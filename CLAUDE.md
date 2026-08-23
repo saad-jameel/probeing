@@ -100,6 +100,31 @@ required in each new shell before any `npm`/`npx` command.
 - `setupSheet()` in `Code.gs` creates/repairs all four tabs. Safe to re-run; it never touches
   existing data.
 
+## The stage pipeline
+
+Each stage of the roadmap runs through four agents (`.claude/agents/`), driven by the `/stage N`
+command (`.claude/skills/stage/SKILL.md`):
+
+| Agent | Does | Cannot |
+|---|---|---|
+| `milestone-planner` | proves the previous stage really landed, then lists this stage's tasks and its validation checklist | write anything |
+| `developer` | writes the code for the `[AGENT]` tasks | push or deploy |
+| `validator` | independently tests: static, local serve, live backend, security invariants | edit anything |
+| `deployer` | secret-scans, then pushes the PWA and versions the Apps Script deployment | skip the secret scan |
+
+The tool restrictions are the design, not an oversight. A validator that could edit would patch
+its own findings and always pass; a developer that could push would make the secret gate
+optional. Subagents cannot call each other, so the main session carries results between them —
+that is what `/stage` describes.
+
+`/stage N` runs: plan → build → validate → fix (max 2 rounds) → deploy → report. It stops and
+asks rather than looping when the second fix round still fails.
+
+`scripts/secret_scan.sh` is the hard gate before any push: it looks for the live token, a real
+`/exec` URL, tracked credential files, and Google API keys, in both the working tree and
+committed history. Exit non-zero means do not push. Verify it still bites by planting the token
+in a tracked file and re-running — a gate nobody has seen fail is not a gate.
+
 ## Testing
 
 There is no test framework — this is a two-user app. Verify by hand:

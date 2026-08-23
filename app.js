@@ -76,6 +76,17 @@ function clockOf(entry) {
   return h ? h[1] : '';
 }
 
+/** Replace the log list with a single muted message. Built as a node, never
+ *  as an HTML string, so this path can never become an injection point. */
+function showEmpty(message) {
+  var list = $('logList');
+  list.textContent = '';
+  var li = document.createElement('li');
+  li.className = 'empty';
+  li.textContent = message;
+  list.appendChild(li);
+}
+
 // ------------------------------------------------------------------ render
 
 function renderToday(data) {
@@ -86,10 +97,7 @@ function renderToday(data) {
   list.textContent = '';
 
   if (!data.log.length) {
-    var empty = document.createElement('li');
-    empty.className = 'empty';
-    empty.textContent = 'No entries yet today.';
-    list.appendChild(empty);
+    showEmpty('No entries yet today.');
     return;
   }
 
@@ -116,7 +124,7 @@ function renderToday(data) {
 
 async function refresh(opts) {
   if (!isConfigured()) {
-    $('logList').innerHTML = '<li class="empty">Open Settings to connect.</li>';
+    showEmpty('Open Settings to connect.');
     $('nowLine').textContent = 'Not connected.';
     return;
   }
