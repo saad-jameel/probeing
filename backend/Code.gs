@@ -119,7 +119,7 @@ var ACTIONS = {
       return dateKeyOf(r[0]) === key;
     }).map(function (r) {
       return {
-        at: String(r[0]), local: String(r[1]), type: String(r[2]),
+        at: String(r[0]), local: humanOf(r[1]), type: String(r[2]),
         raw_text: String(r[3]), project: String(r[4]), detail: String(r[5])
       };
     });
@@ -127,7 +127,7 @@ var ACTIONS = {
     var prayers = rows(SHEETS.PRAYERS).filter(function (r) {
       return String(r[2]) === key || dateKeyOf(r[0]) === key;
     }).map(function (r) {
-      return { at: String(r[0]), local: String(r[1]), prayer: String(r[3]), mode: String(r[4]) };
+      return { at: String(r[0]), local: humanOf(r[1]), prayer: String(r[3]), mode: String(r[4]) };
     });
 
     return {
@@ -232,6 +232,16 @@ function dateKeyOf(cell) {
   return String(cell).slice(0, 10);
 }
 
+/**
+ * Same problem for the human-readable column: Sheets coerces "Sun 23 Aug,
+ * 07:00 PM" into a Date, which then stringifies as the full JS date dump. If
+ * the cell came back as a Date, re-format it rather than showing that.
+ */
+function humanOf(cell) {
+  if (cell instanceof Date) return human(cell);
+  return String(cell || '');
+}
+
 function json(obj) {
   return ContentService
     .createTextOutput(JSON.stringify(obj))
@@ -258,6 +268,11 @@ function setupSheet() {
     var want = headers[name];
     sh.getRange(1, 1, 1, want.length).setValues([want]).setFontWeight('bold');
     sh.setFrozenRows(1);
+
+    // Stop Sheets coercing our timestamp strings into Date values, which read
+    // back as raw JS date dumps instead of the readable text we wrote.
+    var textCols = want.indexOf('local_time') >= 0 ? 2 : 0;
+    if (textCols) sh.getRange(1, 1, sh.getMaxRows(), textCols).setNumberFormat('@');
   });
 
   // Now is a single-row tab; make sure that row exists.
