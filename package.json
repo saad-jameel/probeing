@@ -1,0 +1,14 @@
+{
+  "name": "probeing",
+  "version": "0.1.0",
+  "private": true,
+  "description": "ProBeing - personal activity keeper. PWA + Google Apps Script + Google Sheet.",
+  "scripts": {
+    "serve": "python3 -m http.server 8080",
+    "push": "clasp push --project backend/.clasp.json",
+    "deploy": "clasp deploy --project backend/.clasp.json"
+  },
+  "devDependencies": {
+    "@google/clasp": "^3.3.0"
+  }
+}

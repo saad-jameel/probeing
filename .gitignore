@@ -1,0 +1,21 @@
+# --- Node (project-local only, never global) ---
+node_modules/
+npm-debug.log*
+
+# --- Python venv ---
+.venv/
+__pycache__/
+
+# --- SECRETS: never commit these ---
+# clasp OAuth credentials + script id
+.clasp.json
+.clasprc.json
+# any local env / secret scratch files
+.env
+.env.*
+secrets.json
+*.secret
+
+# --- OS / editor noise ---
+*Zone.Identifier
+.DS_Store
