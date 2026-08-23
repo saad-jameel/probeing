@@ -29,6 +29,16 @@ var isConfigured = function () { return Boolean(cfg.apiUrl && cfg.token); };
 
 // ---------------------------------------------------------------------- api
 
+/** This device's IANA timezone, e.g. "Asia/Karachi". The backend stamps rows
+ *  with it, so logs read in local time and "today" rolls over where you are. */
+function deviceTz() {
+  try {
+    return Intl.DateTimeFormat().resolvedOptions().timeZone || '';
+  } catch (e) {
+    return '';
+  }
+}
+
 /**
  * Call the backend.
  *
@@ -44,7 +54,11 @@ async function api(action, payload) {
     method: 'POST',
     redirect: 'follow',
     headers: { 'Content-Type': 'text/plain;charset=utf-8' },
-    body: JSON.stringify(Object.assign({ action: action, token: cfg.token }, payload || {}))
+    body: JSON.stringify(Object.assign({
+      action: action,
+      token: cfg.token,
+      tz: deviceTz()
+    }, payload || {}))
   });
 
   if (!res.ok) throw new Error('HTTP ' + res.status);

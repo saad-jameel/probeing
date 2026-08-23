@@ -18,6 +18,13 @@ var SHEETS = {
   NOW: 'Now'
 };
 
+/**
+ * Timezone for the current request. Each doPost runs in a fresh script context,
+ * so a module-level slot is per-request state, not shared between callers.
+ * The client sends its own IANA zone; we fall back to the project's.
+ */
+var REQ_TZ = null;
+
 var PRAYERS = ['Fajr', 'Dhuhr', 'Asr', 'Maghrib', 'Isha'];
 var PRAYER_MODES = ['Takbeer-e-oola', 'Partial Jamat', 'Individual'];
 
@@ -44,6 +51,10 @@ function doPost(e) {
     if (!checkToken(body.token)) {
       return json({ ok: false, error: 'unauthorized' });
     }
+
+    // Honour the device's clock. A phone that travels keeps logging in local
+    // time, and "today" rolls over where the user actually is.
+    REQ_TZ = validTz(body.tz);
 
     var handler = ACTIONS[body.action];
     if (!handler) {
@@ -190,7 +201,23 @@ function countTodayType(type) {
   }).length;
 }
 
-function tz() { return Session.getScriptTimeZone(); }
+function tz() { return REQ_TZ || Session.getScriptTimeZone(); }
+
+/**
+ * Accept an IANA zone name only if Apps Script can actually format with it.
+ * An unvalidated string here would throw deep inside formatDate and turn a
+ * typo into a 500 for every subsequent call.
+ */
+function validTz(name) {
+  if (!name || typeof name !== 'string' || name.length > 64) return null;
+  if (!/^([A-Za-z_]+\/[A-Za-z0-9_+\-]+(\/[A-Za-z0-9_+\-]+)?|UTC|GMT)$/.test(name)) return null;
+  try {
+    Utilities.formatDate(new Date(), name, 'yyyy');
+    return name;
+  } catch (e) {
+    return null;
+  }
+}
 function nowIso() { return iso(new Date()); }
 function iso(d) { return Utilities.formatDate(d, tz(), "yyyy-MM-dd'T'HH:mm:ssXXX"); }
 function human(d) { return Utilities.formatDate(d, tz(), 'EEE dd MMM, hh:mm a'); }

@@ -1,21 +1,62 @@
-# --- Node (project-local only, never global) ---
-node_modules/
-npm-debug.log*
+# Allowlist .gitignore — ignore everything, then un-ignore deliberately.
+#
+# Rationale: a denylist leaks whatever you forget to name. An allowlist fails
+# closed — a new file is invisible to git until someone adds a line for it. If
+# `git status` doesn't show your new file, that is this file working as
+# intended: add the un-ignore line below.
+#
+# This repo must be PUBLIC (GitHub Pages is only free on public repos), so
+# everything tracked here is world-readable forever. Nothing secret gets an
+# un-ignore line, and `scripts/secret_scan.sh` enforces that before every push.
+#
+# Git rule governing the ordering: you cannot re-include a file if one of its
+# parent directories is excluded. So each tree is un-ignored as a directory
+# first (`!/icons/`), then as contents (`!/icons/**`). Last matching pattern wins.
 
-# --- Python venv ---
-.venv/
+*
+
+# --- Top-level files ---------------------------------------------------------
+!/.gitignore
+!/.nvmrc
+!/.env.example
+!/README.md
+!/package.json
+!/package-lock.json
+
+# --- The PWA (served at the repo root by GitHub Pages) -----------------------
+!/index.html
+!/app.js
+!/styles.css
+!/manifest.webmanifest
+!/sw.js
+!/icons/
+!/icons/**
+
+# --- Backend -----------------------------------------------------------------
+!/backend/
+!/backend/**
+# ...but never clasp's credentials, which land inside backend/.
+/backend/.clasp.json
+/backend/.clasprc.json
+
+# --- Tooling and docs --------------------------------------------------------
+!/scripts/
+!/scripts/**
+!/docs/
+!/docs/**
+
+# --- The stage pipeline (agent definitions; no secrets) ----------------------
+!/.claude/
+!/.claude/**
+
+# --- Noise -------------------------------------------------------------------
+# These sit inside un-ignored trees, so they need re-ignoring explicitly.
 __pycache__/
-
-# --- SECRETS: never commit these ---
-# clasp OAuth credentials + script id
-.clasp.json
-.clasprc.json
-# any local env / secret scratch files
-.env
-.env.*
-secrets.json
-*.secret
-
-# --- OS / editor noise ---
+*.pyc
+# WSL writes these next to files copied from Windows.
 *Zone.Identifier
-.DS_Store
+
+# --- Deliberately NOT tracked ------------------------------------------------
+# CLAUDE.md   — describes this machine's setup; the repo is public.
+# .env        — real token and API URL. Copy .env.example to .env and fill it in.
+# node_modules/, .venv/, ~/.probeing/  — all covered by `*` above.

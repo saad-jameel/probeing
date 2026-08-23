@@ -55,9 +55,21 @@ for f in .clasp.json .clasprc.json backend/.clasp.json; do
     fail "$f is tracked by git — it holds credentials"
   fi
 done
-ENV_TRACKED=$(git ls-files | grep -E '(^|/)\.env' || true)
-[ -n "$ENV_TRACKED" ] && fail ".env file tracked: $ENV_TRACKED"
+# .env.example / .env.sample are templates and SHOULD be tracked; a real .env
+# never should. Match .env and .env.<machine>, but not the templates.
+ENV_TRACKED=$(git ls-files | grep -E '(^|/)\.env($|\.)' | grep -vE '\.(example|sample|template)$' || true)
+[ -n "$ENV_TRACKED" ] && fail "real .env file tracked: $ENV_TRACKED"
 pass "credential files (.clasp.json/.clasprc.json/.env) not tracked"
+
+# A template is only safe while it still holds placeholders.
+for tpl in $(git ls-files | grep -E '\.(example|sample|template)$' || true); do
+  if [ -r "$TOKEN_FILE" ] && [ ${#TOKEN} -ge 12 ] && grep -qF -- "$TOKEN" "$tpl" 2>/dev/null; then
+    fail "$tpl contains the REAL token — it must hold placeholders only"
+  fi
+  if grep -qE 'macros/s/[A-Za-z0-9_-]{30,}' "$tpl" 2>/dev/null; then
+    fail "$tpl contains a REAL Apps Script URL — it must hold placeholders only"
+  fi
+done
 
 # --- 4. generic high-entropy credential shapes ------------------------------
 # Google API keys (AIza...) and OAuth client secrets have recognisable prefixes.
