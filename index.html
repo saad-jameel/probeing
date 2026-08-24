@@ -34,9 +34,12 @@
     </button>
 
     <div class="action-row">
-      <button id="prayerBtn" class="btn" data-stage="3">Prayer</button>
+      <button id="prayerBtn" class="btn">Prayer</button>
       <button id="micBtn" class="btn" data-stage="4">&#127908; Voice</button>
     </div>
+
+    <!-- One tap = one status row. No confirmation dialog: that is the point. -->
+    <div id="chipRow" class="chips" aria-label="Quick status"></div>
   </section>
 
   <form id="trackerForm" class="tracker" autocomplete="off">
@@ -53,6 +56,25 @@
   </section>
 </main>
 
+<dialog id="prayerDlg" class="dlg">
+  <form method="dialog">
+    <h2>Log a prayer</h2>
+    <p class="hint">Already logged today is ticked. Logging again adds a second row; nothing is overwritten.</p>
+
+    <div id="prayerList" class="pick-grid"></div>
+
+    <div id="modeWrap" hidden>
+      <p class="pick-head">Mode</p>
+      <div id="modeList" class="pick-grid"></div>
+    </div>
+
+    <div class="dlg-actions">
+      <button type="button" id="prayerCancelBtn" class="link-btn">Cancel</button>
+      <button type="button" id="prayerSaveBtn" class="btn btn-accent" disabled>Save</button>
+    </div>
+  </form>
+</dialog>
+
 <dialog id="settingsDlg" class="dlg">
   <form method="dialog" id="settingsForm">
     <h2>Settings</h2>
@@ -63,6 +85,10 @@
 
     <label for="token">Secret token</label>
     <input id="token" type="password" placeholder="your TOKEN script property" required>
+
+    <label for="chipsInput">Quick-status chips (comma separated)</label>
+    <input id="chipsInput" type="text" placeholder="Tea, Lunch, Prayer-break, Rest, PUBG">
+    <p class="hint">Stored on this device only, so each device has its own list. The comma is the separator, so a chip label cannot contain one.</p>
 
     <div class="dlg-actions">
       <button type="button" id="testBtn" class="btn">Test</button>

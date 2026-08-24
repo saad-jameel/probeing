@@ -83,6 +83,49 @@ body {
 /* Buttons whose behaviour lands in a later stage. */
 [data-stage] { position: relative; }
 
+.m-btn[disabled] { opacity: .75; cursor: default; }
+
+/* The confirm flash. You should be able to tap M and glance away, so the
+   button itself acknowledges the write instead of only the banner. */
+.m-btn.confirm { animation: mconfirm .45s ease; }
+@keyframes mconfirm {
+  0%   { background: var(--danger); }
+  30%  { background: var(--accent); }
+  100% { background: var(--danger); }
+}
+
+/* ----------------------------------------------------------------- chips */
+
+.chips { display: flex; flex-wrap: wrap; gap: 8px; }
+.chip {
+  padding: 8px 14px;
+  background: var(--panel);
+  color: var(--fg);
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  font-size: 14px; cursor: pointer;
+}
+.chip:active { transform: scale(.97); }
+.chip[disabled] { opacity: .55; cursor: default; }
+.chip.confirm { background: var(--accent); color: var(--accent-ink); border-color: transparent; }
+
+/* --------------------------------------------------------- prayer picker */
+
+.pick-head { margin: 16px 0 0; font-size: 13px; color: var(--muted); }
+.pick-grid { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 8px; }
+.pick {
+  flex: 1 1 30%;
+  padding: 12px 10px;
+  background: var(--bg);
+  color: var(--fg);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  font-size: 15px; cursor: pointer;
+}
+.pick[aria-pressed="true"] { background: var(--accent); color: var(--accent-ink); border-color: transparent; font-weight: 600; }
+.pick .done { color: var(--accent); margin-left: 6px; }
+.pick[aria-pressed="true"] .done { color: var(--accent-ink); }
+
 /* --------------------------------------------------------------- tracker */
 
 .tracker { display: flex; gap: 10px; margin: 22px 0; }
@@ -159,5 +202,5 @@ body {
 .banner.err { background: var(--danger); color: #fff; border-color: transparent; }
 
 @media (prefers-reduced-motion: reduce) {
-  * { transition: none !important; }
+  * { transition: none !important; animation: none !important; }
 }
