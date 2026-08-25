@@ -27,7 +27,7 @@
   <g id="i-history"><path d="M3.2 12a8.8 8.8 0 1 0 2.9-6.5"/><path d="M3 4.2v5h5"/><path d="M12 7.5V12l3.4 2"/></g>
   <g id="i-chart"><path d="M4 20.2V11M9.3 20.2V4.5M14.7 20.2v-6M20 20.2v-9.6"/></g>
   <g id="i-target"><circle cx="12" cy="12" r="8.7"/><circle cx="12" cy="12" r="4.6"/><circle cx="12" cy="12" r="1.4"/></g>
-  <g id="i-plus"><path d="M12 5v14M5 12h14"/></g>
+  <g id="i-board"><rect x="3" y="4.5" width="18" height="15" rx="2.2"/><path d="M9 4.5v15M15 4.5v15"/></g>
   <g id="i-mic"><rect x="9" y="2.8" width="6" height="11" rx="3"/><path d="M5.5 11.5a6.5 6.5 0 0 0 13 0"/><path d="M12 18v3.2"/></g>
 </defs></svg>
 
@@ -101,9 +101,10 @@
     <div id="prayerTicks" class="ticks"></div>
   </section>
 
-  <button id="goalBtn" class="btn btn-wide">
-    <svg class="btn-ico" aria-hidden="true"><use href="#i-plus"></use></svg>
-    Set a goal
+  <!-- Point 3: 'off' had no way in except going to bed. This is that way. -->
+  <button id="dayBtn" class="btn btn-wide">
+    <svg class="btn-ico" aria-hidden="true"><use href="#i-off"></use></svg>
+    <span id="dayBtnLabel">End the day</span>
   </button>
 </section>
 
@@ -149,16 +150,6 @@
   <p class="pending">Nothing archived yet &mdash; the first report is written at the end of your first full week.</p>
 </section>
 
-<!-- ============================================================ GOALS -->
-<section class="screen" data-screen="goals" hidden>
-  <div class="log-head">
-    <h2 class="screen-title">Goals</h2>
-    <button id="goalBtn2" class="link-btn">+ New</button>
-  </div>
-  <p class="screen-sub">Set the milestones. The checker marks them off against what you actually logged.</p>
-  <div id="goalList" class="goal-list"><p class="pending">Loading&hellip;</p></div>
-</section>
-
 </main>
 
 <!-- ============================================================== NAV -->
@@ -166,7 +157,7 @@
   <button class="tab is-on" data-goto="home" aria-label="Home"><svg aria-hidden="true"><use href="#i-home"></use></svg></button>
   <button class="tab" data-goto="today" aria-label="Today"><svg aria-hidden="true"><use href="#i-history"></use></svg></button>
   <button class="tab" data-goto="review" aria-label="Weekly review"><svg aria-hidden="true"><use href="#i-chart"></use></svg></button>
-  <button class="tab" data-goto="goals" aria-label="Goals"><svg aria-hidden="true"><use href="#i-target"></use></svg></button>
+  <button class="tab" id="boardTab" aria-label="Taskboard"><svg aria-hidden="true"><use href="#i-board"></use></svg></button>
 </nav>
 
 <dialog id="prayerDlg" class="dlg">
@@ -188,27 +179,6 @@
   </form>
 </dialog>
 
-<dialog id="goalDlg" class="dlg">
-  <form method="dialog">
-    <h2>Set a goal</h2>
-    <p class="hint">Goes straight to the Sheet. Stage 5 splits the points into milestones and ticks them off.</p>
-
-    <p class="pick-head">Kind</p>
-    <div id="goalKindList" class="pick-grid"></div>
-
-    <label for="goalProject">Project name</label>
-    <input id="goalProject" type="text" placeholder="OneNet" maxlength="60">
-
-    <label for="goalPoints">This week&rsquo;s points</label>
-    <textarea id="goalPoints" rows="4" placeholder="One per line:&#10;PKI certs issued&#10;broker mTLS working&#10;node heartbeat"></textarea>
-
-    <div class="dlg-actions">
-      <button type="button" id="goalCancelBtn" class="link-btn">Cancel</button>
-      <button type="button" id="goalSaveBtn" class="btn btn-accent">Save</button>
-    </div>
-  </form>
-</dialog>
-
 <dialog id="settingsDlg" class="dlg">
   <form method="dialog" id="settingsForm">
     <h2>Settings</h2>
@@ -219,6 +189,10 @@
 
     <label for="token">Secret token</label>
     <input id="token" type="password" placeholder="your TOKEN script property" required>
+
+    <label for="boardUrl">Taskboard link (optional)</label>
+    <input id="boardUrl" type="url" placeholder="https://trello.com/b/... or any board you use">
+    <p class="hint">The fourth tab opens this in your browser. Any board works &mdash; Trello, Notion, Jira, Google Tasks. Left empty, the tab tells you to set it.</p>
 
     <label for="chipsInput">Quick-status chips (comma separated)</label>
     <input id="chipsInput" type="text" placeholder="Tea, Lunch, Prayer-break, PUBG">

@@ -3,7 +3,7 @@
  * Home     : M / Prayer / Sleep-Wake / Break-Work, prayer ticks, current project
  * Today    : the tracker input and today's raw log
  * Review   : the weekly report (layout final, numbers land with the backend)
- * Goals    : set a goal, and later check it off against what was logged
+ * Board    : the fourth tab is a link out to whatever taskboard you already use
  *
  * Everything writes through api() below. The Voice button is still a
  * placeholder; Stage 4 wires it.
@@ -18,7 +18,6 @@ var CHIP_STATS_KEY = 'probeing.chipstats';  // how often each status gets logged
 // Kept in step with the same two lists in Code.gs, which validates them server-side.
 var PRAYER_NAMES = ['Fajr', 'Dhuhr', 'Asr', 'Maghrib', 'Isha'];
 var PRAYER_MODES = ['Takbeer-e-oola', 'Partial Jamat', 'Individual'];
-var GOAL_KINDS = ['Office', 'Personal', 'Other'];
 
 // 'Rest' is gone on purpose: the Break/Work toggle records rest properly, as a
 // pair of rows that can be turned into a duration later.
@@ -182,11 +181,13 @@ function showScreen(name) {
 
   window.scrollTo(0, 0);
   if (name === 'review') renderReviewRange();
-  if (name === 'goals') loadGoals();
 }
 
+/* Only tabs that name a screen switch screens. The taskboard tab is also a
+ * .tab but carries no data-goto — without this guard it would call
+ * showScreen(undefined), which matches no screen and hides all of them. */
 (function wireTabs() {
-  var tabs = document.querySelectorAll('.tab');
+  var tabs = document.querySelectorAll('.tab[data-goto]');
   for (var i = 0; i < tabs.length; i++) {
     tabs[i].addEventListener('click', function () { showScreen(this.dataset.goto); });
   }
@@ -294,10 +295,20 @@ async function refresh(opts) {
  * A break does not change the project — you come back to the same thing — it
  * only pauses the clock, because "hours worked" must not include the coffee. */
 function replayDay(log) {
-  var rows = (log || []).slice().filter(function (r) {
-    return !isNaN(instantOf(r.at));
+  /* Sheet timestamps are second-precision, so two rows written inside the same
+   * second tie. A stable sort would then keep the input order — and today()
+   * hands rows back NEWEST FIRST, which replays a same-second pair backwards
+   * (End the day, Start the day -> looks like Start then End). The Sheet's own
+   * row order is append order, i.e. chronological, so the later a row sits in
+   * this array the older it is: break the tie on that. */
+  var rows = (log || []).map(function (r, i) {
+    return { r: r, i: i };
+  }).filter(function (x) {
+    return !isNaN(instantOf(x.r.at));
   }).sort(function (a, b) {
-    return instantOf(a.at) - instantOf(b.at);
+    return (instantOf(a.r.at) - instantOf(b.r.at)) || (b.i - a.i);
+  }).map(function (x) {
+    return x.r;
   });
 
   var project = '';
@@ -322,7 +333,7 @@ function replayDay(log) {
     } else if (row.type === 'break' || row.type === 'off' || row.type === 'sleep') {
       stop(t);
     }
-    // wake / M / status / prayer / goal do not move the work clock
+    // wake / M / status / prayer do not move the work clock
   });
 
   var now = Date.now();
@@ -493,6 +504,8 @@ function paintToggles() {
   setIcon(wp.querySelector('use'), w.icon);
   wp.className = 'pill' + w.cls;
 
+  paintDayBtn();
+
   // --- the page tint
   document.body.classList.toggle('state-asleep', asleep);
   document.body.classList.toggle('state-break', !asleep && work === 'break');
@@ -555,6 +568,22 @@ function sleepClosingRow(work, night) {
   return null;                                       // a nap while already paused
 }
 
+/**
+ * Close the night before anything that means "I am working now".
+ *
+ * THREE controls can start work — the Break/Work tile, the End/Start day button
+ * and typing an entry — and every one of them has to write a `wake` row first if
+ * the app still thinks you are asleep. A `sleep` with no `wake` is not a short
+ * night, it is an unmeasurable one, and the pills would contradict each other
+ * on top of that. Living in one function is the point: this used to be inlined
+ * in the tile handler alone, and the other two silently skipped it.
+ */
+async function ensureAwake() {
+  if (toggles.sleep.state !== 'asleep') return;
+  await api('log', { type: 'wake', raw_text: 'Wake up (auto — back to work)' });
+  setToggle('sleep', 'awake');
+}
+
 sleepBtn.addEventListener('click', async function () {
   if (sleepBtn.disabled) return;
   var toSleep = toggles.sleep.state === 'awake';
@@ -590,7 +619,6 @@ sleepBtn.addEventListener('click', async function () {
 workBtn.addEventListener('click', async function () {
   if (workBtn.disabled) return;
   var toBreak = toggles.work.state === 'working';
-  var wakingUp = !toBreak && toggles.sleep.state === 'asleep';
 
   workBtn.disabled = true;
   var wrote = false;
@@ -598,10 +626,7 @@ workBtn.addEventListener('click', async function () {
     // Mirror of the Sleep path: you cannot be asleep and working at once, so
     // starting work ends the night first, and without asking — one tap, and the
     // review still sees a wake row to close the sleep against.
-    if (wakingUp) {
-      await api('log', { type: 'wake', raw_text: 'Wake up (auto — back to work)' });
-      setToggle('sleep', 'awake');
-    }
+    if (!toBreak) await ensureAwake();
     await api('log', {
       type: toBreak ? 'break' : 'resume',
       raw_text: toBreak ? 'Break' : 'Back to work'
@@ -619,6 +644,45 @@ workBtn.addEventListener('click', async function () {
 });
 
 paintToggles();
+
+// ------------------------------------------------------------ end of the day
+
+/* Point 3: 'off' used to have only one way in — pressing Sleep at night. That
+ * made "I have stopped for the day but I am not going to bed" unrecordable, and
+ * every hours-worked figure depends on the day having a closing edge. This is
+ * that edge, on its own button. */
+
+var dayBtn = $('dayBtn');
+
+function paintDayBtn() {
+  if (!dayBtn) return;
+  var off = toggles.work.state === 'off';
+  $('dayBtnLabel').textContent = off ? 'Start the day' : 'End the day';
+}
+
+dayBtn.addEventListener('click', async function () {
+  if (dayBtn.disabled) return;
+  var off = toggles.work.state === 'off';
+
+  dayBtn.disabled = true;
+  var wrote = false;
+  try {
+    if (off) await ensureAwake();          // starting the day ends the night
+    await api('log', {
+      type: off ? 'resume' : 'off',
+      raw_text: off ? 'Day started' : 'Day over'
+    });
+    wrote = true;
+    setToggle('work', off ? 'working' : 'off');
+    confirmPulse(dayBtn);
+    flash(off ? 'Day started' : 'Day closed', 'ok');
+    refresh();
+  } catch (err) {
+    flash(String(err.message || err), 'err');
+  } finally {
+    if (wrote) coolDown(dayBtn); else dayBtn.disabled = false;
+  }
+});
 
 // -------------------------------------------------------------------- chips
 
@@ -900,6 +964,7 @@ $('trackerForm').addEventListener('submit', async function (e) {
 
   input.value = '';
   try {
+    await ensureAwake();                   // logging work is starting work
     // project stays empty until Gemini splits it out; replayDay() falls back to
     // the raw text so Home can already name what you are on.
     await api('log', { type: 'work', raw_text: text });
@@ -935,151 +1000,29 @@ function renderReviewRange() {
   $('reviewRange').textContent = 'Last week (' + f(start) + ' – ' + f(end) + ')';
 }
 
-// -------------------------------------------------------------------- goals
+// ------------------------------------------------------------------ taskboard
 
-/* Goals go to the Sheet, which is the database — nothing is kept only on the
- * device. Reading them back needs the `goals` action in Code.gs; until that
- * deployment is live the screen says so instead of showing an empty list. */
+/* The fourth tab is a link, not a screen. Whatever board you already use stays
+ * where it is — this app has no business becoming a second one. Opened in the
+ * browser, not in the PWA frame, so the back gesture still belongs to ProBeing. */
 
-var goalDlg = $('goalDlg');
-var pickedKind = GOAL_KINDS[0];
-
-function renderKindPicks() {
-  var box = $('goalKindList');
-  box.textContent = '';
-  GOAL_KINDS.forEach(function (kind) {
-    box.appendChild(pickButton(kind, pickedKind === kind, false, function () {
-      pickedKind = kind;
-      renderKindPicks();
-    }));
-  });
+/** Only http(s) links may be opened. The Save button is type="button", so the
+ *  <input type="url"> constraint never runs — this is the only check there is,
+ *  and it is what keeps a `javascript:` URL out of window.open(). */
+function safeBoardUrl(raw) {
+  var url = String(raw || '').trim();
+  return /^https?:\/\//i.test(url) ? url : '';
 }
 
-function openGoalDialog() {
-  pickedKind = GOAL_KINDS[0];
-  $('goalProject').value = '';
-  $('goalPoints').value = '';
-  renderKindPicks();
-  goalDlg.showModal();
-}
-
-$('goalBtn').addEventListener('click', openGoalDialog);
-$('goalBtn2').addEventListener('click', openGoalDialog);
-$('goalCancelBtn').addEventListener('click', function () { goalDlg.close(); });
-
-$('goalSaveBtn').addEventListener('click', async function () {
-  var name = $('goalProject').value.trim();
-  var points = $('goalPoints').value.trim();
-
-  // log() rejects an empty raw_text server-side, so catch it here with a
-  // message that says which box to fill.
-  if (!name) { flash('Give the project a name.', 'err'); return; }
-  if (!points) { flash('Add at least one point.', 'err'); return; }
-
-  var btn = this;
-  btn.disabled = true;
-  try {
-    await api('log', {
-      type: 'goal',
-      raw_text: points,
-      project: name,
-      detail: pickedKind
-    });
-    goalDlg.close();
-    flash('Goal saved', 'ok');
-    loadGoals();
-    refresh();
-  } catch (err) {
-    flash(String(err.message || err), 'err');
-  } finally {
-    btn.disabled = false;
+$('boardTab').addEventListener('click', function () {
+  var url = safeBoardUrl(cfg.boardUrl);
+  if (!url) {
+    flash('Add a taskboard link starting with https:// in Settings.');
+    dlg.showModal();
+    return;
   }
+  window.open(url, '_blank', 'noopener');
 });
-
-function goalCard(goal) {
-  var card = document.createElement('section');
-  card.className = 'card';
-
-  var top = document.createElement('div');
-  top.className = 'goal-top';
-
-  var name = document.createElement('span');
-  name.className = 'goal-name';
-  name.textContent = goal.project || 'Unnamed';       // user input — textContent only
-
-  var kind = document.createElement('span');
-  kind.className = 'goal-kind';
-  kind.textContent = goal.detail || 'Other';
-
-  top.append(name, kind);
-  card.appendChild(top);
-
-  var points = String(goal.raw_text || '').split('\n')
-    .map(function (x) { return x.trim(); })
-    .filter(Boolean);
-
-  if (points.length) {
-    var ul = document.createElement('ul');
-    ul.className = 'goal-points';
-    points.forEach(function (p) {
-      var li = document.createElement('li');
-
-      var box = document.createElement('span');
-      box.className = 'box';
-      box.textContent = '☐';                          // ticked by Gemini in Stage 5
-
-      var txt = document.createElement('span');
-      txt.textContent = p;
-
-      li.append(box, txt);
-      ul.appendChild(li);
-    });
-    card.appendChild(ul);
-  }
-
-  var when = document.createElement('p');
-  when.className = 'goal-when';
-  when.textContent = 'Set ' + (goal.local || '');
-  card.appendChild(when);
-
-  return card;
-}
-
-function goalsMessage(text) {
-  var box = $('goalList');
-  box.textContent = '';
-  var p = document.createElement('p');
-  p.className = 'pending';
-  p.textContent = text;
-  box.appendChild(p);
-}
-
-var goalsLoading = false;
-
-async function loadGoals() {
-  if (goalsLoading) return;
-  if (!isConfigured()) { goalsMessage('Open Settings to connect.'); return; }
-
-  goalsLoading = true;
-  try {
-    var data = await api('goals');
-    var goals = data.goals || [];
-    if (!goals.length) {
-      goalsMessage('No goals yet. Tap + New to set this week’s points.');
-      return;
-    }
-    var box = $('goalList');
-    box.textContent = '';
-    goals.forEach(function (g) { box.appendChild(goalCard(g)); });
-  } catch (err) {
-    var msg = String(err.message || err);
-    goalsMessage(msg === 'unknown_action'
-      ? 'The Apps Script deployment is still the old version — it does not know how to read goals back yet. Re-deploy it and this fills in.'
-      : msg);
-  } finally {
-    goalsLoading = false;
-  }
-}
 
 // ----------------------------------------------------------------- settings
 
@@ -1088,6 +1031,7 @@ var dlg = $('settingsDlg');
 $('settingsBtn').addEventListener('click', function () {
   $('apiUrl').value = cfg.apiUrl || '';
   $('token').value = cfg.token || '';
+  $('boardUrl').value = cfg.boardUrl || '';
   $('chipsInput').value = chipLabels().join(', ');
   $('testResult').textContent = '';
   dlg.showModal();
@@ -1116,9 +1060,18 @@ $('testBtn').addEventListener('click', async function () {
 });
 
 $('saveBtn').addEventListener('click', function () {
+  // Typing "trello.com/b/abc" without the scheme is a fair mistake, and
+  // safeBoardUrl() would quietly store nothing. Say so instead.
+  var typedBoard = $('boardUrl').value.trim();
+  if (typedBoard && !safeBoardUrl(typedBoard)) {
+    $('testResult').textContent = 'The taskboard link must start with https:// — nothing else was saved.';
+    return;
+  }
+
   var next = {
     apiUrl: $('apiUrl').value.trim(),
     token: $('token').value.trim(),
+    boardUrl: safeBoardUrl(typedBoard),
     // Device-local on purpose: the chip list does not sync between phone and laptop.
     chips: (parseChips($('chipsInput').value).join(', ')) || DEFAULT_CHIPS.join(', ')
   };

@@ -94,6 +94,11 @@ body {
 /* --------------------------------------------------------------- screens */
 
 .screen { display: grid; gap: 14px; }
+/* Author styles beat the UA stylesheet, so `display: grid` above silently
+   defeats the browser's own `[hidden] { display: none }` — every screen renders
+   at once and the tab bar looks broken. This line is what makes hidden mean
+   hidden. Any future `.screen`-like class that sets `display` needs the pair. */
+.screen[hidden] { display: none; }
 .screen-title { font-size: 26px; margin: 4px 0 0; letter-spacing: -0.02em; }
 .screen-title.sm { font-size: 18px; margin-top: 10px; }
 .screen-sub { color: var(--muted); font-size: 14px; margin: -8px 0 4px; }
@@ -216,21 +221,6 @@ body {
 }
 .tick.done { color: var(--accent); border-color: var(--accent); }
 .tick .mark { font-size: 13px; }
-
-/* ----------------------------------------------------------------- goals */
-
-.goal-list { display: grid; gap: 10px; }
-.goal-kind {
-  font-size: 11px; text-transform: uppercase; letter-spacing: .06em;
-  color: var(--muted); border: 1px solid var(--line);
-  border-radius: 999px; padding: 2px 9px;
-}
-.goal-top { display: flex; align-items: center; gap: 10px; justify-content: space-between; }
-.goal-name { font-size: 16px; font-weight: 600; overflow-wrap: anywhere; }
-.goal-points { list-style: none; margin: 10px 0 0; padding: 0; display: grid; gap: 6px; }
-.goal-points li { display: flex; gap: 9px; font-size: 14.5px; color: var(--fg); }
-.goal-points .box { color: var(--muted); flex: 0 0 auto; }
-.goal-when { color: var(--muted); font-size: 12px; margin: 10px 0 0; }
 
 /* --------------------------------------------------------- prayer picker */
 
