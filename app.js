@@ -1,18 +1,29 @@
 /* ProBeing PWA — Stage 3: shell, settings, sync, and the logging buttons.
  *
- * M, Prayer and the quick-status chips all write through api() below. The Voice
- * button is still a placeholder; Stage 4 wires it.
+ * M, Prayer, the Sleep/Wake and Break/Work toggles and the quick-status chips
+ * all write through api() below. The Voice button is still a placeholder;
+ * Stage 4 wires it.
  */
 
 'use strict';
 
 var CFG_KEY = 'probeing.config';
+var TOGGLE_KEY = 'probeing.toggles';        // current sleep/work state, per device
+var CHIP_STATS_KEY = 'probeing.chipstats';  // how often each status gets logged
 
 // Kept in step with the same two lists in Code.gs, which validates them server-side.
 var PRAYER_NAMES = ['Fajr', 'Dhuhr', 'Asr', 'Maghrib', 'Isha'];
 var PRAYER_MODES = ['Takbeer-e-oola', 'Partial Jamat', 'Individual'];
 
-var DEFAULT_CHIPS = ['Tea', 'Lunch', 'Prayer-break', 'Rest', 'PUBG'];
+// 'Rest' is gone on purpose: the Break/Work toggle records rest properly, as a
+// pair of rows that can be turned into a duration later.
+var DEFAULT_CHIPS = ['Tea', 'Lunch', 'Prayer-break', 'PUBG'];
+
+// Sleep pressed during a fresh work session, or in daylight, is more often a
+// mis-tap than a bedtime. Anything outside those two windows goes through silently.
+var SHORT_SESSION_MINUTES = 45;
+var DAY_STARTS_HOUR = 5;
+var DAY_ENDS_HOUR = 20;
 
 // ------------------------------------------------------------------- config
 // The API URL and token live ONLY in this device's localStorage. They are never
@@ -97,6 +108,18 @@ function confirmPulse(el) {
   setTimeout(function () { el.classList.remove('confirm'); }, 500);
 }
 
+/* The in-flight disable below covers the round trip, but if the backend answers
+ * almost instantly a second tap can still land and write the reversing row
+ * (sleep then wake, or two Ms). A short cooldown after a successful press closes
+ * that gap; it is far shorter than any deliberate second press. */
+var TAP_COOLDOWN_MS = 400;
+
+/** Keep `btn` disabled a moment longer after a write that actually happened. */
+function coolDown(btn) {
+  btn.disabled = true;
+  setTimeout(function () { btn.disabled = false; }, TAP_COOLDOWN_MS);
+}
+
 /** "2026-08-23T14:05:00+05:00" -> "14:05". Falls back to the raw string. */
 function clockOf(entry) {
   var m = /T(\d{2}:\d{2})/.exec(entry.at || '');
@@ -156,6 +179,11 @@ function todayEntries(data) {
 function renderToday(data) {
   $('mCount').textContent = data.m_count + ' today';
   $('nowLine').textContent = (data.now && data.now.text) || 'Nothing logged yet today.';
+
+  // Today's rows are the shared truth between devices: they correct the toggles
+  // and they teach the chip order.
+  reconcileToggles(data.log);
+  absorbChipStats(data.log);
 
   // The picker's checkmarks are driven by this; refresh them if it is open.
   todayPrayers = data.prayers || [];
@@ -242,9 +270,11 @@ mBtn.addEventListener('click', async function () {
 
   var before = $('mCount').textContent;
   $('mCount').textContent = ((parseInt(before, 10) || 0) + 1) + ' today';
+  var wrote = false;
 
   try {
     var res = await api('m');
+    wrote = true;
     $('mCount').textContent = res.m_count + ' today';   // the Sheet's number wins
     confirmPulse(mBtn);
     refresh();
@@ -252,9 +282,178 @@ mBtn.addEventListener('click', async function () {
     $('mCount').textContent = before;                   // nothing was written; put it back
     flash(String(err.message || err), 'err');
   } finally {
-    mBtn.disabled = false;
+    // Nothing was written on the error path, so a retry should be instant.
+    if (wrote) coolDown(mBtn); else mBtn.disabled = false;
   }
 });
+
+// ------------------------------------------------------ sleep / work toggles
+
+/* Two buttons that swap identity. Each press writes ONE row whose type says
+ * which edge of the pair it is (sleep→wake, break→resume), so a later stage can
+ * pair them into durations for the weekly review.
+ *
+ * Where the state lives: localStorage is the primary store, because state has to
+ * survive midnight — asleep at 23:30 is still asleep at 07:00, and today() only
+ * ever returns today's rows. It is then reconciled against those rows, and any
+ * row newer than the stored change wins, because the Sheet always wins.
+ *
+ * Known limit: localStorage is per device, so a sleep logged on the phone before
+ * midnight leaves the laptop's toggle stale the next morning until a matching
+ * row appears in today's log. Fixing that needs the backend to report state. */
+
+var sleepBtn = $('sleepBtn');
+var workBtn = $('workBtn');
+
+// row type -> which toggle it moves, and to which state
+var STATE_ROWS = {
+  sleep: { kind: 'sleep', state: 'asleep' },
+  wake: { kind: 'sleep', state: 'awake' },
+  'break': { kind: 'work', state: 'break' },
+  resume: { kind: 'work', state: 'working' }
+};
+
+function loadToggles() {
+  var out = { sleep: { state: 'awake', at: 0 }, work: { state: 'working', at: 0 } };
+  try {
+    var s = JSON.parse(localStorage.getItem(TOGGLE_KEY)) || {};
+    // Only known states are accepted; a corrupt value must not wedge the UI.
+    if (s.sleep && (s.sleep.state === 'awake' || s.sleep.state === 'asleep')) {
+      out.sleep = { state: s.sleep.state, at: Number(s.sleep.at) || 0 };
+    }
+    if (s.work && (s.work.state === 'working' || s.work.state === 'break')) {
+      out.work = { state: s.work.state, at: Number(s.work.at) || 0 };
+    }
+  } catch (e) { /* fall back to awake + working */ }
+  return out;
+}
+
+var toggles = loadToggles();
+
+function setToggle(kind, state, at) {
+  toggles[kind] = { state: state, at: at || Date.now() };
+  localStorage.setItem(TOGGLE_KEY, JSON.stringify(toggles));
+  paintToggles();
+}
+
+/** Label, button highlight and page tint all follow the state. The tint is the
+ *  point: you can tell asleep from awake without reading anything. */
+function paintToggles() {
+  var asleep = toggles.sleep.state === 'asleep';
+  var onBreak = toggles.work.state === 'break';
+
+  sleepBtn.textContent = asleep ? 'Wake up' : 'Sleep';
+  sleepBtn.classList.toggle('on', asleep);
+
+  workBtn.textContent = onBreak ? 'Work' : 'Break';
+  workBtn.classList.toggle('on', onBreak);
+
+  document.body.classList.toggle('state-asleep', asleep);
+  document.body.classList.toggle('state-break', onBreak && !asleep);
+}
+
+/** The Sheet wins: adopt any state row from today that is newer than what this
+ *  device remembers. Rows can arrive in any order, so scan them all. */
+function reconcileToggles(log) {
+  (log || []).forEach(function (row) {
+    var move = STATE_ROWS[row.type];
+    if (!move) return;
+    var t = instantOf(row.at);
+    if (isNaN(t) || t <= toggles[move.kind].at) return;
+    setToggle(move.kind, move.state, t);
+  });
+  paintToggles();
+}
+
+/**
+ * The question to ask before going to sleep, or '' to write it silently.
+ *
+ * Two independent slip-checks, deliberately not merged: the clock one is about
+ * the time of day alone, so it must fire whatever the work state is, while the
+ * short-session one only means anything when there is a session being closed.
+ * Each returns its own wording, because a message naming a trigger that did not
+ * fire reads as a bug.
+ */
+function sleepConfirmQuestion(closingWork) {
+  var hour = new Date().getHours();
+  if (hour >= DAY_STARTS_HOUR && hour < DAY_ENDS_HOUR) {
+    return "It's the middle of the day. Are you sure you're going to sleep?";
+  }
+
+  var startedMinsAgo = toggles.work.at ? (Date.now() - toggles.work.at) / 60000 : Infinity;
+  if (closingWork && startedMinsAgo < SHORT_SESSION_MINUTES) {
+    return 'You started working only a few minutes ago. ' +
+           "Are you sure you're going to sleep?";
+  }
+  return '';
+}
+
+sleepBtn.addEventListener('click', async function () {
+  if (sleepBtn.disabled) return;
+  var toSleep = toggles.sleep.state === 'awake';
+  var closingWork = toSleep && toggles.work.state === 'working';
+
+  // Declining must leave the Sheet untouched, so this runs before any write.
+  var question = toSleep ? sleepConfirmQuestion(closingWork) : '';
+  if (question && !window.confirm(question)) return;
+
+  sleepBtn.disabled = true;
+  var wrote = false;
+  try {
+    // You cannot be working and asleep at once, so close the work session first
+    // and without asking — the whole action must stay one tap.
+    if (closingWork) {
+      await api('log', { type: 'break', raw_text: 'Break (auto — going to sleep)' });
+      setToggle('work', 'break');
+    }
+    await api('log', {
+      type: toSleep ? 'sleep' : 'wake',
+      raw_text: toSleep ? 'Sleep' : 'Wake up'
+    });
+    wrote = true;
+    setToggle('sleep', toSleep ? 'asleep' : 'awake');
+    confirmPulse(sleepBtn);
+    flash(toSleep ? 'Sleep logged' : 'Awake', 'ok');
+    refresh();
+  } catch (err) {
+    flash(String(err.message || err), 'err');
+  } finally {
+    if (wrote) coolDown(sleepBtn); else sleepBtn.disabled = false;
+  }
+});
+
+workBtn.addEventListener('click', async function () {
+  if (workBtn.disabled) return;
+  var toBreak = toggles.work.state === 'working';
+  var wakingUp = !toBreak && toggles.sleep.state === 'asleep';
+
+  workBtn.disabled = true;
+  var wrote = false;
+  try {
+    // Mirror of the Sleep path: you cannot be asleep and working at once, so
+    // starting work ends the night first, and without asking — one tap, and the
+    // review still sees a wake row to close the sleep against.
+    if (wakingUp) {
+      await api('log', { type: 'wake', raw_text: 'Wake up (auto — back to work)' });
+      setToggle('sleep', 'awake');
+    }
+    await api('log', {
+      type: toBreak ? 'break' : 'resume',
+      raw_text: toBreak ? 'Break' : 'Back to work'
+    });
+    wrote = true;
+    setToggle('work', toBreak ? 'break' : 'working');
+    confirmPulse(workBtn);
+    flash(toBreak ? 'Break started' : 'Back to work', 'ok');
+    refresh();
+  } catch (err) {
+    flash(String(err.message || err), 'err');
+  } finally {
+    if (wrote) coolDown(workBtn); else workBtn.disabled = false;
+  }
+});
+
+paintToggles();
 
 // -------------------------------------------------------------------- chips
 
@@ -273,11 +472,108 @@ function chipLabels() {
   return parts.length ? parts : DEFAULT_CHIPS.slice();
 }
 
+/* Chips learn, like keyboard suggestions. The Settings list still decides which
+ * chips exist — the tally only decides their order, so a hand-edited list is
+ * never overruled.
+ *
+ * Known limit: the tally starts empty and grows from today's rows forward. It
+ * cannot see last month's statuses, because today() only returns today. Mining
+ * the full history needs a backend change. */
+
+function loadChipStats() {
+  try {
+    var s = JSON.parse(localStorage.getItem(CHIP_STATS_KEY)) || {};
+    return {
+      items: (s.items && typeof s.items === 'object') ? s.items : {},
+      seen: Number(s.seen) || 0
+    };
+  } catch (e) {
+    return { items: {}, seen: 0 };
+  }
+}
+
+var chipStats = loadChipStats();
+
+/** Frequency, nudged by recency so a habit that just started can climb without
+ *  having to out-count a year of tea. */
+function chipScore(label) {
+  var rec = chipStats.items[label];
+  if (!rec) return 0;
+  var days = Math.max(0, (Date.now() - rec.last) / 86400000);
+  return rec.n + 3 / (1 + days);
+}
+
+/* Counting happens from the Sheet's own status rows, not from the tap. That way
+ * a chip tapped on the phone teaches the laptop too, and `seen` (the newest row
+ * already counted) stops refresh() from counting the same row over and over. */
+function absorbChipStats(log) {
+  var newest = chipStats.seen;
+  var changed = false;
+
+  (log || []).forEach(function (row) {
+    if (row.type !== 'status') return;
+    var label = String(row.raw_text || '').trim();
+    if (!label) return;
+
+    var t = instantOf(row.at);
+    if (isNaN(t) || t <= chipStats.seen) return;
+
+    var rec = chipStats.items[label] || { n: 0, last: 0 };
+    rec.n += 1;
+    rec.last = Math.max(rec.last, t);
+    chipStats.items[label] = rec;
+
+    if (t > newest) newest = t;
+    changed = true;
+  });
+
+  if (!changed) return;
+  chipStats.seen = newest;
+  localStorage.setItem(CHIP_STATS_KEY, JSON.stringify(chipStats));
+  renderChips();
+}
+
+/** Most-used first; ties keep the order typed in Settings. */
+function orderedChipLabels() {
+  return chipLabels().map(function (label, i) {
+    return { label: label, i: i, score: chipScore(label) };
+  }).sort(function (a, b) {
+    return (b.score - a.score) || (a.i - b.i);
+  }).map(function (x) {
+    return x.label;
+  });
+}
+
+var renderedChipOrder = null;
+
+/* A tap teaches the tally, and the refresh a second later can re-rank the row —
+ * right when a finger is still hovering over the neighbouring chips. Hold the
+ * current order for a few seconds after any tap; the next render after that
+ * picks the new one up, so nothing is unlearned, only delayed. */
+var CHIP_FREEZE_MS = 4000;
+var chipFreezeUntil = 0;
+var chipFreezeTimer;
+
 function renderChips() {
   var row = $('chipRow');
+
+  if (row.childElementCount && Date.now() < chipFreezeUntil) {
+    // Re-render when the freeze lifts, in case nothing else asks by then.
+    clearTimeout(chipFreezeTimer);
+    chipFreezeTimer = setTimeout(renderChips, (chipFreezeUntil - Date.now()) + 50);
+    return;
+  }
+
+  var labels = orderedChipLabels();
+  var order = labels.join('\n');
+
+  // Rebuilding on every refresh would move a chip out from under a finger that
+  // is already on its way down; only redraw when the order actually changed.
+  if (order === renderedChipOrder && row.childElementCount) return;
+  renderedChipOrder = order;
   row.textContent = '';
 
-  chipLabels().forEach(function (label) {
+  labels.forEach(function (label) {
     var b = document.createElement('button');
     b.type = 'button';
     b.className = 'chip';
@@ -287,10 +583,13 @@ function renderChips() {
   });
 }
 
-/** One tap, one status row, no confirmation dialog — that is the whole point. */
+/** One tap, one status row, no confirmation dialog — that is the whole point.
+ *  The tally is not touched here; the refresh below brings the row back and
+ *  absorbChipStats() counts it once. */
 async function logChip(btn, label) {
   if (btn.disabled) return;
   btn.disabled = true;
+  chipFreezeUntil = Date.now() + CHIP_FREEZE_MS;   // set before the write, not after
   try {
     await api('log', { type: 'status', raw_text: label });
     confirmPulse(btn);
@@ -381,7 +680,7 @@ $('prayerSaveBtn').addEventListener('click', async function () {
 
   // Append-only by design: a duplicate is warned about, never overwritten.
   if (loggedToday(pickedPrayer) &&
-      !window.confirm(pickedPrayer + ' already logged today — log again?')) return;
+      !window.confirm(pickedPrayer + ' is already logged today. Log it again?')) return;
 
   var btn = this;
   var name = pickedPrayer;

@@ -11,6 +11,24 @@
   --radius: 14px;
 }
 
+/* The page tint IS the state readout: you should know you are "asleep" or "on a
+   break" from across the room, without reading either toggle's label. Both
+   states only re-point the theme variables, so every panel follows along. */
+body.state-break {
+  --bg: #241a0f;
+  --panel: #2e2214;
+  --panel-2: #38291a;
+  --line: #4c3924;
+}
+/* Last, so night wins if both are set — you cannot be working while asleep. */
+body.state-asleep {
+  --bg: #05070d;
+  --panel: #0b0f1a;
+  --panel-2: #111726;
+  --line: #1b2333;
+  --muted: #6c7893;
+}
+
 * { box-sizing: border-box; }
 
 body {
@@ -22,6 +40,7 @@ body {
   color: var(--fg);
   font: 16px/1.5 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
   -webkit-tap-highlight-color: transparent;
+  transition: background-color .35s ease;
 }
 
 /* ---------------------------------------------------------------- header */
@@ -74,6 +93,17 @@ body {
 }
 .btn:active { transform: scale(.985); }
 .btn-accent { background: var(--accent); color: var(--accent-ink); border-color: transparent; font-weight: 600; }
+
+.btn[disabled] { opacity: .55; cursor: default; }
+
+/* Sleep/Wake and Break/Work. Bigger type than a plain .btn because each one is
+   a one-tap state change sitting next to M. */
+.btn-toggle { font-size: 17px; font-weight: 600; }
+.btn-toggle.on { border-color: var(--accent); color: var(--accent); }
+.btn-toggle.confirm { background: var(--accent); color: var(--accent-ink); border-color: transparent; }
+
+/* Icon-only, so it does not steal width from the tracker input. */
+.btn-mic { flex: 0 0 auto; padding: 14px; font-size: 18px; line-height: 1; }
 
 .link-btn {
   background: none; border: 0; color: var(--accent);

@@ -28,14 +28,18 @@
 
 <main>
   <section class="actions">
-    <button id="mBtn" class="m-btn" data-stage="3">
-      <span class="m-letter">M</span>
-      <span id="mCount" class="m-count">0 today</span>
-    </button>
+    <div class="action-row">
+      <button id="mBtn" class="m-btn" data-stage="3">
+        <span class="m-letter">M</span>
+        <span id="mCount" class="m-count">0 today</span>
+      </button>
+      <!-- One button with two identities; app.js swaps the label and the page tint. -->
+      <button id="sleepBtn" class="btn btn-toggle">Sleep</button>
+    </div>
 
     <div class="action-row">
       <button id="prayerBtn" class="btn">Prayer</button>
-      <button id="micBtn" class="btn" data-stage="4">&#127908; Voice</button>
+      <button id="workBtn" class="btn btn-toggle">Break</button>
     </div>
 
     <!-- One tap = one status row. No confirmation dialog: that is the point. -->
@@ -44,6 +48,7 @@
 
   <form id="trackerForm" class="tracker" autocomplete="off">
     <input id="trackerInput" type="text" placeholder="What are you working on?" aria-label="Log an activity">
+    <button type="button" id="micBtn" class="btn btn-mic" data-stage="4" aria-label="Voice note">&#127908;</button>
     <button type="submit" class="btn btn-accent">Log</button>
   </form>
 
@@ -87,8 +92,8 @@
     <input id="token" type="password" placeholder="your TOKEN script property" required>
 
     <label for="chipsInput">Quick-status chips (comma separated)</label>
-    <input id="chipsInput" type="text" placeholder="Tea, Lunch, Prayer-break, Rest, PUBG">
-    <p class="hint">Stored on this device only, so each device has its own list. The comma is the separator, so a chip label cannot contain one.</p>
+    <input id="chipsInput" type="text" placeholder="Tea, Lunch, Prayer-break, PUBG">
+    <p class="hint">Stored on this device only, so each device has its own list. The comma is the separator, so a chip label cannot contain one. This list decides which chips exist; the order re-sorts itself so the ones you tap most sit first.</p>
 
     <div class="dlg-actions">
       <button type="button" id="testBtn" class="btn">Test</button>
