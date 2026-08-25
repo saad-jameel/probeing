@@ -1,8 +1,12 @@
-/* ProBeing PWA — Stage 3: shell, settings, sync, and the logging buttons.
+/* ProBeing PWA — four screens, two mandatory buttons, two state toggles.
  *
- * M, Prayer, the Sleep/Wake and Break/Work toggles and the quick-status chips
- * all write through api() below. The Voice button is still a placeholder;
- * Stage 4 wires it.
+ * Home     : M / Prayer / Sleep-Wake / Break-Work, prayer ticks, current project
+ * Today    : the tracker input and today's raw log
+ * Review   : the weekly report (layout final, numbers land with the backend)
+ * Goals    : set a goal, and later check it off against what was logged
+ *
+ * Everything writes through api() below. The Voice button is still a
+ * placeholder; Stage 4 wires it.
  */
 
 'use strict';
@@ -14,6 +18,7 @@ var CHIP_STATS_KEY = 'probeing.chipstats';  // how often each status gets logged
 // Kept in step with the same two lists in Code.gs, which validates them server-side.
 var PRAYER_NAMES = ['Fajr', 'Dhuhr', 'Asr', 'Maghrib', 'Isha'];
 var PRAYER_MODES = ['Takbeer-e-oola', 'Partial Jamat', 'Individual'];
+var GOAL_KINDS = ['Office', 'Personal', 'Other'];
 
 // 'Rest' is gone on purpose: the Break/Work toggle records rest properly, as a
 // pair of rows that can be turned into a duration later.
@@ -99,13 +104,13 @@ function flash(message, kind) {
   bannerTimer = setTimeout(function () { el.hidden = true; }, 2600);
 }
 
-/** Acknowledge a write on the button that was pressed. The banner is a backstop;
- *  this is what you see if you tap and immediately look away. */
+/** Acknowledge a write on the control that was pressed. The banner is a
+ *  backstop; this is what you see if you tap and immediately look away. */
 function confirmPulse(el) {
   el.classList.remove('confirm');
   void el.offsetWidth;                       // forces a reflow so a fast second tap replays it
   el.classList.add('confirm');
-  setTimeout(function () { el.classList.remove('confirm'); }, 500);
+  setTimeout(function () { el.classList.remove('confirm'); }, 550);
 }
 
 /* The in-flight disable below covers the round trip, but if the backend answers
@@ -128,6 +133,25 @@ function clockOf(entry) {
   return h ? h[1] : '';
 }
 
+/** ISO timestamp -> milliseconds since epoch, or NaN if it cannot be read. */
+function instantOf(at) {
+  return Date.parse(String(at));
+}
+
+/** 8_100_000 -> "2h 15m". Minutes only under an hour; never "0h". */
+function humanDuration(ms) {
+  var mins = Math.max(0, Math.round(ms / 60000));
+  var h = Math.floor(mins / 60);
+  var m = mins % 60;
+  if (!h) return m + 'm';
+  return h + 'h ' + m + 'm';
+}
+
+/** Point one <use> element at a different sprite symbol. */
+function setIcon(el, id) {
+  el.setAttribute('href', '#' + id);
+}
+
 /** Replace the log list with a single muted message. Built as a node, never
  *  as an HTML string, so this path can never become an injection point. */
 function showEmpty(message) {
@@ -139,12 +163,36 @@ function showEmpty(message) {
   list.appendChild(li);
 }
 
-// ------------------------------------------------------------------ render
+// ------------------------------------------------------------------- screens
 
-/** ISO timestamp -> milliseconds since epoch, or NaN if it cannot be read. */
-function instantOf(at) {
-  return Date.parse(String(at));
+var currentScreen = 'home';
+
+function showScreen(name) {
+  currentScreen = name;
+
+  var screens = document.querySelectorAll('.screen');
+  for (var i = 0; i < screens.length; i++) {
+    screens[i].hidden = screens[i].dataset.screen !== name;
+  }
+
+  var tabs = document.querySelectorAll('.tab');
+  for (var j = 0; j < tabs.length; j++) {
+    tabs[j].classList.toggle('is-on', tabs[j].dataset.goto === name);
+  }
+
+  window.scrollTo(0, 0);
+  if (name === 'review') renderReviewRange();
+  if (name === 'goals') loadGoals();
 }
+
+(function wireTabs() {
+  var tabs = document.querySelectorAll('.tab');
+  for (var i = 0; i < tabs.length; i++) {
+    tabs[i].addEventListener('click', function () { showScreen(this.dataset.goto); });
+  }
+})();
+
+// ------------------------------------------------------------------- render
 
 /** Prayers live in their own Sheet tab, so the Today list is the two streams
  *  merged, newest first. Rows are stamped with the posting device's timezone
@@ -176,17 +224,22 @@ function todayEntries(data) {
   return entries;
 }
 
+var lastLog = [];      // today's rows from the last successful refresh
+
 function renderToday(data) {
   $('mCount').textContent = data.m_count + ' today';
-  $('nowLine').textContent = (data.now && data.now.text) || 'Nothing logged yet today.';
+
+  lastLog = data.log || [];
 
   // Today's rows are the shared truth between devices: they correct the toggles
   // and they teach the chip order.
-  reconcileToggles(data.log);
-  absorbChipStats(data.log);
+  reconcileToggles(lastLog);
+  absorbChipStats(lastLog);
+  renderProject();
 
-  // The picker's checkmarks are driven by this; refresh them if it is open.
+  // The picker's checkmarks and the Home ticks are both driven by this.
   todayPrayers = data.prayers || [];
+  renderPrayerTicks();
   if (prayerDlg.open) renderPrayerPicks();
 
   var entries = todayEntries(data);
@@ -222,7 +275,6 @@ function renderToday(data) {
 async function refresh(opts) {
   if (!isConfigured()) {
     showEmpty('Open Settings to connect.');
-    $('nowLine').textContent = 'Not connected.';
     return;
   }
   try {
@@ -233,30 +285,77 @@ async function refresh(opts) {
   }
 }
 
-// ------------------------------------------------------------------- events
+// -------------------------------------------------------- the current project
 
-$('refreshBtn').addEventListener('click', function () { refresh({ announce: true }); });
+/* Point 6: the project comes from what you typed, not from a picker. Walk
+ * today's rows in order and replay the day: a tracker entry names the project
+ * and starts the clock, break/off/sleep stop it, resume starts it again.
+ *
+ * A break does not change the project — you come back to the same thing — it
+ * only pauses the clock, because "hours worked" must not include the coffee. */
+function replayDay(log) {
+  var rows = (log || []).slice().filter(function (r) {
+    return !isNaN(instantOf(r.at));
+  }).sort(function (a, b) {
+    return instantOf(a.at) - instantOf(b.at);
+  });
 
-$('trackerForm').addEventListener('submit', async function (e) {
-  e.preventDefault();
-  var input = $('trackerInput');
-  var text = input.value.trim();
-  if (!text) return;
+  var project = '';
+  var totals = {};
+  var runningSince = 0;                     // 0 = clock stopped
 
-  input.value = '';
-  try {
-    await api('log', { type: 'work', raw_text: text });
-    flash('Logged', 'ok');
-    refresh();
-  } catch (err) {
-    input.value = text;                      // give the text back, never lose it
-    flash(String(err.message || err), 'err');
+  function stop(t) {
+    if (!runningSince) return;
+    totals[project] = (totals[project] || 0) + Math.max(0, t - runningSince);
+    runningSince = 0;
   }
-});
 
-$('micBtn').addEventListener('click', function () {
-  flash('Arrives in Stage ' + this.dataset.stage + '.');
-});
+  rows.forEach(function (row) {
+    var t = instantOf(row.at);
+
+    if (row.type === 'work' || row.type === 'voice') {
+      stop(t);                              // close the previous project's segment...
+      project = String(row.project || row.raw_text || '').trim();
+      runningSince = t;                     // ...and open this one's
+    } else if (row.type === 'resume') {
+      if (!runningSince) runningSince = t;
+    } else if (row.type === 'break' || row.type === 'off' || row.type === 'sleep') {
+      stop(t);
+    }
+    // wake / M / status / prayer / goal do not move the work clock
+  });
+
+  var now = Date.now();
+  var live = runningSince ? Math.max(0, now - runningSince) : 0;
+
+  return {
+    project: project,
+    ms: (totals[project] || 0) + live,
+    running: Boolean(runningSince)
+  };
+}
+
+function renderProject() {
+  var day = replayDay(lastLog);
+  var name = $('projName');
+  var time = $('projTime');
+
+  if (!day.project && !day.ms) {
+    name.textContent = 'Nothing logged yet';
+    time.textContent = 'Type what you are doing on the Today tab.';
+    return;
+  }
+
+  // textContent, never markup — this string came straight from the input box.
+  name.textContent = day.project || 'Working (no project named)';
+  time.textContent = humanDuration(day.ms) + ' today' + (day.running ? ' · running' : ' · paused');
+}
+
+// The clock on screen should move without a round trip. Cheap: it only re-reads
+// rows already in memory.
+setInterval(function () {
+  if (currentScreen === 'home') renderProject();
+}, 30000);
 
 // ----------------------------------------------------------------- M button
 
@@ -289,9 +388,15 @@ mBtn.addEventListener('click', async function () {
 
 // ------------------------------------------------------ sleep / work toggles
 
-/* Two buttons that swap identity. Each press writes ONE row whose type says
- * which edge of the pair it is (sleep→wake, break→resume), so a later stage can
- * pair them into durations for the weekly review.
+/* Two tiles that swap identity. Each press writes ONE row whose type says which
+ * edge of the pair it is, so a later stage can pair them into durations.
+ *
+ * The work side has THREE states, not two:
+ *   working  — the clock runs
+ *   break    — a pause you will come back from       (break -> resume)
+ *   off      — the working day is over                (resume/break -> off)
+ * Off is what going to bed does. A daytime nap only writes a break, because a
+ * nap is not the end of the day; an evening Sleep writes 'off' and closes it.
  *
  * Where the state lives: localStorage is the primary store, because state has to
  * survive midnight — asleep at 23:30 is still asleep at 07:00, and today() only
@@ -310,8 +415,12 @@ var STATE_ROWS = {
   sleep: { kind: 'sleep', state: 'asleep' },
   wake: { kind: 'sleep', state: 'awake' },
   'break': { kind: 'work', state: 'break' },
-  resume: { kind: 'work', state: 'working' }
+  off: { kind: 'work', state: 'off' },
+  resume: { kind: 'work', state: 'working' },
+  work: { kind: 'work', state: 'working' }   // typing an entry means you are working
 };
+
+var WORK_STATES = { working: 1, 'break': 1, off: 1 };
 
 function loadToggles() {
   var out = { sleep: { state: 'awake', at: 0 }, work: { state: 'working', at: 0 } };
@@ -321,7 +430,7 @@ function loadToggles() {
     if (s.sleep && (s.sleep.state === 'awake' || s.sleep.state === 'asleep')) {
       out.sleep = { state: s.sleep.state, at: Number(s.sleep.at) || 0 };
     }
-    if (s.work && (s.work.state === 'working' || s.work.state === 'break')) {
+    if (s.work && WORK_STATES[s.work.state]) {
       out.work = { state: s.work.state, at: Number(s.work.at) || 0 };
     }
   } catch (e) { /* fall back to awake + working */ }
@@ -336,20 +445,58 @@ function setToggle(kind, state, at) {
   paintToggles();
 }
 
-/** Label, button highlight and page tint all follow the state. The tint is the
- *  point: you can tell asleep from awake without reading anything. */
+/** Is it night by the app's own definition — the same window the Sleep guard
+ *  uses, so "it warned me" and "it ended my day" can never disagree. */
+function isNight() {
+  var hour = new Date().getHours();
+  return hour < DAY_STARTS_HOUR || hour >= DAY_ENDS_HOUR;
+}
+
+/** "since 23:10", or '' if we never saw the change happen. */
+function sinceLabel(at) {
+  if (!at) return ' ';
+  var d = new Date(at);
+  return 'since ' + String(d.getHours()).padStart(2, '0') + ':' +
+         String(d.getMinutes()).padStart(2, '0');
+}
+
+/** Labels, icons, the two pills and the page tint all follow the state. */
 function paintToggles() {
   var asleep = toggles.sleep.state === 'asleep';
-  var onBreak = toggles.work.state === 'break';
+  var work = toggles.work.state;
 
-  sleepBtn.textContent = asleep ? 'Wake up' : 'Sleep';
+  // --- Sleep tile shows the ACTION; the pill shows the STATE.
+  $('sleepLabel').textContent = asleep ? 'Wake up' : 'Sleep';
+  setIcon($('sleepIco'), asleep ? 'i-sun' : 'i-moon');
+  $('sleepSub').textContent = asleep ? sinceLabel(toggles.sleep.at) : ' ';
   sleepBtn.classList.toggle('on', asleep);
 
-  workBtn.textContent = onBreak ? 'Work' : 'Break';
-  workBtn.classList.toggle('on', onBreak);
+  $('workLabel').textContent = work === 'working' ? 'Break' : 'Work';
+  setIcon($('workIco'), work === 'working' ? 'i-break' : 'i-work');
+  $('workSub').textContent = work === 'working' ? ' ' : sinceLabel(toggles.work.at);
+  workBtn.classList.toggle('on', work !== 'working');
 
+  // --- the two pills under the logo
+  var sp = $('sleepPill');
+  $('sleepPillText').textContent = asleep ? 'Asleep' : 'Awake';
+  setIcon(sp.querySelector('use'), asleep ? 'i-moon' : 'i-sun');
+  sp.className = 'pill' + (asleep ? ' lit' : '');
+
+  var wp = $('workPill');
+  var WORK_PILL = {
+    working: { text: 'Working', icon: 'i-work', cls: ' lit' },
+    'break': { text: 'On break', icon: 'i-break', cls: ' warn' },
+    off: { text: 'Day done', icon: 'i-off', cls: ' dim' }
+  };
+  var w = WORK_PILL[work] || WORK_PILL.working;
+  $('workPillText').textContent = w.text;
+  setIcon(wp.querySelector('use'), w.icon);
+  wp.className = 'pill' + w.cls;
+
+  // --- the page tint
   document.body.classList.toggle('state-asleep', asleep);
-  document.body.classList.toggle('state-break', onBreak && !asleep);
+  document.body.classList.toggle('state-break', !asleep && work === 'break');
+  document.body.classList.toggle('state-off', !asleep && work === 'off');
 }
 
 /** The Sheet wins: adopt any state row from today that is newer than what this
@@ -375,8 +522,7 @@ function reconcileToggles(log) {
  * fire reads as a bug.
  */
 function sleepConfirmQuestion(closingWork) {
-  var hour = new Date().getHours();
-  if (hour >= DAY_STARTS_HOUR && hour < DAY_ENDS_HOUR) {
+  if (!isNight()) {
     return "It's the middle of the day. Are you sure you're going to sleep?";
   }
 
@@ -388,23 +534,42 @@ function sleepConfirmQuestion(closingWork) {
   return '';
 }
 
+/**
+ * What pressing Sleep must do to the WORK side first, or null for nothing.
+ *
+ *   at night   -> the day is over: close it as 'off', whatever it was
+ *   in the day -> this is a nap: only pause a running session as 'break'
+ *
+ * Either way you can never be recorded as working while asleep, and the review
+ * always gets a closing edge to measure the session against. Pure on purpose —
+ * this is the rule the whole interlock rests on, so it has to be testable.
+ */
+function sleepClosingRow(work, night) {
+  if (night) {
+    if (work === 'off') return null;                 // already closed
+    return { type: 'off', state: 'off', text: 'Day over (auto — going to sleep)' };
+  }
+  if (work === 'working') {
+    return { type: 'break', state: 'break', text: 'Break (auto — going to sleep)' };
+  }
+  return null;                                       // a nap while already paused
+}
+
 sleepBtn.addEventListener('click', async function () {
   if (sleepBtn.disabled) return;
   var toSleep = toggles.sleep.state === 'awake';
-  var closingWork = toSleep && toggles.work.state === 'working';
+  var closing = toSleep ? sleepClosingRow(toggles.work.state, isNight()) : null;
 
   // Declining must leave the Sheet untouched, so this runs before any write.
-  var question = toSleep ? sleepConfirmQuestion(closingWork) : '';
+  var question = toSleep ? sleepConfirmQuestion(toggles.work.state === 'working') : '';
   if (question && !window.confirm(question)) return;
 
   sleepBtn.disabled = true;
   var wrote = false;
   try {
-    // You cannot be working and asleep at once, so close the work session first
-    // and without asking — the whole action must stay one tap.
-    if (closingWork) {
-      await api('log', { type: 'break', raw_text: 'Break (auto — going to sleep)' });
-      setToggle('work', 'break');
+    if (closing) {
+      await api('log', { type: closing.type, raw_text: closing.text });
+      setToggle('work', closing.state);
     }
     await api('log', {
       type: toSleep ? 'sleep' : 'wake',
@@ -614,6 +779,34 @@ function loggedToday(name) {
   return todayPrayers.some(function (p) { return p.prayer === name; });
 }
 
+/** Point 6: Home shows the five prayers as ticks, not as log lines. Read-only —
+ *  logging still goes through the picker, so a tick cannot be set by a mis-tap. */
+function renderPrayerTicks() {
+  var box = $('prayerTicks');
+  box.textContent = '';
+  var done = 0;
+
+  PRAYER_NAMES.forEach(function (name) {
+    var isDone = loggedToday(name);
+    if (isDone) done += 1;
+
+    var el = document.createElement('span');
+    el.className = 'tick' + (isDone ? ' done' : '');
+
+    var mark = document.createElement('span');
+    mark.className = 'mark';
+    mark.textContent = isDone ? '✓' : '○';
+
+    var label = document.createElement('span');
+    label.textContent = name;
+
+    el.append(mark, label);
+    box.appendChild(el);
+  });
+
+  $('prayerSub').textContent = done + ' of 5';
+}
+
 /** One picker button. `done` adds the "already logged today" tick. */
 function pickButton(label, isPicked, done, onPick) {
   var b = document.createElement('button');
@@ -692,9 +885,201 @@ $('prayerSaveBtn').addEventListener('click', async function () {
     refresh();
   } catch (err) {
     flash(String(err.message || err), 'err');
+  } finally {
     btn.disabled = false;
   }
 });
+
+// ------------------------------------------------------------------ tracker
+
+$('trackerForm').addEventListener('submit', async function (e) {
+  e.preventDefault();
+  var input = $('trackerInput');
+  var text = input.value.trim();
+  if (!text) return;
+
+  input.value = '';
+  try {
+    // project stays empty until Gemini splits it out; replayDay() falls back to
+    // the raw text so Home can already name what you are on.
+    await api('log', { type: 'work', raw_text: text });
+    flash('Logged', 'ok');
+    // Typing an entry means you are working — if you were on a break or the day
+    // was marked over, this reopens it, so the clock and the label agree.
+    if (toggles.work.state !== 'working') setToggle('work', 'working');
+    refresh();
+  } catch (err) {
+    input.value = text;                      // give the text back, never lose it
+    flash(String(err.message || err), 'err');
+  }
+});
+
+$('micBtn').addEventListener('click', function () {
+  flash('Arrives in Stage ' + this.dataset.stage + '.');
+});
+
+$('refreshBtn').addEventListener('click', function () { refresh({ announce: true }); });
+
+// ------------------------------------------------------------------- review
+
+/** Last week, Monday to Sunday, in the device's own locale. */
+function renderReviewRange() {
+  var now = new Date();
+  var dow = (now.getDay() + 6) % 7;              // 0 = Monday
+  var end = new Date(now.getFullYear(), now.getMonth(), now.getDate() - dow - 1);
+  var start = new Date(end.getFullYear(), end.getMonth(), end.getDate() - 6);
+
+  var f = function (d) {
+    return d.toLocaleDateString(undefined, { weekday: 'short', day: 'numeric', month: 'short' });
+  };
+  $('reviewRange').textContent = 'Last week (' + f(start) + ' – ' + f(end) + ')';
+}
+
+// -------------------------------------------------------------------- goals
+
+/* Goals go to the Sheet, which is the database — nothing is kept only on the
+ * device. Reading them back needs the `goals` action in Code.gs; until that
+ * deployment is live the screen says so instead of showing an empty list. */
+
+var goalDlg = $('goalDlg');
+var pickedKind = GOAL_KINDS[0];
+
+function renderKindPicks() {
+  var box = $('goalKindList');
+  box.textContent = '';
+  GOAL_KINDS.forEach(function (kind) {
+    box.appendChild(pickButton(kind, pickedKind === kind, false, function () {
+      pickedKind = kind;
+      renderKindPicks();
+    }));
+  });
+}
+
+function openGoalDialog() {
+  pickedKind = GOAL_KINDS[0];
+  $('goalProject').value = '';
+  $('goalPoints').value = '';
+  renderKindPicks();
+  goalDlg.showModal();
+}
+
+$('goalBtn').addEventListener('click', openGoalDialog);
+$('goalBtn2').addEventListener('click', openGoalDialog);
+$('goalCancelBtn').addEventListener('click', function () { goalDlg.close(); });
+
+$('goalSaveBtn').addEventListener('click', async function () {
+  var name = $('goalProject').value.trim();
+  var points = $('goalPoints').value.trim();
+
+  // log() rejects an empty raw_text server-side, so catch it here with a
+  // message that says which box to fill.
+  if (!name) { flash('Give the project a name.', 'err'); return; }
+  if (!points) { flash('Add at least one point.', 'err'); return; }
+
+  var btn = this;
+  btn.disabled = true;
+  try {
+    await api('log', {
+      type: 'goal',
+      raw_text: points,
+      project: name,
+      detail: pickedKind
+    });
+    goalDlg.close();
+    flash('Goal saved', 'ok');
+    loadGoals();
+    refresh();
+  } catch (err) {
+    flash(String(err.message || err), 'err');
+  } finally {
+    btn.disabled = false;
+  }
+});
+
+function goalCard(goal) {
+  var card = document.createElement('section');
+  card.className = 'card';
+
+  var top = document.createElement('div');
+  top.className = 'goal-top';
+
+  var name = document.createElement('span');
+  name.className = 'goal-name';
+  name.textContent = goal.project || 'Unnamed';       // user input — textContent only
+
+  var kind = document.createElement('span');
+  kind.className = 'goal-kind';
+  kind.textContent = goal.detail || 'Other';
+
+  top.append(name, kind);
+  card.appendChild(top);
+
+  var points = String(goal.raw_text || '').split('\n')
+    .map(function (x) { return x.trim(); })
+    .filter(Boolean);
+
+  if (points.length) {
+    var ul = document.createElement('ul');
+    ul.className = 'goal-points';
+    points.forEach(function (p) {
+      var li = document.createElement('li');
+
+      var box = document.createElement('span');
+      box.className = 'box';
+      box.textContent = '☐';                          // ticked by Gemini in Stage 5
+
+      var txt = document.createElement('span');
+      txt.textContent = p;
+
+      li.append(box, txt);
+      ul.appendChild(li);
+    });
+    card.appendChild(ul);
+  }
+
+  var when = document.createElement('p');
+  when.className = 'goal-when';
+  when.textContent = 'Set ' + (goal.local || '');
+  card.appendChild(when);
+
+  return card;
+}
+
+function goalsMessage(text) {
+  var box = $('goalList');
+  box.textContent = '';
+  var p = document.createElement('p');
+  p.className = 'pending';
+  p.textContent = text;
+  box.appendChild(p);
+}
+
+var goalsLoading = false;
+
+async function loadGoals() {
+  if (goalsLoading) return;
+  if (!isConfigured()) { goalsMessage('Open Settings to connect.'); return; }
+
+  goalsLoading = true;
+  try {
+    var data = await api('goals');
+    var goals = data.goals || [];
+    if (!goals.length) {
+      goalsMessage('No goals yet. Tap + New to set this week’s points.');
+      return;
+    }
+    var box = $('goalList');
+    box.textContent = '';
+    goals.forEach(function (g) { box.appendChild(goalCard(g)); });
+  } catch (err) {
+    var msg = String(err.message || err);
+    goalsMessage(msg === 'unknown_action'
+      ? 'The Apps Script deployment is still the old version — it does not know how to read goals back yet. Re-deploy it and this fills in.'
+      : msg);
+  } finally {
+    goalsLoading = false;
+  }
+}
 
 // ----------------------------------------------------------------- settings
 
@@ -762,5 +1147,7 @@ document.addEventListener('visibilitychange', function () {
   if (document.visibilityState === 'visible') refresh();
 });
 
+renderPrayerTicks();
+renderProject();
 refresh();
 if (!isConfigured()) dlg.showModal();

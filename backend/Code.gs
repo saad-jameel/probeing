@@ -140,6 +140,31 @@ var ACTIONS = {
     };
   },
 
+  /**
+   * Every goal ever set, newest first.
+   *
+   * today() cannot serve these: a goal set on Monday still has to be on screen
+   * on Friday, and today() only ever returns today's rows. Goals are ordinary
+   * Log rows of type 'goal' — project holds the name, detail holds the kind,
+   * raw_text holds the points — so this needs no new tab and setupSheet() does
+   * not have to be re-run.
+   */
+  goals: function (b) {
+    var limit = Math.min(Math.max(parseInt(b && b.limit, 10) || 50, 1), 200);
+
+    var out = rows(SHEETS.LOG).filter(function (r) {
+      return String(r[2]) === 'goal';
+    }).map(function (r) {
+      return {
+        at: String(r[0]), local: humanOf(r[1]),
+        raw_text: String(r[3]), project: String(r[4]), detail: String(r[5])
+      };
+    });
+
+    out.reverse();                      // newest first
+    return { ok: true, goals: out.slice(0, limit) };
+  },
+
   now_get: function () {
     return { ok: true, now: readNow() };
   },

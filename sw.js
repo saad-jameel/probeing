@@ -5,7 +5,7 @@
  * Stage 7 and will use a localStorage queue, not this cache.
  */
 
-var CACHE = 'probeing-shell-v1';
+var CACHE = 'probeing-shell-v2';
 var SHELL = [
   './',
   'index.html',

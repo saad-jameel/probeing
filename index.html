@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>ProBeing</title>
 <meta name="description" content="Personal activity keeper.">
-<meta name="theme-color" content="#101828">
+<meta name="theme-color" content="#0d1420">
 <link rel="manifest" href="manifest.webmanifest">
 <link rel="icon" href="icons/favicon-32.png" sizes="32x32">
 <link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
@@ -14,52 +14,160 @@
 </head>
 <body>
 
+<!-- Icon sprite. Stroke-based and currentColor, so every icon inherits the
+     button's colour and the state tint without a second copy. -->
+<svg class="sprite" aria-hidden="true" focusable="false"><defs>
+  <g id="i-sun"><circle cx="12" cy="12" r="4"/><path d="M12 2.5v2M12 19.5v2M4.6 4.6l1.4 1.4M18 18l1.4 1.4M2.5 12h2M19.5 12h2M4.6 19.4 6 18M18 6l1.4-1.4"/></g>
+  <g id="i-moon"><path d="M20 14.4A8.5 8.5 0 0 1 9.6 4 8.5 8.5 0 1 0 20 14.4z"/></g>
+  <g id="i-work"><rect x="3" y="7.5" width="18" height="12.5" rx="2.5"/><path d="M8.5 7.5v-2A2 2 0 0 1 10.5 3.5h3a2 2 0 0 1 2 2v2"/><path d="M3 12.5h18"/></g>
+  <g id="i-break"><path d="M4 8h12v6.5a4 4 0 0 1-4 4H8a4 4 0 0 1-4-4z"/><path d="M16 9.5h1.8a2.2 2.2 0 0 1 0 4.4H16"/><path d="M7 2.5v2.2M10 2.5v2.2M13 2.5v2.2"/></g>
+  <g id="i-off"><path d="M12 3v8.5"/><path d="M6.6 6.6a8 8 0 1 0 10.8 0"/></g>
+  <g id="i-prayer"><path d="M5.5 20.5V12a6.5 6.5 0 0 1 13 0v8.5"/><path d="M3 20.5h18"/><path d="M12 5.5V3.2"/><circle cx="12" cy="2.2" r="1.1"/></g>
+  <g id="i-home"><path d="M3.5 10.6 12 3.5l8.5 7.1"/><path d="M5.5 9.5v11h13v-11"/></g>
+  <g id="i-history"><path d="M3.2 12a8.8 8.8 0 1 0 2.9-6.5"/><path d="M3 4.2v5h5"/><path d="M12 7.5V12l3.4 2"/></g>
+  <g id="i-chart"><path d="M4 20.2V11M9.3 20.2V4.5M14.7 20.2v-6M20 20.2v-9.6"/></g>
+  <g id="i-target"><circle cx="12" cy="12" r="8.7"/><circle cx="12" cy="12" r="4.6"/><circle cx="12" cy="12" r="1.4"/></g>
+  <g id="i-plus"><path d="M12 5v14M5 12h14"/></g>
+  <g id="i-mic"><rect x="9" y="2.8" width="6" height="11" rx="3"/><path d="M5.5 11.5a6.5 6.5 0 0 0 13 0"/><path d="M12 18v3.2"/></g>
+</defs></svg>
+
 <div id="banner" class="banner" hidden></div>
 
 <header class="top">
   <div class="brand">
-    <img src="icons/icon-192.png" alt="" class="brand-mark" width="34" height="34">
+    <img src="icons/icon-192.png" alt="" class="brand-mark" width="30" height="30">
     <h1>ProBeing</h1>
   </div>
   <button id="settingsBtn" class="icon-btn" aria-label="Settings">&#9881;</button>
 </header>
 
-<p id="nowLine" class="now">&mdash;</p>
+<!-- Point 1: the line under the logo is the state readout, not a greeting.
+     Two pills, always visible, on every tab. -->
+<div id="statusRow" class="status-row" aria-live="polite">
+  <span id="sleepPill" class="pill">
+    <svg class="pill-ico" aria-hidden="true"><use href="#i-sun"></use></svg>
+    <span id="sleepPillText">Awake</span>
+  </span>
+  <span id="workPill" class="pill">
+    <svg class="pill-ico" aria-hidden="true"><use href="#i-work"></use></svg>
+    <span id="workPillText">Working</span>
+  </span>
+</div>
 
 <main>
-  <section class="actions">
-    <div class="action-row">
-      <button id="mBtn" class="m-btn" data-stage="3">
-        <span class="m-letter">M</span>
-        <span id="mCount" class="m-count">0 today</span>
-      </button>
-      <!-- One button with two identities; app.js swaps the label and the page tint. -->
-      <button id="sleepBtn" class="btn btn-toggle">Sleep</button>
-    </div>
 
-    <div class="action-row">
-      <button id="prayerBtn" class="btn">Prayer</button>
-      <button id="workBtn" class="btn btn-toggle">Break</button>
-    </div>
+<!-- ============================================================= HOME -->
+<section class="screen" data-screen="home">
 
-    <!-- One tap = one status row. No confirmation dialog: that is the point. -->
-    <div id="chipRow" class="chips" aria-label="Quick status"></div>
+  <div class="grid-2">
+    <button id="mBtn" class="tile tile-m" data-stage="3">
+      <span class="tile-ico m-letter">M</span>
+      <span class="tile-label">M</span>
+      <span id="mCount" class="tile-sub">0 today</span>
+    </button>
+
+    <button id="prayerBtn" class="tile">
+      <svg class="tile-ico" aria-hidden="true"><use href="#i-prayer"></use></svg>
+      <span class="tile-label">Prayer</span>
+      <span id="prayerSub" class="tile-sub">0 of 5</span>
+    </button>
+
+    <button id="sleepBtn" class="tile tile-toggle">
+      <svg class="tile-ico" aria-hidden="true"><use id="sleepIco" href="#i-moon"></use></svg>
+      <span id="sleepLabel" class="tile-label">Sleep</span>
+      <span id="sleepSub" class="tile-sub">&nbsp;</span>
+    </button>
+
+    <button id="workBtn" class="tile tile-toggle">
+      <svg class="tile-ico" aria-hidden="true"><use id="workIco" href="#i-break"></use></svg>
+      <span id="workLabel" class="tile-label">Break</span>
+      <span id="workSub" class="tile-sub">&nbsp;</span>
+    </button>
+  </div>
+
+  <!-- One tap = one status row. No confirmation dialog: that is the point. -->
+  <div id="chipRow" class="chips" aria-label="Quick status"></div>
+
+  <!-- Point 6: the project you are on, and how long today. Survives a break. -->
+  <section class="card">
+    <h2 class="card-head">Working on</h2>
+    <p id="projName" class="proj-name">Nothing logged yet</p>
+    <p id="projTime" class="proj-time">&mdash;</p>
   </section>
 
+  <!-- Point 6: prayers as ticks, not a log. -->
+  <section class="card">
+    <h2 class="card-head">Prayers today</h2>
+    <div id="prayerTicks" class="ticks"></div>
+  </section>
+
+  <button id="goalBtn" class="btn btn-wide">
+    <svg class="btn-ico" aria-hidden="true"><use href="#i-plus"></use></svg>
+    Set a goal
+  </button>
+</section>
+
+<!-- ============================================================ TODAY -->
+<section class="screen" data-screen="today" hidden>
   <form id="trackerForm" class="tracker" autocomplete="off">
     <input id="trackerInput" type="text" placeholder="What are you working on?" aria-label="Log an activity">
-    <button type="button" id="micBtn" class="btn btn-mic" data-stage="4" aria-label="Voice note">&#127908;</button>
+    <button type="button" id="micBtn" class="btn btn-mic" data-stage="4" aria-label="Voice note">
+      <svg class="btn-ico" aria-hidden="true"><use href="#i-mic"></use></svg>
+    </button>
     <button type="submit" class="btn btn-accent">Log</button>
   </form>
 
-  <section class="log">
-    <div class="log-head">
-      <h2>Today</h2>
-      <button id="refreshBtn" class="link-btn">Refresh</button>
-    </div>
-    <ul id="logList" class="log-list"><li class="empty">Not connected yet.</li></ul>
+  <div class="log-head">
+    <h2 class="card-head">Today</h2>
+    <button id="refreshBtn" class="link-btn">Refresh</button>
+  </div>
+  <ul id="logList" class="log-list"><li class="empty">Not connected yet.</li></ul>
+</section>
+
+<!-- =========================================================== REVIEW -->
+<section class="screen" data-screen="review" hidden>
+  <h2 class="screen-title">Weekly Review</h2>
+  <p id="reviewRange" class="screen-sub">&mdash;</p>
+
+  <section class="card">
+    <h3 class="card-head"><svg class="card-ico" aria-hidden="true"><use href="#i-chart"></use></svg> Summary</h3>
+    <p class="pending">Hours worked, daily average and sleep average land here once
+      the backend can read a whole week. The numbers exist in the Sheet already.</p>
   </section>
+
+  <section class="card">
+    <h3 class="card-head"><svg class="card-ico" aria-hidden="true"><use href="#i-work"></use></svg> Projects</h3>
+    <p class="pending">Time per project, split out by Gemini from what you typed.</p>
+  </section>
+
+  <section class="card">
+    <h3 class="card-head"><svg class="card-ico" aria-hidden="true"><use href="#i-target"></use></svg> Learning</h3>
+    <p class="pending">What you picked up this week, pulled out of your own entries.</p>
+  </section>
+
+  <h3 class="screen-title sm">Past Reports</h3>
+  <p class="pending">Nothing archived yet &mdash; the first report is written at the end of your first full week.</p>
+</section>
+
+<!-- ============================================================ GOALS -->
+<section class="screen" data-screen="goals" hidden>
+  <div class="log-head">
+    <h2 class="screen-title">Goals</h2>
+    <button id="goalBtn2" class="link-btn">+ New</button>
+  </div>
+  <p class="screen-sub">Set the milestones. The checker marks them off against what you actually logged.</p>
+  <div id="goalList" class="goal-list"><p class="pending">Loading&hellip;</p></div>
+</section>
+
 </main>
+
+<!-- ============================================================== NAV -->
+<nav class="tabs" aria-label="Sections">
+  <button class="tab is-on" data-goto="home" aria-label="Home"><svg aria-hidden="true"><use href="#i-home"></use></svg></button>
+  <button class="tab" data-goto="today" aria-label="Today"><svg aria-hidden="true"><use href="#i-history"></use></svg></button>
+  <button class="tab" data-goto="review" aria-label="Weekly review"><svg aria-hidden="true"><use href="#i-chart"></use></svg></button>
+  <button class="tab" data-goto="goals" aria-label="Goals"><svg aria-hidden="true"><use href="#i-target"></use></svg></button>
+</nav>
 
 <dialog id="prayerDlg" class="dlg">
   <form method="dialog">
@@ -76,6 +184,27 @@
     <div class="dlg-actions">
       <button type="button" id="prayerCancelBtn" class="link-btn">Cancel</button>
       <button type="button" id="prayerSaveBtn" class="btn btn-accent" disabled>Save</button>
+    </div>
+  </form>
+</dialog>
+
+<dialog id="goalDlg" class="dlg">
+  <form method="dialog">
+    <h2>Set a goal</h2>
+    <p class="hint">Goes straight to the Sheet. Stage 5 splits the points into milestones and ticks them off.</p>
+
+    <p class="pick-head">Kind</p>
+    <div id="goalKindList" class="pick-grid"></div>
+
+    <label for="goalProject">Project name</label>
+    <input id="goalProject" type="text" placeholder="OneNet" maxlength="60">
+
+    <label for="goalPoints">This week&rsquo;s points</label>
+    <textarea id="goalPoints" rows="4" placeholder="One per line:&#10;PKI certs issued&#10;broker mTLS working&#10;node heartbeat"></textarea>
+
+    <div class="dlg-actions">
+      <button type="button" id="goalCancelBtn" class="link-btn">Cancel</button>
+      <button type="button" id="goalSaveBtn" class="btn btn-accent">Save</button>
     </div>
   </form>
 </dialog>
