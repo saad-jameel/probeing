@@ -185,7 +185,7 @@ body {
 .btn-accent { background: var(--accent); color: var(--accent-ink); border-color: transparent; font-weight: 600; }
 .btn-wide { display: flex; align-items: center; justify-content: center; gap: 8px; width: 100%; }
 .btn-ico { width: 17px; height: 17px; display: block; }
-.btn-mic { flex: 0 0 auto; padding: 14px; line-height: 0; }
+.btn-mic { flex: 0 0 auto; padding: 14px; font-size: 18px; line-height: 1; }
 
 .link-btn {
   background: none; border: 0; color: var(--accent);

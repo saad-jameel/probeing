@@ -76,7 +76,24 @@ function doPost(e) {
     var lock = LockService.getScriptLock();
     lock.waitLock(20000);
     try {
-      return json(handler(body));
+      /* Idempotency. Apps Script's own front end intermittently loses the reply
+       * to a request that DID run — measured 3 of 8 parallel calls taking 30-40
+       * seconds and then returning an HTML error page or the wrong body. The
+       * client therefore gives up quickly and retries, which without this would
+       * append the row twice, and the Sheet is append-only.
+       *
+       * So every write carries a client-generated `rid`. If we have already
+       * completed that exact request, replay the answer instead of doing the
+       * work again. Inside the lock, so two retries racing cannot both miss. */
+      var done = ridLookup(body.rid);
+      if (done) {
+        done.duplicate = true;
+        return json(done);
+      }
+
+      var out = handler(body);
+      if (out && out.ok) ridRemember(body.rid, out);
+      return json(out);
     } finally {
       lock.releaseLock();
     }
@@ -89,6 +106,51 @@ function doPost(e) {
 
 /** The actions that append or overwrite. Only these are serialised. */
 var WRITES = { log: 1, m: 1, prayer: 1, now_set: 1 };
+
+/* How many recent request ids to remember. A Script Property caps at 9KB, and
+ * the client only ever retries within seconds, so a short memory is plenty. */
+var RID_KEEP = 20;
+var RID_PROP = 'RECENT_RIDS';
+
+function ridStore() {
+  var raw = PropertiesService.getScriptProperties().getProperty(RID_PROP);
+  if (!raw) return [];
+  try {
+    var parsed = JSON.parse(raw);
+    return parsed instanceof Array ? parsed : [];
+  } catch (e) {
+    return [];                      // a corrupt store must not block writes
+  }
+}
+
+/** The answer we already gave for this rid, or null. */
+/** Keys are compared in the SAME truncated form they are stored in. Comparing a
+ *  full incoming rid against a truncated stored one would never match, and the
+ *  retry it was meant to catch would append a second row. */
+function ridKey(rid) { return String(rid).slice(0, 40); }
+
+function ridLookup(rid) {
+  if (!rid) return null;
+  var key = ridKey(rid);
+  var seen = ridStore();
+  for (var i = 0; i < seen.length; i++) {
+    if (seen[i] && seen[i].rid === key) return seen[i].out || null;
+  }
+  return null;
+}
+
+function ridRemember(rid, out) {
+  if (!rid) return;
+  var slim = {};
+  Object.keys(out).forEach(function (k) { slim[k] = out[k]; });
+  // The client never reads this back; keeping it whole could blow the 9KB cap.
+  if (typeof slim.raw_text === 'string') slim.raw_text = slim.raw_text.slice(0, 80);
+
+  var seen = ridStore();
+  seen.unshift({ rid: ridKey(rid), out: slim });
+  PropertiesService.getScriptProperties()
+    .setProperty(RID_PROP, JSON.stringify(seen.slice(0, RID_KEEP)));
+}
 
 var ACTIONS = {
   ping: function () {
@@ -256,9 +318,19 @@ function humanOf(cell) {
   return String(cell || '');
 }
 
+/* Every reply carries `rid_ok`, so the app can tell WHICH backend it is talking
+ * to. The frontend and this file deploy independently — one is a git push, the
+ * other a manual re-version — so for a while the new app can be talking to the
+ * old backend. Retrying a write against a backend with no rid dedup duplicates
+ * the row, and the Sheet is append-only. The app therefore holds off retrying
+ * writes until it has seen this flag. */
 function json(obj) {
+  var out = {};
+  Object.keys(obj).forEach(function (k) { out[k] = obj[k]; });
+  out.rid_ok = true;
+
   return ContentService
-    .createTextOutput(JSON.stringify(obj))
+    .createTextOutput(JSON.stringify(out))
     .setMimeType(ContentService.MimeType.JSON);
 }
 

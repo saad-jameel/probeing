@@ -85,10 +85,18 @@ var ANSWER_FIELD = {
   review: 'text'          // unused until Stage 5, but it is already in IDEMPOTENT
 };
 
-/* Serialising every call made one slow request able to block every tap behind
- * it — measured 58s against the live backend. Nothing may sit in the queue
- * longer than this. */
-var REQUEST_TIMEOUT_MS = 20000;
+/* Measured against the live backend: a HEALTHY call answers in 1.7s. The bad
+ * ones do not answer slowly — they hang for 30-40 seconds and then return an
+ * HTML error page, the wrong body, or nothing at all. So a call that has not
+ * answered in this long is not slow, it is already lost; abandoning it and
+ * trying again is far quicker than waiting for it to fail.
+ *
+ * Set below some genuine successes (5.5s and 11.6s were both measured), which
+ * would once have been a bad trade. The rid changed that: abandoning a call
+ * that actually landed now costs nothing, because the retry replays the stored
+ * answer instead of appending a second row. Three attempts at 5s beats two at
+ * 7s on both counts — more chances, and it settles in ~16s rather than 22. */
+var REQUEST_TIMEOUT_MS = 5000;
 
 async function callBackend(action, payload) {
   var ctrl = typeof AbortController === 'function' ? new AbortController() : null;
@@ -110,12 +118,8 @@ async function callBackend(action, payload) {
   } catch (netErr) {
     clearTimeout(timer);
     if (netErr && netErr.name === 'AbortError') {
-      /* Not retried, even though reads otherwise are. A read that already had
-       * 20 seconds and said nothing will not say anything in the next 20 —
-       * it would just double the time every tap behind it sits in the queue. */
-      var slow = new Error('The Sheet took too long to answer.');
-      slow.fatal = true;
-      throw slow;
+      // Retryable: the next attempt usually lands in under two seconds.
+      throw new Error('The Sheet took too long to answer.');
     }
     throw netErr;
   }
@@ -143,6 +147,9 @@ async function callBackend(action, payload) {
   if (field && data[field] === undefined) {
     throw new Error('The Sheet answered a different question.');
   }
+
+  // Learn once, from any reply, whether this deployment deduplicates by rid.
+  if (data.rid_ok) backendDedupes = true;
   return data;
 }
 
@@ -154,29 +161,41 @@ async function callBackend(action, payload) {
  * clean. So: one request at a time, through a promise chain — this device never
  * competes with itself for that lock.
  *
- * WHICH CALLS MAY BE RETRIED, and why the answer is "reads only":
+ * WHY WRITES MAY NOW BE RETRIED:
  *
- * That 404 usually means the request DID reach doPost and the row WAS written;
- * only the answer got lost on the redirect hop. Retrying then appends the row a
- * second time, and the Sheet is append-only — a doubled M or a second `sleep`
- * with no `wake` cannot be undone. So a write is never retried. It reports the
- * failure instead, and the reconcile a few seconds later shows what actually
- * landed, which is the honest answer rather than a guess.
- *
- * Reads have no such cost, so they retry — except on a timeout, which is
- * treated as final for the reason given at the abort. Once the backend carries
- * a request id that `log` can deduplicate against, writes can join them. */
+ * A lost reply usually means the request DID reach doPost and the row WAS
+ * written. Retrying blind would append it twice, and the Sheet is append-only —
+ * a doubled M cannot be undone. So every write carries a `rid`, generated once
+ * here and reused across all attempts; `Code.gs` replays the original answer
+ * rather than doing the work again. That is what makes giving up after 7
+ * seconds safe, and it is why the rid is added in api() and not in
+ * attemptCall() — a retry with a fresh rid would defeat the whole thing. */
+
+/* Retrying a write is only safe against a backend that deduplicates by rid, and
+ * the two halves deploy separately — a git push for the app, a manual
+ * re-version for Apps Script. So this is not assumed, it is observed: every
+ * reply from the new Code.gs carries `rid_ok`, and until one has been seen a
+ * write gets a single attempt. That way the app is correct whichever order the
+ * two deployments happen in, instead of depending on the user doing them in
+ * the right order. */
+var backendDedupes = false;
 
 var IDEMPOTENT = { ping: 1, today: 1, now_get: 1, review: 1 };
-var MAX_READ_TRIES = 2;
-var RETRY_DELAY_MS = 800;
+var MAX_TRIES = 3;
+var RETRY_DELAY_MS = 500;
 var apiChain = Promise.resolve();
+
+/** Enough entropy that two devices cannot collide within the backend's memory
+ *  of the last 20 requests. */
+function newRid() {
+  return Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 10);
+}
 
 function wait(ms) { return new Promise(function (r) { setTimeout(r, ms); }); }
 
 async function attemptCall(action, payload) {
-  var tries = IDEMPOTENT[action] ? MAX_READ_TRIES : 1;
   var last;
+  var tries = (IDEMPOTENT[action] || backendDedupes) ? MAX_TRIES : 1;
 
   for (var i = 0; i < tries; i++) {
     try {
@@ -206,6 +225,12 @@ async function trackedCall(action, payload) {
 /** Call the backend. Serialised — see the note above. */
 function api(action, payload) {
   if (!isConfigured()) return Promise.reject(new Error('Not configured — open Settings.'));
+
+  // One rid per logical write, fixed before the first attempt so every retry
+  // carries the same one. Reads need none.
+  if (!IDEMPOTENT[action]) {
+    payload = Object.assign({ rid: newRid() }, payload || {});
+  }
 
   var run = apiChain.then(
     function () { return trackedCall(action, payload); },
@@ -387,6 +412,38 @@ var FAILED_WRITE_REFRESH_MS = 4000;
 function writeFailed(err) {
   flash(String(err.message || err), 'err');
   scheduleRefresh(FAILED_WRITE_REFRESH_MS);
+}
+
+/**
+ * Run a sequence of writes in the background.
+ *
+ * THE TRADE, stated plainly: the screen updates on the tap and the request
+ * drains behind it. A healthy call is 1.7s and a sick one hangs for 40, so
+ * making the button wait for the network meant the button was sometimes dead
+ * for half a minute — against a project rule that says every logging action
+ * stays under five seconds. Showing the result first and correcting it if the
+ * write fails is the better of the two wrongs, because writeFailed() reconciles
+ * against the Sheet and the Sheet always wins.
+ *
+ * Sequential on purpose: a chain means step 2 does not run if step 1 failed, so
+ * a `resume` can never be written without the `wake` that had to precede it.
+ */
+function runWrites(steps, undo) {
+  var chain = Promise.resolve();
+  steps.forEach(function (step) {
+    chain = chain.then(function () { return api('log', step); });
+  });
+  return chain.catch(function (err) {
+    if (undo) restoreToggles(undo);
+    writeFailed(err);
+  }).then(function () {
+    if (undo) endToggleWrite();          // release the baseline once drained
+  });
+}
+
+/** The same idea for the one write that is not a `log` row. */
+function runWrite(action, payload) {
+  return api(action, payload).catch(function (err) { writeFailed(err); });
 }
 
 /** Reconcile with the Sheet soon, but never on the tap itself. Repeated taps
@@ -656,27 +713,26 @@ var mBtn = $('mBtn');
 
 /* Disabled for the whole round trip: on a phone a double tap is a slip, not two
  * Ms, and the backend is append-only so a stray second row cannot be undone. */
-mBtn.addEventListener('click', async function () {
+var pendingWrites = 0;
+
+mBtn.addEventListener('click', function () {
   if (mBtn.disabled) return;
-  mBtn.disabled = true;
+  coolDown(mBtn);                    // 400ms against a slip, not the round trip
 
-  var before = $('mCount').textContent;
-  $('mCount').textContent = ((parseInt(before, 10) || 0) + 1) + ' today';
-  var wrote = false;
+  $('mCount').textContent = ((parseInt($('mCount').textContent, 10) || 0) + 1) + ' today';
+  confirmPulse(mBtn);
+  noteLocalRow('M', '');
 
-  try {
-    var res = await api('m');
-    wrote = true;
-    $('mCount').textContent = res.m_count + ' today';   // the Sheet's number wins
-    confirmPulse(mBtn);
-    noteLocalRow('M', '');
-  } catch (err) {
-    $('mCount').textContent = before;                   // put the count back...
-    writeFailed(err);                                   // ...and let the Sheet settle it
-  } finally {
-    // Nothing was written on the error path, so a retry should be instant.
-    if (wrote) coolDown(mBtn); else mBtn.disabled = false;
-  }
+  pendingWrites += 1;
+  api('m').then(function (res) {
+    // The Sheet's number wins — but only once nothing else is still in flight,
+    // or a reply computed three taps ago would undo the two taps after it.
+    if (pendingWrites === 1) $('mCount').textContent = res.m_count + ' today';
+  }).catch(function (err) {
+    writeFailed(err);                // reconciles, which puts the real count back
+  }).then(function () {
+    pendingWrites -= 1;
+  });
 });
 
 // ------------------------------------------------------ sleep / work toggles
@@ -731,6 +787,66 @@ function loadToggles() {
 }
 
 var toggles = loadToggles();
+
+/* Optimistic toggles need an undo, and reconcileToggles cannot be it.
+ *
+ * That function is monotonic on purpose — it only adopts a row NEWER than the
+ * local change — which is what stops an old row from resurrecting a stale state.
+ * But an optimistic setToggle stamps Date.now(), so no real row can ever be
+ * newer than it, and a toggle moved for a write that then failed would be stuck
+ * wrong forever. Worse than a wrong label: the button's meaning flips with the
+ * state, so the next tap does the opposite of what the user intends.
+ *
+ * So a failed write puts the toggles back exactly as they were. That restores
+ * the OLD timestamps too, which is the point — any row that did land is once
+ * again newer, so the reconcile a moment later re-adopts it. A half-failed pair
+ * (`wake` landed, `resume` did not) therefore ends up correct without this code
+ * having to know which half it was. */
+function toggleSnapshot() {
+  return {
+    sleep: { state: toggles.sleep.state, at: toggles.sleep.at },
+    work: { state: toggles.work.state, at: toggles.work.at }
+  };
+}
+
+/* Copies out, never aliases. Two failed taps in a burst restore from the SAME
+ * snapshot object, and assigning it directly would let the next setToggle
+ * mutate the thing the second undo still needs. */
+function restoreToggles(snap) {
+  toggles = {
+    sleep: { state: snap.sleep.state, at: snap.sleep.at },
+    work: { state: snap.work.state, at: snap.work.at }
+  };
+  localStorage.setItem(TOGGLE_KEY, JSON.stringify(toggles));
+  paintToggles();
+}
+
+/* THE BASELINE IS THE LAST CONFIRMED STATE, NOT THE LAST SEEN ONE.
+ *
+ * Snapshotting the live toggles works for one tap and breaks for two. Tap Break
+ * (optimistic), then tap Work three seconds later: the second snapshot records
+ * "break", which the Sheet never held. If both writes then fail, the undos run
+ * oldest-first and the last one wins — leaving the app in a state that never
+ * existed, with an empty Sheet and nothing for the reconcile to correct it
+ * from. The next tap then means the opposite of its label, which is how an
+ * unpaired `wake` gets written.
+ *
+ * So the snapshot is taken only when nothing is in flight. Every failure in a
+ * burst restores to that same confirmed baseline, and any row that DID land is
+ * newer than its timestamps, so the reconcile puts those back. */
+var togglesInFlight = 0;
+var confirmedToggles = null;
+
+function beginToggleWrite() {
+  if (togglesInFlight === 0) confirmedToggles = toggleSnapshot();
+  togglesInFlight += 1;
+  return confirmedToggles;
+}
+
+function endToggleWrite() {
+  togglesInFlight = Math.max(0, togglesInFlight - 1);
+  if (togglesInFlight === 0) confirmedToggles = null;
+}
 
 function setToggle(kind, state, at) {
   toggles[kind] = { state: state, at: at || Date.now() };
@@ -866,12 +982,17 @@ function sleepClosingRow(work, night) {
  * night, it is an unmeasurable one, and the pills would contradict each other
  * on top of that. Living in one function is the point: this used to be inlined
  * in the tile handler alone, and the other two silently skipped it.
+ *
+ * It returns the STEP rather than writing it, because runWrites() chains the
+ * steps — which is what guarantees the `wake` lands before whatever follows it,
+ * and that nothing follows it if it failed.
  */
-async function ensureAwake() {
-  if (toggles.sleep.state !== 'asleep') return;
-  await api('log', { type: 'wake', raw_text: 'Wake up (auto — back to work)' });
+function wakeSteps(startingWork) {
+  if (!startingWork || toggles.sleep.state !== 'asleep') return [];
+  var text = 'Wake up (auto — back to work)';
   setToggle('sleep', 'awake');
-  noteLocalRow('wake', 'Wake up (auto — back to work)');
+  noteLocalRow('wake', text);
+  return [{ type: 'wake', raw_text: text }];
 }
 
 sleepBtn.addEventListener('click', async function () {
@@ -886,55 +1007,48 @@ sleepBtn.addEventListener('click', async function () {
   var question = toSleep ? sleepConfirmQuestion(toggles.work.state, night) : '';
   if (question && !window.confirm(question)) return;
 
-  sleepBtn.disabled = true;
-  var wrote = false;
-  try {
-    if (closing) {
-      await api('log', { type: closing.type, raw_text: closing.text });
-      setToggle('work', closing.state);
-      noteLocalRow(closing.type, closing.text);
-    }
-    await api('log', {
-      type: toSleep ? 'sleep' : 'wake',
-      raw_text: toSleep ? 'Sleep' : 'Wake up'
-    });
-    wrote = true;
-    setToggle('sleep', toSleep ? 'asleep' : 'awake');
-    confirmPulse(sleepBtn);
-    flash(toSleep ? 'Sleep logged' : 'Awake', 'ok');
-    noteLocalRow(toSleep ? 'sleep' : 'wake', toSleep ? 'Sleep' : 'Wake up');
-  } catch (err) {
-    writeFailed(err);
-  } finally {
-    if (wrote) coolDown(sleepBtn); else sleepBtn.disabled = false;
+  coolDown(sleepBtn);
+  var undo = beginToggleWrite();       // before the first optimistic change
+
+  var steps = [];
+  if (closing) {
+    steps.push({ type: closing.type, raw_text: closing.text });
+    setToggle('work', closing.state);
+    noteLocalRow(closing.type, closing.text);
   }
+
+  var edge = toSleep ? 'sleep' : 'wake';
+  var text = toSleep ? 'Sleep' : 'Wake up';
+  steps.push({ type: edge, raw_text: text });
+  setToggle('sleep', toSleep ? 'asleep' : 'awake');
+  noteLocalRow(edge, text);
+
+  confirmPulse(sleepBtn);
+  flash(toSleep ? 'Sleep logged' : 'Awake', 'ok');
+  runWrites(steps, undo);
 });
 
 workBtn.addEventListener('click', async function () {
   if (workBtn.disabled) return;
   var toBreak = toggles.work.state === 'working';
 
-  workBtn.disabled = true;
-  var wrote = false;
-  try {
-    // Mirror of the Sleep path: you cannot be asleep and working at once, so
-    // starting work ends the night first, and without asking — one tap, and the
-    // review still sees a wake row to close the sleep against.
-    if (!toBreak) await ensureAwake();
-    await api('log', {
-      type: toBreak ? 'break' : 'resume',
-      raw_text: toBreak ? 'Break' : 'Back to work'
-    });
-    wrote = true;
-    setToggle('work', toBreak ? 'break' : 'working');
-    confirmPulse(workBtn);
-    flash(toBreak ? 'Break started' : 'Back to work', 'ok');
-    noteLocalRow(toBreak ? 'break' : 'resume', toBreak ? 'Break' : 'Back to work');
-  } catch (err) {
-    writeFailed(err);
-  } finally {
-    if (wrote) coolDown(workBtn); else workBtn.disabled = false;
-  }
+  coolDown(workBtn);
+  var undo = beginToggleWrite();
+
+  // Mirror of the Sleep path: you cannot be asleep and working at once, so
+  // starting work ends the night first, and without asking — one tap, and the
+  // review still sees a wake row to close the sleep against.
+  var steps = wakeSteps(!toBreak);
+
+  var edge = toBreak ? 'break' : 'resume';
+  var text = toBreak ? 'Break' : 'Back to work';
+  steps.push({ type: edge, raw_text: text });
+  setToggle('work', toBreak ? 'break' : 'working');
+  noteLocalRow(edge, text);
+
+  confirmPulse(workBtn);
+  flash(toBreak ? 'Break started' : 'Back to work', 'ok');
+  runWrites(steps, undo);
 });
 
 paintToggles();
@@ -958,24 +1072,19 @@ dayBtn.addEventListener('click', async function () {
   if (dayBtn.disabled) return;
   var off = toggles.work.state === 'off';
 
-  dayBtn.disabled = true;
-  var wrote = false;
-  try {
-    if (off) await ensureAwake();          // starting the day ends the night
-    await api('log', {
-      type: off ? 'resume' : 'off',
-      raw_text: off ? 'Day started' : 'Day over'
-    });
-    wrote = true;
-    setToggle('work', off ? 'working' : 'off');
-    confirmPulse(dayBtn);
-    flash(off ? 'Day started' : 'Day closed', 'ok');
-    noteLocalRow(off ? 'resume' : 'off', off ? 'Day started' : 'Day over');
-  } catch (err) {
-    writeFailed(err);
-  } finally {
-    if (wrote) coolDown(dayBtn); else dayBtn.disabled = false;
-  }
+  coolDown(dayBtn);
+  var undo = beginToggleWrite();
+
+  var steps = wakeSteps(off);              // starting the day ends the night
+  var edge = off ? 'resume' : 'off';
+  var text = off ? 'Day started' : 'Day over';
+  steps.push({ type: edge, raw_text: text });
+
+  setToggle('work', off ? 'working' : 'off');
+  noteLocalRow(edge, text);
+  confirmPulse(dayBtn);
+  flash(off ? 'Day started' : 'Day closed', 'ok');
+  runWrites(steps, undo);
 });
 
 // -------------------------------------------------------------------- chips
@@ -1109,21 +1218,16 @@ function renderChips() {
 /** One tap, one status row, no confirmation dialog — that is the whole point.
  *  The tally is not touched here; the refresh below brings the row back and
  *  absorbChipStats() counts it once. */
-async function logChip(btn, label) {
+function logChip(btn, label) {
   if (btn.disabled) return;
-  btn.disabled = true;
+  coolDown(btn);
   chipFreezeUntil = Date.now() + CHIP_FREEZE_MS;   // set before the write, not after
-  try {
-    await api('log', { type: 'status', raw_text: label });
-    confirmPulse(btn);
-    // Not fed to the chip tally here — the reconcile brings the row back and
-    // absorbChipStats() counts it exactly once, from the Sheet.
-    noteLocalRow('status', label);
-  } catch (err) {
-    writeFailed(err);
-  } finally {
-    btn.disabled = false;
-  }
+
+  confirmPulse(btn);
+  // Not fed to the chip tally here — the reconcile brings the row back and
+  // absorbChipStats() counts it exactly once, from the Sheet.
+  noteLocalRow('status', label);
+  runWrites([{ type: 'status', raw_text: label }]);
 }
 
 renderChips();
@@ -1227,56 +1331,50 @@ $('prayerBtn').addEventListener('click', function () {
 
 $('prayerCancelBtn').addEventListener('click', function () { prayerDlg.close(); });
 
-$('prayerSaveBtn').addEventListener('click', async function () {
+$('prayerSaveBtn').addEventListener('click', function () {
   if (!pickedPrayer || !pickedMode) return;
 
   // Append-only by design: a duplicate is warned about, never overwritten.
   if (loggedToday(pickedPrayer) &&
       !window.confirm(pickedPrayer + ' is already logged today. Log it again?')) return;
 
-  var btn = this;
   var name = pickedPrayer;
-  btn.disabled = true;
-  try {
-    var mode = pickedMode;
-    await api('prayer', { prayer: name, mode: mode });
-    prayerDlg.close();
-    flash(name + ' logged', 'ok');
-    todayPrayers.push({ at: localIso(), local: '', prayer: name, mode: mode });
-    renderPrayerTicks();
-    renderDaySummary();
-    renderLogList();
-    scheduleRefresh();
-  } catch (err) {
-    writeFailed(err);
-  } finally {
-    btn.disabled = false;
-  }
+  var mode = pickedMode;
+
+  // Tick it and get out of the way; the write drains behind the closed dialog.
+  prayerDlg.close();
+  flash(name + ' logged', 'ok');
+  todayPrayers.push({ at: localIso(), local: '', prayer: name, mode: mode });
+  renderPrayerTicks();
+  renderDaySummary();
+  renderLogList();
+  scheduleRefresh();
+
+  runWrite('prayer', { prayer: name, mode: mode });
 });
 
 // ------------------------------------------------------------------ tracker
 
-$('trackerForm').addEventListener('submit', async function (e) {
+$('trackerForm').addEventListener('submit', function (e) {
   e.preventDefault();
   var input = $('trackerInput');
   var text = input.value.trim();
   if (!text) return;
 
   input.value = '';
-  try {
-    await ensureAwake();                   // logging work is starting work
-    // project stays empty until Gemini splits it out; replayDay() falls back to
-    // the raw text so Home can already name what you are on.
-    await api('log', { type: 'work', raw_text: text });
-    flash('Logged', 'ok');
-    // Typing an entry means you are working — if you were on a break or the day
-    // was marked over, this reopens it, so the clock and the label agree.
-    if (toggles.work.state !== 'working') setToggle('work', 'working');
-    noteLocalRow('work', text);
-  } catch (err) {
-    input.value = text;                      // give the text back, never lose it
-    writeFailed(err);
-  }
+  var undo = beginToggleWrite();
+
+  var steps = wakeSteps(true);             // logging work is starting work
+  // project stays empty until Gemini splits it out; replayDay() falls back to
+  // the raw text so Home can already name what you are on.
+  steps.push({ type: 'work', raw_text: text });
+
+  // Typing an entry means you are working — if you were on a break or the day
+  // was marked over, this reopens it, so the clock and the label agree.
+  if (toggles.work.state !== 'working') setToggle('work', 'working');
+  noteLocalRow('work', text);
+  flash('Logged', 'ok');
+  runWrites(steps, undo);
 });
 
 $('micBtn').addEventListener('click', function () {
