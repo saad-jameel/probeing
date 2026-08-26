@@ -38,7 +38,10 @@
     <img src="icons/icon-192.png" alt="" class="brand-mark" width="30" height="30">
     <h1>ProBeing</h1>
   </div>
-  <button id="settingsBtn" class="icon-btn" aria-label="Settings">&#9881;</button>
+  <div class="top-right">
+    <span id="connDot" class="dot" role="status" aria-live="polite" title="Not connected"></span>
+    <button id="settingsBtn" class="icon-btn" aria-label="Settings">&#9881;</button>
+  </div>
 </header>
 
 <!-- Point 1: the line under the logo is the state readout, not a greeting.
@@ -101,6 +104,14 @@
     <div id="prayerTicks" class="ticks"></div>
   </section>
 
+  <form id="trackerForm" class="tracker" autocomplete="off">
+    <input id="trackerInput" type="text" placeholder="What are you working on?" aria-label="Log an activity">
+    <button type="button" id="micBtn" class="btn btn-mic" data-stage="4" aria-label="Voice note">
+      <svg class="btn-ico" aria-hidden="true"><use href="#i-mic"></use></svg>
+    </button>
+    <button type="submit" class="btn btn-accent">Log</button>
+  </form>
+
   <!-- Point 3: 'off' had no way in except going to bed. This is that way. -->
   <button id="dayBtn" class="btn btn-wide">
     <svg class="btn-ico" aria-hidden="true"><use href="#i-off"></use></svg>
@@ -110,13 +121,19 @@
 
 <!-- ============================================================ TODAY -->
 <section class="screen" data-screen="today" hidden>
-  <form id="trackerForm" class="tracker" autocomplete="off">
-    <input id="trackerInput" type="text" placeholder="What are you working on?" aria-label="Log an activity">
-    <button type="button" id="micBtn" class="btn btn-mic" data-stage="4" aria-label="Voice note">
-      <svg class="btn-ico" aria-hidden="true"><use href="#i-mic"></use></svg>
-    </button>
-    <button type="submit" class="btn btn-accent">Log</button>
-  </form>
+
+  <!-- Today at a glance, computed from the rows below — no second source of
+       truth, and nothing to store. -->
+  <section class="card">
+    <h2 class="card-head"><svg class="card-ico" aria-hidden="true"><use href="#i-chart"></use></svg> Today so far</h2>
+    <div class="sum-row">
+      <div class="sum"><span id="sumWorked" class="sum-n">0m</span><span class="sum-l">worked</span></div>
+      <div class="sum"><span id="sumPrayers" class="sum-n">0/5</span><span class="sum-l">prayers</span></div>
+      <div class="sum"><span id="sumM" class="sum-n">0</span><span class="sum-l">M</span></div>
+      <div class="sum"><span id="sumBreak" class="sum-n">0m</span><span class="sum-l">on break</span></div>
+    </div>
+    <ul id="sumProjects" class="sum-projects"></ul>
+  </section>
 
   <div class="log-head">
     <h2 class="card-head">Today</h2>

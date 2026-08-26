@@ -61,7 +61,18 @@ function doPost(e) {
       return json({ ok: false, error: 'unknown_action', action: body.action || null });
     }
 
-    // Serialize writes so two fast taps can never interleave into one row.
+    /* Serialize WRITES so two fast taps can never interleave into one row.
+     *
+     * Reads deliberately do not take the lock. Locking them too made `today`
+     * queue behind every write: measured 4 of 12 parallel requests returning
+     * HTTP 404 from the redirect host and calls taking up to 58 seconds, with
+     * the hangs landing exactly on waitLock's 20-second ceiling. A read that
+     * races a write is harmless here — the worst case is a row that appears one
+     * refresh later, which the app already reconciles. */
+    if (!WRITES[body.action]) {
+      return json(handler(body));
+    }
+
     var lock = LockService.getScriptLock();
     lock.waitLock(20000);
     try {
@@ -75,6 +86,9 @@ function doPost(e) {
 }
 
 // ------------------------------------------------------------------- actions
+
+/** The actions that append or overwrite. Only these are serialised. */
+var WRITES = { log: 1, m: 1, prayer: 1, now_set: 1 };
 
 var ACTIONS = {
   ping: function () {

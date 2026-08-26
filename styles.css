@@ -66,6 +66,21 @@ body {
 .brand-mark { border-radius: 8px; display: block; }
 .top h1 { font-size: 19px; margin: 0; letter-spacing: -0.01em; }
 
+.top-right { display: flex; align-items: center; gap: 4px; }
+
+/* (6) Connection at a glance. Green means the last call to the Sheet worked,
+   red means it did not, amber means one is in flight right now. It is small on
+   purpose — a status light, not an alarm. */
+.dot {
+  width: 9px; height: 9px; border-radius: 50%;
+  background: var(--muted);
+  flex: 0 0 auto;
+  transition: background-color .25s ease;
+}
+.dot.ok { background: #35c07a; }
+.dot.bad { background: var(--danger); }
+.dot.busy { background: #e8a33d; }
+
 .icon-btn {
   background: none; border: 0; color: var(--muted);
   font-size: 22px; cursor: pointer; padding: 6px; line-height: 1;
@@ -209,6 +224,20 @@ body {
 
 .proj-name { font-size: 18px; font-weight: 600; margin: 9px 0 2px; overflow-wrap: anywhere; }
 .proj-time { color: var(--accent); font-size: 14px; margin: 0; font-variant-numeric: tabular-nums; }
+
+/* The daily summary at the top of the Today tab. Four numbers, then the
+   projects underneath — read left to right, no chart needed. */
+.sum-row { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; margin-top: 12px; }
+.sum { display: flex; flex-direction: column; gap: 1px; min-width: 0; }
+.sum-n { font-size: 19px; font-weight: 700; color: var(--accent); font-variant-numeric: tabular-nums; }
+.sum-l { font-size: 11.5px; color: var(--muted); }
+
+.sum-projects { list-style: none; margin: 14px 0 0; padding: 12px 0 0; display: grid; gap: 7px;
+  border-top: 1px solid var(--line); }
+.sum-projects:empty { display: none; }
+.sum-projects li { display: flex; gap: 12px; justify-content: space-between; font-size: 14.5px; }
+.sum-projects .p-name { min-width: 0; overflow-wrap: anywhere; }
+.sum-projects .p-time { color: var(--accent); white-space: nowrap; font-variant-numeric: tabular-nums; }
 
 /* Point 6: prayers as ticks. Read-only here — logging still goes through the
    picker, so a tick can never be set by a stray tap. */

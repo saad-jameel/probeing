@@ -23,11 +23,12 @@ var PRAYER_MODES = ['Takbeer-e-oola', 'Partial Jamat', 'Individual'];
 // pair of rows that can be turned into a duration later.
 var DEFAULT_CHIPS = ['Tea', 'Lunch', 'Prayer-break', 'PUBG'];
 
-// Sleep pressed during a fresh work session, or in daylight, is more often a
-// mis-tap than a bedtime. Anything outside those two windows goes through silently.
-var SHORT_SESSION_MINUTES = 45;
+/* 9 PM is the line between "a nap in the middle of the day" and "winding up".
+ * Only one press is ever silent — on a break after 9 PM, which is unambiguously
+ * bedtime. Everything else asks, because every one of those presses closes a
+ * session the weekly review has to measure. */
+var NIGHT_STARTS_HOUR = 21;
 var DAY_STARTS_HOUR = 5;
-var DAY_ENDS_HOUR = 20;
 
 // ------------------------------------------------------------------- config
 // The API URL and token live ONLY in this device's localStorage. They are never
@@ -68,31 +69,175 @@ function deviceTz() {
  * answer — the call would fail with an opaque CORS error before reaching us.
  * Apps Script also 302-redirects to googleusercontent.com, hence redirect:follow.
  */
-async function api(action, payload) {
-  if (!isConfigured()) throw new Error('Not configured — open Settings.');
+/* A field only that action's own reply carries. Apps Script's redirect hop
+ * intermittently serves the doGet body instead — {ok:true, service:'probeing'}
+ * — which passes an `ok` check and then blanks the screen, because data.log is
+ * undefined and the whole day renders empty behind a green dot. An `ok` alone
+ * is not proof the answer belongs to the question. */
+var ANSWER_FIELD = {
+  ping: 'pong',
+  today: 'log',
+  m: 'm_count',
+  log: 'type',
+  prayer: 'prayer',
+  now_get: 'now',
+  now_set: 'now',
+  review: 'text'          // unused until Stage 5, but it is already in IDEMPOTENT
+};
 
-  var res = await fetch(cfg.apiUrl, {
-    method: 'POST',
-    redirect: 'follow',
-    headers: { 'Content-Type': 'text/plain;charset=utf-8' },
-    body: JSON.stringify(Object.assign({
-      action: action,
-      token: cfg.token,
-      tz: deviceTz()
-    }, payload || {}))
-  });
+/* Serialising every call made one slow request able to block every tap behind
+ * it — measured 58s against the live backend. Nothing may sit in the queue
+ * longer than this. */
+var REQUEST_TIMEOUT_MS = 20000;
+
+async function callBackend(action, payload) {
+  var ctrl = typeof AbortController === 'function' ? new AbortController() : null;
+  var timer = ctrl ? setTimeout(function () { ctrl.abort(); }, REQUEST_TIMEOUT_MS) : 0;
+
+  var res;
+  try {
+    res = await fetch(cfg.apiUrl, {
+      method: 'POST',
+      redirect: 'follow',
+      signal: ctrl ? ctrl.signal : undefined,
+      headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+      body: JSON.stringify(Object.assign({
+        action: action,
+        token: cfg.token,
+        tz: deviceTz()
+      }, payload || {}))
+    });
+  } catch (netErr) {
+    clearTimeout(timer);
+    if (netErr && netErr.name === 'AbortError') {
+      /* Not retried, even though reads otherwise are. A read that already had
+       * 20 seconds and said nothing will not say anything in the next 20 —
+       * it would just double the time every tap behind it sits in the queue. */
+      var slow = new Error('The Sheet took too long to answer.');
+      slow.fatal = true;
+      throw slow;
+    }
+    throw netErr;
+  }
+  clearTimeout(timer);
 
   if (!res.ok) throw new Error('HTTP ' + res.status);
 
-  var data = await res.json();
-  if (!data.ok) throw new Error(data.error || 'request failed');
+  var data;
+  try {
+    data = await res.json();
+  } catch (parseErr) {
+    // Apps Script hands back its own HTML shell under load. Saying so beats
+    // showing the user `Unexpected token '<', "<!DOCTYPE "...`.
+    throw new Error('The Sheet did not answer properly.');
+  }
+
+  if (!data.ok) {
+    // The backend answered and said no. Repeating it will not change its mind.
+    var refusal = new Error(data.error || 'request failed');
+    refusal.fatal = true;
+    throw refusal;
+  }
+
+  var field = ANSWER_FIELD[action];
+  if (field && data[field] === undefined) {
+    throw new Error('The Sheet answered a different question.');
+  }
   return data;
+}
+
+/* Apps Script under a burst is genuinely flaky. Fire a few requests back to
+ * back and some come back HTTP 404 — not from doPost, but from the
+ * googleusercontent.com host it 302-redirects to. Measured: 4 of 12 parallel
+ * pings 404'd, and calls took up to 58s, because doPost takes a script lock on
+ * EVERY action, so a read queues behind a write. Sequentially, 12 of 12 were
+ * clean. So: one request at a time, through a promise chain — this device never
+ * competes with itself for that lock.
+ *
+ * WHICH CALLS MAY BE RETRIED, and why the answer is "reads only":
+ *
+ * That 404 usually means the request DID reach doPost and the row WAS written;
+ * only the answer got lost on the redirect hop. Retrying then appends the row a
+ * second time, and the Sheet is append-only — a doubled M or a second `sleep`
+ * with no `wake` cannot be undone. So a write is never retried. It reports the
+ * failure instead, and the reconcile a few seconds later shows what actually
+ * landed, which is the honest answer rather than a guess.
+ *
+ * Reads have no such cost, so they retry — except on a timeout, which is
+ * treated as final for the reason given at the abort. Once the backend carries
+ * a request id that `log` can deduplicate against, writes can join them. */
+
+var IDEMPOTENT = { ping: 1, today: 1, now_get: 1, review: 1 };
+var MAX_READ_TRIES = 2;
+var RETRY_DELAY_MS = 800;
+var apiChain = Promise.resolve();
+
+function wait(ms) { return new Promise(function (r) { setTimeout(r, ms); }); }
+
+async function attemptCall(action, payload) {
+  var tries = IDEMPOTENT[action] ? MAX_READ_TRIES : 1;
+  var last;
+
+  for (var i = 0; i < tries; i++) {
+    try {
+      return await callBackend(action, payload);
+    } catch (err) {
+      last = err;
+      if (err && err.fatal) throw err;          // a real refusal, not a hiccup
+      if (i === tries - 1) throw err;
+      await wait(RETRY_DELAY_MS);
+    }
+  }
+  throw last;
+}
+
+async function trackedCall(action, payload) {
+  setConn('busy');
+  try {
+    var data = await attemptCall(action, payload);
+    setConn('ok');
+    return data;
+  } catch (err) {
+    setConn('bad');
+    throw err;
+  }
+}
+
+/** Call the backend. Serialised — see the note above. */
+function api(action, payload) {
+  if (!isConfigured()) return Promise.reject(new Error('Not configured — open Settings.'));
+
+  var run = apiChain.then(
+    function () { return trackedCall(action, payload); },
+    function () { return trackedCall(action, payload); }   // a failure must not wedge the queue
+  );
+  apiChain = run.then(function () {}, function () {});
+  return run;
 }
 
 // ------------------------------------------------------------------ helpers
 
 var $ = function (id) { return document.getElementById(id); };
 var bannerTimer;
+
+/* The dot beside the cog. Green = the last call to the Sheet worked, red = it
+ * did not, amber = one is in flight. Small on purpose: a status light, not an
+ * alarm. It is the honest answer to "is it just slow, or is it broken?" */
+var connState = '';
+var CONN_TITLES = {
+  ok: 'Connected — the Sheet answered',
+  bad: 'Not reaching the Sheet. Tap the cog to check Settings.',
+  busy: 'Talking to the Sheet…'
+};
+
+function setConn(state) {
+  if (state === connState) return;
+  connState = state;
+  var el = $('connDot');
+  if (!el) return;
+  el.className = 'dot ' + state;
+  el.title = CONN_TITLES[state] || 'Not connected';
+}
 
 function flash(message, kind) {
   var el = $('banner');
@@ -180,6 +325,7 @@ function showScreen(name) {
   }
 
   window.scrollTo(0, 0);
+  if (name === 'today') renderDaySummary();     // catch up the clock on arrival
   if (name === 'review') renderReviewRange();
 }
 
@@ -192,6 +338,64 @@ function showScreen(name) {
     tabs[i].addEventListener('click', function () { showScreen(this.dataset.goto); });
   }
 })();
+
+/** The device's clock in the backend's own format, so a row we add locally
+ *  sorts and displays exactly like the real one that replaces it. */
+function localIso(d) {
+  d = d || new Date();
+  var pad = function (n) { return String(n).padStart(2, '0'); };
+  var off = -d.getTimezoneOffset();
+  var sign = off < 0 ? '-' : '+';
+  off = Math.abs(off);
+  return d.getFullYear() + '-' + pad(d.getMonth() + 1) + '-' + pad(d.getDate()) +
+         'T' + pad(d.getHours()) + ':' + pad(d.getMinutes()) + ':' + pad(d.getSeconds()) +
+         sign + pad(Math.floor(off / 60)) + ':' + pad(off % 60);
+}
+
+/* Showing the row we just wrote, instead of asking the Sheet to read it back,
+ * is what takes a tap from two round trips down to one — and two round trips
+ * per tap is what was producing the 404s. The Sheet still wins: the reconcile
+ * below replaces this list wholesale a few seconds later.
+ *
+ * Rows go in newest-first, matching today(), because replayDay() breaks
+ * same-second ties on that order. */
+function noteLocalRow(type, text, project) {
+  lastLog.unshift({
+    at: localIso(), local: '', type: type,
+    raw_text: text || '', project: project || '', detail: ''
+  });
+  renderProject();
+  renderDaySummary();
+  renderLogList();
+  scheduleRefresh();
+}
+
+var refreshTimer;
+var BACKGROUND_REFRESH_MS = 9000;
+var FAILED_WRITE_REFRESH_MS = 4000;
+
+/**
+ * A write failed. Say so — and reconcile shortly after, because this is the
+ * other half of the no-retry decision above.
+ *
+ * An Apps Script 404 usually means the row DID land and only the answer was
+ * lost. Reporting the failure and then leaving the screen alone is the worst of
+ * both worlds: it shows a number the Sheet contradicts, and the natural
+ * response is to tap again — creating by hand exactly the duplicate that not
+ * retrying was meant to prevent. So the Sheet gets the last word, quickly.
+ */
+function writeFailed(err) {
+  flash(String(err.message || err), 'err');
+  scheduleRefresh(FAILED_WRITE_REFRESH_MS);
+}
+
+/** Reconcile with the Sheet soon, but never on the tap itself. Repeated taps
+ *  coalesce into one call instead of firing one each. */
+function scheduleRefresh(delay) {
+  clearTimeout(refreshTimer);
+  refreshTimer = setTimeout(function () { refresh(); },
+    typeof delay === 'number' ? delay : BACKGROUND_REFRESH_MS);
+}
 
 // ------------------------------------------------------------------- render
 
@@ -225,7 +429,8 @@ function todayEntries(data) {
   return entries;
 }
 
-var lastLog = [];      // today's rows from the last successful refresh
+var lastLog = [];        // today's rows from the last successful refresh
+var todayPrayers = [];   // today's prayer rows; drives the ticks and the picker
 
 function renderToday(data) {
   $('mCount').textContent = data.m_count + ' today';
@@ -243,7 +448,14 @@ function renderToday(data) {
   renderPrayerTicks();
   if (prayerDlg.open) renderPrayerPicks();
 
-  var entries = todayEntries(data);
+  renderDaySummary();
+  renderLogList();
+}
+
+/** The Today tab's list, drawn from whatever is currently in memory — the last
+ *  refresh, plus anything written since. */
+function renderLogList() {
+  var entries = todayEntries({ log: lastLog, prayers: todayPrayers });
   var list = $('logList');
   list.textContent = '';
 
@@ -274,6 +486,7 @@ function renderToday(data) {
 }
 
 async function refresh(opts) {
+  clearTimeout(refreshTimer);
   if (!isConfigured()) {
     showEmpty('Open Settings to connect.');
     return;
@@ -314,11 +527,22 @@ function replayDay(log) {
   var project = '';
   var totals = {};
   var runningSince = 0;                     // 0 = clock stopped
+  var pausedSince = 0;                      // on a break, or the day is closed
+  var paused = 0;                           // total time not working, once started
 
   function stop(t) {
     if (!runningSince) return;
     totals[project] = (totals[project] || 0) + Math.max(0, t - runningSince);
     runningSince = 0;
+    pausedSince = t;
+  }
+
+  /** Close an open pause. Only counts once the day has actually started, so a
+   *  morning before the first entry is not reported as five hours "on break". */
+  function unpause(t) {
+    if (!pausedSince) return;
+    paused += Math.max(0, t - pausedSince);
+    pausedSince = 0;
   }
 
   rows.forEach(function (row) {
@@ -326,24 +550,81 @@ function replayDay(log) {
 
     if (row.type === 'work' || row.type === 'voice') {
       stop(t);                              // close the previous project's segment...
+      unpause(t);
       project = String(row.project || row.raw_text || '').trim();
       runningSince = t;                     // ...and open this one's
     } else if (row.type === 'resume') {
+      unpause(t);
       if (!runningSince) runningSince = t;
-    } else if (row.type === 'break' || row.type === 'off' || row.type === 'sleep') {
+    } else if (row.type === 'break') {
+      stop(t);                              // a pause you will come back from
+    } else if (row.type === 'off' || row.type === 'sleep') {
+      /* The day being over is not "on break". stop() closes the running
+       * segment; unpause() then closes any pause that was already open — so a
+       * break at 14:00 followed by 'off' at 15:00 still counts that hour, and
+       * the evening after it counts as nothing at all. */
       stop(t);
+      unpause(t);
     }
     // wake / M / status / prayer do not move the work clock
   });
 
   var now = Date.now();
   var live = runningSince ? Math.max(0, now - runningSince) : 0;
+  var livePause = pausedSince ? Math.max(0, now - pausedSince) : 0;
+
+  // Every project's total, including the segment still running.
+  var byProject = {};
+  Object.keys(totals).forEach(function (k) { byProject[k] = totals[k]; });
+  if (runningSince) byProject[project] = (byProject[project] || 0) + live;
+
+  var worked = 0;
+  Object.keys(byProject).forEach(function (k) { worked += byProject[k]; });
 
   return {
     project: project,
-    ms: (totals[project] || 0) + live,
-    running: Boolean(runningSince)
+    ms: byProject[project] || 0,
+    running: Boolean(runningSince),
+    byProject: byProject,
+    worked: worked,
+    paused: paused + livePause
   };
+}
+
+/* The Today tab's header. Everything here is derived from the same rows the
+ * list below shows — one source of truth, nothing stored, and it is right the
+ * instant a row is written rather than after a round trip. */
+function renderDaySummary() {
+  var day = replayDay(lastLog);
+
+  $('sumWorked').textContent = humanDuration(day.worked);
+  $('sumBreak').textContent = humanDuration(day.paused);
+
+  var done = PRAYER_NAMES.filter(function (n) { return loggedToday(n); }).length;
+  $('sumPrayers').textContent = done + '/5';
+
+  $('sumM').textContent = lastLog.filter(function (r) { return r.type === 'M'; }).length;
+
+  var box = $('sumProjects');
+  box.textContent = '';
+
+  Object.keys(day.byProject)
+    .filter(function (name) { return name && day.byProject[name] > 0; })
+    .sort(function (a, b) { return day.byProject[b] - day.byProject[a]; })
+    .forEach(function (name) {
+      var li = document.createElement('li');
+
+      var n = document.createElement('span');
+      n.className = 'p-name';
+      n.textContent = name;                 // user input — textContent only
+
+      var t = document.createElement('span');
+      t.className = 'p-time';
+      t.textContent = humanDuration(day.byProject[name]);
+
+      li.append(n, t);
+      box.appendChild(li);
+    });
 }
 
 function renderProject() {
@@ -366,6 +647,7 @@ function renderProject() {
 // rows already in memory.
 setInterval(function () {
   if (currentScreen === 'home') renderProject();
+  if (currentScreen === 'today') renderDaySummary();
 }, 30000);
 
 // ----------------------------------------------------------------- M button
@@ -387,10 +669,10 @@ mBtn.addEventListener('click', async function () {
     wrote = true;
     $('mCount').textContent = res.m_count + ' today';   // the Sheet's number wins
     confirmPulse(mBtn);
-    refresh();
+    noteLocalRow('M', '');
   } catch (err) {
-    $('mCount').textContent = before;                   // nothing was written; put it back
-    flash(String(err.message || err), 'err');
+    $('mCount').textContent = before;                   // put the count back...
+    writeFailed(err);                                   // ...and let the Sheet settle it
   } finally {
     // Nothing was written on the error path, so a retry should be instant.
     if (wrote) coolDown(mBtn); else mBtn.disabled = false;
@@ -456,11 +738,11 @@ function setToggle(kind, state, at) {
   paintToggles();
 }
 
-/** Is it night by the app's own definition — the same window the Sleep guard
- *  uses, so "it warned me" and "it ended my day" can never disagree. */
+/** Past 9 PM (or before 5 AM) — the same window both Sleep rules use, so "it
+ *  warned me" and "it ended my day" can never disagree about the time. */
 function isNight() {
   var hour = new Date().getHours();
-  return hour < DAY_STARTS_HOUR || hour >= DAY_ENDS_HOUR;
+  return hour >= NIGHT_STARTS_HOUR || hour < DAY_STARTS_HOUR;
 }
 
 /** "since 23:10", or '' if we never saw the change happen. */
@@ -528,23 +810,30 @@ function reconcileToggles(log) {
 /**
  * The question to ask before going to sleep, or '' to write it silently.
  *
- * Two independent slip-checks, deliberately not merged: the clock one is about
- * the time of day alone, so it must fire whatever the work state is, while the
- * short-session one only means anything when there is a session being closed.
- * Each returns its own wording, because a message naming a trigger that did not
- * fire reads as a bug.
+ * The wording has to name the state it actually found, because a message
+ * describing a situation you are not in reads as a bug and trains you to tap
+ * through it. Four cases, one per row of the table:
+ *
+ *   after 9 PM, on a break   -> silent. This is bedtime; the day ends.
+ *   after 9 PM, working      -> ask. Then the day ends.
+ *   before 9 PM, working     -> ask. Then it is only a break, not the day.
+ *   before 9 PM, not working -> ask. The break (or closed day) stays as it is.
  */
-function sleepConfirmQuestion(closingWork) {
-  if (!isNight()) {
-    return "It's the middle of the day. Are you sure you're going to sleep?";
+function sleepConfirmQuestion(work, night) {
+  if (night) {
+    if (work === 'working') {
+      return "You're still working. Sleep and wind up the day for good?";
+    }
+    return '';                                   // on a break at night — just bed
   }
 
-  var startedMinsAgo = toggles.work.at ? (Date.now() - toggles.work.at) / 60000 : Infinity;
-  if (closingWork && startedMinsAgo < SHORT_SESSION_MINUTES) {
-    return 'You started working only a few minutes ago. ' +
-           "Are you sure you're going to sleep?";
+  if (work === 'working') {
+    return "You're working. Are you going to sleep?";
   }
-  return '';
+  if (work === 'break') {
+    return "You're on a break. Are you going to sleep in the middle of work?";
+  }
+  return "It's the middle of the day. Are you sure you're going to sleep?";
 }
 
 /**
@@ -582,15 +871,19 @@ async function ensureAwake() {
   if (toggles.sleep.state !== 'asleep') return;
   await api('log', { type: 'wake', raw_text: 'Wake up (auto — back to work)' });
   setToggle('sleep', 'awake');
+  noteLocalRow('wake', 'Wake up (auto — back to work)');
 }
 
 sleepBtn.addEventListener('click', async function () {
   if (sleepBtn.disabled) return;
   var toSleep = toggles.sleep.state === 'awake';
-  var closing = toSleep ? sleepClosingRow(toggles.work.state, isNight()) : null;
+  // One reading of the clock for both decisions, so they can never straddle
+  // 9 PM and disagree about which side of it this press is on.
+  var night = isNight();
+  var closing = toSleep ? sleepClosingRow(toggles.work.state, night) : null;
 
   // Declining must leave the Sheet untouched, so this runs before any write.
-  var question = toSleep ? sleepConfirmQuestion(toggles.work.state === 'working') : '';
+  var question = toSleep ? sleepConfirmQuestion(toggles.work.state, night) : '';
   if (question && !window.confirm(question)) return;
 
   sleepBtn.disabled = true;
@@ -599,6 +892,7 @@ sleepBtn.addEventListener('click', async function () {
     if (closing) {
       await api('log', { type: closing.type, raw_text: closing.text });
       setToggle('work', closing.state);
+      noteLocalRow(closing.type, closing.text);
     }
     await api('log', {
       type: toSleep ? 'sleep' : 'wake',
@@ -608,9 +902,9 @@ sleepBtn.addEventListener('click', async function () {
     setToggle('sleep', toSleep ? 'asleep' : 'awake');
     confirmPulse(sleepBtn);
     flash(toSleep ? 'Sleep logged' : 'Awake', 'ok');
-    refresh();
+    noteLocalRow(toSleep ? 'sleep' : 'wake', toSleep ? 'Sleep' : 'Wake up');
   } catch (err) {
-    flash(String(err.message || err), 'err');
+    writeFailed(err);
   } finally {
     if (wrote) coolDown(sleepBtn); else sleepBtn.disabled = false;
   }
@@ -635,9 +929,9 @@ workBtn.addEventListener('click', async function () {
     setToggle('work', toBreak ? 'break' : 'working');
     confirmPulse(workBtn);
     flash(toBreak ? 'Break started' : 'Back to work', 'ok');
-    refresh();
+    noteLocalRow(toBreak ? 'break' : 'resume', toBreak ? 'Break' : 'Back to work');
   } catch (err) {
-    flash(String(err.message || err), 'err');
+    writeFailed(err);
   } finally {
     if (wrote) coolDown(workBtn); else workBtn.disabled = false;
   }
@@ -676,9 +970,9 @@ dayBtn.addEventListener('click', async function () {
     setToggle('work', off ? 'working' : 'off');
     confirmPulse(dayBtn);
     flash(off ? 'Day started' : 'Day closed', 'ok');
-    refresh();
+    noteLocalRow(off ? 'resume' : 'off', off ? 'Day started' : 'Day over');
   } catch (err) {
-    flash(String(err.message || err), 'err');
+    writeFailed(err);
   } finally {
     if (wrote) coolDown(dayBtn); else dayBtn.disabled = false;
   }
@@ -822,9 +1116,11 @@ async function logChip(btn, label) {
   try {
     await api('log', { type: 'status', raw_text: label });
     confirmPulse(btn);
-    refresh();
+    // Not fed to the chip tally here — the reconcile brings the row back and
+    // absorbChipStats() counts it exactly once, from the Sheet.
+    noteLocalRow('status', label);
   } catch (err) {
-    flash(String(err.message || err), 'err');
+    writeFailed(err);
   } finally {
     btn.disabled = false;
   }
@@ -835,7 +1131,6 @@ renderChips();
 // ------------------------------------------------------------ prayer picker
 
 var prayerDlg = $('prayerDlg');
-var todayPrayers = [];               // from the last today() call; drives the checkmarks
 var pickedPrayer = null;
 var pickedMode = null;
 
@@ -927,7 +1222,7 @@ $('prayerBtn').addEventListener('click', function () {
   renderPrayerPicks();
   renderModePicks();
   prayerDlg.showModal();
-  refresh();                          // opens instantly on cached ticks, then corrects them
+  scheduleRefresh(1200);              // opens instantly on cached ticks, then corrects them
 });
 
 $('prayerCancelBtn').addEventListener('click', function () { prayerDlg.close(); });
@@ -943,12 +1238,17 @@ $('prayerSaveBtn').addEventListener('click', async function () {
   var name = pickedPrayer;
   btn.disabled = true;
   try {
-    await api('prayer', { prayer: name, mode: pickedMode });
+    var mode = pickedMode;
+    await api('prayer', { prayer: name, mode: mode });
     prayerDlg.close();
     flash(name + ' logged', 'ok');
-    refresh();
+    todayPrayers.push({ at: localIso(), local: '', prayer: name, mode: mode });
+    renderPrayerTicks();
+    renderDaySummary();
+    renderLogList();
+    scheduleRefresh();
   } catch (err) {
-    flash(String(err.message || err), 'err');
+    writeFailed(err);
   } finally {
     btn.disabled = false;
   }
@@ -972,10 +1272,10 @@ $('trackerForm').addEventListener('submit', async function (e) {
     // Typing an entry means you are working — if you were on a break or the day
     // was marked over, this reopens it, so the clock and the label agree.
     if (toggles.work.state !== 'working') setToggle('work', 'working');
-    refresh();
+    noteLocalRow('work', text);
   } catch (err) {
     input.value = text;                      // give the text back, never lose it
-    flash(String(err.message || err), 'err');
+    writeFailed(err);
   }
 });
 
@@ -1095,12 +1395,23 @@ if ('serviceWorker' in navigator) {
   });
 }
 
-// Coming back to the app should show current data, not a stale screen.
+/* Coming back to the app should show current data — but flipping between apps
+ * must not become a request storm, which is exactly how the burst that produces
+ * the 404s starts. One reconcile per 20 seconds is plenty. */
+var VISIBILITY_THROTTLE_MS = 20000;
+var lastVisibleRefresh = 0;
+
 document.addEventListener('visibilitychange', function () {
-  if (document.visibilityState === 'visible') refresh();
+  if (document.visibilityState !== 'visible') return;
+  var now = Date.now();
+  if (now - lastVisibleRefresh < VISIBILITY_THROTTLE_MS) return;
+  lastVisibleRefresh = now;
+  refresh();
 });
 
 renderPrayerTicks();
 renderProject();
+renderDaySummary();
+lastVisibleRefresh = Date.now();     // the boot reconcile counts as the first one
 refresh();
 if (!isConfigured()) dlg.showModal();
