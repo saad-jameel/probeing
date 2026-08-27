@@ -234,7 +234,10 @@ async function attemptCall(action, payload) {
   throw last;
 }
 
+var inFlight = 0;
+
 async function trackedCall(action, payload) {
+  inFlight += 1;
   setConn('busy');
   try {
     var data = await attemptCall(action, payload);
@@ -243,6 +246,8 @@ async function trackedCall(action, payload) {
   } catch (err) {
     setConn('bad');
     throw err;
+  } finally {
+    inFlight -= 1;
   }
 }
 
@@ -424,6 +429,20 @@ var refreshTimer;
 var BACKGROUND_REFRESH_MS = 9000;
 var FAILED_WRITE_REFRESH_MS = 4000;
 
+/* POLLING, and why it is only half an answer.
+ *
+ * The two devices cannot tell each other anything: Apps Script only speaks when
+ * spoken to. So the app asks, on a timer, whenever it is on screen. That closes
+ * the "nothing changes until I refresh" gap to about a minute.
+ *
+ * It does NOT close the race underneath it. A break row carries the whole
+ * current set, so a device working from a stale view overwrites what the other
+ * one added — press Dinner on the laptop, then Tea on a phone that has not
+ * caught up, and Dinner is gone. Polling narrows that window; only a backend
+ * that pushes closes it, which is what the move to Supabase is for. */
+var POLL_MS = 45000;
+var lastReconcileAt = 0;
+
 /**
  * A write failed. Say so — and reconcile shortly after, because this is the
  * other half of the no-retry decision above.
@@ -569,6 +588,7 @@ function renderLogList() {
 
 async function refresh(opts) {
   clearTimeout(refreshTimer);
+  lastReconcileAt = Date.now();
   if (!isConfigured()) {
     showEmpty('Open Settings to connect.');
     return;
@@ -1753,6 +1773,16 @@ if ('serviceWorker' in navigator) {
  * the 404s starts. One reconcile per 20 seconds is plenty. */
 var VISIBILITY_THROTTLE_MS = 20000;
 var lastVisibleRefresh = 0;
+
+/* Ask again while the app is on screen. Skipped whenever anything is already in
+ * flight or a reconcile just happened, so this adds one request a minute at
+ * most, and never one the user is waiting behind. */
+setInterval(function () {
+  if (document.visibilityState !== 'visible') return;
+  if (inFlight > 0 || !isConfigured()) return;
+  if (Date.now() - lastReconcileAt < POLL_MS) return;
+  refresh();
+}, 5000);
 
 document.addEventListener('visibilitychange', function () {
   if (document.visibilityState !== 'visible') return;
