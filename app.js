@@ -108,7 +108,208 @@ function saveConfig(cfg) {
 }
 
 var cfg = loadConfig();
-var isConfigured = function () { return Boolean(cfg.apiUrl && cfg.token); };
+var isConfigured = function () {
+  if (cfg.backend === 'supabase') return Boolean(cfg.supaUrl && cfg.supaKey && sbUser);
+  return Boolean(cfg.apiUrl && cfg.token);
+};
+
+// ----------------------------------------------------------------- supabase
+/* The second backend, and the one that fixes what Apps Script could not: taps
+ * in ~0.35s instead of 2-30s, and a live feed so the two devices correct each
+ * other without anyone pressing refresh.
+ *
+ * It answers the SAME action names and the same response shapes, so everything
+ * downstream — the serialised queue, the retry rules, the shape guard, the
+ * optimistic rows, the day replay — is untouched by the move.
+ *
+ * The rows keep their meanings from the Sheet. Prayers are not a separate
+ * table: they are events of type 'prayer' carrying the name in `project` and
+ * the mode in `detail`, which is what the Sheet's extra tab was really for. */
+
+var sb = null;                 // the Supabase client, once configured
+var sbUser = null;             // the signed-in user, or null
+
+function usingSupabase() {
+  return cfg.backend === 'supabase';
+}
+
+function supabaseReady() {
+  return Boolean(sb && sbUser);
+}
+
+/** Build (or rebuild) the client from whatever is in Settings. */
+function initSupabase() {
+  sb = null;
+  sbUser = null;
+  if (!cfg.supaUrl || !cfg.supaKey) return;
+  if (typeof supabase === 'undefined' || !supabase.createClient) return;
+
+  sb = supabase.createClient(cfg.supaUrl.trim().replace(/\/+$/, ''), cfg.supaKey.trim(), {
+    auth: { persistSession: true, autoRefreshToken: true, detectSessionInUrl: true }
+  });
+
+  sb.auth.getSession().then(function (res) {
+    adoptSession(res && res.data ? res.data.session : null);
+  });
+
+  // Covers the return trip from GitHub, and a token refreshing in the background.
+  sb.auth.onAuthStateChange(function (_event, session) {
+    adoptSession(session);
+  });
+}
+
+function adoptSession(session) {
+  var before = sbUser && sbUser.id;
+  sbUser = session ? session.user : null;
+  paintAccount();
+
+  if (!usingSupabase()) return;
+  if (sbUser && sbUser.id !== before) {
+    signInDlg.close();
+    watchLive();
+    refresh();
+  } else if (!sbUser) {
+    stopLive();
+    askSignIn();
+  }
+}
+
+/** Midnight this morning, where the device is, as an instant the database can
+ *  compare against. "Today" has to roll over where the user actually is. */
+function localDayStartIso() {
+  var d = new Date();
+  d.setHours(0, 0, 0, 0);
+  return d.toISOString();
+}
+
+function sbRow(r) {
+  return {
+    at: r.at, local: r.local_time || '', type: r.type,
+    raw_text: r.raw_text || '', project: r.project || '', detail: r.detail || ''
+  };
+}
+
+async function sbInsert(payload) {
+  var row = {
+    at: new Date().toISOString(),
+    local_time: humanLocal(),
+    tz: deviceTz(),
+    type: payload.type || 'work',
+    raw_text: String(payload.raw_text || ''),
+    project: String(payload.project || ''),
+    detail: String(payload.detail || ''),
+    rid: payload.rid || null
+  };
+
+  var res = await sb.from('events').insert(row);
+  if (res.error) {
+    /* 23505 is the unique index on (user_id, rid): this exact write already
+     * landed and only its answer was lost. That is a success, not a failure —
+     * it is the whole reason a retry is safe here. */
+    if (res.error.code === '23505') return { duplicate: true };
+    throw errorFrom(res.error);
+  }
+  return { duplicate: false };
+}
+
+function errorFrom(e) {
+  var err = new Error(e.message || 'request failed');
+  // A refusal from the database will refuse again; do not spend retries on it.
+  if (e.code && e.code !== 'PGRST301') err.fatal = true;
+  return err;
+}
+
+/** "Wed 27 Aug, 04:58 PM" — the same readable stamp the Sheet carried. */
+function humanLocal() {
+  try {
+    return new Date().toLocaleString(undefined, {
+      weekday: 'short', day: '2-digit', month: 'short',
+      hour: '2-digit', minute: '2-digit'
+    });
+  } catch (e) {
+    return '';
+  }
+}
+
+async function callSupabase(action, payload) {
+  if (!sb) throw new Error('Add your Supabase details in Settings.');
+  if (!sbUser) throw new Error('Sign in to keep logging.');
+  payload = payload || {};
+
+  if (action === 'ping') {
+    var p = await sb.from('events').select('id').limit(1);
+    if (p.error) throw errorFrom(p.error);
+    return { ok: true, pong: true, tz: deviceTz() };
+  }
+
+  if (action === 'today') {
+    var res = await sb.from('events').select('*')
+      .gte('at', localDayStartIso())
+      .order('at', { ascending: false })
+      .limit(1000);
+    if (res.error) throw errorFrom(res.error);
+
+    var rows = res.data || [];
+    var log = [];
+    var prayers = [];
+
+    rows.forEach(function (r) {
+      if (r.type === 'prayer') {
+        prayers.push({ at: r.at, local: r.local_time || '',
+                       prayer: r.project || '', mode: r.detail || '' });
+      } else {
+        log.push(sbRow(r));
+      }
+    });
+
+    return {
+      ok: true,
+      date: localDayStartIso().slice(0, 10),
+      log: log,
+      prayers: prayers,
+      m_count: log.filter(function (x) { return x.type === 'M'; }).length,
+      now: { text: '', updated: '' }
+    };
+  }
+
+  if (action === 'log') {
+    if (!String(payload.raw_text || '').trim() && payload.type !== 'M') {
+      var empty = new Error('empty_text');
+      empty.fatal = true;
+      throw empty;
+    }
+    await sbInsert(payload);
+    return { ok: true, type: payload.type || 'work', raw_text: payload.raw_text || '' };
+  }
+
+  if (action === 'm') {
+    await sbInsert({ type: 'M', raw_text: '', rid: payload.rid });
+    var c = await sb.from('events').select('id', { count: 'exact', head: true })
+      .eq('type', 'M').gte('at', localDayStartIso());
+    if (c.error) throw errorFrom(c.error);
+    return { ok: true, m_count: c.count || 0 };
+  }
+
+  if (action === 'prayer') {
+    var name = String(payload.prayer || '').trim();
+    var mode = String(payload.mode || '').trim();
+    if (PRAYER_NAMES.indexOf(name) === -1 || PRAYER_MODES.indexOf(mode) === -1) {
+      var bad = new Error('bad_prayer');
+      bad.fatal = true;
+      throw bad;
+    }
+    await sbInsert({ type: 'prayer', raw_text: name + ' · ' + mode,
+                     project: name, detail: mode, rid: payload.rid });
+    return { ok: true, prayer: name, mode: mode };
+  }
+
+  if (action === 'review') return { ok: true, stub: true, text: 'Review arrives in Stage 5.' };
+  if (action === 'now_get' || action === 'now_set') return { ok: true, now: { text: '', updated: '' } };
+
+  var unknown = new Error('unknown_action');
+  unknown.fatal = true;
+  throw unknown;
+}
 
 // ---------------------------------------------------------------------- api
 
@@ -163,6 +364,11 @@ var ANSWER_FIELD = {
 var REQUEST_TIMEOUT_MS = 9000;
 
 async function callBackend(action, payload) {
+  if (usingSupabase()) return callSupabase(action, payload);
+  return callAppsScript(action, payload);
+}
+
+async function callAppsScript(action, payload) {
   var ctrl = typeof AbortController === 'function' ? new AbortController() : null;
   var timer = ctrl ? setTimeout(function () { ctrl.abort(); }, REQUEST_TIMEOUT_MS) : 0;
 
@@ -313,6 +519,33 @@ function api(action, payload, opts) {
   );
   apiChain = run.then(function () {}, function () {});
   return run;
+}
+
+// -------------------------------------------------------------- live updates
+
+/* What polling was a stand-in for. The database tells us the moment a row
+ * appears — from this device or the other one — so the two stay in step without
+ * anybody pressing refresh, and without the guessing that let one device
+ * overwrite the other's break reasons.
+ *
+ * It still only triggers a reconcile rather than trusting the payload: the
+ * database is the truth, and one code path reading it is easier to keep honest
+ * than two. */
+var liveChannel = null;
+
+function watchLive() {
+  if (!sb || !sbUser || liveChannel) return;
+  liveChannel = sb.channel('probeing-events')
+    .on('postgres_changes',
+        { event: 'INSERT', schema: 'public', table: 'events' },
+        function () { scheduleRefresh(400); })
+    .subscribe();
+}
+
+function stopLive() {
+  if (!liveChannel) return;
+  try { sb.removeChannel(liveChannel); } catch (e) { /* already gone */ }
+  liveChannel = null;
 }
 
 // ------------------------------------------------------------------ helpers
@@ -500,6 +733,7 @@ var lastReconcileAt = 0;
  * keeps the 45s default; a 7s call stretches it to ~84s; a 30s call to six
  * minutes. The poll stands back exactly when standing back is what helps. */
 var lastCallMs = 0;
+var LIVE_HEARTBEAT_MS = 300000;      // 5 minutes, purely a dead-socket check
 var POLL_DUTY = 12;                  // never spend more than ~1/12th of the time polling
 
 function pollInterval() {
@@ -1788,11 +2022,88 @@ $('boardTab').addEventListener('click', function () {
   window.open(url, '_blank', 'noopener');
 });
 
+// ------------------------------------------------------------- signing in
+
+var signInDlg = $('signInDlg');
+var BACKENDS = [
+  { id: 'supabase', label: 'Supabase' },
+  { id: 'apps', label: 'Apps Script' }
+];
+
+function askSignIn() {
+  if (!usingSupabase() || signInDlg.open || dlg.open) return;
+  if (!cfg.supaUrl || !cfg.supaKey) return;      // nothing to sign in to yet
+  $('signInMsg').textContent = '';
+  signInDlg.showModal();
+}
+
+$('githubBtn').addEventListener('click', async function () {
+  if (!sb) { $('signInMsg').textContent = 'Add your Supabase details in Settings first.'; return; }
+  $('signInMsg').textContent = 'Opening GitHub…';
+  try {
+    // Come back to this exact page, so an installed app returns where it left.
+    var back = location.origin + location.pathname;
+    var res = await sb.auth.signInWithOAuth({
+      provider: 'github', options: { redirectTo: back }
+    });
+    if (res.error) throw res.error;
+  } catch (err) {
+    $('signInMsg').textContent = String(err.message || err);
+  }
+});
+
+/** Who is signed in, shown in Settings. */
+function paintAccount() {
+  var who = $('supaWho');
+  if (!who) return;
+  if (!cfg.supaUrl || !cfg.supaKey) {
+    who.textContent = 'Not connected yet.';
+  } else if (sbUser) {
+    var name = (sbUser.user_metadata && (sbUser.user_metadata.user_name ||
+                sbUser.user_metadata.preferred_username)) || sbUser.email || 'your account';
+    who.textContent = 'Signed in as ' + name + '.';
+  } else {
+    who.textContent = 'Not signed in.';
+  }
+  $('signOutBtn').hidden = !sbUser;
+}
+
+$('signOutBtn').addEventListener('click', async function () {
+  if (!sb) return;
+  stopLive();
+  try { await sb.auth.signOut(); } catch (e) { /* already gone */ }
+  dlg.close();
+  flash('Signed out', 'ok');
+});
+
 // ----------------------------------------------------------------- settings
 
 var dlg = $('settingsDlg');
 
+function renderBackendPick() {
+  var box = $('backendPick');
+  box.textContent = '';
+  BACKENDS.forEach(function (b) {
+    box.appendChild(pickButton(b.label, (cfg.backend || 'apps') === b.id, false, function () {
+      cfg.backend = b.id;
+      renderBackendPick();
+      paintBackendFields();
+    }));
+  });
+}
+
+function paintBackendFields() {
+  var supa = (cfg.backend || 'apps') === 'supabase';
+  $('supaFields').hidden = !supa;
+  $('appsFields').hidden = supa;
+  paintAccount();
+}
+
 $('settingsBtn').addEventListener('click', function () {
+  renderBackendPick();
+  paintBackendFields();
+  $('supaUrl').value = cfg.supaUrl || '';
+  $('supaKey').value = cfg.supaKey || '';
   $('apiUrl').value = cfg.apiUrl || '';
   $('token').value = cfg.token || '';
   $('boardUrl').value = cfg.boardUrl || '';
@@ -1804,6 +2115,18 @@ $('settingsBtn').addEventListener('click', function () {
 $('cancelBtn').addEventListener('click', function () { dlg.close(); });
 
 $('testBtn').addEventListener('click', async function () {
+  if ((cfg.backend || 'apps') === 'supabase') {
+    if (!sbUser) { $('testResult').textContent = 'Sign in first.'; return; }
+    $('testResult').textContent = 'Testing…';
+    try {
+      await api('ping');
+      $('testResult').textContent = '✅ Connected.';
+    } catch (err) {
+      $('testResult').textContent = '❌ ' + (err.message || err);
+    }
+    return;
+  }
+
   var probe = { apiUrl: $('apiUrl').value.trim(), token: $('token').value.trim() };
   if (!probe.apiUrl || !probe.token) {
     $('testResult').textContent = 'Fill both fields first.';
@@ -1833,22 +2156,40 @@ $('saveBtn').addEventListener('click', function () {
   }
 
   var next = {
+    backend: cfg.backend || 'apps',
+    supaUrl: $('supaUrl').value.trim(),
+    supaKey: $('supaKey').value.trim(),
     apiUrl: $('apiUrl').value.trim(),
     token: $('token').value.trim(),
     boardUrl: safeBoardUrl(typedBoard),
     // Device-local on purpose: the chip list does not sync between phone and laptop.
     chips: (parseChips($('chipsInput').value).join(', ')) || DEFAULT_CHIPS.join(', ')
   };
-  if (!next.apiUrl || !next.token) {
+  if (next.backend === 'supabase') {
+    if (!next.supaUrl || !next.supaKey) {
+      $('testResult').textContent = 'Fill in the Supabase URL and key first.';
+      return;
+    }
+  } else if (!next.apiUrl || !next.token) {
     $('testResult').textContent = 'Fill both fields first.';
     return;
   }
+
+  var switched = next.backend !== cfg.backend ||
+                 next.supaUrl !== cfg.supaUrl || next.supaKey !== cfg.supaKey;
   cfg = next;
   saveConfig(cfg);
   renderChips();
   dlg.close();
   flash('Saved', 'ok');
-  refresh();
+
+  if (switched) {
+    stopLive();
+    lastLog = [];
+    todayPrayers = [];
+    initSupabase();
+  }
+  if (usingSupabase() && !sbUser) askSignIn(); else refresh();
 });
 
 // -------------------------------------------------------------------- boot
@@ -1871,7 +2212,10 @@ var lastVisibleRefresh = 0;
 setInterval(function () {
   if (document.visibilityState !== 'visible') return;
   if (inFlight > 0 || !isConfigured()) return;
-  if (Date.now() - lastReconcileAt < pollInterval()) return;
+  // A live subscription makes polling redundant; keep a slow heartbeat only, in
+  // case the socket has quietly died.
+  var every = liveChannel ? LIVE_HEARTBEAT_MS : pollInterval();
+  if (Date.now() - lastReconcileAt < every) return;
   // One attempt only. A poll that retried three times against a 9s timeout was
   // the other half of the amplification — the client gives up, but Apps Script
   // still runs every one of them to completion, holding its lock.
@@ -1886,9 +2230,14 @@ document.addEventListener('visibilitychange', function () {
   refresh();
 });
 
+initSupabase();
 renderPrayerTicks();
 renderProject();
 renderDaySummary();
 lastVisibleRefresh = Date.now();     // the boot reconcile counts as the first one
 refresh();
-if (!isConfigured()) dlg.showModal();
+if (usingSupabase()) {
+  if (!cfg.supaUrl || !cfg.supaKey) dlg.showModal();
+} else if (!isConfigured()) {
+  dlg.showModal();
+}

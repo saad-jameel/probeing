@@ -5,12 +5,13 @@
  * Stage 7 and will use a localStorage queue, not this cache.
  */
 
-var CACHE = 'probeing-shell-v2';
+var CACHE = 'probeing-shell-v3';
 var SHELL = [
   './',
   'index.html',
   'styles.css',
   'app.js',
+  'vendor/supabase.js',
   'manifest.webmanifest',
   'icons/icon-192.png',
   'icons/icon-512.png'

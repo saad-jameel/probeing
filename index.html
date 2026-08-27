@@ -225,16 +225,51 @@
   </form>
 </dialog>
 
+<dialog id="signInDlg" class="dlg">
+  <form method="dialog">
+    <h2>Sign in</h2>
+    <p class="hint">Once per device. Your log is yours &mdash; nobody else can read it, including anyone holding the app&rsquo;s public key.</p>
+
+    <div class="dlg-actions" style="justify-content: stretch">
+      <button type="button" id="githubBtn" class="btn btn-accent btn-wide">Continue with GitHub</button>
+    </div>
+    <p id="signInMsg" class="hint"></p>
+  </form>
+</dialog>
+
 <dialog id="settingsDlg" class="dlg">
   <form method="dialog" id="settingsForm">
     <h2>Settings</h2>
     <p class="hint">Stored only on this device, never in the code repo. Enter these once per device.</p>
 
+    <label for="backendPick">Where the data lives</label>
+    <div id="backendPick" class="pick-grid"></div>
+    <p class="hint">Supabase is fast and syncs both devices live. Apps Script is the old
+      backend, kept so you can fall back if anything misbehaves.</p>
+
+    <div id="supaFields">
+      <label for="supaUrl">Supabase project URL</label>
+      <input id="supaUrl" type="url" placeholder="https://xxxx.supabase.co">
+
+      <label for="supaKey">Supabase anon key</label>
+      <input id="supaKey" type="text" placeholder="eyJ...">
+      <p class="hint">Both are safe to store here &mdash; they are meant to be public. What
+        protects your rows is the sign-in and the database&rsquo;s own rules.</p>
+
+      <p id="supaWho" class="hint"></p>
+      <div class="dlg-actions" style="justify-content: flex-start">
+        <button type="button" id="signOutBtn" class="link-btn">Sign out</button>
+      </div>
+    </div>
+
+    <div id="appsFields">
     <label for="apiUrl">Apps Script Web App URL</label>
     <input id="apiUrl" type="url" placeholder="https://script.google.com/macros/s/.../exec" required>
 
     <label for="token">Secret token</label>
     <input id="token" type="password" placeholder="your TOKEN script property" required>
+
+    </div>
 
     <label for="boardUrl">Taskboard link (optional)</label>
     <input id="boardUrl" type="url" placeholder="https://trello.com/b/... or any board you use">
@@ -253,6 +288,9 @@
   </form>
 </dialog>
 
+<!-- Vendored, not from a CDN: no build step, and no third party whose outage
+     takes the app down. See vendor/README.md for how it was verified. -->
+<script src="vendor/supabase.js"></script>
 <script src="app.js"></script>
 </body>
 </html>
