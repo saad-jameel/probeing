@@ -32,7 +32,7 @@ and Sheets without building any OAuth flow.
 > | 🟡 | 4 Tracker + Voice | ~25% — the text box works, voice and Gemini do not exist |
 > | ⬜ | 5 Review Button | shell only; the hard maths is written but only reads *today* |
 > | ⬜ | 6 Weekly & Monthly Reports | not started, and has **nowhere to store a report** yet |
-> | ⬜ | 7 Offline + Notifications | not started — this is where the 11:30 PM wrapup lives |
+> | ⬜ | 7 Notifications + wrapup + offline | not started — **the 11:30 PM rules and the home-screen glance are written out in full here** |
 > | ⬜ | 8 Native wrapper | not started, correctly deferred |
 >
 > **The plan was not followed, and that was mostly right.** A great deal was built
@@ -248,24 +248,91 @@ and prayer breakdown exactly match a manual count of the raw rows (spot-check ho
 
 ---
 
-## ⬜ Stage 7 — Polish: Offline + Notifications — NOT STARTED
+## ⬜ Stage 7 — Notifications, the daily wrapup, and offline — NOT STARTED
 
-> **This is where the 11:30 PM daily wrapup lives** — see `docs/Review_Spec.md`
-> and the rules captured separately: compile after 9 PM, or hold until 11:30;
-> notify with a Yes button; close the day effective 11:30 if unanswered.
-> A real lock-screen notification needs Web Push, which Apps Script could not do
-> and Supabase Edge Functions can.
+Rewritten 27 Aug from three requirements Saad gave verbatim and asked to have
+recorded, because he expected to forget them. They are reproduced here in full;
+this is the stage where they get built.
 
-**Start:** works online only. **Work:**
-1. Offline queue: if a log fails (no internet), keep it in localStorage and retry on
-   reconnect — logging must never be lost.
-2. Optional gentle nudges: Apps Script sends you an email, or (fancier) web push — skip
-   push if it drags; the app is open-when-you-need-it by design.
-
-**End goal (validation):** Airplane mode → press M and log a status → reconnect → both rows
-appear in the Sheet with their original timestamps.
+**Everything here needs Web Push, and Web Push is now easy.** It used to need
+Firebase, because Apps Script cannot sign a VAPID token — its crypto library does
+RSA and HMAC, and VAPID needs ES256. That constraint died with the Supabase move:
+Edge Functions run Deno, whose Web Crypto signs P-256 natively. So this needs **no
+Firebase and no third party**: a VAPID key pair in Supabase secrets, a
+`push_subscriptions` table, one Edge Function to send, and `pg_cron` to schedule.
 
 ---
+
+### 7a — The daily wrapup
+
+**Compiling the day** — prayers offered, projects worked on, progress against goals:
+
+- Day ended **after 9 PM** → compile immediately.
+- Day ended **before 9 PM** → do **not** compile until 11:30 PM. He might start
+  working again, and a report written at 6 PM would be wrong by bedtime.
+
+**If the day is still open at 11:30 PM:**
+
+1. **11:30 PM** — notify: *"are you awake?"*, with a **Yes** button and nothing else.
+2. Wait **one hour** for an answer.
+3. **Answered** → ask again at **01:00 AM**, same one-hour rule.
+4. **Not answered** → close the day and set sleep status, **effective from the time
+   the notification was sent** (11:30 PM) — *not* from when the timeout expired.
+
+That last point is the subtle one and the easiest to get wrong. If he did not answer
+at 11:30, he was asleep at 11:30; recording the day as ending at 00:30 would add an
+hour of phantom wakefulness to every unanswered night.
+
+**It must be a real notification, answerable from the lock screen.** Explicitly not an
+in-app banner, explicitly not email — asked and confirmed twice. An in-app banner
+fails the actual requirement, because the app is closed when he is asleep, which is
+precisely when this fires.
+
+**Depends on:** Stage 3.5 (a wrapup that reads a range must read a whole one), and a
+Gemini key if the compiled summary is to be prose rather than figures.
+
+---
+
+### 7b — The home-screen glance
+
+He wants, without opening the app: **Working on** (from Home) and **Today so far**
+(from the Today tab).
+
+**The honest constraint, which he has not yet ruled on.** A PWA *cannot* place a
+widget on an Android home screen. The manifest's `widgets` member is Windows-only;
+on a Pixel there is no supported path from an installed web app. So there are two
+real options, and they are very different sizes:
+
+| | What it is | Cost |
+|---|---|---|
+| **Ongoing notification** | A sticky notification the service worker keeps updated. Sits in the shade and on the lock screen, shows both figures. | Small — rides on 7a's push work |
+| **A true home-screen widget** | Needs a native wrapper (TWA / Bubblewrap) and an Android widget provider. | Large — this is Stage 8 territory |
+
+**Ask before building.** The two are not substitutes for each other and only he can
+say which he meant.
+
+---
+
+### 7c — Offline logging
+
+From the original plan, unchanged and still wanted: keep failed logs in a queue and
+retry on reconnect, so a log made in airplane mode lands with its **original**
+timestamp once signal returns.
+
+Note this got easier too: writes already carry a `rid`, and the unique index makes a
+replayed write a no-op. The queue can retry as bluntly as it likes without
+duplicating anything.
+
+**End goal (validation)**
+- Airplane mode → press M and log a status → reconnect → both rows appear, with the
+  timestamps from when they were pressed.
+- A day left open at 11:30 PM produces a notification with a Yes button, on the lock
+  screen, with the phone's screen off.
+- Ignoring that notification closes the day at **23:30**, not at 00:30.
+- Answering it produces a second notification at 01:00, and no report until that one
+  resolves.
+- A day ended at 6 PM produces no report until 11:30 PM.
+- A day ended at 10 PM produces its report immediately.
 
 ## ⬜ Stage 8 (Optional) — Native Wrapper — NOT STARTED, correctly deferred
 **The honest scope:** a custom always-listening "ProBeing" hotword on a locked phone is
@@ -282,11 +349,31 @@ OS-assistant territory; not buildable solo for free. The achievable versions:
 ---
 
 ## Stage Order & Dependencies
+
+Updated 27 Aug. The original order assumed one backend and no user accounts; both
+turned out to be wrong, so this is what actually blocks what.
+
 ```
-0 → 1 → 2 → 3 → 4 → 5 → 6 → 7 → (8 optional)
+  3.5 Finish the move ─┬─► 5 Review ──► 6 Reports
+   (import + Gemini    │
+    key + Edge Fn)     └─► 7a Wrapup ──► 7b Glance (if "notification")
+                                              │
+   4 Voice ─────────────(independent)         └─► 8 Native wrapper (if "real widget")
+
+   7c Offline ──────────(independent)
 ```
-Each stage leaves the app usable. After Stage 3 you already have your two mandatory
-buttons working with sync; everything after adds intelligence.
+
+**Why 3.5 gates so much:** Stages 5, 6 and 7a all read a *date range*. Built before
+the history is in one place, each would report on half the data — and look correct
+doing it, because a real number would come back.
+
+**Why the Edge Function is in 3.5 rather than 5:** the Gemini key cannot ship to the
+browser in a public repo, so it needs a server-side home. That home is one Edge
+Function, and it is the same one `pg_cron` calls at 11:30 PM. Building it once
+unblocks 5, 6 and 7a together.
+
+**What is genuinely independent:** voice input (Stage 4) touches nothing else, and
+offline logging (7c) only needs the `rid` scheme, which already exists.
 
 ## Voice Agent Recommendation (your question, answered plainly)
 - **Mobile:** no extra agent needed — in-app Web Speech API + Gboard mic cover it. Wispr
