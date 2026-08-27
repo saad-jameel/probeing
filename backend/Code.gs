@@ -164,7 +164,7 @@ var ACTIONS = {
     if (!raw) return { ok: false, error: 'empty_text' };
 
     var d = new Date();
-    sheet(SHEETS.LOG).appendRow([
+    appendText(SHEETS.LOG, [
       iso(d), human(d), type, raw, b.project || '', b.detail || ''
     ]);
     return { ok: true, type: type, raw_text: raw, at: iso(d) };
@@ -173,7 +173,7 @@ var ACTIONS = {
   /** The red M button. Records only that it happened, and when. */
   m: function () {
     var d = new Date();
-    sheet(SHEETS.LOG).appendRow([iso(d), human(d), 'M', '', '', '']);
+    appendText(SHEETS.LOG, [iso(d), human(d), 'M', '', '', '']);
     return { ok: true, at: iso(d), m_count: countTodayType('M') };
   },
 
@@ -184,7 +184,7 @@ var ACTIONS = {
     if (PRAYER_MODES.indexOf(mode) === -1) return { ok: false, error: 'bad_mode', got: mode };
 
     var d = new Date();
-    sheet(SHEETS.PRAYERS).appendRow([iso(d), human(d), dateKey(d), name, mode]);
+    appendText(SHEETS.PRAYERS, [iso(d), human(d), dateKey(d), name, mode]);
     return { ok: true, prayer: name, mode: mode, at: iso(d) };
   },
 
@@ -248,6 +248,25 @@ function checkToken(given) {
     mismatch |= (g.charCodeAt(i) ^ expected.charCodeAt(i));
   }
   return mismatch === 0;
+}
+
+/**
+ * Append a row WITHOUT letting Google Sheets interpret it.
+ *
+ * appendRow parses each value, so a cell beginning with = + - or @ becomes a
+ * formula. "+ Tea" was stored as #NAME? — Sheets saying there is no function
+ * called Tea — and the text was gone for good. Anything the user types can hit
+ * this: "+1 on the PR", "-- rewrite the parser", "=> ship it".
+ *
+ * Formatting the range as text BEFORE writing makes Sheets store the literal
+ * string. Safe under the write lock, which is the only place this is called
+ * from, so getLastRow() cannot move underneath it.
+ */
+function appendText(name, values) {
+  var sh = sheet(name);
+  var range = sh.getRange(sh.getLastRow() + 1, 1, 1, values.length);
+  range.setNumberFormat('@');
+  range.setValues([values]);
 }
 
 function sheet(name) {

@@ -49,18 +49,38 @@ var REASON_SEP = ' + ';
  * A row with no sign is still read as the whole set, so every row written
  * before this change still replays correctly.
  */
-function parseBreakOp(text) {
+function parseBreakOp(text, detail) {
+  var d = String(detail || '').trim();
+  if (d === 'add' || d === 'drop') return { op: d, names: parseReasons(text) };
+
+  /* Rows written on 27 Aug carried the sign in the text itself — which Google
+   * Sheets ate, because a cell starting with + or - is a FORMULA. "+ Tea"
+   * became #NAME?, Sheets saying there is no function called Tea. The operation
+   * lives in its own column now; this reads the handful written before that. */
   var t = String(text || '').trim();
   if (t.charAt(0) === '+') return { op: 'add', names: parseReasons(t.slice(1)) };
   if (t.charAt(0) === '-') return { op: 'drop', names: parseReasons(t.slice(1)) };
+
+  /* A cell Sheets turned into an error says nothing about which reasons apply,
+   * so it must not be read as "clear them all" — the row was a real break, and
+   * the ones already running should survive it. Reading these as `set` would
+   * mean the #NAME? rows sitting in the Sheet right now silently wipe the
+   * reason you are on every time the day replays. */
+  if (isSheetError(t)) return { op: 'keep', names: [] };
+
   return { op: 'set', names: parseReasons(t) };
+}
+
+/** Anything Sheets produced rather than the user: #NAME?, #REF!, #VALUE! … */
+function isSheetError(name) {
+  return name.charAt(0) === '#';
 }
 
 function parseReasons(text) {
   return String(text || '').split('+').map(function (x) {
     return x.trim();
   }).filter(function (x) {
-    return x && x !== PLAIN_BREAK;
+    return x && x !== PLAIN_BREAK && !isSheetError(x);
   });
 }
 
@@ -439,10 +459,10 @@ function localIso(d) {
  *
  * Rows go in newest-first, matching today(), because replayDay() breaks
  * same-second ties on that order. */
-function noteLocalRow(type, text, project) {
+function noteLocalRow(type, text, project, detail) {
   lastLog.unshift({
     at: localIso(), local: '', type: type,
-    raw_text: text || '', project: project || '', detail: ''
+    raw_text: text || '', project: project || '', detail: detail || ''
   });
   renderProject();
   renderDaySummary();
@@ -763,11 +783,13 @@ function replayDay(log) {
        * a break — that was a real bug, and `underWay` is the guard. */
       if (underWay) {
         clock = false;
-        var move = parseBreakOp(text);
+        var move = parseBreakOp(text, row.detail);
         if (move.op === 'set') reasons = {};
-        move.names.forEach(function (r) {
-          if (move.op === 'drop') delete reasons[r]; else reasons[r] = 1;
-        });
+        if (move.op !== 'keep') {
+          move.names.forEach(function (r) {
+            if (move.op === 'drop') delete reasons[r]; else reasons[r] = 1;
+          });
+        }
       }
     } else if (row.type === 'off' || row.type === 'sleep') {
       // The day being over is not "on break": nothing accrues after it.
@@ -1386,8 +1408,8 @@ function absorbChipStats(log) {
 
     // A row can name several reasons at once; each one earns its own tick.
     // Only a start counts — removing a reason is not using it again.
-    var move = parseBreakOp(row.raw_text);
-    if (move.op === 'drop') return;
+    var move = parseBreakOp(row.raw_text, row.detail);
+    if (move.op === 'drop' || move.op === 'keep') return;
     move.names.forEach(function (label) {
       if (!known[label]) return;
       var rec = chipStats.items[label] || { n: 0, last: 0 };
@@ -1529,17 +1551,19 @@ function logChip(btn, label) {
   var now = replayDay(lastLog).activeReasons;
   var adding = now.indexOf(label) === -1;
 
-  // A delta, so two devices adding different reasons merge instead of racing.
-  var text = (adding ? '+ ' : '- ') + label;
+  /* A delta, so two devices adding different reasons merge instead of racing.
+   * It goes in the `detail` column, NOT the text: a cell beginning with + or -
+   * is a formula to Google Sheets, and "+ Tea" was being stored as #NAME?. */
+  var op = adding ? 'add' : 'drop';
 
   var undo = beginToggleWrite();
   setToggle('work', 'break');
   // Not fed to the chip tally here — the reconcile brings the row back and
   // absorbChipStats() counts it exactly once, from the Sheet.
-  noteLocalRow('break', text);
+  noteLocalRow('break', label, '', op);
   confirmPulse(btn);
   flash(adding ? label + ' — on a break' : label + ' — done', 'ok');
-  runWrites([{ type: 'break', raw_text: text }], undo);
+  runWrites([{ type: 'break', raw_text: label, detail: op }], undo);
 }
 
 renderChips();
