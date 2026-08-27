@@ -204,6 +204,10 @@ body {
   font-size: 14px; cursor: pointer;
 }
 .chip:active { transform: scale(.97); }
+/* The chip you are currently on a break for. */
+.chip.on { background: var(--accent); color: var(--accent-ink); border-color: transparent; font-weight: 600; }
+.chip-add { color: var(--muted); font-weight: 700; padding: 8px 15px; }
+.chip-add:hover { color: var(--fg); }
 .chip[disabled] { opacity: .55; cursor: default; }
 
 /* ----------------------------------------------------------------- cards */
@@ -235,6 +239,7 @@ body {
 .sum-projects { list-style: none; margin: 14px 0 0; padding: 12px 0 0; display: grid; gap: 7px;
   border-top: 1px solid var(--line); }
 .sum-projects:empty { display: none; }
+.sum-projects .p-why { color: var(--muted); }
 .sum-projects li { display: flex; gap: 12px; justify-content: space-between; font-size: 14.5px; }
 .sum-projects .p-name { min-width: 0; overflow-wrap: anywhere; }
 .sum-projects .p-time { color: var(--accent); white-space: nowrap; font-variant-numeric: tabular-nums; }

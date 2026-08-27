@@ -87,8 +87,9 @@
     </button>
   </div>
 
-  <!-- One tap = one status row. No confirmation dialog: that is the point. -->
-  <div id="chipRow" class="chips" aria-label="Quick status"></div>
+  <!-- One tap = you are on a break, and the chip says what for. No dialog:
+       that is the point. The + at the end adds a new reason. -->
+  <div id="chipRow" class="chips" aria-label="Step away for"></div>
 
   <!-- Point 6: the project you are on, and how long today. Survives a break. -->
   <section class="card">
@@ -193,6 +194,36 @@
   </form>
 </dialog>
 
+<dialog id="statusDlg" class="dlg">
+  <form method="dialog">
+    <h2>Add a break reason</h2>
+    <p class="hint">It joins the row on Home. Tapping it starts a break, and the time counts against this name until you press Work.</p>
+
+    <label for="statusName">Name</label>
+    <input id="statusName" type="text" placeholder="Gym" maxlength="30">
+
+    <div class="dlg-actions">
+      <button type="button" id="statusCancelBtn" class="link-btn">Cancel</button>
+      <button type="button" id="statusSaveBtn" class="btn btn-accent">Add</button>
+    </div>
+  </form>
+</dialog>
+
+<dialog id="projectDlg" class="dlg">
+  <form method="dialog">
+    <h2>What are you working on?</h2>
+    <p class="hint">Nothing is logged for today yet, so there is no project to carry on with. Name it and the clock has something to count against.</p>
+
+    <label for="projectName">Project or task</label>
+    <input id="projectName" type="text" placeholder="OneNet PKI certs" maxlength="120">
+
+    <div class="dlg-actions">
+      <button type="button" id="projectSkipBtn" class="link-btn">Skip</button>
+      <button type="button" id="projectSaveBtn" class="btn btn-accent">Start</button>
+    </div>
+  </form>
+</dialog>
+
 <dialog id="settingsDlg" class="dlg">
   <form method="dialog" id="settingsForm">
     <h2>Settings</h2>
@@ -208,9 +239,9 @@
     <input id="boardUrl" type="url" placeholder="https://trello.com/b/... or any board you use">
     <p class="hint">The fourth tab opens this in your browser. Any board works &mdash; Trello, Notion, Jira, Google Tasks. Left empty, the tab tells you to set it.</p>
 
-    <label for="chipsInput">Quick-status chips (comma separated)</label>
-    <input id="chipsInput" type="text" placeholder="Tea, Lunch, Prayer-break, PUBG">
-    <p class="hint">Stored on this device only, so each device has its own list. The comma is the separator, so a chip label cannot contain one. This list decides which chips exist; the order re-sorts itself so the ones you tap most sit first.</p>
+    <label for="chipsInput">Break reasons (comma separated)</label>
+    <input id="chipsInput" type="text" placeholder="Prayer-break, Lunch, Coffee">
+    <p class="hint">Stored on this device only, so each device has its own list. The comma is the separator, so a name cannot contain one. This list decides which reasons exist; the order re-sorts itself so the ones you use most sit first. The + on Home adds to it.</p>
 
     <div class="dlg-actions">
       <button type="button" id="testBtn" class="btn">Test</button>
