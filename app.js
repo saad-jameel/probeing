@@ -36,6 +36,26 @@ var PLAIN_BREAK = 'Break';
  * they are added, so this can never be ambiguous. */
 var REASON_SEP = ' + ';
 
+/**
+ * What a break row DOES to the current set of reasons.
+ *
+ * Posting the resulting list was a mistake: a device working from a view even a
+ * few seconds old overwrites what the other one added. Press Dinner on the
+ * laptop, then Tea on a phone that has not caught up, and the phone writes
+ * "Tea" — erasing Dinner, permanently, with nothing on screen to say so.
+ *
+ * A delta cannot do that. "+ Tea" and "+ Dinner" from two devices merge no
+ * matter what order they land in or what either device believed at the time.
+ * A row with no sign is still read as the whole set, so every row written
+ * before this change still replays correctly.
+ */
+function parseBreakOp(text) {
+  var t = String(text || '').trim();
+  if (t.charAt(0) === '+') return { op: 'add', names: parseReasons(t.slice(1)) };
+  if (t.charAt(0) === '-') return { op: 'drop', names: parseReasons(t.slice(1)) };
+  return { op: 'set', names: parseReasons(t) };
+}
+
 function parseReasons(text) {
   return String(text || '').split('+').map(function (x) {
     return x.trim();
@@ -217,9 +237,10 @@ function newRid() {
 
 function wait(ms) { return new Promise(function (r) { setTimeout(r, ms); }); }
 
-async function attemptCall(action, payload) {
+async function attemptCall(action, payload, opts) {
   var last;
   var tries = (IDEMPOTENT[action] || backendDedupes) ? MAX_TRIES : 1;
+  if (opts && opts.tries) tries = Math.min(tries, opts.tries);
 
   for (var i = 0; i < tries; i++) {
     try {
@@ -236,11 +257,16 @@ async function attemptCall(action, payload) {
 
 var inFlight = 0;
 
-async function trackedCall(action, payload) {
-  inFlight += 1;
-  setConn('busy');
+async function trackedCall(action, payload, opts) {
+  /* Both lines inside the try: if setConn ever threw, the finally would not run,
+   * inFlight would leak upward for the session, and the poll — which refuses to
+   * fire while anything is in flight — would be silently dead forever. */
+  var startedAt = Date.now();
   try {
-    var data = await attemptCall(action, payload);
+    inFlight += 1;
+    setConn('busy');
+    var data = await attemptCall(action, payload, opts);
+    lastCallMs = Date.now() - startedAt;
     setConn('ok');
     return data;
   } catch (err) {
@@ -252,7 +278,7 @@ async function trackedCall(action, payload) {
 }
 
 /** Call the backend. Serialised — see the note above. */
-function api(action, payload) {
+function api(action, payload, opts) {
   if (!isConfigured()) return Promise.reject(new Error('Not configured — open Settings.'));
 
   // One rid per logical write, fixed before the first attempt so every retry
@@ -262,8 +288,8 @@ function api(action, payload) {
   }
 
   var run = apiChain.then(
-    function () { return trackedCall(action, payload); },
-    function () { return trackedCall(action, payload); }   // a failure must not wedge the queue
+    function () { return trackedCall(action, payload, opts); },
+    function () { return trackedCall(action, payload, opts); }  // a failure must not wedge the queue
   );
   apiChain = run.then(function () {}, function () {});
   return run;
@@ -443,6 +469,23 @@ var FAILED_WRITE_REFRESH_MS = 4000;
 var POLL_MS = 45000;
 var lastReconcileAt = 0;
 
+/* THE POLL MUST NOT MAKE THINGS WORSE.
+ *
+ * Measured: against a backend answering in 20-30s, a fixed 45s poll turns one
+ * request an hour into 239, and a single idle device then demands more than the
+ * whole available lock-hour — so the other device's taps queue behind it. That
+ * is a route to the very 404 bursts the rest of this file exists to survive.
+ *
+ * So the interval tracks how slow the backend actually is. A healthy 1.7s call
+ * keeps the 45s default; a 7s call stretches it to ~84s; a 30s call to six
+ * minutes. The poll stands back exactly when standing back is what helps. */
+var lastCallMs = 0;
+var POLL_DUTY = 12;                  // never spend more than ~1/12th of the time polling
+
+function pollInterval() {
+  return Math.max(POLL_MS, Math.round(lastCallMs * POLL_DUTY));
+}
+
 /**
  * A write failed. Say so — and reconcile shortly after, because this is the
  * other half of the no-retry decision above.
@@ -589,12 +632,13 @@ function renderLogList() {
 async function refresh(opts) {
   clearTimeout(refreshTimer);
   lastReconcileAt = Date.now();
+  lastVisibleRefresh = Date.now();      // one shared clock, so the two paths cannot double up
   if (!isConfigured()) {
     showEmpty('Open Settings to connect.');
     return;
   }
   try {
-    renderToday(await api('today'));
+    renderToday(await api('today', null, opts));
     if (opts && opts.announce) flash('Up to date', 'ok');
   } catch (err) {
     flash(String(err.message || err), 'err');
@@ -719,8 +763,11 @@ function replayDay(log) {
        * a break — that was a real bug, and `underWay` is the guard. */
       if (underWay) {
         clock = false;
-        reasons = {};
-        parseReasons(text).forEach(function (r) { reasons[r] = 1; });
+        var move = parseBreakOp(text);
+        if (move.op === 'set') reasons = {};
+        move.names.forEach(function (r) {
+          if (move.op === 'drop') delete reasons[r]; else reasons[r] = 1;
+        });
       }
     } else if (row.type === 'off' || row.type === 'sleep') {
       // The day being over is not "on break": nothing accrues after it.
@@ -1338,7 +1385,10 @@ function absorbChipStats(log) {
     if (isNaN(t) || t <= chipStats.seen) return;
 
     // A row can name several reasons at once; each one earns its own tick.
-    parseReasons(row.raw_text).forEach(function (label) {
+    // Only a start counts — removing a reason is not using it again.
+    var move = parseBreakOp(row.raw_text);
+    if (move.op === 'drop') return;
+    move.names.forEach(function (label) {
       if (!known[label]) return;
       var rec = chipStats.items[label] || { n: 0, last: 0 };
       rec.n += 1;
@@ -1477,11 +1527,10 @@ function logChip(btn, label) {
   chipFreezeUntil = Date.now() + CHIP_FREEZE_MS;   // set before the write, not after
 
   var now = replayDay(lastLog).activeReasons;
-  var next = now.filter(function (r) { return r !== label; });
-  var adding = next.length === now.length;
-  if (adding) next.push(label);
+  var adding = now.indexOf(label) === -1;
 
-  var text = next.length ? next.join(REASON_SEP) : PLAIN_BREAK;
+  // A delta, so two devices adding different reasons merge instead of racing.
+  var text = (adding ? '+ ' : '- ') + label;
 
   var undo = beginToggleWrite();
   setToggle('work', 'break');
@@ -1489,7 +1538,7 @@ function logChip(btn, label) {
   // absorbChipStats() counts it exactly once, from the Sheet.
   noteLocalRow('break', text);
   confirmPulse(btn);
-  flash(adding ? text + ' — on a break' : (next.length ? text : 'On a break'), 'ok');
+  flash(adding ? label + ' — on a break' : label + ' — done', 'ok');
   runWrites([{ type: 'break', raw_text: text }], undo);
 }
 
@@ -1798,8 +1847,11 @@ var lastVisibleRefresh = 0;
 setInterval(function () {
   if (document.visibilityState !== 'visible') return;
   if (inFlight > 0 || !isConfigured()) return;
-  if (Date.now() - lastReconcileAt < POLL_MS) return;
-  refresh();
+  if (Date.now() - lastReconcileAt < pollInterval()) return;
+  // One attempt only. A poll that retried three times against a 9s timeout was
+  // the other half of the amplification — the client gives up, but Apps Script
+  // still runs every one of them to completion, holding its lock.
+  refresh({ tries: 1 });
 }, 5000);
 
 document.addEventListener('visibilitychange', function () {
