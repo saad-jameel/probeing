@@ -257,6 +257,14 @@
         protects your rows is the sign-in and the database&rsquo;s own rules.</p>
 
       <p id="supaWho" class="hint"></p>
+
+      <label for="importFile">Bring the old Sheet across</label>
+      <input id="importFile" type="file" accept=".csv,text/csv" multiple>
+      <p class="hint">Download each tab of the Sheet as CSV (File &rarr; Download &rarr;
+        Comma-separated values) and pick them here. Rows already imported are skipped, so
+        running it twice is safe.</p>
+      <p id="importMsg" class="hint"></p>
+
       <div class="dlg-actions" style="justify-content: flex-start">
         <button type="button" id="signOutBtn" class="link-btn">Sign out</button>
       </div>

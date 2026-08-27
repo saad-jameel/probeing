@@ -2076,6 +2076,131 @@ $('signOutBtn').addEventListener('click', async function () {
   flash('Signed out', 'ok');
 });
 
+// ------------------------------------------------- bringing the Sheet across
+
+/* A one-time import, done from inside the app because that is where the
+ * signed-in session already is — a standalone script would have to reproduce
+ * the whole OAuth dance to write rows that belong to you.
+ *
+ * Every row gets a `rid` derived from its own contents, so the unique index
+ * does the deduplicating: import the same file twice, or overlapping exports,
+ * and the second attempt is refused rather than doubling your history. */
+
+function splitCsv(text) {
+  var rows = [];
+  var row = [];
+  var field = '';
+  var quoted = false;
+
+  for (var i = 0; i < text.length; i++) {
+    var c = text.charAt(i);
+
+    if (quoted) {
+      if (c === '"') {
+        if (text.charAt(i + 1) === '"') { field += '"'; i++; }   // an escaped quote
+        else quoted = false;
+      } else field += c;
+      continue;
+    }
+
+    if (c === '"') quoted = true;
+    else if (c === ',') { row.push(field); field = ''; }
+    else if (c === '\n' || c === '\r') {
+      if (c === '\r' && text.charAt(i + 1) === '\n') i++;
+      row.push(field); field = '';
+      if (row.length > 1 || row[0] !== '') rows.push(row);
+      row = [];
+    } else field += c;
+  }
+  row.push(field);
+  if (row.length > 1 || row[0] !== '') rows.push(row);
+  return rows;
+}
+
+/** A stable id for a row, so re-importing cannot double it. */
+function importRid(parts) {
+  var key = 'imp|' + parts.join('|');
+  var h = 5381;
+  for (var i = 0; i < key.length; i++) h = ((h * 33) ^ key.charCodeAt(i)) >>> 0;
+  return 'imp-' + h.toString(36) + '-' + key.length.toString(36);
+}
+
+/** One CSV row -> one events row, or null if it is a header or unreadable. */
+function rowFromCsv(cells) {
+  var at = String(cells[0] || '').trim();
+  if (!at || at.toLowerCase() === 'timestamp') return null;     // header
+  var when = new Date(at);
+  if (isNaN(when.getTime())) return null;
+
+  // The Prayers tab is: timestamp, local_time, date, prayer, mode
+  // The Log tab is:     timestamp, local_time, type, raw_text, project, detail
+  var third = String(cells[2] || '').trim();
+  var isPrayer = /^\d{4}-\d{2}-\d{2}$/.test(third) &&
+                 PRAYER_NAMES.indexOf(String(cells[3] || '').trim()) !== -1;
+
+  if (isPrayer) {
+    var name = String(cells[3] || '').trim();
+    var mode = String(cells[4] || '').trim();
+    return { at: when.toISOString(), local_time: String(cells[1] || ''), tz: '',
+             type: 'prayer', raw_text: name + ' · ' + mode,
+             project: name, detail: mode,
+             rid: importRid([at, 'prayer', name, mode]) };
+  }
+
+  var type = third;
+  if (!type) return null;
+  return { at: when.toISOString(), local_time: String(cells[1] || ''), tz: '',
+           type: type, raw_text: String(cells[3] || ''),
+           project: String(cells[4] || ''), detail: String(cells[5] || ''),
+           rid: importRid([at, type, String(cells[3] || '')]) };
+}
+
+$('importFile').addEventListener('change', async function () {
+  var files = Array.prototype.slice.call(this.files || []);
+  var msg = $('importMsg');
+  this.value = '';                       // so picking the same file again re-runs
+
+  if (!files.length) return;
+  if (!sb || !sbUser) { msg.textContent = 'Sign in first.'; return; }
+
+  var rows = [];
+  for (var i = 0; i < files.length; i++) {
+    var text = await files[i].text();
+    splitCsv(text).forEach(function (cells) {
+      var r = rowFromCsv(cells);
+      if (r) rows.push(r);
+    });
+  }
+
+  if (!rows.length) { msg.textContent = 'Nothing readable in those files.'; return; }
+
+  msg.textContent = 'Importing ' + rows.length + ' rows…';
+  var added = 0;
+  var skipped = 0;
+
+  // In batches, so one bad row cannot lose the whole import, and so a big
+  // history does not arrive as one enormous request.
+  for (var j = 0; j < rows.length; j += 100) {
+    var batch = rows.slice(j, j + 100);
+    var res = await sb.from('events').insert(batch);
+    if (!res.error) { added += batch.length; continue; }
+
+    // A clash means some of this batch is already here; retry one at a time so
+    // the new rows still land.
+    for (var k = 0; k < batch.length; k++) {
+      var one = await sb.from('events').insert(batch[k]);
+      if (!one.error) added += 1;
+      else if (one.error.code === '23505') skipped += 1;
+      else { msg.textContent = 'Stopped: ' + one.error.message; return; }
+    }
+  }
+
+  msg.textContent = 'Imported ' + added + ' rows' +
+    (skipped ? ', skipped ' + skipped + ' already here' : '') + '.';
+  flash('Imported ' + added + ' rows', 'ok');
+  refresh();
+});
+
 // ----------------------------------------------------------------- settings
 
 var dlg = $('settingsDlg');
