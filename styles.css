@@ -359,7 +359,17 @@ body {
   color: var(--fg);
   width: min(440px, calc(100vw - 32px));
   padding: 20px;
+
+  /* A dialog with no height limit does not scroll — it just runs off the bottom
+     of the screen, and everything past the fold becomes unreachable rather than
+     merely out of view. Settings grew to 22 fields and the import control at the
+     bottom could not be got to at all. */
+  max-height: min(85vh, 85dvh);
+  overflow-y: auto;
+  overscroll-behavior: contain;
 }
+/* Room for a thumb at the bottom of a phone screen. */
+.dlg > form { padding-bottom: 4px; }
 .dlg::backdrop { background: rgba(0, 0, 0, .6); }
 .dlg h2 { margin: 0 0 4px; font-size: 18px; }
 .dlg label { display: block; margin: 14px 0 6px; font-size: 13px; color: var(--muted); }
@@ -370,6 +380,15 @@ body {
   font-size: 16px; font-family: inherit; resize: vertical;
 }
 .hint { color: var(--muted); font-size: 13px; margin: 6px 0 0; }
+
+/* A block that should not be scrolled past without noticing. */
+.dlg-block {
+  margin-top: 18px; padding: 14px;
+  background: var(--bg);
+  border: 1px solid var(--line); border-radius: 10px;
+}
+.dlg-block h3 { margin: 0; font-size: 14px; }
+.dlg input[type="file"] { padding: 10px; font-size: 14px; }
 .dlg-actions { display: flex; gap: 10px; align-items: center; justify-content: flex-end; margin-top: 18px; }
 
 /* ---------------------------------------------------------------- banner */

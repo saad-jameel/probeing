@@ -96,7 +96,25 @@ if [ -f "$HOME/.probeing/supabase_url.txt" ]; then
   fi
 fi
 
-# --- 6. history, not just the working tree ----------------------------------
+# --- 6. the Supabase service_role key ----------------------------------------
+# Unlike the anon key, this one bypasses row level security entirely — it can
+# read and delete everything. It lives only in ~/.probeing/, never here.
+if [ -f "$HOME/.probeing/supabase_service.txt" ]; then
+  SVC=$(tr -d '\n' < "$HOME/.probeing/supabase_service.txt")
+  if [ -n "$SVC" ] && git grep -qI --cached -- "$SVC" 2>/dev/null; then
+    fail "Supabase SERVICE key present in a tracked file"
+  else
+    pass "Supabase service key absent from tracked files"
+  fi
+fi
+if git grep -qIE --cached -- '"?role"?\s*:\s*"service_role"' 2>/dev/null; then
+  fail "something claiming service_role is committed"
+  git grep -nIE --cached -- '"?role"?\s*:\s*"service_role"' | head -3
+else
+  pass "no service_role credential shape in tracked files"
+fi
+
+# --- 7. history, not just the working tree ----------------------------------
 # A secret removed in a later commit is still public in an earlier one.
 if [ "$QUICK" -eq 0 ] && git rev-parse HEAD >/dev/null 2>&1; then
   HIST_BAD=0

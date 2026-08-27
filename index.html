@@ -258,12 +258,15 @@
 
       <p id="supaWho" class="hint"></p>
 
-      <label for="importFile">Bring the old Sheet across</label>
-      <input id="importFile" type="file" accept=".csv,text/csv" multiple>
-      <p class="hint">Download each tab of the Sheet as CSV (File &rarr; Download &rarr;
-        Comma-separated values) and pick them here. Rows already imported are skipped, so
-        running it twice is safe.</p>
-      <p id="importMsg" class="hint"></p>
+      <div class="dlg-block">
+        <h3>Bring the old Sheet across</h3>
+        <p class="hint">Your history before the move still lives in the Google Sheet.
+          Download the <strong>Log</strong> and <strong>Prayers</strong> tabs as CSV
+          (File &rarr; Download &rarr; Comma-separated values) and pick both here.
+          Rows already imported are skipped, so running it twice is safe.</p>
+        <input id="importFile" type="file" accept=".csv,text/csv" multiple>
+        <p id="importMsg" class="hint"></p>
+      </div>
 
       <div class="dlg-actions" style="justify-content: flex-start">
         <button type="button" id="signOutBtn" class="link-btn">Sign out</button>
