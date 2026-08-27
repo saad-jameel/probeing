@@ -32,6 +32,12 @@
 !/icons/
 !/icons/**
 
+# --- Vendored libraries ------------------------------------------------------
+# Committed rather than fetched from a CDN: no build step, and no third party
+# whose outage takes the app down. Read before committing, like anything else.
+!/vendor/
+!/vendor/**
+
 # --- Backend -----------------------------------------------------------------
 !/backend/
 !/backend/**
