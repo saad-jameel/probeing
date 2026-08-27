@@ -768,13 +768,23 @@ function renderDaySummary() {
   var box = $('sumProjects');
   box.textContent = '';
 
-  /** One "name .... 1h 20m" line. `muted` marks it as a break, not work. */
-  function line(name, ms, muted) {
+  /** One "name .... 1h 20m" line. `muted` marks it as a break, not work;
+   *  `finished` ticks a project you have pressed Done on. */
+  function line(name, ms, muted, finished) {
     var li = document.createElement('li');
 
     var n = document.createElement('span');
     n.className = 'p-name' + (muted ? ' p-why' : '');
-    n.textContent = name;                   // user input — textContent only
+
+    if (finished) {
+      var tick = document.createElement('span');
+      tick.className = 'p-done';
+      tick.textContent = '✓';
+      n.appendChild(tick);
+    }
+
+    // textContent on a text node, never markup — this is user input.
+    n.appendChild(document.createTextNode(name));
 
     var t = document.createElement('span');
     t.className = 'p-time';
@@ -788,10 +798,18 @@ function renderDaySummary() {
     return function (a, b) { return map[b] - map[a]; };
   };
 
+  /* A project leaves `activeProjects` only by being pressed Done — `off` and
+   * `sleep` stop the clock without closing anything — so "not active" is
+   * exactly "finished", and earns the tick. */
+  var open = {};
+  day.activeProjects.forEach(function (p) { open[p] = 1; });
+
   Object.keys(day.byProject)
     .filter(function (name) { return name && day.byProject[name] > 0; })
     .sort(byTime(day.byProject))
-    .forEach(function (name) { line(name, day.byProject[name], false); });
+    .forEach(function (name) {
+      line(name, day.byProject[name], false, !open[name]);
+    });
 
   // Where the break time actually went — Lunch 45m, Prayer-break 20m.
   if (day.unattributed > 0) line('Not on a named project', day.unattributed, true);

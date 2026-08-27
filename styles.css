@@ -258,6 +258,7 @@ body {
   border-top: 1px solid var(--line); }
 .sum-projects:empty { display: none; }
 .sum-projects .p-why { color: var(--muted); }
+.sum-projects .p-done { color: var(--accent); margin-right: 7px; font-weight: 700; }
 .sum-projects li { display: flex; gap: 12px; justify-content: space-between; font-size: 14.5px; }
 .sum-projects .p-name { min-width: 0; overflow-wrap: anywhere; }
 .sum-projects .p-time { color: var(--accent); white-space: nowrap; font-variant-numeric: tabular-nums; }
