@@ -31,6 +31,19 @@ var DEFAULT_CHIPS = ['Prayer-break', 'Lunch', 'Coffee'];
 /** What the plain Break button writes. Never counted as a chip. */
 var PLAIN_BREAK = 'Break';
 
+/* Several reasons can apply at once — dinner AND tea — so a break row carries
+ * the whole current set, joined. Reason names have the separator stripped when
+ * they are added, so this can never be ambiguous. */
+var REASON_SEP = ' + ';
+
+function parseReasons(text) {
+  return String(text || '').split('+').map(function (x) {
+    return x.trim();
+  }).filter(function (x) {
+    return x && x !== PLAIN_BREAK;
+  });
+}
+
 /* 9 PM is the line between "a nap in the middle of the day" and "winding up".
  * Only one press is ever silent — on a break after 9 PM, which is unambiguously
  * bedtime. Everything else asks, because every one of those presses closes a
@@ -99,12 +112,15 @@ var ANSWER_FIELD = {
  * answered in this long is not slow, it is already lost; abandoning it and
  * trying again is far quicker than waiting for it to fail.
  *
- * Set below some genuine successes (5.5s and 11.6s were both measured), which
- * would once have been a bad trade. The rid changed that: abandoning a call
- * that actually landed now costs nothing, because the retry replays the stored
- * answer instead of appending a second row. Three attempts at 5s beats two at
- * 7s on both counts — more chances, and it settles in ~16s rather than 22. */
-var REQUEST_TIMEOUT_MS = 5000;
+ * Set below some genuine successes, which would once have been a bad trade. The
+ * rid changed that: abandoning a call that actually landed now costs nothing,
+ * because the retry replays the stored answer instead of appending a second row.
+ *
+ * Raised from 5s: the backend has since degraded to 4-7s on a GOOD run, so 5s
+ * had drifted inside the normal range and the app was retrying healthy calls,
+ * doubling traffic against something already struggling. This number tracks the
+ * platform, and the platform is being replaced. */
+var REQUEST_TIMEOUT_MS = 9000;
 
 async function callBackend(action, payload) {
   var ctrl = typeof AbortController === 'function' ? new AbortController() : null;
@@ -590,103 +606,127 @@ function replayDay(log) {
     return x.r;
   });
 
-  var project = '';
-  var totals = {};
-  var runningSince = 0;                     // 0 = clock stopped
-  var pausedSince = 0;                      // on a break, or the day is closed
-  var paused = 0;                           // total time not working, once started
-  var breakReason = '';                     // what the current break is for
-  var breaks = {};                          // reason -> total ms
+  /* SEVERAL THINGS CAN BE TRUE AT ONCE.
+   *
+   * You can be on two projects, and at dinner having tea. So the day is walked
+   * as a set of ACTIVE things rather than a single current one: at every event
+   * the span since the last event is credited to everything that was active
+   * across it.
+   *
+   * That makes the totals overlap on purpose. `worked` is wall-clock time with
+   * the clock running, so it is still a real number of hours in your day;
+   * sum(byProject) can EXCEED it, because two hours spent on two projects at
+   * once is two hours of your life and two hours of each project. Same for
+   * `paused` against byReason. Anything else would either invent hours or
+   * quietly halve the time you spent on something. */
+  var active = {};                          // project -> 1, currently being worked on
+  var reasons = {};                         // break reason -> 1, currently applying
+  var byProject = {};
+  var byReason = {};
+  var worked = 0;
+  var paused = 0;
+  /* The clock keeps running after the last Done — you are still at work, just
+   * not on anything named. "Worked 9h / Projects: A 3h" would leave six hours
+   * silently missing, so they are counted here as they happen rather than
+   * derived afterwards: with projects run one after another rather than at the
+   * same time, no arithmetic on the totals can tell the difference. */
+  var unattributed = 0;
 
-  function stop(t) {
-    if (!runningSince) return;
-    totals[project] = (totals[project] || 0) + Math.max(0, t - runningSince);
-    runningSince = 0;
-    pausedSince = t;
+  var clock = false;                        // is the work clock running
+  var underWay = false;                     // has the day started and not ended
+  var lastT = 0;
+  var order = [];                           // projects, most recently started last
+
+  /* Never credit past this instant. A device clock running behind the server
+   * makes real rows look like the future, and the day would inflate until the
+   * clock was corrected — 14 hours "worked" at 5pm, from one row stamped 23:00.
+   * The old code guarded only negative spans, so this is an old hole, closed. */
+  var ceiling = Date.now();
+
+  /** Credit everything active up to `t`, then move the cursor there. */
+  function advance(t) {
+    if (t > ceiling) t = ceiling;
+    if (lastT && t > lastT) {
+      var span = t - lastT;
+      if (clock) {
+        worked += span;
+        var names = Object.keys(active);
+        if (!names.length) unattributed += span;
+        names.forEach(function (p) {
+          byProject[p] = (byProject[p] || 0) + span;
+        });
+      } else if (underWay) {
+        paused += span;
+        Object.keys(reasons).forEach(function (r) {
+          byReason[r] = (byReason[r] || 0) + span;
+        });
+      }
+    }
+    if (t > lastT) lastT = t;
   }
 
-  /** Close an open pause, crediting it to whatever it was for. Only counts once
-   *  the day has actually started, so a morning before the first entry is not
-   *  reported as five hours "on break". */
-  function unpause(t) {
-    if (!pausedSince) return;
-    var span = Math.max(0, t - pausedSince);
-    paused += span;
-    if (breakReason) breaks[breakReason] = (breaks[breakReason] || 0) + span;
-    pausedSince = 0;
-    breakReason = '';
+  function remember(name) {
+    var at = order.indexOf(name);
+    if (at !== -1) order.splice(at, 1);
+    order.push(name);
   }
 
   rows.forEach(function (row) {
     var t = instantOf(row.at);
+    advance(t);
+
+    var text = String(row.raw_text || '').trim();
 
     if (row.type === 'work' || row.type === 'voice') {
-      stop(t);                              // close the previous project's segment...
-      unpause(t);
-      project = String(row.project || row.raw_text || '').trim();
-      runningSince = t;                     // ...and open this one's
+      // Adds, never replaces — that is the whole point of multitasking.
+      var name = String(row.project || text).trim();
+      if (name) { active[name] = 1; remember(name); }
+      clock = true;
+      underWay = true;
+      reasons = {};
+    } else if (row.type === 'done') {
+      var finished = String(row.project || text).trim();
+      delete active[finished];
+      var idx = order.indexOf(finished);
+      if (idx !== -1) order.splice(idx, 1);
     } else if (row.type === 'resume') {
-      unpause(t);
-      if (!runningSince) runningSince = t;
+      clock = true;
+      underWay = true;
+      reasons = {};
     } else if (row.type === 'break') {
-      /* Only a day that is under way can go ON a break.
-       *
-       * stop() opens the pause when it closes a running segment, and its early
-       * return when nothing was running is what stops an untouched morning
-       * being reported as hours of break. Opening the pause here as well
-       * bypassed that guard — a Coffee chip tapped before the first work row
-       * booked every hour since as coffee, and one tapped while asleep booked
-       * the rest of the night. So this only opens a pause when the clock was
-       * already running, or a break was already open to be replaced. */
-      var underWay = Boolean(runningSince) || Boolean(pausedSince);
-
-      // Lunch then Coffee closes Lunch rather than relabelling the whole span.
-      unpause(t);
-      stop(t);                              // a pause you will come back from
-
+      /* Only a day that is under way can go ON a break. A chip tapped before
+       * the first work row, or while asleep, must not book every hour since as
+       * a break — that was a real bug, and `underWay` is the guard. */
       if (underWay) {
-        pausedSince = pausedSince || t;
-        var why = String(row.raw_text || '').trim();
-        breakReason = (why && why !== PLAIN_BREAK) ? why : '';
+        clock = false;
+        reasons = {};
+        parseReasons(text).forEach(function (r) { reasons[r] = 1; });
       }
     } else if (row.type === 'off' || row.type === 'sleep') {
-      /* The day being over is not "on break". stop() closes the running
-       * segment; unpause() then closes any pause that was already open — so a
-       * break at 14:00 followed by 'off' at 15:00 still counts that hour, and
-       * the evening after it counts as nothing at all. */
-      stop(t);
-      unpause(t);
+      // The day being over is not "on break": nothing accrues after it.
+      clock = false;
+      reasons = {};
+      underWay = false;
     }
-    // wake / M / status / prayer do not move the work clock
+    // wake / M / prayer do not move the work clock
   });
 
-  var now = Date.now();
-  var live = runningSince ? Math.max(0, now - runningSince) : 0;
-  var livePause = pausedSince ? Math.max(0, now - pausedSince) : 0;
+  advance(ceiling);                         // bring everything up to now
 
-  // Every project's total, including the segment still running.
-  var byProject = {};
-  Object.keys(totals).forEach(function (k) { byProject[k] = totals[k]; });
-  if (runningSince) byProject[project] = (byProject[project] || 0) + live;
-
-  var worked = 0;
-  Object.keys(byProject).forEach(function (k) { worked += byProject[k]; });
-
-  // The break still running counts too, so "Lunch 20m" grows while you are at it.
-  var byReason = {};
-  Object.keys(breaks).forEach(function (k) { byReason[k] = breaks[k]; });
-  if (pausedSince && breakReason) {
-    byReason[breakReason] = (byReason[breakReason] || 0) + livePause;
-  }
+  var activeProjects = order.filter(function (p) { return active[p]; });
+  var current = activeProjects.length ? activeProjects[activeProjects.length - 1] : '';
 
   return {
-    project: project,
-    ms: byProject[project] || 0,
-    running: Boolean(runningSince),
+    project: current,                       // the most recent one, for a one-line readout
+    ms: byProject[current] || 0,
+    running: clock,
+    activeProjects: activeProjects,
     byProject: byProject,
     worked: worked,
-    paused: paused + livePause,
-    breakReason: pausedSince ? breakReason : '',
+    unattributed: unattributed,
+    paused: paused,
+    breakReason: Object.keys(reasons).join(REASON_SEP),
+    activeReasons: Object.keys(reasons),
     byReason: byReason
   };
 }
@@ -734,6 +774,8 @@ function renderDaySummary() {
     .forEach(function (name) { line(name, day.byProject[name], false); });
 
   // Where the break time actually went — Lunch 45m, Prayer-break 20m.
+  if (day.unattributed > 0) line('Not on a named project', day.unattributed, true);
+
   Object.keys(day.byReason)
     .filter(function (why) { return why && day.byReason[why] > 0; })
     .sort(byTime(day.byReason))
@@ -742,18 +784,55 @@ function renderDaySummary() {
 
 function renderProject() {
   var day = replayDay(lastLog);
-  var name = $('projName');
-  var time = $('projTime');
+  var list = $('projList');
+  var empty = $('projEmpty');
 
-  if (!day.project && !day.ms) {
-    name.textContent = 'Nothing logged yet';
-    time.textContent = 'Type what you are doing on the Today tab.';
+  list.textContent = '';
+  empty.hidden = day.activeProjects.length > 0;
+
+  if (!day.activeProjects.length) {
+    empty.textContent = day.worked
+      ? 'Nothing open. ' + humanDuration(day.worked) + ' worked today.'
+      : 'Nothing yet — say what you are on below.';
     return;
   }
 
-  // textContent, never markup — this string came straight from the input box.
-  name.textContent = day.project || 'Working (no project named)';
-  time.textContent = humanDuration(day.ms) + ' today' + (day.running ? ' · running' : ' · paused');
+  // Most recently started first: that is the one you are most likely to finish.
+  day.activeProjects.slice().reverse().forEach(function (name) {
+    var li = document.createElement('li');
+
+    var main = document.createElement('div');
+    main.className = 'proj-main';
+
+    var n = document.createElement('div');
+    n.className = 'proj-name';
+    n.textContent = name;                   // user input — textContent only
+
+    var t = document.createElement('div');
+    t.className = 'proj-time' + (day.running ? '' : ' paused');
+    t.textContent = humanDuration(day.byProject[name] || 0) + ' today' +
+                    (day.running ? '' : ' · paused');
+
+    main.append(n, t);
+
+    var done = document.createElement('button');
+    done.type = 'button';
+    done.className = 'done-btn';
+    done.textContent = 'Done';
+    done.addEventListener('click', function () { finishProject(done, name); });
+
+    li.append(main, done);
+    list.appendChild(li);
+  });
+}
+
+/** Close one project without touching the others, or the work clock. */
+function finishProject(btn, name) {
+  if (btn.disabled) return;
+  coolDown(btn);
+  noteLocalRow('done', name, name);
+  flash(name + ' — done', 'ok');
+  runWrites([{ type: 'done', raw_text: name, project: name }]);
 }
 
 // The clock on screen should move without a round trip. Cheap: it only re-reads
@@ -1155,10 +1234,20 @@ function parseChips(text) {
     .filter(function (x) { return x.length > 0; });
 }
 
+/* '+' separates reasons inside a break row, so a chip name cannot contain one.
+ * The dialog strips it now, but a name saved before that rule would be split
+ * into two junk reasons ("C++ work" -> "C", "work") for good, with nothing on
+ * screen to explain it. Clean the saved list on the way out instead. */
+function safeChipName(label) {
+  return String(label).replace(/[+]/g, ' ').replace(/\s+/g, ' ').trim();
+}
+
 function chipLabels() {
   // Separators-only input (", , ") parses to nothing, which would leave the row
   // blank with no explanation; treat that the same as an empty box.
-  var parts = parseChips(cfg.chips === undefined ? DEFAULT_CHIPS.join(', ') : cfg.chips);
+  var parts = parseChips(cfg.chips === undefined ? DEFAULT_CHIPS.join(', ') : cfg.chips)
+    .map(safeChipName)
+    .filter(function (x) { return x.length > 0 && x !== PLAIN_BREAK; });
   return parts.length ? parts : DEFAULT_CHIPS.slice();
 }
 
@@ -1206,19 +1295,21 @@ function absorbChipStats(log) {
     // Chips write `break` rows now. The plain Break button writes one too, so
     // only names that are actually on the chip list are counted.
     if (row.type !== 'break') return;
-    var label = String(row.raw_text || '').trim();
-    if (!label || !known[label]) return;
 
     var t = instantOf(row.at);
     if (isNaN(t) || t <= chipStats.seen) return;
 
-    var rec = chipStats.items[label] || { n: 0, last: 0 };
-    rec.n += 1;
-    rec.last = Math.max(rec.last, t);
-    chipStats.items[label] = rec;
+    // A row can name several reasons at once; each one earns its own tick.
+    parseReasons(row.raw_text).forEach(function (label) {
+      if (!known[label]) return;
+      var rec = chipStats.items[label] || { n: 0, last: 0 };
+      rec.n += 1;
+      rec.last = Math.max(rec.last, t);
+      chipStats.items[label] = rec;
+      changed = true;
+    });
 
     if (t > newest) newest = t;
-    changed = true;
   });
 
   if (!changed) return;
@@ -1259,7 +1350,9 @@ function renderChips() {
   }
 
   var labels = orderedChipLabels();
-  var active = replayDay(lastLog).breakReason;
+  var lit = {};
+  replayDay(lastLog).activeReasons.forEach(function (r) { lit[r] = 1; });
+  var active = Object.keys(lit).sort().join('\u0001');
   // The active reason is part of what is drawn, so it has to be part of the key
   // — otherwise tapping the chip that is already first never lights it up.
   var order = labels.join('\n') + '\u0000' + active;
@@ -1273,7 +1366,7 @@ function renderChips() {
   labels.forEach(function (label) {
     var b = document.createElement('button');
     b.type = 'button';
-    b.className = 'chip' + (label === active ? ' on' : '');
+    b.className = 'chip' + (lit[label] ? ' on' : '');
     b.textContent = label;            // textContent, never markup — this is user input
     b.addEventListener('click', function () { logChip(b, label); });
     row.appendChild(b);
@@ -1301,7 +1394,9 @@ $('statusCancelBtn').addEventListener('click', function () { statusDlg.close(); 
 
 $('statusSaveBtn').addEventListener('click', function () {
   // The comma is the separator in the stored list, so a name cannot contain one.
-  var name = $('statusName').value.replace(/,/g, ' ').replace(/\s+/g, ' ').trim();
+  // The comma separates the stored list and the + separates reasons in a row,
+  // so a name can contain neither.
+  var name = $('statusName').value.replace(/[,+]/g, ' ').replace(/\s+/g, ' ').trim();
   if (!name) { flash('Give it a name first.', 'err'); return; }
 
   /* "Break" is what the plain Break button writes. A chip by that name would be
@@ -1329,19 +1424,35 @@ $('statusSaveBtn').addEventListener('click', function () {
 /** One tap, one status row, no confirmation dialog — that is the whole point.
  *  The tally is not touched here; the refresh below brings the row back and
  *  absorbChipStats() counts it once. */
+/**
+ * Tap a chip to add that reason, tap it again to drop it — several can apply at
+ * once. Each tap writes ONE break row carrying the whole resulting set, so the
+ * Sheet always states the full picture and a row can be read on its own.
+ *
+ * Tapping the same chip repeatedly used to append an identical row every time.
+ * Now the second tap means something different from the first, so a row per tap
+ * is a row per change.
+ */
 function logChip(btn, label) {
   if (btn.disabled) return;
   coolDown(btn);
   chipFreezeUntil = Date.now() + CHIP_FREEZE_MS;   // set before the write, not after
 
+  var now = replayDay(lastLog).activeReasons;
+  var next = now.filter(function (r) { return r !== label; });
+  var adding = next.length === now.length;
+  if (adding) next.push(label);
+
+  var text = next.length ? next.join(REASON_SEP) : PLAIN_BREAK;
+
   var undo = beginToggleWrite();
   setToggle('work', 'break');
   // Not fed to the chip tally here — the reconcile brings the row back and
   // absorbChipStats() counts it exactly once, from the Sheet.
-  noteLocalRow('break', label);
+  noteLocalRow('break', text);
   confirmPulse(btn);
-  flash(label + ' — on a break', 'ok');
-  runWrites([{ type: 'break', raw_text: label }], undo);
+  flash(adding ? text + ' — on a break' : (next.length ? text : 'On a break'), 'ok');
+  runWrites([{ type: 'break', raw_text: text }], undo);
 }
 
 renderChips();
@@ -1478,7 +1589,7 @@ var projectDlg = $('projectDlg');
 
 function maybeAskProject() {
   if (projectDlg.open) return;
-  if (replayDay(lastLog).project) return;      // already on something today
+  if (replayDay(lastLog).activeProjects.length) return;   // already on something
   $('projectName').value = '';
   projectDlg.showModal();
 }

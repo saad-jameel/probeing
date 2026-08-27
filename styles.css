@@ -226,8 +226,26 @@ body {
 .card-ico { width: 16px; height: 16px; }
 .pending { color: var(--muted); font-size: 14px; margin: 8px 0 0; }
 
-.proj-name { font-size: 18px; font-weight: 600; margin: 9px 0 2px; overflow-wrap: anywhere; }
-.proj-time { color: var(--accent); font-size: 14px; margin: 0; font-variant-numeric: tabular-nums; }
+.proj-list { list-style: none; margin: 0; padding: 0; display: grid; gap: 10px; }
+.proj-list:empty { display: none; }
+.proj-list li {
+  display: flex; align-items: center; gap: 12px;
+  padding-top: 10px; border-top: 1px solid var(--line);
+}
+.proj-list li:first-child { padding-top: 12px; }
+.proj-main { flex: 1; min-width: 0; }
+.proj-name { font-size: 17px; font-weight: 600; overflow-wrap: anywhere; }
+.proj-time { color: var(--accent); font-size: 13.5px; font-variant-numeric: tabular-nums; }
+.proj-time.paused { color: var(--muted); }
+.done-btn {
+  flex: 0 0 auto;
+  padding: 7px 14px;
+  background: none; color: var(--accent);
+  border: 1px solid var(--accent); border-radius: 999px;
+  font-size: 13px; font-weight: 600; cursor: pointer;
+}
+.done-btn:active { transform: scale(.96); }
+.done-btn[disabled] { opacity: .5; cursor: default; }
 
 /* The daily summary at the top of the Today tab. Four numbers, then the
    projects underneath — read left to right, no chart needed. */
