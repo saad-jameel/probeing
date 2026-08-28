@@ -28,7 +28,7 @@ and Sheets without building any OAuth flow.
 > | ✅ | 1 Backend API | done — but **superseded as primary** by Supabase |
 > | ✅ | 2 PWA Shell + Install | done — the *sync test* is obsolete, see the stage |
 > | ✅ | 3 The Buttons | done — chips were **rebuilt** as durations |
-> | ⬜ | **3.5 Finish the move** | **NEW, and next.** The history is split across two databases |
+> | 🟡 | **3.5 Finish the move** | in progress — history migration **declined** (it was test data); Gemini key done; Edge Function next |
 > | 🟡 | 4 Tracker + Voice | ~25% — the text box works, voice and Gemini do not exist |
 > | ⬜ | 5 Review Button | shell only; the hard maths is written but only reads *today* |
 > | ⬜ | 6 Weekly & Monthly Reports | not started, and has **nowhere to store a report** yet |
@@ -145,44 +145,49 @@ One-tap chip logs a status row. All verified from BOTH devices.
 ---
 
 
-## ⬜ Stage 3.5 — Finish the move — NEXT
+## 🟡 Stage 3.5 — Finish the move — IN PROGRESS
 
-Added 27 Aug, after the audit. Not in the original plan because the original plan
-did not anticipate changing backends.
+Added 27 Aug after the audit; **scope reduced 28 Aug** when Saad declined the data
+migration.
 
-**Why this comes before anything else.** The history is currently split across two
-databases that cannot see each other. Nothing looks broken, because "today" lives
-in the new one — which is exactly why it would go unnoticed until something reads
-a week and quietly reports on half the data while looking correct.
+### The history was NOT migrated, deliberately
 
-Worse, the split manufactures the orphaned events the whole toggle design exists to
-prevent: a `sleep` in the Sheet whose `wake` is in Supabase is not a short night,
-it is unmeasurable in both systems. Every figure in `docs/Review_Spec.md` is a
-duration and needs two events.
+The audit argued hard for importing the Sheet before building anything that reads a
+date range. Saad overruled it: *"I do not want to import the history, why should I?
+It was created during the testing."*
 
-It is also the cheapest it will ever be. The gap only grows.
+He is right, and the evidence backs him. Supabase holds 13 rows — five M presses in
+seven seconds, five prayers in twenty, one `off`. The Sheet's rows are the same
+shape: a fortnight of exercising buttons, not a fortnight of living. The audit's
+reasoning was sound for *real* history and simply did not apply to this history.
 
-**Tasks**
-1. `[USER]` Export the `Log` and `Prayers` tabs as CSV and import them (Settings →
-   *Bring the old Sheet across*). Rows carry a content-derived `rid`, so running it
-   twice is safe.
-2. `[USER]` Create a Gemini API key — specified in Stage 0 step 2, never done, and
-   Stages 4, 5 and 6 all wait on it.
-3. `[AGENT]` A Supabase Edge Function to hold that key server-side. The same
-   function is what the nightly schedule will call, so building it once unblocks
-   Stages 5, 6 and the wrapup.
+**What this costs, recorded so nobody is surprised later:** the weekly review and the
+wrapup have nothing before **27 Aug 2026**. The first genuine week starts from there.
+An importer still exists in Settings if that judgement ever changes; nothing was
+thrown away, the old Sheet is intact and frozen.
+
+**What survives from the audit:** a range-reading feature must still refuse to report
+on a range starting before the first row in `events`, or it will confidently announce
+zero hours slept for a week that predates the database.
+
+### Tasks
+
+1. ~~`[USER]` Import the Log and Prayers tabs~~ — **declined, deliberately.**
+2. `[USER]` Create a Gemini API key — specified in Stage 0 step 2, never done. ✅ done 28 Aug.
+3. `[AGENT]` A Supabase Edge Function to hold that key server-side. The same function
+   is what the nightly schedule calls, so building it once unblocks Stages 5, 6 and 7a.
 4. `[AGENT]` Add a `reports` table to `docs/supabase_schema.sql`.
-5. `[AGENT]` Stop writing to Apps Script once the import is verified.
+5. `[AGENT]` Stop writing to Apps Script; keep it selectable but no longer primary.
 
-**End goal (validation)**
-- Row counts per `type` match between the Sheet and Supabase for every day before cutover.
-- Re-running the import inserts **zero** rows.
-- Every migrated `sleep` has a later `wake` and every `break` a later `resume`, or is
-  listed as a known orphan. No silent unpaired events.
-- Rows from before and after the cutover appear in one ordered query with no gap.
-- Anonymous `insert` still returns `42501` and anonymous `select` still returns `[]` —
-  the migration did not require loosening security.
-- The Gemini key appears in **zero** bytes of `app.js` and `vendor/`.
+### End goal (validation)
+
+- The Gemini key appears in **zero** bytes of `app.js`, `index.html` and `vendor/` —
+  the repo is public, and that key is a real secret unlike the anon one.
+- The Edge Function refuses an unauthenticated caller.
+- A range query that starts before the first row returns an explicit "no data before
+  27 Aug", never a zero.
+- Anonymous `insert` still returns `42501`; anonymous `select` still returns `[]`.
+- `bash scripts/secret_scan.sh` exits 0, including its service_role checks.
 
 ## 🟡 Stage 4 — Tracker + Voice Input — PARTIAL (~25%)
 
