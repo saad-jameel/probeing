@@ -81,19 +81,31 @@ else
   pass "no Google API key or OAuth secret in tracked files"
 fi
 
-# --- 5. Supabase project details -------------------------------------------------
-# The anon key is publishable BY DESIGN — row level security is what protects
-# the data. But the project ref identifies whose database it is, and the
-# convention here is the same as everywhere else: connection details live in
-# Settings on the device, never in a file the whole internet can read.
-if [ -f "$HOME/.probeing/supabase_url.txt" ]; then
-  REF=$(sed -E 's#https?://([^.]+)\..*#\1#' "$HOME/.probeing/supabase_url.txt" | tr -d '\n')
-  if [ -n "$REF" ] && git grep -qI --cached -- "$REF" 2>/dev/null; then
-    fail "Supabase project ref present in a tracked file"
-    git grep -nI --cached -- "$REF" | head -5
+# --- 5. the Supabase key that ships must be the ANON one ---------------------
+# The project URL and anon key are committed DELIBERATELY (app.js), so that
+# reinstalling means signing in with GitHub rather than retyping a 209-character
+# key on a phone. They identify the project; they do not grant access to it —
+# row level security and the sign-in do that. What must never ship is a key
+# claiming any stronger role, so check the shape of what is actually there.
+if git grep -qIE --cached -- 'eyJ[A-Za-z0-9_-]{10,}\.eyJ[A-Za-z0-9_-]{20,}' -- '*.js' '*.html' 2>/dev/null; then
+  BAD=0
+  for TOK in $(git grep -hoIE --cached -- 'eyJ[A-Za-z0-9_-]{10,}\.eyJ[A-Za-z0-9_-]{100,}' -- '*.js' '*.html' 2>/dev/null); do
+    BODY=$(printf '%s' "$TOK" | cut -d. -f2)
+    PAD=$(( (4 - ${#BODY} % 4) % 4 ))
+    DEC=$(printf '%s%s' "$BODY" "$(printf '=%.0s' $(seq 0 $PAD) 2>/dev/null)" \
+          | tr '_-' '/+' | base64 -d 2>/dev/null || true)
+    case "$DEC" in
+      *'"role":"anon"'*) : ;;
+      *) BAD=1 ;;
+    esac
+  done
+  if [ "$BAD" -eq 1 ]; then
+    fail "a committed project token claims a role other than anon"
   else
-    pass "no Supabase project ref in tracked files"
+    pass "committed Supabase token is the anon key (deliberate, and safe)"
   fi
+else
+  pass "no Supabase token in tracked files"
 fi
 
 # --- 6. the Supabase service_role key ----------------------------------------

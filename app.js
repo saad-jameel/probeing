@@ -11,6 +11,23 @@
 
 'use strict';
 
+/* SHIPPED ON PURPOSE, and safe to.
+ *
+ * These two identify the project; they do not grant access to it. Row level
+ * security plus the GitHub sign-in are what protect the rows — an anon key with
+ * no session can read nothing and write nothing, which was verified against the
+ * live project in both directions.
+ *
+ * They are here so that reinstalling the app, or clearing site data, does not
+ * mean retyping a 209-character key on a phone. Recovery is: open the app, sign
+ * in with GitHub. That is the whole point — the only credential a person should
+ * ever handle is the one they already have.
+ *
+ * The SERVICE key is the opposite in every way and must never appear here;
+ * scripts/secret_scan.sh blocks it by value and by shape. */
+var DEFAULT_SUPABASE_URL = 'https://whxgzdrowvkpzpgfilof.supabase.co';
+var DEFAULT_SUPABASE_ANON = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6IndoeGd6ZHJvd3ZrcHpwZ2ZpbG9mIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODc4NDEzNDQsImV4cCI6MjEwMzQxNzM0NH0.qJyTdirLFpOu5uBsLwOWAnwWUp4lU1Ka0ZwM6Vsz3mE';
+
 var CFG_KEY = 'probeing.config';
 var TOGGLE_KEY = 'probeing.toggles';        // current sleep/work state, per device
 var CHIP_STATS_KEY = 'probeing.chipstats';  // how often each status gets logged
@@ -96,11 +113,17 @@ var DAY_STARTS_HOUR = 5;
 // committed, because GitHub Pages requires a public repo.
 
 function loadConfig() {
+  var saved = {};
   try {
-    return JSON.parse(localStorage.getItem(CFG_KEY)) || {};
-  } catch (e) {
-    return {};
-  }
+    saved = JSON.parse(localStorage.getItem(CFG_KEY)) || {};
+  } catch (e) { /* corrupt storage must not wedge the app */ }
+
+  // Supabase is the backend now, not merely an option — and it comes ready to
+  // sign in to. Anything saved on this device still wins.
+  if (!saved.backend) saved.backend = 'supabase';
+  if (!saved.supaUrl) saved.supaUrl = DEFAULT_SUPABASE_URL;
+  if (!saved.supaKey) saved.supaKey = DEFAULT_SUPABASE_ANON;
+  return saved;
 }
 
 function saveConfig(cfg) {
@@ -951,7 +974,8 @@ function replayDay(log) {
   var unattributed = 0;
 
   var clock = false;                        // is the work clock running
-  var underWay = false;                     // has the day started and not ended
+  var underWay = false;                     // is there time worth counting yet
+  var dayClosed = false;                    // ended for the night, or asleep
   var lastT = 0;
   var order = [];                           // projects, most recently started last
 
@@ -1001,6 +1025,7 @@ function replayDay(log) {
       if (name) { active[name] = 1; remember(name); }
       clock = true;
       underWay = true;
+      dayClosed = false;
       reasons = {};
     } else if (row.type === 'done') {
       var finished = String(row.project || text).trim();
@@ -1010,13 +1035,24 @@ function replayDay(log) {
     } else if (row.type === 'resume') {
       clock = true;
       underWay = true;
+      dayClosed = false;
       reasons = {};
     } else if (row.type === 'break') {
-      /* Only a day that is under way can go ON a break. A chip tapped before
-       * the first work row, or while asleep, must not book every hour since as
-       * a break — that was a real bug, and `underWay` is the guard. */
-      if (underWay) {
+      /* A chip STARTS the day if nothing else has.
+       *
+       * This used to require the day to be already under way, which made a chip
+       * tapped as the first action of the morning do nothing at all — no light,
+       * no break, though the row was written. Saying "I am at lunch" is itself a
+       * statement that you are up and your day has begun; you are simply not
+       * working this minute.
+       *
+       * The guard that matters is narrower than the one it replaces: a chip is
+       * ignored only when the day has been explicitly CLOSED — after `off`, or
+       * while asleep. That is what stops a stray tap booking the whole night as
+       * coffee, without stopping the ordinary case. */
+      if (!dayClosed) {
         clock = false;
+        underWay = true;
         var move = parseBreakOp(text, row.detail);
         if (move.op === 'set') reasons = {};
         if (move.op !== 'keep') {
@@ -1030,6 +1066,7 @@ function replayDay(log) {
       clock = false;
       reasons = {};
       underWay = false;
+      dayClosed = true;
     }
     // wake / M / prayer do not move the work clock
   });
@@ -1782,22 +1819,28 @@ function logChip(btn, label) {
   coolDown(btn);
   chipFreezeUntil = Date.now() + CHIP_FREEZE_MS;   // set before the write, not after
 
-  var now = replayDay(lastLog).activeReasons;
-  var adding = now.indexOf(label) === -1;
+  /* Already on it? Then there is nothing to say.
+   *
+   * This used to toggle off, which meant a second press wrote a second row —
+   * the exact "I keep pressing it and it keeps logging" complaint. A break ends
+   * when you go back to Work, not when you tap its reason again. */
+  if (replayDay(lastLog).activeReasons.indexOf(label) !== -1) {
+    confirmPulse(btn);
+    flash('Already on ' + label);
+    return;
+  }
 
   /* A delta, so two devices adding different reasons merge instead of racing.
    * It goes in the `detail` column, NOT the text: a cell beginning with + or -
    * is a formula to Google Sheets, and "+ Tea" was being stored as #NAME?. */
-  var op = adding ? 'add' : 'drop';
-
   var undo = beginToggleWrite();
   setToggle('work', 'break');
   // Not fed to the chip tally here — the reconcile brings the row back and
   // absorbChipStats() counts it exactly once, from the Sheet.
-  noteLocalRow('break', label, '', op);
+  noteLocalRow('break', label, '', 'add');
   confirmPulse(btn);
-  flash(adding ? label + ' — on a break' : label + ' — done', 'ok');
-  runWrites([{ type: 'break', raw_text: label, detail: op }], undo);
+  flash(label + ' — on a break', 'ok');
+  runWrites([{ type: 'break', raw_text: label, detail: 'add' }], undo);
 }
 
 renderChips();
@@ -2209,7 +2252,7 @@ function renderBackendPick() {
   var box = $('backendPick');
   box.textContent = '';
   BACKENDS.forEach(function (b) {
-    box.appendChild(pickButton(b.label, (cfg.backend || 'apps') === b.id, false, function () {
+    box.appendChild(pickButton(b.label, cfg.backend === b.id, false, function () {
       cfg.backend = b.id;
       renderBackendPick();
       paintBackendFields();
@@ -2218,7 +2261,7 @@ function renderBackendPick() {
 }
 
 function paintBackendFields() {
-  var supa = (cfg.backend || 'apps') === 'supabase';
+  var supa = cfg.backend === 'supabase';
   $('supaFields').hidden = !supa;
   $('appsFields').hidden = supa;
   paintAccount();
@@ -2240,7 +2283,7 @@ $('settingsBtn').addEventListener('click', function () {
 $('cancelBtn').addEventListener('click', function () { dlg.close(); });
 
 $('testBtn').addEventListener('click', async function () {
-  if ((cfg.backend || 'apps') === 'supabase') {
+  if (cfg.backend === 'supabase') {
     if (!sbUser) { $('testResult').textContent = 'Sign in first.'; return; }
     $('testResult').textContent = 'Testing…';
     try {
@@ -2281,7 +2324,7 @@ $('saveBtn').addEventListener('click', function () {
   }
 
   var next = {
-    backend: cfg.backend || 'apps',
+    backend: cfg.backend,
     supaUrl: $('supaUrl').value.trim(),
     supaKey: $('supaKey').value.trim(),
     apiUrl: $('apiUrl').value.trim(),
