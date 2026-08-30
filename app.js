@@ -2767,6 +2767,29 @@ var lastExtractError = '';
  * is left in `lastExtractError` rather than shown, because a row that stays
  * unnamed is correct behaviour and must not interrupt anybody.
  */
+/** Google's refusal, narrowed to "the DAY is gone" rather than "this minute is".
+ *  Same discriminator quotaWait() uses: the limit it names. */
+function isDailyRefusal(msg) {
+  var s = String(msg || '');
+  if (s === GEMINI_BUDGET_SPENT) return false;          // that IS our own tally
+  if (!/quota|rate.?limit|RESOURCE_EXHAUSTED|exceeded/i.test(s)) return false;
+  if (/per.?minute|PerMinute/i.test(s)) return false;
+  // Same asymmetry as quotaWait(): only stop for the day when Google actually
+  // says the day. An unnamed limit is treated as the minute, and recovers.
+  var lim = /limit:\s*([0-9]+)/i.exec(s);
+  return !!lim && Number(lim[1]) > GEMINI_RPM_LIMIT + 2;
+}
+
+/** Mark our own budget as gone, so nothing else is attempted today. Reversible
+ *  by the date changing, like any other spend — never sticky beyond the day. */
+function spendRestOfDay() {
+  try {
+    localStorage.setItem(GEMINI_DAY_KEY, JSON.stringify({
+      day: localDayStamp(), n: GEMINI_DAILY_BUDGET
+    }));
+  } catch (e) { /* private mode: we simply keep trying, as before */ }
+}
+
 async function geminiCall(body, ctrl) {
   /* Gemini has one home and it is the Supabase Edge Function — the key is a
    * secret of that function and must never be anywhere else. On the Apps Script
@@ -2811,6 +2834,14 @@ async function geminiCall(body, ctrl) {
      * appearing" is indistinguishable from "the feature is broken" unless the
      * reason is kept. The reason only; never the prompt, never the answer. */
     lastExtractError = (data && data.error) || ('HTTP ' + res.status);
+
+    /* If GOOGLE says the day is gone, believe it over our own tally and stop
+     * asking. The two counts can disagree badly: ours starts at zero the first
+     * time this code runs on a device, while Google has been counting all along
+     * — on the day this shipped it was already at 21 of 20 before the app had
+     * counted one. Without this, every later entry spends a doomed call and
+     * waits the full deadline for a refusal we could already predict. */
+    if (isDailyRefusal(lastExtractError)) spendRestOfDay();
     return null;
   }
 
@@ -3712,11 +3743,36 @@ function quotaWait(msg) {
   }
 
   if (!/quota|rate.?limit|RESOURCE_EXHAUSTED|exceeded/i.test(s)) return '';
+
+  /* WHICH ceiling? Google's refusal names it — "limit: 5" is the per-minute one,
+   * "limit: 20" the daily — and the difference is the whole message. Saying "try
+   * again in 40 seconds" when the DAY is spent sends you back to a button that
+   * cannot work for hours, which is exactly what this said before.
+   *
+   * The retry hint is not the discriminator: Google offers a short backoff for
+   * the daily refusal too, which is what made the first version of this wrong. */
+  /* When the refusal does not name a limit, read it as the per-minute one. The
+   * two mistakes are not equal: calling it per-minute when it is daily costs a
+   * few doomed calls and recovers by itself, while calling it daily when it is
+   * per-minute stops naming anything for the rest of the day over a wait of
+   * forty seconds. Real refusals do carry "limit: N"; this is for the ones that
+   * do not. */
+  var lim = /limit:\s*([0-9]+)/i.exec(s);
+  var perMinute = /per.?minute|PerMinute/i.test(s) ||
+                  !lim || Number(lim[1]) <= GEMINI_RPM_LIMIT + 2;
   var secs = /retry in ([0-9.]+)s/i.exec(s);
-  return 'Gemini\'s free tier allows 5 requests a minute and 20 a day, and one of those ' +
-         'is used up. Nothing has been charged and nothing is broken — the per-minute one ' +
-         'clears on its own' +
-         (secs ? ' in about ' + Math.ceil(parseFloat(secs[1])) + ' seconds.' : ' within a minute.');
+
+  if (perMinute) {
+    return 'Gemini\'s free tier allows 5 requests a minute and that is used up. Nothing ' +
+           'has been charged and nothing is broken — it clears on its own' +
+           (secs ? ' in about ' + Math.ceil(parseFloat(secs[1])) + ' seconds.' : ' within a minute.');
+  }
+
+  return 'Gemini\'s free tier allows 20 requests a DAY and today\'s are gone. Nothing has ' +
+         'been charged and nothing is broken. Entries are still saved and still keep their ' +
+         'own text as the name; a line naming a project the app already knows is still ' +
+         'named for free. This resets once a day on Google\'s clock, not at your midnight, ' +
+         'so it may come back during the day rather than overnight.';
 }
 
 $('testGeminiBtn').addEventListener('click', async function () {
