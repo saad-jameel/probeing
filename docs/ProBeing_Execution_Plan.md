@@ -145,7 +145,7 @@ One-tap chip logs a status row. All verified from BOTH devices.
 ---
 
 
-## 🟡 Stage 3.5 — Finish the move — IN PROGRESS
+## ✅ Stage 3.5 — Finish the move — DONE (30 Aug 2026)
 
 Added 27 Aug after the audit; **scope reduced 28 Aug** when Saad declined the data
 migration.
@@ -176,18 +176,51 @@ zero hours slept for a week that predates the database.
 2. `[USER]` Create a Gemini API key — specified in Stage 0 step 2, never done. ✅ done 28 Aug.
 3. `[AGENT]` A Supabase Edge Function to hold that key server-side. The same function
    is what the nightly schedule calls, so building it once unblocks Stages 5, 6 and 7a.
-4. `[AGENT]` Add a `reports` table to `docs/supabase_schema.sql`.
+   ✅ `supabase/functions/gemini/index.ts`, deployed by hand 30 Aug.
+4. `[AGENT]` Add a `reports` table to `docs/supabase_schema.sql`. ✅ applied 30 Aug.
 5. `[AGENT]` Stop writing to Apps Script; keep it selectable but no longer primary.
+   ✅ `app.js:123` defaults `backend` to `supabase`; Apps Script stays in the picker.
+6. `[USER]` Disable sign-ups. ✅ 30 Aug — `/auth/v1/signup` now answers
+   `422 signup_disabled`. Not on the original list; added once it was clear that
+   "signed in" meant nothing while anyone could mint an account.
 
-### End goal (validation)
+### End goal (validation) — all met, 30 Aug 2026
 
-- The Gemini key appears in **zero** bytes of `app.js`, `index.html` and `vendor/` —
-  the repo is public, and that key is a real secret unlike the anon one.
-- The Edge Function refuses an unauthenticated caller.
-- A range query that starts before the first row returns an explicit "no data before
-  27 Aug", never a zero.
-- Anonymous `insert` still returns `42501`; anonymous `select` still returns `[]`.
-- `bash scripts/secret_scan.sh` exits 0, including its service_role checks.
+- ✅ The Gemini key appears in **zero** bytes of `app.js`, `index.html` and `vendor/`.
+  The key was never on this machine at all: it went from Saad's screen into Supabase's
+  secret store, so there was nothing for the repo to leak.
+- ✅ The Edge Function refuses an unauthenticated caller — and, tested live, refuses the
+  shipped **anon key** and the **service_role key** too. The anon key is a structurally
+  valid project JWT that clears Supabase's own "Verify JWT", so only the role check
+  stops it. That check is the whole point of the function.
+- ✅ A range starting before the first row returns "No data before 2026-08-27", never a
+  zero. Tested under five timezones against the real `min(at)`. No call sites yet, by
+  design — Stage 5 is what will call it.
+- ✅ Anonymous `insert` → `42501`; anonymous `select` → `[]`. Confirmed on `events` and
+  on the new `reports` table.
+- ✅ `bash scripts/secret_scan.sh` exits 0, service_role checks included.
+- ✅ **End to end:** Test Gemini returned "ProBeing can reach Gemini" from the live
+  function, on the real account, with the key never leaving the server.
+
+### What the validation missed, and what it cost
+
+Two bugs got through the checklist above, because both were in the *checker*.
+
+`git log … | grep -q .` under `set -o pipefail` reported "no match" roughly three runs
+in four: `grep -q` exits on its first match, `git log` dies of SIGPIPE, and 141 becomes
+the pipeline's status. Three history checks were silently passing. A gate that lies
+three times in four is worse than no gate, because it is trusted.
+
+Then three checks used a bare `git grep`, which reads the working tree but not the
+index — so a secret `git add`ed and then wiped from the file passed, while `git commit`
+would have committed exactly that staged copy. **The gate's own file was in that state
+when this was found**: the fixed script was on disk, the broken one was staged, and
+every test run had been against a file that was not going to ship.
+
+Neither was findable by reading. Both were found by planting secrets and counting
+blocks. The rule this leaves behind: *a check is not verified until it has been seen
+to fail.* Nine planted shapes — token, `/exec` URL, Gemini key, each on disk, staged,
+and history-only — now block, twelve runs out of twelve.
 
 ## 🟡 Stage 4 — Tracker + Voice Input — PARTIAL (~25%)
 
