@@ -247,6 +247,42 @@ filled; `Now` line updates on BOTH devices; same mic flow works on laptop Chrome
 
 ---
 
+## The Gemini budget — a standing constraint on Stages 5, 6 and 7
+
+Learned on 30 Aug, from hitting it: the free tier allows **20 requests per minute**.
+It is a throttle, not a bill — nothing is charged, and it clears within the minute.
+Google's refusal is worded like an invoice ("check your plan and billing details")
+and is not one.
+
+**Per minute is the only limit that has actually bitten, and ordinary use cannot
+reach it.** Logging costs one call per entry, typed by hand; a heavy day is 30 or
+40 calls spread across sixteen hours. The nightly wrapup is one. A weekly review is
+one. Adding those up is not the risk.
+
+**Bursts are the risk, and they come from one design mistake:** looping the model
+over a collection. One call per day of the week is 7 at once. One call per project
+is unbounded — and it is exactly what a reasonable person writes when asked for
+"time per project", because it reads as the obvious decomposition.
+
+So the rule, and it is not negotiable without measuring first:
+
+> **A summary is ONE call.** Compute the numbers locally — `replayDay()` already
+> does, over any range — and send Gemini the finished figures to put into prose.
+> The model is there to write sentences, not to do arithmetic it is worse at and
+> not to be asked the same question seven times.
+
+That is also why `docs/Review_Spec.md`'s figures are computed, not asked for. If a
+future stage genuinely needs several calls, space them and cap them — but the first
+question is always whether one call with more context would do, and it usually will.
+
+**Unverified and worth checking before Stage 6:** whether the free tier also caps
+requests per *day*. The refusal named only the per-minute metric, so the daily
+ceiling is unknown rather than known to be absent. Current usage is nowhere near
+any plausible daily cap; a design that loops could be. Limits are at
+https://ai.google.dev/gemini-api/docs/rate-limits and usage at https://ai.dev/rate-limit.
+
+---
+
 ## ⬜ Stage 5 — Review Button (Weekly Overview) — NOT STARTED (shell only)
 
 > **The hard half is already written.** `replayDay()` reconstructs a day from
