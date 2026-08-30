@@ -5,8 +5,8 @@
  * Review   : the weekly report (layout final, numbers land with the backend)
  * Board    : the fourth tab is a link out to whatever taskboard you already use
  *
- * Everything writes through api() below. The Voice button is still a
- * placeholder; Stage 4 wires it.
+ * Everything writes through api() below — with one deliberate exception, the
+ * Gemini call in extractProject(), which must not queue behind it.
  */
 
 'use strict';
@@ -305,6 +305,28 @@ async function callSupabase(action, payload) {
     return { ok: true, type: payload.type || 'work', raw_text: payload.raw_text || '' };
   }
 
+  if (action === 'label') {
+    /* THE ONE THING IN THIS APP THAT CHANGES A ROW THAT IS ALREADY WRITTEN, and
+     * it may only ever fill in a blank. `rid` names the row — it is unique per
+     * user, which is why it can be used as an address — and the database refuses
+     * anything wider: the policy in docs/supabase_schema.sql matches only a row
+     * of this user's whose `project` is still empty, and the column grant beside
+     * it means `raw_text`, `at` and `type` cannot be touched from the browser at
+     * all. So the human record stays exactly as typed, whatever this code does.
+     *
+     * `labelled` is observed, not assumed. If that policy has not been run yet
+     * the update quietly matches no rows rather than failing, and the caller must
+     * be able to tell the difference — an unlabelled row is fine, a screen that
+     * claims a label the database never took is not. */
+    var lab = await sb.from('events')
+      .update({ project: String(payload.project || ''),
+                detail: String(payload.detail || '') })
+      .eq('rid', payload.rid)
+      .select('id');
+    if (lab.error) throw errorFrom(lab.error);
+    return { ok: true, labelled: (lab.data || []).length > 0 };
+  }
+
   if (action === 'm') {
     await sbInsert({ type: 'M', raw_text: '', rid: payload.rid });
     var c = await sb.from('events').select('id', { count: 'exact', head: true })
@@ -327,6 +349,12 @@ async function callSupabase(action, payload) {
   }
 
   if (action === 'review') return { ok: true, stub: true, text: 'Review arrives in Stage 5.' };
+  /* DEAD ON PURPOSE, and not a Stage 4 gap. The plan's step 2 was a one-line
+   * "what am I doing right now", written by a model after every log. The two
+   * state pills under the logo replaced it: they say the same thing, they are
+   * computed from the rows rather than asserted by an LLM, and they cannot go
+   * stale. Nothing in the app calls these two; they answer only because the
+   * Apps Script fallback still has the tab. Deleting them is a separate job. */
   if (action === 'now_get' || action === 'now_set') return { ok: true, now: { text: '', updated: '' } };
 
   var unknown = new Error('unknown_action');
@@ -367,7 +395,10 @@ var ANSWER_FIELD = {
   prayer: 'prayer',
   now_get: 'now',
   now_set: 'now',
-  review: 'text'          // unused until Stage 5, but it is already in IDEMPOTENT
+  review: 'text',         // unused until Stage 5, but it is already in IDEMPOTENT
+  // Supabase only. The Apps Script fallback has no `label` action, and nothing
+  // asks it for one: extraction is switched off entirely on that backend.
+  label: 'labelled'
 };
 
 /* Measured against the live backend: a HEALTHY call answers in 1.7s. The bad
@@ -559,8 +590,12 @@ var liveChannel = null;
 function watchLive() {
   if (!sb || !sbUser || liveChannel) return;
   liveChannel = sb.channel('probeing-events')
+    /* '*', not 'INSERT': a project label is an UPDATE to a row that already
+     * exists, so an INSERT-only subscription never hears it and the other
+     * device keeps showing the raw sentence until its next 45s poll. Postgres
+     * does broadcast the update; the gap was purely on this side. */
     .on('postgres_changes',
-        { event: 'INSERT', schema: 'public', table: 'events' },
+        { event: '*', schema: 'public', table: 'events' },
         function () { scheduleRefresh(400); })
     .subscribe();
 }
@@ -716,15 +751,20 @@ function localIso(d) {
  * Rows go in newest-first, matching today(), because replayDay() breaks
  * same-second ties on that order. */
 function noteLocalRow(type, text, project, detail) {
-  lastLog.unshift({
+  var row = {
     at: localIso(), local: '', type: type,
     raw_text: text || '', project: project || '', detail: detail || ''
-  });
+  };
+  lastLog.unshift(row);
   renderProject();
   renderDaySummary();
   renderLogList();
   renderChips();                 // the active break reason may have changed
   scheduleRefresh();
+  /* Handed back so a caller that learns something a moment later can correct
+   * this row rather than adding a second one. Only the tracker does that, and
+   * only to fill in the project Gemini extracted; every other caller ignores it. */
+  return row;
 }
 
 var refreshTimer;
@@ -791,17 +831,26 @@ function writeFailed(err) {
  *
  * Sequential on purpose: a chain means step 2 does not run if step 1 failed, so
  * a `resume` can never be written without the `wake` that had to precede it.
+ *
+ * It resolves with true only if every step landed. Nothing has to look — the
+ * failure is already reported and reconciled here — but the tracker does, because
+ * asking the database to label a row that was never written is a wasted call
+ * against a backend this app is careful not to talk to twice.
  */
 function runWrites(steps, undo) {
   var chain = Promise.resolve();
   steps.forEach(function (step) {
     chain = chain.then(function () { return api('log', step); });
   });
-  return chain.catch(function (err) {
+  return chain.then(function () {
+    return true;
+  }, function (err) {
     if (undo) restoreToggles(undo);
     writeFailed(err);
-  }).then(function () {
+    return false;
+  }).then(function (wrote) {
     if (undo) endToggleWrite();          // release the baseline once drained
+    return wrote;
   });
 }
 
@@ -1204,13 +1253,20 @@ function renderProject() {
   });
 }
 
-/** Close one project without touching the others, or the work clock. */
+/* Write the row that closes one project, without touching the others or the
+ * work clock. Separate from the button handler because the tracker needs the
+ * same row: closing a project is how an append-only store takes something back,
+ * and a rename that reopens one has to be able to close it again. */
+function closeProject(name) {
+  noteLocalRow('done', name, name);
+  runWrites([{ type: 'done', raw_text: name, project: name }]);
+}
+
 function finishProject(btn, name) {
   if (btn.disabled) return;
   coolDown(btn);
-  noteLocalRow('done', name, name);
+  closeProject(name);
   flash(name + ' — done', 'ok');
-  runWrites([{ type: 'done', raw_text: name, project: name }]);
 }
 
 // The clock on screen should move without a round trip. Cheap: it only re-reads
@@ -1279,7 +1335,8 @@ var STATE_ROWS = {
   'break': { kind: 'work', state: 'break' },
   off: { kind: 'work', state: 'off' },
   resume: { kind: 'work', state: 'working' },
-  work: { kind: 'work', state: 'working' }   // typing an entry means you are working
+  work: { kind: 'work', state: 'working' },  // typing an entry means you are working
+  voice: { kind: 'work', state: 'working' }  // and so does speaking one
 };
 
 var WORK_STATES = { working: 1, 'break': 1, off: 1 };
@@ -1998,30 +2055,470 @@ $('projectSaveBtn').addEventListener('click', function () {
 
 // ------------------------------------------------------------------ tracker
 
+/* WHERE THE PROJECT COMES FROM, AND WHY THE ROW IS WRITTEN BEFORE IT ARRIVES.
+ *
+ * THE ROW IS WRITTEN ON THE TAP. Nothing waits for the model. Read the rest only
+ * if you are tempted to move that write behind the extraction again; it was
+ * there for one round of this stage and every problem below is one it caused.
+ *
+ * Holding the row back until Gemini answers looks like it costs a few seconds of
+ * latency on a write nobody is watching. What it actually costs is the user's
+ * next action. Four seconds is long enough to press Break, or End the day, or
+ * Sleep — and the held-back row then lands with a LATER timestamp than the
+ * button that was pressed after it. replayDay() reads it as "started working
+ * again", so the break silently evaporates; reconcileToggles() sees a newer row
+ * and flips the pill back to Working. The app overwrites a deliberate action
+ * with an inference. It is also a row that simply does not exist if the phone is
+ * locked or the tab is closed inside those four seconds.
+ *
+ * So the label has to arrive afterwards, and it does — as an UPDATE that fills
+ * in `project` on the row we already wrote (action `label`, and the narrow
+ * policy that permits it in docs/supabase_schema.sql).
+ *
+ * THE ONE HARD PART, because the previous round's comment was right about it:
+ * replayDay() keys a project on `row.project || row.raw_text`, so filling in
+ * `project` RENAMES the tile. Press Done in the gap and the `done` row names the
+ * sentence while the work row now names the project, and nothing closes. Three
+ * things keep that safe, in this order:
+ *
+ *   1. the label is skipped entirely if the tile is no longer open — a Done
+ *      already pressed means the row stays unlabelled and the two names agree;
+ *   2. the tile is renamed on screen only AFTER the database has taken the
+ *      label, so a Done pressed while it is in flight still writes the old name;
+ *   3. and if that happened, the rename is followed by a second `done` row under
+ *      the new name. An append-only store takes something back by appending.
+ *
+ * Rejected on the way here, so nobody re-treads it:
+ *   - extract first with a short (~800ms) deadline: still defers the row, still
+ *     loses it if the tab closes, and a cold Edge Function plus a model call
+ *     overruns 800ms often enough that most entries would land unlabelled;
+ *   - stamp `at` at tap time and keep the deferred insert: fixes the ordering
+ *     and nothing else — Done still closes a name that never opened;
+ *   - never label at all: the tile stays named after the whole sentence, which
+ *     is the feature this stage exists to remove.
+ *
+ * THE TRADE that remains: labelling needs an UPDATE policy the user has to run
+ * once in the Supabase SQL editor. Until they do, the update matches no rows,
+ * `labelled` comes back false, and every entry keeps the sentence as its name —
+ * which is exactly the behaviour that shipped before this existed, not a broken
+ * state. The row itself is never at risk either way.
+ */
+/* Nothing on screen waits for this any more, so it is no longer a latency
+ * budget: it is how long a label may take before the entry simply keeps the
+ * sentence as its name. Still bounded, because an abandoned request must not
+ * still be open when the next entry starts its own. */
+var EXTRACT_DEADLINE_MS = 4000;
+
+/** Nothing understood. A fresh object every time, because callers read from it
+ *  and one shared instance is a bug waiting for a careless assignment. */
+function noExtraction() {
+  return { project: '', detail: '' };
+}
+
+/* Gemini answers in a fixed shape because the Edge Function asks for one. This
+ * is that shape, in the API's own schema vocabulary. */
+var EXTRACT_SCHEMA = {
+  type: 'OBJECT',
+  properties: {
+    project: { type: 'STRING' },
+    detail: { type: 'STRING' }
+  },
+  required: ['project', 'detail']
+};
+
+/* THE OPEN PROJECTS GO IN THE PROMPT, and that is a correctness requirement
+ * rather than a nicety. A project is identified by its exact string, so
+ * "Sauda Kifyaha", "sauda kifyaha" and "Sauda" are three separate tiles on Home,
+ * three separate rows in the review, and three separate things to press Done on.
+ * Telling the model what is already open is what keeps one project one project. */
+function extractPrompt(text, known) {
+  var lines = [
+    'You are labelling one line from a personal activity log. Answer with JSON only.',
+    '',
+    'The line: ' + JSON.stringify(text),
+    '',
+    'project: the short name of the thing being worked on, two or three words at most.',
+    'detail: what is being done to it, a few words. Use "" if the line does not say.'
+  ];
+
+  if (known && known.length) {
+    lines.push('');
+    lines.push('Projects already open today: ' + known.map(function (n) {
+      return JSON.stringify(String(n));
+    }).join(', '));
+    lines.push('If this line is about one of those, copy that name EXACTLY, character ' +
+               'for character, including its capitals.');
+  }
+
+  lines.push('');
+  lines.push('If no project is named or implied, return "" for both fields.');
+  lines.push('Never reword, translate, expand or correct what was written.');
+  return lines.join('\n');
+}
+
+/* The function is asked for structured output, but the two halves of this app
+ * deploy separately — a git push here, a hand paste into the Supabase dashboard
+ * there — so a deployment that predates that change will answer with prose, and
+ * prose asked for JSON arrives inside ``` fences often enough to matter. Reading
+ * the fenced form costs three lines and is the difference between a labelled row
+ * and a silently unlabelled one. */
+function parseExtraction(text) {
+  var body = String(text || '').trim();
+  var fenced = /^```(?:json)?\s*([\s\S]*?)\s*```$/i.exec(body);
+  if (fenced) body = fenced[1].trim();
+  try {
+    return JSON.parse(body);
+  } catch (e) {
+    return null;
+  }
+}
+
+/* A project name becomes a tile, a key in byProject, and the text of the `done`
+ * row that eventually closes it — and the store is append-only, so a model that
+ * runs on leaves a permanent mess. Trim it, cap it, and snap a case-only
+ * difference back onto the project that is already open: asking for an exact
+ * match is not the same as getting one. */
+var PROJECT_MAX = 60;
+var DETAIL_MAX = 120;
+
+function tidyExtraction(got, known) {
+  var squash = function (v) {
+    return String((got && got[v]) || '').replace(/\s+/g, ' ').trim();
+  };
+  var project = squash('project');
+  var detail = squash('detail').slice(0, DETAIL_MAX);
+
+  /* Match against the open projects BEFORE capping, and skip the cap on a hit.
+   * Every tile logged before this feature existed is named after a whole
+   * sentence, which is longer than PROJECT_MAX — so truncating a name the model
+   * copied correctly would split the very tile the matching is here to keep
+   * whole. The cap exists to contain a model that runs on, not to rename a
+   * project the user already has. */
+  var matched = '';
+  (known || []).forEach(function (name) {
+    if (project && project.toLowerCase() === String(name).toLowerCase()) matched = name;
+  });
+
+  return { project: matched || project.slice(0, PROJECT_MAX), detail: detail };
+}
+
+/**
+ * Ask the Edge Function to split one line into project + detail.
+ *
+ * DELIBERATELY NOT THROUGH api(). api() serialises every call through apiChain
+ * so this device never competes with itself for the backend; a language model in
+ * that queue would make the next M press and the next prayer tap wait behind it,
+ * which is the one thing rule 4 forbids. This is a plain fetch, off the chain,
+ * and nothing else in the app waits on it.
+ *
+ * It never rejects. Offline, signed out, timed out, running on the Apps Script
+ * fallback, or handed something that is not JSON — every one of those resolves
+ * to {project:'', detail:''}, which is exactly what the tracker wrote before.
+ */
+function extractProject(text, known) {
+  var ctrl = typeof AbortController === 'function' ? new AbortController() : null;
+  var timer;
+
+  var deadline = new Promise(function (resolve) {
+    timer = setTimeout(function () {
+      // Abort as well as resolve: a request nobody is waiting for any more
+      // should not still be open when the next entry starts its own.
+      if (ctrl) { try { ctrl.abort(); } catch (e) { /* already finished */ } }
+      resolve(noExtraction());
+    }, EXTRACT_DEADLINE_MS);
+  });
+
+  return Promise.race([askGemini(text, known, ctrl), deadline]).then(function (got) {
+    clearTimeout(timer);
+    return got;
+  }, function () {
+    clearTimeout(timer);
+    return noExtraction();                 // see the promise above: never throws
+  });
+}
+
+async function askGemini(text, known, ctrl) {
+  /* Gemini has one home and it is the Supabase Edge Function — the key is a
+   * secret of that function and must never be anywhere else. On the Apps Script
+   * fallback there is simply nothing to ask, and the row goes in unlabelled. */
+  if (cfg.backend !== 'supabase' || !sb || !sbUser) return noExtraction();
+
+  var got = await sb.auth.getSession();
+  var session = got && got.data ? got.data.session : null;
+  if (!session || !session.access_token) return noExtraction();
+
+  var base = String(cfg.supaUrl || '').trim().replace(/\/+$/, '');
+  var res = await fetch(base + '/functions/v1/gemini', {
+    method: 'POST',
+    signal: ctrl ? ctrl.signal : undefined,
+    headers: {
+      /* JSON, not the text/plain that rule 1 demands of Apps Script. That rule
+       * exists because Apps Script cannot answer the CORS preflight an
+       * application/json POST triggers. This function answers OPTIONS itself. */
+      'Content-Type': 'application/json',
+      // The user's own token, not the anon key: the function refuses anything
+      // whose role is not `authenticated`.
+      'Authorization': 'Bearer ' + session.access_token,
+      'apikey': String(cfg.supaKey || '').trim()
+    },
+    body: JSON.stringify({
+      prompt: extractPrompt(text, known),
+      json: true,
+      schema: EXTRACT_SCHEMA
+    })
+  });
+
+  var data = await res.json().catch(function () { return null; });
+  if (!res.ok || !data || !data.ok) return noExtraction();
+  return tidyExtraction(parseExtraction(data.text), known);
+}
+
+/* Did the mic put the current text in the box? It survives editing on purpose —
+ * fixing a misheard word does not make the sentence typed — but not clearing. */
+var voiceFilled = false;
+
+$('trackerInput').addEventListener('input', function () {
+  if (!this.value.trim()) voiceFilled = false;
+});
+
 $('trackerForm').addEventListener('submit', function (e) {
   e.preventDefault();
   var input = $('trackerInput');
   var text = input.value.trim();
   if (!text) return;
 
+  /* replayDay() treats `voice` and `work` identically, so this changes no number
+   * anywhere. It is recorded only so Stage 5 can answer "how much of this did I
+   * speak rather than type", which is unanswerable later if it is not kept now. */
+  var type = voiceFilled ? 'voice' : 'work';
+  voiceFilled = false;
+
   input.value = '';
   var undo = beginToggleWrite();
 
   var steps = wakeSteps(true);             // logging work is starting work
-  // project stays empty until Gemini splits it out; replayDay() falls back to
-  // the raw text so Home can already name what you are on.
-  steps.push({ type: 'work', raw_text: text });
+
+  /* The open projects, read BEFORE the optimistic row is added. Afterwards the
+   * row we are about to write is itself in that list — keyed on the whole
+   * sentence, because it has no project yet — and the prompt would be inviting
+   * the model to reuse the sentence as a project name. */
+  var known = openProjects();
 
   // Typing an entry means you are working — if you were on a break or the day
   // was marked over, this reopens it, so the clock and the label agree.
   if (toggles.work.state !== 'working') setToggle('work', 'working');
-  noteLocalRow('work', text);
+  var row = noteLocalRow(type, text);
   flash('Logged', 'ok');
-  runWrites(steps, undo);
+
+  /* The id of this row, made HERE rather than inside api(), because a label that
+   * arrives in a few seconds has to be able to name the row it belongs to. It is
+   * the same id every retry of the write would carry, so it stays one row. */
+  var rid = newRid();
+
+  steps.push({
+    type: type,
+    raw_text: text,                        // VERBATIM. The model never edits the
+                                           // human record, and Code.gs rejects
+                                           // an empty one.
+    project: '',                           // filled in later, or never
+    detail: '',
+    rid: rid
+  });
+
+  // On the tap. Everything below only decides what this row is CALLED.
+  var wrote = runWrites(steps, undo);
+
+  /* Hide this sentence from the next entry's prompt while its own label is in
+   * flight. Only while: once the label has settled, an entry that stayed
+   * unlabelled is an ordinary sentence-named tile, and the model should be told
+   * about it so a follow-up line lands on the same tile rather than a new one. */
+  awaitingLabel[text] = (awaitingLabel[text] || 0) + 1;
+
+  function forget() {
+    awaitingLabel[text] -= 1;
+    if (awaitingLabel[text] <= 0) delete awaitingLabel[text];
+  }
+
+  function settle(got) {
+    if (!got.project) { forget(); return; } // understood nothing: the old behaviour
+    wrote.then(function (ok) {
+      // A row that never landed has nothing to label, and the failed write has
+      // already scheduled its own reconcile against the store.
+      if (!ok) { forget(); return; }
+      applyLabel(rid, text, row, got, forget);
+    });
+  }
+
+  extractProject(text, known).then(settle, function () { settle(noExtraction()); });
 });
 
-$('micBtn').addEventListener('click', function () {
-  flash('Arrives in Stage ' + this.dataset.stage + '.');
+/* Tile names whose label has not settled yet — kept out of the next entry's
+ * prompt. Counted rather than flagged, because the same sentence can be logged
+ * twice before either one is answered. */
+var awaitingLabel = {};
+
+/** What the model may be told is already open. */
+function openProjects() {
+  return replayDay(lastLog).activeProjects.filter(function (name) {
+    return !awaitingLabel[name];
+  });
+}
+
+/** Is `name` still an open project, as far as this device knows right now? */
+function isOpenProject(name) {
+  return replayDay(lastLog).activeProjects.indexOf(name) !== -1;
+}
+
+/**
+ * Put Gemini's project name on a row that is already written.
+ *
+ * `key` is what the tile is called until this lands — the raw sentence — and
+ * every check here is about that name changing under the user's feet. See the
+ * long note at the top of the tracker for why the row is written first.
+ */
+function applyLabel(rid, key, row, got, done) {
+  /* Supabase only. The Apps Script fallback cannot change a row it has already
+   * appended, and extractProject() never returns a project there anyway. */
+  if (!usingSupabase()) { done(); return; }
+
+  /* Done already pressed — including on the other device, since these rows are
+   * the shared truth. Labelling now would rename the tile back into existence
+   * under a name that no `done` row has ever used, and the real one could then
+   * never be closed. An unlabelled row is the right answer here. */
+  if (!isOpenProject(key)) { done(); return; }
+
+  api('label', { rid: rid, project: got.project, detail: got.detail }).then(function (res) {
+    done();
+    // No update policy in the database yet, or the row is not there: the entry
+    // keeps the sentence as its name, which is where this stage started.
+    if (!res || !res.labelled) return;
+
+    /* The tile was closed while the update was in flight, so the `done` row
+     * names the sentence and the store now names the project. Close it again
+     * under the new name: an append-only store takes something back by
+     * appending, and a `done` for a project that is not open costs nothing. */
+    if (!isOpenProject(key)) { closeProject(got.project); return; }
+
+    row.project = got.project;
+    row.detail = got.detail;
+    renderProject();
+    renderDaySummary();
+    renderLogList();
+    // A refresh may have replaced the row above with the store's own copy, in
+    // which case the rename shows up when this lands rather than immediately.
+    scheduleRefresh(600);
+
+    // Model output, so textContent only — which is all flash() ever uses.
+    flash('Logged — ' + got.project + (got.detail ? ': ' + got.detail : ''), 'ok');
+  }, function () {
+    done();                                // saved and unlabelled; nothing to undo
+  });
+}
+
+// -------------------------------------------------------------------- voice
+
+/* The Web Speech API, which in practice means Chrome's webkit-prefixed one.
+ * Worth knowing before reading the error handling: it is NOT on-device on the
+ * desktop — Chrome ships the audio to Google and simply fails with no
+ * connection, which is why `network` gets a message of its own. */
+var Recognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+var micBtn = $('micBtn');
+
+/* A button that cannot work is worse than no button, and there is a real
+ * fallback one line below it in the markup: the keyboard's own mic. */
+if (!Recognition) micBtn.hidden = true;
+
+/* Chrome mishears the app's own name more often than it gets it right —
+ * "Pro Being", "ProBing", "probing" — and none of those spellings belong in the
+ * log. One pattern covers them all: "pro", an optional space, then "being" or
+ * "bing", and whatever punctuation follows.
+ *
+ * The possessive is spelled out because "ProBeing's roadmap review" is a normal
+ * thing to say, and the word boundary lands before the apostrophe: without the
+ * `'s` the entry was logged as "'s roadmap review". Both apostrophes, because a
+ * phone keyboard and a transcript disagree about which one they use. */
+var WAKE_WORD = /^\s*pro\s*be?ing\b(?:['’]s)?[\s,.:;'’-]*/i;
+
+function stripWakeWord(said) {
+  return String(said || '').replace(WAKE_WORD, '').trim();
+}
+
+/* Told apart on purpose. "It did not hear you", "your microphone is blocked" and
+ * "you are offline" need three completely different responses from the person
+ * holding the phone, and one generic "voice failed" teaches them to ignore all
+ * three. The blocked-mic case is also the one the Gboard note under the tracker
+ * is there for. */
+var VOICE_ERRORS = {
+  'not-allowed': 'Microphone is blocked — use the keyboard\'s mic instead.',
+  'service-not-allowed': 'Microphone is blocked — use the keyboard\'s mic instead.',
+  network: 'Voice needs a connection. Type it, or try again when you are back online.',
+  'no-speech': 'Did not catch that — tap the mic and say it again.',
+  'audio-capture': 'No microphone found on this device.'
+};
+
+var listening = false;
+var recognizer = null;
+
+function stopListening() {
+  listening = false;
+  micBtn.classList.remove('listening');
+  micBtn.setAttribute('aria-pressed', 'false');
+}
+
+if (Recognition) micBtn.addEventListener('click', function () {
+  if (listening) {                         // a second tap means "I have finished"
+    try { recognizer.stop(); } catch (e) { /* it may have stopped by itself */ }
+    return;
+  }
+
+  var rec = new Recognition();
+  recognizer = rec;
+  rec.lang = navigator.language || 'en-US';  // the device's language, not a guess
+  rec.interimResults = false;              // one settled answer, not a live stream
+  rec.continuous = false;                  // one sentence, then stop on its own
+  rec.maxAlternatives = 1;
+
+  rec.onresult = function (ev) {
+    var said = ev.results && ev.results[0] && ev.results[0][0]
+      ? ev.results[0][0].transcript : '';
+    var heard = stripWakeWord(said);
+    if (!heard) { flash(VOICE_ERRORS['no-speech']); return; }
+
+    /* FILLED, NOT SUBMITTED, and that is a deliberate departure from the plan.
+     * The store is append-only and has no delete, so a misheard sentence written
+     * without anyone reading it is a row you keep for good. One tap on Log is
+     * still comfortably inside the five-second rule, and it is the only moment a
+     * mishearing can be caught. Appended rather than replacing, so tapping the
+     * mic after typing does not silently destroy what was typed. */
+    var box = $('trackerInput');
+    var had = box.value.trim();
+    box.value = had ? had + ' ' + heard : heard;
+    voiceFilled = true;
+    box.focus();
+  };
+
+  rec.onerror = function (ev) {
+    var code = ev && ev.error;
+    if (code === 'aborted') return;        // the user stopped it; nothing to report
+    // no-speech is not a failure, it is a retry — so no red banner for it.
+    var quiet = code === 'no-speech';
+    flash(VOICE_ERRORS[code] || ('Voice failed' + (code ? ' — ' + code : '.')),
+          quiet ? '' : 'err');
+  };
+
+  rec.onend = stopListening;
+
+  try {
+    rec.start();
+  } catch (e) {
+    stopListening();
+    flash('Could not start the microphone.', 'err');
+    return;
+  }
+
+  listening = true;
+  micBtn.classList.add('listening');
+  micBtn.setAttribute('aria-pressed', 'true');
 });
 
 $('refreshBtn').addEventListener('click', function () { refresh({ announce: true }); });

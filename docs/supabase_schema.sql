@@ -61,9 +61,45 @@ do $$ begin
     for insert with check (auth.uid() = user_id);
 exception when duplicate_object then null; end $$;
 
--- Deliberately no update or delete policy. The log is append-only, the same as
--- the Sheet was: a mistake is corrected by a later row, never by rewriting
--- history. Rows can still be removed by hand in the Supabase table editor.
+-- Deliberately no delete policy. The log is append-only, the same as the Sheet
+-- was: a mistake is corrected by a later row, never by rewriting history. Rows
+-- can still be removed by hand in the Supabase table editor.
+--
+-- ONE EXCEPTION, AND IT IS AS NARROW AS POSTGRES CAN MAKE IT: filling in a blank
+-- project name. The tracker writes your entry the instant you press Log — it
+-- must, or a Break pressed a second later would be overwritten by a row that
+-- landed after it — and Gemini's short name for it ("Sauda Kifyaha" out of
+-- "working on Sauda Kifyaha, fixing the auth bug") arrives a few seconds behind.
+--
+-- IN PLAIN LANGUAGE, this is what the app can now do that it could not before:
+-- on a row of YOUR OWN, of type work or voice, whose project box is still EMPTY,
+-- it may write the project and detail boxes. That is all.
+--   * NOT "once": while the project box is still empty the row stays writable,
+--     and detail can be rewritten freely in that state. What is permanent is
+--     the moment project becomes non-blank — after that the row is frozen. The
+--     app only ever writes once, but the POLICY permits more, and a comment
+--     about a security boundary has to describe the boundary, not the caller.
+--   * `using` reads the row as it is now, so a project that has been filled in
+--     can never be changed again — including back to blank.
+--   * the grant below is per-COLUMN, so `raw_text`, `at`, `type` and `rid` are
+--     not writable from a browser at all: what you actually typed, and when,
+--     cannot be rewritten by this app or by anyone holding the public anon key.
+-- The words stay exactly as you said them; only the label can be filled in.
+do $$ begin
+  create policy "label own unlabelled rows" on public.events
+    for update
+    using (auth.uid() = user_id and project = '' and type in ('work', 'voice'))
+    with check (auth.uid() = user_id);
+exception when duplicate_object then null; end $$;
+
+-- Row level security picks WHICH ROWS; these two lines pick WHICH COLUMNS.
+-- Supabase grants a signed-in browser update on every column by default, so the
+-- blanket grant is taken away first and a two-column one put back. Re-running
+-- this file is safe: revoking a privilege that is not held does nothing.
+revoke update on public.events from authenticated;
+grant update (project, detail) on public.events to authenticated;
+-- `anon` needs no revoke: the policy above requires auth.uid() to match a row's
+-- owner, and a signed-out visitor has no auth.uid() at all.
 
 -- --------------------------------------------------------------- realtime
 -- What makes the phone and the laptop update each other without a refresh.

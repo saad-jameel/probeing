@@ -5,13 +5,21 @@
 // the world can read. The key lives only as a Supabase function secret, and the
 // browser asks this function to do the talking on its behalf.
 //
-// Deliberately tiny — one prompt in, one string out. No date ranges, no database
-// reads, no review logic. Stage 5 replaces it with the real report generator, and
-// keeping it this small is what makes throwing it away cost nothing.
+// Deliberately tiny — one prompt in, one string out, and optionally a schema that
+// says what shape that string must be. No date ranges, no database reads, no
+// review logic. Stage 5 replaces it with the real report generator, and keeping it
+// this small is what makes throwing it away cost nothing.
 //
 // Deployed by hand; the repo stays the source of truth:
 //   npx supabase secrets set GEMINI_API_KEY=... --project-ref <ref>
 //   npx supabase functions deploy gemini --project-ref <ref>
+//
+// THE REPO CANNOT PROVE WHAT IS RUNNING HERE, and it has already been wrong
+// once: the model name in this file and the one in the deployed copy drifted
+// apart, which is why MODEL is read from an env var below rather than being
+// edited in place. Every functional change to this file — the structured-output
+// block below is one — is dead in the repo until somebody pastes the file into
+// the dashboard and presses Deploy. A comment-only change is safe to leave.
 //
 // Leave the project's "Verify JWT" setting ON (the default). It is a free extra
 // layer, but it is NOT the check that matters — see steps 2 and 4 below for why.
@@ -133,12 +141,35 @@ Deno.serve(async (req: Request): Promise<Response> => {
   const key = Deno.env.get('GEMINI_API_KEY') || '';
   if (!key) return reply(500, { ok: false, error: 'GEMINI_API_KEY is not set on this function' });
 
+  /* `prompt` alone is the original contract and still works untouched — that is
+   * what keeps Settings -> Test Gemini passing after this change.
+   *
+   * `json` and `schema` are the addition. Asking a model in prose to "reply with
+   * only JSON" gets you JSON wrapped in ``` fences some fraction of the time, and
+   * every one of those is a row the app quietly fails to label. Structured output
+   * makes that the API's problem instead of ours.
+   *
+   * The schema arrives in the request rather than living here as a constant,
+   * because the shape is the CALLER's business: Stage 4 wants {project, detail}
+   * and Stage 5 will want something else entirely. Accepting it costs nothing —
+   * only the one pinned owner can reach this line at all. */
   let prompt = '';
+  let wantsJson = false;
+  let schema: unknown = null;
   try {
     const sent = await req.json();
     prompt = String((sent && sent.prompt) || '').trim();
+    wantsJson = Boolean(sent && sent.json);
+    if (sent && sent.schema && typeof sent.schema === 'object') schema = sent.schema;
   } catch (_e) { /* an unparseable body is just a missing prompt */ }
   if (!prompt) return reply(400, { ok: false, error: 'prompt is required' });
+
+  const ask: Record<string, unknown> = { contents: [{ parts: [{ text: prompt }] }] };
+  if (wantsJson || schema) {
+    const gen: Record<string, unknown> = { responseMimeType: 'application/json' };
+    if (schema) gen.responseSchema = schema;
+    ask.generationConfig = gen;
+  }
 
   // The key travels in a header, not the query string, so it cannot end up in a
   // redirect, a referrer, or somebody's request log. Wrapped for the same reason
@@ -149,7 +180,7 @@ Deno.serve(async (req: Request): Promise<Response> => {
     res = await fetch(GEMINI_URL + MODEL + ':generateContent', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', 'x-goog-api-key': key },
-      body: JSON.stringify({ contents: [{ parts: [{ text: prompt }] }] })
+      body: JSON.stringify(ask)
     });
   } catch (e) {
     return reply(502, { ok: false, error: 'could not reach gemini: ' + scrub(e) });

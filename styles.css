@@ -186,6 +186,13 @@ body {
 .btn-wide { display: flex; align-items: center; justify-content: center; gap: 8px; width: 100%; }
 .btn-ico { width: 17px; height: 17px; display: block; }
 .btn-mic { flex: 0 0 auto; padding: 14px; font-size: 18px; line-height: 1; }
+/* Red while it is listening: the only other signal that the mic is live is the
+   browser's own tab indicator, which nobody looks at on a phone. */
+.btn-mic.listening { background: var(--danger); color: #fff; border-color: transparent; }
+/* Rule 6, kept ahead of the trouble. app.js hides this button outright where
+   there is no Web Speech API, so the day someone gives .btn-mic a `display` the
+   pair is already here and hidden still means hidden. */
+.btn-mic[hidden] { display: none; }
 
 .link-btn {
   background: none; border: 0; color: var(--accent);

@@ -62,7 +62,7 @@
 <section class="screen" data-screen="home">
 
   <div class="grid-2">
-    <button id="mBtn" class="tile tile-m" data-stage="3">
+    <button id="mBtn" class="tile tile-m">
       <span class="tile-ico m-letter">M</span>
       <span class="tile-label">M</span>
       <span id="mCount" class="tile-sub">0 today</span>
@@ -107,9 +107,14 @@
 
   <form id="trackerForm" class="tracker" autocomplete="off">
     <input id="trackerInput" type="text" placeholder="What are you working on?" aria-label="Log an activity">
-    <button type="button" id="micBtn" class="btn btn-mic" data-stage="4" aria-label="Voice note">&#127908;</button>
+    <button type="button" id="micBtn" class="btn btn-mic" aria-label="Voice note" aria-pressed="false">&#127908;</button>
     <button type="submit" class="btn btn-accent">Log</button>
   </form>
+  <!-- Plan step 4. Visible here rather than buried in Settings, because the
+       moment it is needed is the moment the mic button has just refused: on a
+       phone whose mic permission is off, or a browser with no Web Speech at all,
+       where app.js hides that button entirely. -->
+  <p class="hint">Your keyboard&rsquo;s own mic (Gboard) works in this box too &mdash; tap the box, then the mic on the keyboard.</p>
 
   <!-- Point 3: 'off' had no way in except going to bed. This is that way. -->
   <button id="dayBtn" class="btn btn-wide">
