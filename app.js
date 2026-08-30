@@ -31,6 +31,8 @@ var DEFAULT_SUPABASE_ANON = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdX
 var CFG_KEY = 'probeing.config';
 var TOGGLE_KEY = 'probeing.toggles';        // current sleep/work state, per device
 var CHIP_STATS_KEY = 'probeing.chipstats';  // how often each status gets logged
+var PROJECT_NAMES_KEY = 'probeing.projects'; // project names seen lately, reused for free
+var GEMINI_DAY_KEY = 'probeing.geminiday';   // today's Gemini call count, against the free tier
 
 // Kept in step with the same two lists in Code.gs, which validates them server-side.
 var PRAYER_NAMES = ['Fajr', 'Dhuhr', 'Asr', 'Maghrib', 'Isha'];
@@ -2117,7 +2119,15 @@ $('projectSaveBtn').addEventListener('click', function () {
  * It is still bounded, because a sentence whose label is in flight is held out
  * of the next entry's prompt, and holding that open for a minute is how two
  * tiles appear for one project. With deliberation off this should be about a
- * second; 15 is the allowance for a cold function, not the expectation. */
+ * second; 15 is the allowance for a cold function, not the expectation.
+ *
+ * It bounds ONE call, not one entry. An entry that arrives while a call is out
+ * waits for that call and then goes in the next one, so its own label can be up
+ * to two deadlines away — and, if the minute is already full, up to a further
+ * minute on top of that while the pacer holds the batch. That is deliberate on
+ * both counts: the batching is what keeps the day inside 20 Gemini calls and
+ * the pacing is what keeps it inside 5 a minute. It costs nothing on screen,
+ * because the row was written on the tap and only its name is outstanding. */
 var EXTRACT_DEADLINE_MS = 15000;
 
 /** Nothing understood. A fresh object every time, because callers read from it
@@ -2127,14 +2137,28 @@ function noExtraction() {
 }
 
 /* Gemini answers in a fixed shape because the Edge Function asks for one. This
- * is that shape, in the API's own schema vocabulary. */
+ * is that shape, in the API's own schema vocabulary.
+ *
+ * `n` IS THE LINE NUMBER, and it is here for the batch. Several lines share one
+ * prompt now, and the answers are matched back to them by POSITION — so a model
+ * that returns the right NUMBER of objects in the wrong ORDER would file every
+ * row in that batch under somebody else's project, silently and permanently, in
+ * an append-only store. Counting the answers cannot see a reorder; making each
+ * answer say which line it belongs to can. askGeminiMany() checks it and throws
+ * the WHOLE batch away when it does not line up.
+ *
+ * The one-line path asks for `n` as well, because the schema is shared, and then
+ * ignores what comes back: with a single entry there is only one position, so
+ * there is nothing to misalign, and discarding a correct name because the model
+ * wrote 0 where we wanted 1 would cost a call and buy nothing. */
 var EXTRACT_SCHEMA = {
   type: 'OBJECT',
   properties: {
+    n: { type: 'INTEGER' },
     project: { type: 'STRING' },
     detail: { type: 'STRING' }
   },
-  required: ['project', 'detail']
+  required: ['n', 'project', 'detail']
 };
 
 /* THE OPEN PROJECTS GO IN THE PROMPT, and that is a correctness requirement
@@ -2148,6 +2172,8 @@ function extractPrompt(text, known) {
     '',
     'The line: ' + JSON.stringify(text),
     '',
+    // Asked for so the required field means something; the answer is not read.
+    'n: the number 1. There is only this one line.',
     'project: the short name of the thing being worked on, two or three words at most.',
     'detail: what is being done to it, a few words. Use "" if the line does not say.'
   ];
@@ -2213,8 +2239,390 @@ function tidyExtraction(got, known) {
   return { project: matched || project.slice(0, PROJECT_MAX), detail: detail };
 }
 
+/* ---------------------------------------------------------------------------
+ * NAMING AN ENTRY WITHOUT SPENDING A GEMINI CALL.
+ *
+ * The free tier allows 5 requests a minute and TWENTY A DAY. Saad logs 30-40
+ * entries on a normal day, so the shape this stage first shipped with — one
+ * Gemini call per entry — ran out somewhere after lunch, and every entry after
+ * that stayed unnamed. Measured off Google's own dashboard on the day it
+ * happened: RPD 21/20, against TPM 375 of 250,000.
+ *
+ * Read those two numbers together, because they are the whole design. Tokens
+ * are not the scarce thing; CALLS are. One prompt covering ten entries costs
+ * exactly what one covering a single entry costs. Bigger prompts are free;
+ * extra calls are not. So:
+ *
+ *   1. reuse a name we already know, on the device, for nothing. Once
+ *      "NeuraVue" has been named once, every later line that says NeuraVue is
+ *      free — today, and tomorrow too, because the names are remembered.
+ *   2. coalesce whatever is left DURING FLIGHT. An entry arriving while no call
+ *      is out goes on its own, at once, so an unhurried day feels exactly as it
+ *      does now; entries arriving while a call IS out wait for it and then go
+ *      together, as one call.
+ *   3. pace what is left at 4 calls a minute, holding rather than sending the
+ *      one that would be refused (see the pacer, below).
+ *   4. stop at a self-imposed 18 rather than let Google refuse the 21st.
+ *
+ * WHAT THIS ACTUALLY COSTS, measured rather than hoped for. 40 entries across 5
+ * projects, typed one at a time through a day, varying only how many of those
+ * lines literally contain the project's name — because step 1 is a plain
+ * word-for-word match and cannot read anything else:
+ *
+ *     lines naming the project | Gemini calls | named | left unnamed
+ *          100%                       5           40         0
+ *           75%                      14           40         0
+ *           50%                      18           35         5   <- budget gone
+ *           25%                      18           26        14
+ *            0%                      18           18        22
+ *
+ * READ THE FIRST ROW AS THE CEILING OF THE SAVING, NOT AS THE DAY. It needs
+ * every single line to spell the name out, and real log lines often do not:
+ * "fixed the login bug", "finished the invoice" and "called him back" name
+ * nothing a matcher can see, and lines like those are precisely why Gemini is
+ * here at all. Somewhere below half, the budget runs out during the day and
+ * every entry after that keeps its own sentence as its project name — saved,
+ * complete, just not tidied. That is a real outcome, not a fault, and it is the
+ * behaviour that shipped before any of this existed.
+ *
+ * The old shape cost 40 calls and hit Google's refusal every day, so all five
+ * rows are an improvement on it. Only the first is a triumph.
+ * ------------------------------------------------------------------------- */
+
+/* Names are remembered across reloads because "tomorrow's lines about it are
+ * free too" is most of the saving. Most-recent-first and capped: a list that
+ * grows for ever is a list where a name used once in March can still capture a
+ * line in September. */
+var PROJECT_NAMES_MAX = 60;
+
+function loadProjectNames() {
+  var saved = null;
+  try {
+    saved = JSON.parse(localStorage.getItem(PROJECT_NAMES_KEY));
+  } catch (e) { /* corrupt storage is an empty memory, not a broken app */ }
+  if (!Array.isArray(saved)) return [];
+  return saved.filter(function (n) {
+    return typeof n === 'string' && n.trim();
+  }).slice(0, PROJECT_NAMES_MAX);
+}
+
+var recentProjects = loadProjectNames();
+
+/** Put `name` at the front of the remembered list. Called for every name the
+ *  app settles on, including one it recognised locally — using a name is what
+ *  keeps it near the front, so a project you have stopped working on falls off
+ *  the end by itself rather than needing to be forgotten on purpose. */
+function rememberProject(name) {
+  var clean = String(name || '').replace(/\s+/g, ' ').trim();
+  if (!clean) return;
+
+  var keep = [clean];
+  recentProjects.forEach(function (n) {
+    if (n.toLowerCase() === clean.toLowerCase()) return;   // moved, not duplicated
+    if (keep.length < PROJECT_NAMES_MAX) keep.push(n);
+  });
+  recentProjects = keep;
+
+  try {
+    localStorage.setItem(PROJECT_NAMES_KEY, JSON.stringify(recentProjects));
+  } catch (e) { /* a full store costs a remembered name, never a row */ }
+}
+
+/** Every project name this device could recognise: the ones on today's rows
+ *  that already carry one, then the remembered set. */
+function knownNames() {
+  var seen = {};
+  var out = [];
+
+  function add(name) {
+    var clean = String(name || '').replace(/\s+/g, ' ').trim();
+    var key = clean.toLowerCase();
+    /* `=== 1`, not truthiness: a plain object inherits `constructor` and
+     * `toString` from its prototype, and a project may fairly be called either
+     * of those. */
+    if (!clean || seen[key] === 1) return;
+    seen[key] = 1;
+    out.push(clean);
+  }
+
+  (lastLog || []).forEach(function (row) {
+    /* The type check is load-bearing: a PRAYER row carries the prayer's name in
+     * `project`. Without it "Asr" and "Isha" become matchable project names and
+     * the next line that mentions one gets filed under it. */
+    if (row.type !== 'work' && row.type !== 'voice' && row.type !== 'done') return;
+    add(row.project);
+  });
+  recentProjects.forEach(add);
+  return out;
+}
+
+/* WORD FOR WORD, NEVER SUBSTRING. "auth" must not match inside "author": a
+ * wrong name is worse than no name, because it silently merges two projects'
+ * hours and `raw_text` is the only record that would ever show it. So both
+ * sides are cut into words, and the name has to appear as a run of whole ones.
+ *
+ * Everything that is not a digit or an ASCII letter separates words — except
+ * characters above ASCII, which are kept as word content so a non-English name
+ * stays in one piece instead of shattering into letters. */
+var NAME_WORD_SPLIT = /[^0-9a-z\u0080-\uffff]+/;
+
+/** Below this many letters a name is too easy to hit by accident, so the line
+ *  goes to Gemini rather than being guessed at. */
+var NAME_MIN_CHARS = 3;
+
+function nameWords(s) {
+  return String(s == null ? '' : s).toLowerCase().split(NAME_WORD_SPLIT)
+    .filter(function (w) { return w; });
+}
+
+/** Does `words` contain `want` as a run of consecutive whole words? */
+function saysName(words, want) {
+  if (!want.length || want.length > words.length) return false;
+  for (var i = 0; i + want.length <= words.length; i++) {
+    var all = true;
+    for (var j = 0; j < want.length; j++) {
+      if (words[i + j] !== want[j]) { all = false; break; }
+    }
+    if (all) return true;
+  }
+  return false;
+}
+
+/** The known project this line plainly names, or ''. The LONGEST match wins, so
+ *  a line about "NeuraVue API" is not filed under "NeuraVue". */
+function localProjectName(text) {
+  var words = nameWords(text);
+  if (!words.length) return '';
+
+  var best = '';
+  var bestWords = 0;
+  knownNames().forEach(function (name) {
+    var want = nameWords(name);
+    if (want.join('').length < NAME_MIN_CHARS) return;
+    if (!saysName(words, want)) return;
+    if (want.length > bestWords || (want.length === bestWords && name.length > best.length)) {
+      best = name;
+      bestWords = want.length;
+    }
+  });
+  return best;
+}
+
+/* THE DAILY BUDGET.
+ *
+ * Google allows 20 requests a day and refuses the 21st with a message that
+ * reads like a bill and is not one. Stopping ourselves at 18 means that message
+ * is never seen: the two spare absorb a Settings -> Test Gemini tap made after
+ * the budget is gone.
+ *
+ * Counted per LOCAL day, which is not exactly Google's day — their window
+ * almost certainly turns over on Pacific time, so a heavy morning and a heavy
+ * evening either side of THEIR midnight could in principle add up past 20
+ * inside one of their days. Named rather than solved: a real day spends about
+ * five calls now, and the alternative is guessing at a reset time we cannot
+ * observe. If Google ever refuses despite this counter, this is the reason. */
+var GEMINI_DAILY_BUDGET = 18;
+
+/** What `lastExtractError` is set to when WE stopped the call rather than
+ *  Google. quotaWait() turns it into a sentence; nothing else compares to it. */
+var GEMINI_BUDGET_SPENT = 'probeing:daily-budget-spent';
+
+function localDayStamp() {
+  var d = new Date();
+  return d.getFullYear() + '-' + (d.getMonth() + 1) + '-' + d.getDate();
+}
+
+/* Read out of storage every time rather than held in a variable, and two things
+ * fall out of that for free: a tab left open past midnight resets by itself,
+ * and two open tabs count against one tally instead of two. */
+function geminiTally() {
+  var saved = null;
+  try {
+    saved = JSON.parse(localStorage.getItem(GEMINI_DAY_KEY));
+  } catch (e) { /* unreadable storage counts as a fresh day */ }
+
+  var today = localDayStamp();
+  if (!saved || saved.day !== today) return { day: today, n: 0 };
+  /* Math.max, because a NEGATIVE count would not merely miscount — it would lift
+   * the ceiling ABOVE Google's. `{n:-50}` makes geminiCallsLeft() 68, and 68
+   * calls is 48 past the refusal this whole budget exists to avoid. Every other
+   * way this value can be corrupt already fails safe (a string, a null and a
+   * shape all read as 0 or as a huge number; both are survivable). This one did
+   * not. Storage is a place anything can be written, including by us with a
+   * future bug, so the guard belongs on the READ. */
+  return { day: today, n: Math.max(0, Number(saved.n) || 0) };
+}
+
+function geminiUsedToday() {
+  return geminiTally().n;
+}
+
+function geminiCallsLeft() {
+  return Math.max(0, GEMINI_DAILY_BUDGET - geminiUsedToday());
+}
+
+/* THE PER-MINUTE PACER, which is the OTHER half of the free tier and the half
+ * that was left undefended. Google allows 5 requests a minute as well as 20 a
+ * day, and the day this shape was designed the dashboard read RPM 5/5 next to
+ * RPD 21/20 — both ceilings were hit, and only one of them was being watched.
+ *
+ * The in-flight coalescing does not cover this. It batches calls that OVERLAP,
+ * and six entries typed one after another do not overlap: each is answered
+ * before the next is typed, so each gets its own call. Measured, that is six
+ * requests inside six milliseconds against a limit of five a minute — which is
+ * exactly the catching-up burst a person types after a meeting.
+ *
+ * So: remember when the recent calls went out, and if the last minute is
+ * already full, HOLD the next one until the window opens instead of sending it
+ * into a refusal. Holding is cheap here in a way it would be almost nowhere
+ * else in this app — the row was written on the tap, nothing on screen is
+ * waiting, and only the NAME is late. Rule 4 is untouched: no logging action
+ * waits on any of this.
+ *
+ * Four, not five, for the same reason the daily budget is 18 and not 20: the
+ * spare absorbs a Settings -> Test Gemini tap, which goes out unpaced (a
+ * diagnostic the user is watching must not sit silently for a minute) and is
+ * still counted here so the pacer knows the slot is gone.
+ *
+ * KEPT IN MEMORY, unlike the daily tally, and that is a deliberate difference. A
+ * day outlives a reload and is shared by two open tabs, so it has to live in
+ * storage; a sixty-second window does not survive anything worth surviving, and
+ * a write per call to track it would buy one edge case — reload, then log five
+ * unrecognised entries inside a minute — whose worst outcome is Google's own
+ * refusal, which the app already handles by leaving the row unnamed and saying
+ * so once. Named rather than solved. */
+var GEMINI_RPM_LIMIT = 4;
+var GEMINI_RPM_WINDOW_MS = 60000;
+
+/** When the recent calls left this device, oldest first. Trimmed to the window
+ *  at every read, and every send reads it first — so the only entries that can
+ *  pile up are Settings -> Test Gemini taps, one each. */
+var geminiCallTimes = [];
+
 /**
- * Ask the Edge Function to split one line into project + detail.
+ * How long to wait before another call may go out: 0 means "now".
+ *
+ * Clamped to the window at both ends, because a device clock that jumps — and
+ * phones do, on a network time correction — could otherwise produce a wait of
+ * hours from arithmetic that is perfectly correct for a clock that only moves
+ * forwards. A pacer that stops naming anything until tomorrow would be a worse
+ * bug than the one it is here to prevent.
+ */
+function geminiPacerWaitMs() {
+  var now = Date.now();
+
+  /* `>= 0` drops a stamp that is somehow in the FUTURE — the clock moved
+   * backwards under us. Dropping it errs towards sending, which risks one
+   * refusal; keeping it would err towards never sending again. */
+  geminiCallTimes = geminiCallTimes.filter(function (t) {
+    return now - t >= 0 && now - t < GEMINI_RPM_WINDOW_MS;
+  });
+  if (geminiCallTimes.length < GEMINI_RPM_LIMIT) return 0;
+
+  // Oldest first, because they are appended in order — so the first slot to
+  // free is the first one taken.
+  var wait = GEMINI_RPM_WINDOW_MS - (now - geminiCallTimes[0]);
+  return Math.min(GEMINI_RPM_WINDOW_MS, Math.max(1, wait));
+}
+
+/** Record one call against today AND against this minute. EVERY path that
+ *  actually reaches the Edge Function calls this, the Settings test included —
+ *  a counter that watched only half the calls would be worse than no counter at
+ *  all. */
+function noteGeminiCall() {
+  geminiCallTimes.push(Date.now());
+
+  var tally = geminiTally();
+  tally.n += 1;
+  try {
+    localStorage.setItem(GEMINI_DAY_KEY, JSON.stringify(tally));
+  } catch (e) { /* unwritable storage: undercounting beats refusing to log */ }
+  return tally.n;
+}
+
+/** "4 of 18 used today". Settings -> Test Gemini is the only place this number
+ *  is visible, and it is the one that says whether the day fits. */
+function geminiUsageLine() {
+  var used = geminiUsedToday();
+  return used + ' of ' + GEMINI_DAILY_BUDGET + ' used today' +
+    (used >= GEMINI_DAILY_BUDGET
+      ? ' — entries keep their own text as the name until tomorrow.'
+      : ' (Google allows 20; the last two are kept for this button).');
+}
+
+/* The batch shape: one object per line, in the order the lines were given. The
+ * Edge Function hands any `schema` straight to responseSchema, so an ARRAY
+ * needs nothing deployed there — which matters, because that function is pasted
+ * in by hand and has been redeployed enough times for one day. */
+var EXTRACT_LIST_SCHEMA = {
+  type: 'ARRAY',
+  items: EXTRACT_SCHEMA
+};
+
+/** The batch prompt: numbered lines in, one answer per line out, in order. */
+function extractManyPrompt(texts, known) {
+  var lines = [
+    'You are labelling lines from a personal activity log. Answer with JSON only.',
+    '',
+    'There are ' + texts.length + ' lines, numbered:'
+  ];
+
+  texts.forEach(function (t, i) {
+    lines.push((i + 1) + '. ' + JSON.stringify(String(t)));
+  });
+
+  lines.push('');
+  lines.push('Return a JSON array of exactly ' + texts.length + ' objects, one for each ' +
+             'line, in the same order as the numbering above. Answer for every line, ' +
+             'including any you cannot name.');
+  lines.push('');
+  /* The echo is the alignment check. Without it a reordered answer is
+   * indistinguishable from a correct one — see EXTRACT_SCHEMA. */
+  lines.push('n: the number of the line this object answers, copied from the list above. ' +
+             'The first object must have n=1, the second n=2, and so on up to n=' +
+             texts.length + '. Never renumber, reorder or skip a line.');
+  lines.push('project: the short name of the thing being worked on, two or three words at most.');
+  lines.push('detail: what is being done to it, a few words. Use "" if the line does not say.');
+  lines.push('Lines about the same thing must get the same project name, spelled the same way.');
+
+  if (known && known.length) {
+    lines.push('');
+    lines.push('Projects already open today: ' + known.map(function (n) {
+      return JSON.stringify(String(n));
+    }).join(', '));
+    lines.push('If a line is about one of those, copy that name EXACTLY, character ' +
+               'for character, including its capitals.');
+  }
+
+  lines.push('');
+  lines.push('If a line names or implies no project, return "" for both of its fields.');
+  lines.push('Never reword, translate, expand or correct what was written.');
+  return lines.join('\n');
+}
+
+/* Entries waiting for the call that is currently out, drained as ONE call the
+ * moment it comes back. Waiting for a call already in flight is the only delay
+ * this design ever adds, and nothing on screen is waiting on it. */
+var extractQueue = [];
+var extractBusy = false;
+
+/* A ceiling on one PROMPT, not on the queue: anything past this stays queued
+ * and goes in the batch after. Tokens are effectively free, but an unbounded
+ * prompt is not a thing to discover in production. */
+var EXTRACT_BATCH_MAX = 20;
+
+/**
+ * Name one line: what project it is about, and what is being done to it.
+ *
+ * THREE WAYS THIS ANSWERS, cheapest first. See the long note further up for the
+ * measured numbers behind the ordering.
+ *
+ *   - the line plainly names a project this device already knows: answered here
+ *     and now, for nothing. Most entries on a normal day.
+ *   - otherwise it joins the queue. Nothing is out -> it is sent alone,
+ *     immediately, so an unhurried day is exactly as quick as it was before.
+ *   - a call IS out -> it waits for that one, and then goes with everything else
+ *     that arrived meanwhile, as a single call.
  *
  * DELIBERATELY NOT THROUGH api(). api() serialises every call through apiChain
  * so this device never competes with itself for the backend; a language model in
@@ -2222,43 +2630,162 @@ function tidyExtraction(got, known) {
  * which is the one thing rule 4 forbids. This is a plain fetch, off the chain,
  * and nothing else in the app waits on it.
  *
- * It never rejects. Offline, signed out, timed out, running on the Apps Script
- * fallback, or handed something that is not JSON — every one of those resolves
- * to {project:'', detail:''}, which is exactly what the tracker wrote before.
+ * It never rejects. Offline, signed out, out of budget, timed out, running on
+ * the Apps Script fallback, or handed something that is not JSON — every one of
+ * those resolves to {project:'', detail:''}, which is exactly what the tracker
+ * wrote before any of this existed.
  */
 function extractProject(text, known) {
+  /* THE FREE PATH, and the reason a normal day fits inside the budget at all.
+   * Nothing is spent and nothing is awaited; on a day with five projects this
+   * is where most entries end. */
+  var mine = localProjectName(text);
+  if (mine) {
+    rememberProject(mine);                 // using a name is what keeps it fresh
+    /* `detail` stays empty here, and it costs nothing measurable: replayDay()
+     * reads `detail` only on `break` rows (the add/drop that parseBreakOp
+     * decodes), and nothing renders it for a work or voice row. The project is
+     * the half that matters — it names the tile and keys byProject. */
+    return Promise.resolve({ project: mine, detail: '' });
+  }
+
+  return new Promise(function (resolve) {
+    extractQueue.push({ text: text, known: known || [], resolve: resolve });
+    pumpExtraction();
+  });
+}
+
+/* Set while the queue is waiting out a full minute, so that the twenty entries
+ * that arrive during the wait schedule ONE timer between them rather than
+ * twenty. Cleared by the timer itself, before it re-pumps. */
+var pacerTimer = null;
+
+/** Send the queue, if nothing is already out and the minute has room. Called
+ *  the moment an entry joins — so a lone entry goes at once, with the latency it
+ *  always had — again each time a call comes back, which is where the coalescing
+ *  happens, and again when a held minute opens. */
+function pumpExtraction() {
+  if (extractBusy || !extractQueue.length) return;
+
+  /* HELD, NOT DROPPED, and held BEFORE the batch is taken off the queue. Both
+   * halves matter:
+   *
+   *   - nothing is spliced, so entries arriving during the wait join the same
+   *     queue and go out in the same batch — the wait makes the batching better,
+   *     not worse;
+   *   - and the deadline in runExtraction() has not started, so a request held
+   *     for fifty seconds still gets its full 15 to answer. Starting the clock
+   *     here would time out every held call and quietly undo the pacing.
+   *
+   * The queue cannot jam on this. `extractBusy` is deliberately NOT set — no
+   * call is out — and the timer always fires and always re-enters here, so the
+   * worst case is a name that arrives a minute late, or never arrives because
+   * the tab was closed first. The ROW is already saved either way. */
+  var wait = geminiPacerWaitMs();
+  if (wait > 0) {
+    if (pacerTimer === null) {
+      pacerTimer = setTimeout(function () {
+        pacerTimer = null;
+        pumpExtraction();
+      }, wait);
+    }
+    return;
+  }
+
+  var batch = extractQueue.splice(0, EXTRACT_BATCH_MAX);
+
+  function finish(answers) {
+    extractBusy = false;
+    batch.forEach(function (item, i) {
+      item.resolve((answers && answers[i]) || noExtraction());
+    });
+    pumpExtraction();                      // whatever arrived while that was out
+  }
+
+  extractBusy = true;
+  /* The second handler is the belt to runExtraction's brace. It is written not
+   * to reject, but if it ever did, `extractBusy` would stay true for the life of
+   * the page: every later entry would queue behind a call that is never coming
+   * back, and every one of those sentences would stay hidden from the next
+   * prompt for ever. An unnamed entry is fine. A jammed queue is not. */
+  runExtraction(batch).then(finish, function () { finish([]); });
+}
+
+/** One Gemini call for one batch, under one deadline. Never rejects, and always
+ *  resolves with exactly one answer per entry, in the order they were queued. */
+function runExtraction(batch) {
   var ctrl = typeof AbortController === 'function' ? new AbortController() : null;
   var timer;
+
+  var nothing = function () {
+    return batch.map(function () { return noExtraction(); });
+  };
 
   var deadline = new Promise(function (resolve) {
     timer = setTimeout(function () {
       // Abort as well as resolve: a request nobody is waiting for any more
       // should not still be open when the next entry starts its own.
       if (ctrl) { try { ctrl.abort(); } catch (e) { /* already finished */ } }
-      resolve(noExtraction());
+      resolve(nothing());
     }, EXTRACT_DEADLINE_MS);
   });
 
-  return Promise.race([askGemini(text, known, ctrl), deadline]).then(function (got) {
+  /* A single entry keeps the one-line prompt and the object schema it has
+   * always used. The batch shape is for batches: the solo case is the common
+   * one and it is not worth changing a request that is known to work. */
+  var ask = batch.length === 1
+    ? askGemini(batch[0].text, batch[0].known, ctrl).then(function (got) { return [got]; })
+    : askGeminiMany(batch, ctrl);
+
+  return Promise.race([ask, deadline]).then(function (got) {
     clearTimeout(timer);
-    return got;
+    return keepNames(batch, got);
   }, function () {
     clearTimeout(timer);
-    return noExtraction();                 // see the promise above: never throws
+    return nothing();                      // see above: this never throws onward
+  });
+}
+
+/** Line the answers up with the entries, and remember the names that came back
+ *  so the next line about the same thing is free. */
+function keepNames(batch, got) {
+  return batch.map(function (item, i) {
+    var one = (got && got[i]) || noExtraction();
+    if (one.project) rememberProject(one.project);
+    return one;
   });
 }
 
 var lastExtractError = '';
 
-async function askGemini(text, known, ctrl) {
+/**
+ * The one place this app talks to Gemini on the logging path: post `body` to
+ * the Edge Function and hand back the model's text, or null.
+ *
+ * null covers every way there is nothing to read — wrong backend, signed out,
+ * the day's budget spent, an HTTP error, an unreadable reply — and the reason
+ * is left in `lastExtractError` rather than shown, because a row that stays
+ * unnamed is correct behaviour and must not interrupt anybody.
+ */
+async function geminiCall(body, ctrl) {
   /* Gemini has one home and it is the Supabase Edge Function — the key is a
    * secret of that function and must never be anywhere else. On the Apps Script
    * fallback there is simply nothing to ask, and the row goes in unlabelled. */
-  if (cfg.backend !== 'supabase' || !sb || !sbUser) return noExtraction();
+  if (cfg.backend !== 'supabase' || !sb || !sbUser) return null;
 
   var got = await sb.auth.getSession();
   var session = got && got.data ? got.data.session : null;
-  if (!session || !session.access_token) return noExtraction();
+  if (!session || !session.access_token) return null;
+
+  if (geminiCallsLeft() <= 0) {
+    lastExtractError = GEMINI_BUDGET_SPENT;
+    return null;
+  }
+  /* Counted BEFORE the answer, on purpose. A request that has left this device
+   * has been spent whether or not the reply ever arrives; counting on success
+   * would let a run of timeouts walk straight past Google's own ceiling, which
+   * is the one number we are here to stay under. */
+  noteGeminiCall();
 
   var base = String(cfg.supaUrl || '').trim().replace(/\/+$/, '');
   var res = await fetch(base + '/functions/v1/gemini', {
@@ -2274,17 +2801,7 @@ async function askGemini(text, known, ctrl) {
       'Authorization': 'Bearer ' + session.access_token,
       'apikey': String(cfg.supaKey || '').trim()
     },
-    body: JSON.stringify({
-      prompt: extractPrompt(text, known),
-      json: true,
-      schema: EXTRACT_SCHEMA,
-      /* Do not deliberate. Measured: the same request WITH deliberation took
-       * 28.6 seconds to decide that "working on the Ahmed case, fixing the auth
-       * bug" is the Ahmed case. Naming a project from one line is not a problem
-       * that rewards thinking, and the function drops this knob by itself if
-       * the model will not take it. */
-      think: 0
-    })
+    body: JSON.stringify(body)
   });
 
   var data = await res.json().catch(function () { return null; });
@@ -2294,10 +2811,113 @@ async function askGemini(text, known, ctrl) {
      * appearing" is indistinguishable from "the feature is broken" unless the
      * reason is kept. The reason only; never the prompt, never the answer. */
     lastExtractError = (data && data.error) || ('HTTP ' + res.status);
-    return noExtraction();
+    return null;
   }
+
   lastExtractError = '';
-  return tidyExtraction(parseExtraction(data.text), known);
+  quotaTold = '';                          // Gemini answered: any quota spell is over
+  return String(data.text || '');
+}
+
+/** One line in, one project + detail out. */
+async function askGemini(text, known, ctrl) {
+  var answer = await geminiCall({
+    prompt: extractPrompt(text, known),
+    json: true,
+    schema: EXTRACT_SCHEMA,
+    /* Do not deliberate. Measured: the same request WITH deliberation took
+     * 28.6 seconds to decide that "working on the Ahmed case, fixing the auth
+     * bug" is the Ahmed case. Naming a project from one line is not a problem
+     * that rewards thinking, and the function drops this knob by itself if
+     * the model will not take it. */
+    think: 0
+  }, ctrl);
+
+  if (answer === null) return noExtraction();
+  return tidyExtraction(parseExtraction(answer), known);
+}
+
+/** Several lines in, one answer per line out — for the same price as one line.
+ *  This is the whole saving on a burst of catching-up entries. */
+async function askGeminiMany(items, ctrl) {
+  var nothing = function () {
+    return items.map(function () { return noExtraction(); });
+  };
+
+  // Everything any entry in this batch knew was open, merged and deduplicated.
+  var seen = {};
+  var known = [];
+  items.forEach(function (item) {
+    (item.known || []).forEach(function (name) {
+      if (seen[name] === 1) return;
+      seen[name] = 1;
+      known.push(name);
+    });
+  });
+
+  var answer = await geminiCall({
+    prompt: extractManyPrompt(items.map(function (item) { return item.text; }), known),
+    json: true,
+    schema: EXTRACT_LIST_SCHEMA,
+    think: 0
+  }, ctrl);
+  if (answer === null) return nothing();
+
+  var got = parseExtraction(answer);
+
+  /* MISALIGNMENT IS THE DANGEROUS FAILURE HERE, and it is worth being blunt
+   * about: answers are matched to entries by POSITION, so a model that returns
+   * four objects for five lines would put line two's project on line one, line
+   * three's on line two, and so on — every row named after somebody else's
+   * work, silently, for ever, in an append-only store.
+   *
+   * So the count is checked and nothing is guessed at. If it does not match
+   * exactly, NONE of them are labelled: five unnamed rows is a mild
+   * disappointment, five wrongly named ones is corrupted history. */
+  if (!Array.isArray(got) || got.length !== items.length) {
+    lastExtractError = 'gemini answered ' +
+      (Array.isArray(got) ? got.length + ' lines' : 'something that is not a list') +
+      ' for ' + items.length + ' entries, so none were named';
+    return nothing();
+  }
+
+  /* AND THE COUNT IS NOT ENOUGH, which is the whole reason `n` exists. The right
+   * number of objects in the wrong order passes every check above and is the
+   * worst outcome this code can produce: not a missing name, a CONFIDENT wrong
+   * one, on every row of the batch, in a store that cannot take it back.
+   *
+   * So each answer has to say which line it is, and it has to agree with where
+   * it landed. `Number()` rather than `===`, because a model that writes "2"
+   * instead of 2 is aligned and merely typed; anything that is not a number at
+   * all (missing, null, an array, a nested object) is unverifiable and counts as
+   * wrong, because "cannot be checked" and "is correct" are not the same claim.
+   *
+   * One bad slot condemns the batch, never just itself: if the numbering is
+   * untrustworthy anywhere in the answer, there is no reason to believe it in
+   * the slots that happen to look right. Twenty unnamed rows is a dull evening;
+   * twenty wrongly named ones is a corrupted history. */
+  var wrong = -1;
+  for (var i = 0; i < got.length; i++) {
+    var said = got[i] ? Number(got[i].n) : NaN;
+    if (said !== i + 1) { wrong = i; break; }
+  }
+  if (wrong !== -1) {
+    /* The model's own value is described, never quoted in. `lastExtractError` is
+     * handed to quotaWait(), which decides whether to flash "Gemini is
+     * rate-limited" by looking for words like "quota" in it — so a model that
+     * answered {"n":"quota exceeded"} could otherwise put a false explanation on
+     * screen. Reporting the TYPE says everything a diagnosis needs anyway. */
+    var badN = got[wrong] ? got[wrong].n : null;
+    lastExtractError = 'gemini numbered line ' + (wrong + 1) + ' as ' +
+      (typeof badN === 'number' ? badN : 'a ' + (badN === null ? 'null' : typeof badN)) +
+      ', so the batch could not be lined up and none of its ' + items.length +
+      ' entries were named';
+    return nothing();
+  }
+
+  return items.map(function (item, i) {
+    return tidyExtraction(got[i], item.known);
+  });
 }
 
 /* Diagnostic only, used by Settings → Test Gemini when extraction comes back
@@ -2312,6 +2932,11 @@ async function askGeminiRaw(text) {
     var got = await sb.auth.getSession();
     var session = got && got.data ? got.data.session : null;
     if (!session || !session.access_token) return '(not signed in)';
+
+    // A real call against the free tier's 20 a day, so it is counted like one.
+    // Not refused when the budget is gone, though: this is the diagnostic, and
+    // the two calls held back from the budget exist precisely for it.
+    noteGeminiCall();
 
     var base = String(cfg.supaUrl || '').trim().replace(/\/+$/, '');
     var res = await fetch(base + '/functions/v1/gemini', {
@@ -2402,18 +3027,30 @@ $('trackerForm').addEventListener('submit', function (e) {
   function settle(got) {
     if (!got.project) {
       /* Saved either way — only the NAME is missing. Worth one quiet line when
-       * the cause is the free tier's 20-a-minute ceiling, because otherwise the
-       * names simply stop and nothing says why. Once per spell, not per entry. */
-      /* Short, because the banner clears itself in 2.6 seconds and the full
+       * the cause is a ceiling rather than a shrug, because otherwise the names
+       * simply stop appearing and nothing says why.
+       *
+       * Once per cause, not per entry: `quotaTold` holds WHICH of the two
+       * ceilings was mentioned — the cause, not the wording, because Google's
+       * refusal carries a countdown that differs every time and comparing
+       * sentences would flash on every single entry. It is cleared only when
+       * Gemini actually answers again (see geminiCall), which is the whole
+       * distinction: the per-minute limit ends when a call succeeds, but the
+       * day's budget does not, and a free local match must not re-arm a line
+       * about tomorrow.
+       *
+       * Short, because the banner clears itself in 2.6 seconds and the full
        * explanation does not fit in that. Settings -> Test Gemini prints the
-       * long version, including how many seconds are left. */
-      if (quotaWait(lastExtractError) && !quotaTold) {
-        quotaTold = true;
-        flash('Saved. Gemini is rate-limited, so no project name — it clears in a minute.', 'warn');
+       * long version, and the day's count with it. */
+      var cause = lastExtractError === GEMINI_BUDGET_SPENT ? 'budget' : 'rate';
+      if (quotaWait(lastExtractError) && quotaTold !== cause) {
+        quotaTold = cause;
+        flash(cause === 'budget'
+          ? 'Saved. Gemini\'s daily limit is used up — no project names until tomorrow.'
+          : 'Saved. Gemini is rate-limited, so no project name — it clears in a minute.', 'warn');
       }
       forget(); return;                     // understood nothing: the old behaviour
     }
-    quotaTold = false;
     wrote.then(function (ok) {
       // A row that never landed has nothing to label, and the failed write has
       // already scheduled its own reconcile against the store.
@@ -2429,7 +3066,11 @@ $('trackerForm').addEventListener('submit', function (e) {
  * prompt. Counted rather than flagged, because the same sentence can be logged
  * twice before either one is answered. */
 var awaitingLabel = {};
-var quotaTold = false;   // say the quota line once, not on every entry
+/* Which ceiling has already been mentioned: '' , 'rate' or 'budget'. A name
+ * rather than a flag, because there are two causes now — Google's per-minute
+ * refusal and our own daily budget — and being told about the second only
+ * because the first was mentioned first would be no help at all. */
+var quotaTold = '';
 
 /** What the model may be told is already open. */
 function openProjects() {
@@ -2990,6 +3631,12 @@ async function probeExtraction() {
     var session = got && got.data ? got.data.session : null;
     if (!session || !session.access_token) { out.error = 'not signed in'; return out; }
 
+    // Counted against the day, like every other call that leaves the device —
+    // and never refused by the budget, because a diagnostic that stops working
+    // exactly when something is wrong is not a diagnostic. The gap between our
+    // 18 and Google's 20 is what pays for this.
+    noteGeminiCall();
+
     var base = String(cfg.supaUrl || '').trim().replace(/\/+$/, '');
     var res = await fetch(base + '/functions/v1/gemini', {
       method: 'POST',
@@ -2998,9 +3645,19 @@ async function probeExtraction() {
         'Authorization': 'Bearer ' + session.access_token,
         'apikey': String(cfg.supaKey || '').trim()
       },
+      /* TWO lines, not one, and that is deliberate. The single-entry path is the
+       * easy one and it already works; what is unproven is whether the model
+       * honours "return exactly N objects and echo each line's number". If it
+       * does not, every batch is refused and those rows quietly keep their own
+       * sentence as the name — a failure with no symptom except names that stop
+       * appearing on busy days, which is precisely the kind of silence that made
+       * this feature take three wrong diagnoses to understand.
+       *
+       * A batch of two costs the same one request as a batch of one, so this
+       * proves the harder path for free. */
       body: JSON.stringify({
-        prompt: extractPrompt(EXTRACT_PROBE, []),
-        json: true, schema: EXTRACT_SCHEMA, think: 0
+        prompt: extractManyPrompt(EXTRACT_PROBE, []),
+        json: true, schema: { type: 'ARRAY', items: EXTRACT_SCHEMA }, think: 0
       })
     });
     out.status = res.status;
@@ -3010,7 +3667,15 @@ async function probeExtraction() {
       return out;
     }
     out.raw = String(data.text || '');
-    var got2 = tidyExtraction(parseExtraction(out.raw), []);
+    var arr = parseExtraction(out.raw);
+    if (!arr || !arr.length || arr.length !== EXTRACT_PROBE.length) {
+      out.error = 'asked for ' + EXTRACT_PROBE.length + ' answers, got ' +
+                  (arr && arr.length ? arr.length : 'none');
+      return out;
+    }
+    /* The whole point of the probe: did it number them? */
+    out.numbered = arr.every(function (a, i) { return a && Number(a.n) === i + 1; });
+    var got2 = tidyExtraction(arr[0], []);
     out.project = got2.project;
     out.detail = got2.detail;
     out.ok = Boolean(got2.project);
@@ -3023,15 +3688,34 @@ async function probeExtraction() {
   }
 }
 
-var EXTRACT_PROBE = 'working on the Ahmed case, fixing the auth bug';
+/* Two lines about two different things, so a model that lazily returns one
+ * answer, or the same answer twice, is caught rather than flattered. */
+var EXTRACT_PROBE = ['working on the Ahmed case, fixing the auth bug',
+                     'spent an hour on the Falcon migration'];
 
-/** Google's quota refusal is long, links twice, and reads like a bill. It is
- *  neither a bill nor a fault — it is 20 requests a minute on the free tier. */
+/** Why an entry stayed unnamed, in a sentence, or '' if the reason was not a
+ *  ceiling at all.
+ *
+ *  Two ceilings, and they are not the same shape. Ours is a daily count we keep
+ *  ourselves and stop at; Google's is a per-minute refusal that reads like a
+ *  bill and is neither a bill nor a fault. The free tier is 5 requests a minute
+ *  and 20 a day — this said "20 a minute" for a while, which turned a hard
+ *  architectural limit into a non-issue and is how one call per entry shipped. */
 function quotaWait(msg) {
-  if (!/quota|rate.?limit|RESOURCE_EXHAUSTED|exceeded/i.test(String(msg || ''))) return '';
-  var secs = /retry in ([0-9.]+)s/i.exec(String(msg));
-  return 'Gemini\'s free tier allows 20 requests a minute and that is used up. ' +
-         'Nothing has been charged and nothing is broken — it clears on its own' +
+  var s = String(msg || '');
+
+  if (s === GEMINI_BUDGET_SPENT) {
+    return 'ProBeing has used its ' + GEMINI_DAILY_BUDGET + ' Gemini calls for today, out ' +
+           'of the free tier\'s 20 a day. Nothing is broken and nothing has been charged. ' +
+           'Entries are still saved — they keep their own text as the name until tomorrow, ' +
+           'and any line naming a project the app already knows is still named for free.';
+  }
+
+  if (!/quota|rate.?limit|RESOURCE_EXHAUSTED|exceeded/i.test(s)) return '';
+  var secs = /retry in ([0-9.]+)s/i.exec(s);
+  return 'Gemini\'s free tier allows 5 requests a minute and 20 a day, and one of those ' +
+         'is used up. Nothing has been charged and nothing is broken — the per-minute one ' +
+         'clears on its own' +
          (secs ? ' in about ' + Math.ceil(parseFloat(secs[1])) + ' seconds.' : ' within a minute.');
 }
 
@@ -3040,33 +3724,47 @@ $('testGeminiBtn').addEventListener('click', async function () {
   if (cfg.backend !== 'supabase') { out.textContent = 'Gemini runs on Supabase only.'; return; }
   if (!sb || !sbUser) { out.textContent = 'Sign in first.'; return; }
 
+  /* Every answer carries the day's count, because this is the only place it can
+   * be seen and it is the number that says whether the day fits in the free
+   * tier. textContent throughout, never innerHTML — some of this text came out
+   * of a language model. */
+  var say = function (msg) { out.textContent = msg + '\n\n' + geminiUsageLine(); };
+
   out.textContent = 'Testing the real thing (naming a project)…';
 
   var p = await probeExtraction();
 
   if (p.ok) {
-    // textContent, never innerHTML — this text came from a language model.
-    out.textContent = '\u2705 Works (' + p.ms + 'ms): project "' + p.project +
+    var good = '\u2705 Works (' + p.ms + 'ms): project "' + p.project +
       '", detail "' + p.detail + '"';
+    /* Two lines went out. Whether they came back numbered decides if batching —
+     * the thing that makes a busy day fit in 20 calls — is available at all. */
+    good += p.numbered
+      ? '\n\u2705 Batching works: ' + EXTRACT_PROBE.length +
+        ' lines answered and correctly numbered, so busy days cost few calls.'
+      : '\n\u26a0\ufe0f Batching is OFF: the answers came back without line numbers, ' +
+        'so groups of entries are refused rather than risk naming them wrongly. ' +
+        'Everything still works, one call per entry, so a busy day may run out.';
     if (p.ms > EXTRACT_DEADLINE_MS) {
-      out.textContent += '\n\u26a0\ufe0f Slower than the ' + EXTRACT_DEADLINE_MS +
+      good += '\n\u26a0\ufe0f Slower than the ' + EXTRACT_DEADLINE_MS +
         'ms the tracker waits, so real entries will often stay unnamed.';
     }
+    say(good);
     return;
   }
 
   var friendly = quotaWait(p.error);
-  if (friendly) { out.textContent = '\u23f3 ' + friendly; return; }
+  if (friendly) { say('\u23f3 ' + friendly); return; }
 
-  if (p.error) { out.textContent = '\u274c ' + p.error + ' (after ' + p.ms + 'ms)'; return; }
+  if (p.error) { say('\u274c ' + p.error + ' (after ' + p.ms + 'ms)'); return; }
 
   /* It answered, and the answer was unusable. Only now is the second call worth
    * spending: it separates a broken function from a model saying something odd. */
-  out.textContent = '\u274c Gemini answered but the reply could not be read.' +
-    '\nRaw answer: ' + JSON.stringify(p.raw).slice(0, 300) +
-    '\nChecking whether Gemini is reachable at all…';
-  var raw = await askGeminiRaw(EXTRACT_PROBE);
-  out.textContent += '\nWithout the schema it says: ' + raw;
+  var unusable = '\u274c Gemini answered but the reply could not be read.' +
+    '\nRaw answer: ' + JSON.stringify(p.raw).slice(0, 300);
+  out.textContent = unusable + '\nChecking whether Gemini is reachable at all…';
+  var raw = await askGeminiRaw(EXTRACT_PROBE[0]);   // one line: the schema is what is in doubt
+  say(unusable + '\nWithout the schema it says: ' + raw);
 });
 
 $('saveBtn').addEventListener('click', function () {
