@@ -2273,6 +2273,39 @@ async function askGemini(text, known, ctrl) {
   return tidyExtraction(parseExtraction(data.text), known);
 }
 
+/* Diagnostic only, used by Settings → Test Gemini when extraction comes back
+ * empty. Sends the extraction prompt WITHOUT `json`/`schema` and returns the
+ * answer as text, so a person can see which of two very different problems it
+ * is: an Edge Function still on the old code (it ignores the schema and the
+ * model rambles), or a model that answered something genuinely unparseable.
+ * Never called on the logging path — it costs a second round trip. */
+async function askGeminiRaw(text) {
+  if (cfg.backend !== 'supabase' || !sb || !sbUser) return '(not on Supabase)';
+  try {
+    var got = await sb.auth.getSession();
+    var session = got && got.data ? got.data.session : null;
+    if (!session || !session.access_token) return '(not signed in)';
+
+    var base = String(cfg.supaUrl || '').trim().replace(/\/+$/, '');
+    var res = await fetch(base + '/functions/v1/gemini', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': 'Bearer ' + session.access_token,
+        'apikey': String(cfg.supaKey || '').trim()
+      },
+      body: JSON.stringify({ prompt: extractPrompt(text, []) })
+    });
+    var data = await res.json().catch(function () { return null; });
+    if (!res.ok || !data || !data.ok) {
+      return '(HTTP ' + res.status + ' ' + ((data && data.error) || '') + ')';
+    }
+    return JSON.stringify(String(data.text || '')).slice(0, 300);
+  } catch (e) {
+    return '(' + (e && e.message ? e.message : e) + ')';
+  }
+}
+
 /* Did the mic put the current text in the box? It survives editing on purpose —
  * fixing a misheard word does not make the sentence typed — but not clearing. */
 var voiceFilled = false;
@@ -2934,8 +2967,37 @@ $('testGeminiBtn').addEventListener('click', async function () {
       out.textContent = '❌ ' + ((data && data.error) || ('HTTP ' + res.status));
       return;
     }
-    // textContent, never innerHTML — this text came from a language model.
-    out.textContent = '✅ Gemini said: ' + data.text;
+    /* Reaching Gemini is only half of what the tracker needs, and the half that
+     * was already working while project names silently stayed empty. So the
+     * second half is tested too: the SAME structured request the tracker sends,
+     * timed, with the raw answer shown when it will not parse.
+     *
+     * This exists because that failure was diagnosed twice by reasoning and got
+     * the wrong answer both times. A test that only proves the easy half is how
+     * you end up confidently changing the wrong thing. */
+    var plain = '✅ Gemini said: ' + data.text;
+    out.textContent = plain + '\nNow testing project extraction…';
+
+    var began = Date.now();
+    var probe = await askGemini('working on the Ahmed case, fixing the auth bug', []);
+    var took = Date.now() - began;
+
+    if (probe && probe.project) {
+      out.textContent = plain + '\n✅ Extraction works (' + took + 'ms): project "' +
+        probe.project + '", detail "' + probe.detail + '"';
+      if (took > EXTRACT_DEADLINE_MS) {
+        out.textContent += '\n⚠️ Slower than the ' + EXTRACT_DEADLINE_MS +
+          'ms the tracker waits, so real entries will often stay unnamed.';
+      }
+      return;
+    }
+
+    /* It failed. Ask again WITHOUT the schema and show exactly what came back —
+     * that is the difference between "the function is old" and "the model said
+     * something odd", which is not guessable from an empty result. */
+    var raw = await askGeminiRaw('working on the Ahmed case, fixing the auth bug');
+    out.textContent = plain + '\n❌ Extraction returned nothing after ' + took +
+      'ms.\nRaw answer: ' + raw;
   } catch (err) {
     out.textContent = '❌ ' + (err && err.name === 'AbortError'
       ? 'Gemini took too long to answer.'

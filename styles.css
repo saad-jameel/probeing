@@ -395,6 +395,11 @@ body {
   border: 1px solid var(--line); border-radius: 10px;
 }
 .dlg-block h3 { margin: 0; font-size: 14px; }
+/* The test result is several lines now (reachability, then extraction, then the
+   raw answer when it will not parse). Without this they run together into one
+   unreadable paragraph, because textContent keeps the newlines and CSS collapses
+   them by default. `pre-line` and not `pre`: still wrap on a narrow phone. */
+#testResult { white-space: pre-line; }
 .dlg input[type="file"] { padding: 10px; font-size: 14px; }
 /* Wraps because the row grew a fourth button: four of them do not fit across a
    phone, and an un-wrapped flex row would push Save off the edge. */
