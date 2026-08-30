@@ -45,6 +45,22 @@
 /backend/.clasp.json
 /backend/.clasprc.json
 
+# --- Supabase Edge Functions -------------------------------------------------
+# Server-side code, deployed by hand with the Supabase CLI but version-controlled
+# here like everything else.
+#
+# Only the .ts source is un-ignored, and the narrowness is the point: a blanket
+# `!/supabase/functions/**` would out-rank the `.env` rule further down, and
+# `supabase secrets set` writes exactly `supabase/functions/.env` — the file
+# holding the Gemini key. The scanner would catch it by name, but a secret that
+# git never sees cannot be committed by accident in the first place. The
+# directory lines are needed too: git will not look inside a folder it has
+# already excluded, so each level has to be let back in before the files are.
+!/supabase/
+!/supabase/functions/
+!/supabase/functions/*/
+!/supabase/functions/**/*.ts
+
 # --- Tooling and docs --------------------------------------------------------
 !/scripts/
 !/scripts/**

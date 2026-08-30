@@ -2026,6 +2026,78 @@ $('micBtn').addEventListener('click', function () {
 
 $('refreshBtn').addEventListener('click', function () { refresh({ announce: true }); });
 
+// ------------------------------------------------------------- the data floor
+
+/* A review counts rows. That makes an impossible question look like a boring
+ * answer: ask for a week that ended before the first row was ever written and
+ * the count comes back 0, which reads as "you did nothing that week" rather than
+ * the truth, "ProBeing was not here yet". A zero is a claim about your life; a
+ * refusal is a claim about the data. Only one of them is honest.
+ *
+ * So every range a report is built from goes through here first, and a range
+ * that starts before the first event is refused by name instead of summed.
+ *
+ * Nothing calls this until Stage 5 builds the reviews. It ships now because it
+ * is far easier to get right while nobody depends on the answer.
+ */
+
+/** The instant of this account's very first event — min(at) — or '' if there are
+ *  none at all. Row level security already scopes it to the signed-in user, so
+ *  "first row" means their first row. */
+async function earliestEventAt() {
+  if (!sb || !sbUser) return '';
+  var res = await sb.from('events').select('at')
+    .order('at', { ascending: true })
+    .limit(1);
+  if (res.error) throw errorFrom(res.error);
+  return (res.data && res.data[0] && res.data[0].at) || '';
+}
+
+/* Deliberately takes the floor as an argument and uses no other helper: it is a
+ * pure function of two strings, so it can be tested without a database, a clock,
+ * or a browser. */
+/**
+ * @param startDate  the local date a range opens, 'YYYY-MM-DD' (or a Date).
+ * @param earliestAt the account's min(at), an ISO instant, or '' for none.
+ * @returns {{ok: boolean, floor: string, message: string}} — `ok:false` carries
+ *          the sentence to show, and never a number.
+ */
+function rangeFloor(startDate, earliestAt) {
+  var ymd = function (d) {
+    var pad = function (n) { return String(n).padStart(2, '0'); };
+    return d.getFullYear() + '-' + pad(d.getMonth() + 1) + '-' + pad(d.getDate());
+  };
+
+  var start = (startDate instanceof Date) ? ymd(startDate) : String(startDate || '').slice(0, 10);
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(start)) {
+    return { ok: false, floor: '', message: 'That is not a date I can read.' };
+  }
+
+  if (!earliestAt) {
+    return { ok: false, floor: '',
+             message: 'There is nothing logged yet, so there is nothing to report on.' };
+  }
+
+  var first = new Date(earliestAt);
+  if (isNaN(first.getTime())) {
+    return { ok: false, floor: '', message: 'The first entry has an unreadable date.' };
+  }
+
+  // Compared as local dates, because that is the day the user lived through.
+  var floor = ymd(first);
+  if (start < floor) {
+    return { ok: false, floor: floor,
+             message: 'No data before ' + floor + ' — that is the day of the first thing ' +
+                      'ProBeing ever recorded. Ask for a range starting on or after it.' };
+  }
+  return { ok: true, floor: floor, message: '' };
+}
+
+/** The two halves together: read the floor, then judge the range. */
+async function checkRangeFloor(startDate) {
+  return rangeFloor(startDate, await earliestEventAt());
+}
+
 // ------------------------------------------------------------------- review
 
 /** Last week, Monday to Sunday, in the device's own locale. */
@@ -2264,6 +2336,9 @@ function paintBackendFields() {
   var supa = cfg.backend === 'supabase';
   $('supaFields').hidden = !supa;
   $('appsFields').hidden = supa;
+  // The Edge Function lives in the Supabase project; on Apps Script there is
+  // nothing for this button to call.
+  $('testGeminiBtn').hidden = !supa;
   paintAccount();
 }
 
@@ -2311,6 +2386,65 @@ $('testBtn').addEventListener('click', async function () {
     $('testResult').textContent = '❌ ' + (err.message || err);
   } finally {
     cfg = saved;                              // ...without committing them yet
+  }
+});
+
+/* Throwaway scaffolding, and labelled as such. It proves one thing that nothing
+ * else can prove until Stage 4 exists: that this browser can get an answer out of
+ * Gemini without ever holding the Gemini key. The key sits in the Edge Function's
+ * own secrets; all that leaves this device is the prompt and the signed-in
+ * session's token, which is what the function checks before it spends the key.
+ *
+ * JSON here, not the text/plain that rule 1 demands of Apps Script: the rule
+ * exists because Apps Script cannot answer a CORS preflight. The Edge Function
+ * answers OPTIONS itself, so the preflight is fine and JSON is the honest type. */
+var GEMINI_TEST_PROMPT = 'Reply with exactly this sentence and nothing else: ' +
+  'ProBeing can reach Gemini.';
+var GEMINI_TIMEOUT_MS = 30000;   // a cold function plus a model call is not quick
+
+$('testGeminiBtn').addEventListener('click', async function () {
+  var out = $('testResult');
+  if (cfg.backend !== 'supabase') { out.textContent = 'Gemini runs on Supabase only.'; return; }
+  if (!sb || !sbUser) { out.textContent = 'Sign in first.'; return; }
+
+  out.textContent = 'Asking Gemini…';
+  var ctrl = typeof AbortController === 'function' ? new AbortController() : null;
+  var timer = ctrl ? setTimeout(function () { ctrl.abort(); }, GEMINI_TIMEOUT_MS) : 0;
+
+  try {
+    var got = await sb.auth.getSession();
+    var session = got && got.data ? got.data.session : null;
+    if (!session || !session.access_token) { out.textContent = 'Sign in first.'; return; }
+
+    var base = String(cfg.supaUrl || '').trim().replace(/\/+$/, '');
+    var res = await fetch(base + '/functions/v1/gemini', {
+      method: 'POST',
+      signal: ctrl ? ctrl.signal : undefined,
+      headers: {
+        'Content-Type': 'application/json',
+        // The user's own token, not the anon key: the function rejects anything
+        // whose role is not `authenticated`.
+        'Authorization': 'Bearer ' + session.access_token,
+        'apikey': String(cfg.supaKey || '').trim()
+      },
+      body: JSON.stringify({ prompt: GEMINI_TEST_PROMPT })
+    });
+
+    var data = null;
+    try { data = await res.json(); } catch (e) { /* an error page is not JSON */ }
+
+    if (!res.ok || !data || !data.ok) {
+      out.textContent = '❌ ' + ((data && data.error) || ('HTTP ' + res.status));
+      return;
+    }
+    // textContent, never innerHTML — this text came from a language model.
+    out.textContent = '✅ Gemini said: ' + data.text;
+  } catch (err) {
+    out.textContent = '❌ ' + (err && err.name === 'AbortError'
+      ? 'Gemini took too long to answer.'
+      : (err.message || err));
+  } finally {
+    clearTimeout(timer);
   }
 });
 

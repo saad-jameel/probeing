@@ -389,7 +389,9 @@ body {
 }
 .dlg-block h3 { margin: 0; font-size: 14px; }
 .dlg input[type="file"] { padding: 10px; font-size: 14px; }
-.dlg-actions { display: flex; gap: 10px; align-items: center; justify-content: flex-end; margin-top: 18px; }
+/* Wraps because the row grew a fourth button: four of them do not fit across a
+   phone, and an un-wrapped flex row would push Save off the edge. */
+.dlg-actions { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; justify-content: flex-end; margin-top: 18px; }
 
 /* ---------------------------------------------------------------- banner */
 
