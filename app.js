@@ -2107,7 +2107,18 @@ $('projectSaveBtn').addEventListener('click', function () {
  * budget: it is how long a label may take before the entry simply keeps the
  * sentence as its name. Still bounded, because an abandoned request must not
  * still be open when the next entry starts its own. */
-var EXTRACT_DEADLINE_MS = 4000;
+/* 15s, not the original 4s. That 4 was chosen while the ROW waited for the
+ * label, where every extra second was a second the entry could be lost — and
+ * that design is gone: the row is written on the tap now, and only its NAME is
+ * still outstanding. So the deadline stopped being a data-safety limit and
+ * became a patience limit, and 4s was simply too impatient: the first real
+ * extraction came back correct at 28.6s and was thrown away.
+ *
+ * It is still bounded, because a sentence whose label is in flight is held out
+ * of the next entry's prompt, and holding that open for a minute is how two
+ * tiles appear for one project. With deliberation off this should be about a
+ * second; 15 is the allowance for a cold function, not the expectation. */
+var EXTRACT_DEADLINE_MS = 15000;
 
 /** Nothing understood. A fresh object every time, because callers read from it
  *  and one shared instance is a bug waiting for a careless assignment. */
@@ -2264,7 +2275,13 @@ async function askGemini(text, known, ctrl) {
     body: JSON.stringify({
       prompt: extractPrompt(text, known),
       json: true,
-      schema: EXTRACT_SCHEMA
+      schema: EXTRACT_SCHEMA,
+      /* Do not deliberate. Measured: the same request WITH deliberation took
+       * 28.6 seconds to decide that "working on the Ahmed case, fixing the auth
+       * bug" is the Ahmed case. Naming a project from one line is not a problem
+       * that rewards thinking, and the function drops this knob by itself if
+       * the model will not take it. */
+      think: 0
     })
   });
 

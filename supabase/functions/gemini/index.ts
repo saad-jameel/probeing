@@ -156,18 +156,32 @@ Deno.serve(async (req: Request): Promise<Response> => {
   let prompt = '';
   let wantsJson = false;
   let schema: unknown = null;
+  let think: number | null = null;
   try {
     const sent = await req.json();
     prompt = String((sent && sent.prompt) || '').trim();
     wantsJson = Boolean(sent && sent.json);
     if (sent && sent.schema && typeof sent.schema === 'object') schema = sent.schema;
+    /* `think: 0` turns the model's deliberation off. Measured, not assumed: the
+     * first real extraction took 28.6 SECONDS against a 4s deadline, while a
+     * plain prompt in the same breath came back at once. The difference is the
+     * schema — gemini-3.6-flash is a thinking model, and handing it a shape to
+     * fill makes it deliberate at length over "name the project in this line".
+     *
+     * Null, not 0, when the caller says nothing: this is the model's own
+     * default and not ours to change for a caller that never asked. */
+    if (sent && typeof sent.think === 'number' && isFinite(sent.think)) {
+      think = Math.max(0, Math.floor(sent.think));
+    }
   } catch (_e) { /* an unparseable body is just a missing prompt */ }
   if (!prompt) return reply(400, { ok: false, error: 'prompt is required' });
 
   const ask: Record<string, unknown> = { contents: [{ parts: [{ text: prompt }] }] };
-  if (wantsJson || schema) {
-    const gen: Record<string, unknown> = { responseMimeType: 'application/json' };
+  if (wantsJson || schema || think !== null) {
+    const gen: Record<string, unknown> = {};
+    if (wantsJson || schema) gen.responseMimeType = 'application/json';
     if (schema) gen.responseSchema = schema;
+    if (think !== null) gen.thinkingConfig = { thinkingBudget: think };
     ask.generationConfig = gen;
   }
 
@@ -175,13 +189,32 @@ Deno.serve(async (req: Request): Promise<Response> => {
   // redirect, a referrer, or somebody's request log. Wrapped for the same reason
   // as the auth call above: every exit from this function is `{ok: ...}` JSON,
   // including the ones where Google is simply unreachable.
+  const call = (payload: unknown) => fetch(GEMINI_URL + MODEL + ':generateContent', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'x-goog-api-key': key },
+    body: JSON.stringify(payload)
+  });
+
   let res: Response;
   try {
-    res = await fetch(GEMINI_URL + MODEL + ':generateContent', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'x-goog-api-key': key },
-      body: JSON.stringify(ask)
-    });
+    res = await call(ask);
+
+    /* `thinkingConfig` is the newest thing in this request and the likeliest to
+     * be rejected — model names change under us, and so do the knobs they take.
+     * A 400 while we are sending it means the ask was malformed, so drop just
+     * that knob and try once more. Being slow is a nuisance; failing to label
+     * anything at all is a regression on what shipped, and this line is what
+     * makes turning thinking off unable to cause one.
+     *
+     * Only on 400, only once, and only when we actually sent it. */
+    if (res.status === 400 && think !== null) {
+      const gen = { ...(ask.generationConfig as Record<string, unknown>) };
+      delete gen.thinkingConfig;
+      const retry: Record<string, unknown> = { ...ask };
+      if (Object.keys(gen).length) retry.generationConfig = gen;
+      else delete retry.generationConfig;
+      res = await call(retry);
+    }
   } catch (e) {
     return reply(502, { ok: false, error: 'could not reach gemini: ' + scrub(e) });
   }
