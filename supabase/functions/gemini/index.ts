@@ -22,7 +22,16 @@
 import { createClient } from 'jsr:@supabase/supabase-js@2';
 
 const GEMINI_URL = 'https://generativelanguage.googleapis.com/v1beta/models/';
-const MODEL = Deno.env.get('GEMINI_MODEL') || 'gemini-2.5-flash';
+
+/* Google retires model names out from under you. `gemini-2.5-flash` was the
+ * default here for one day before it began answering "no longer available to
+ * new users", naming `gemini-3.6-flash` as its replacement — which is where
+ * this value came from, quoted from the API's own refusal rather than guessed.
+ *
+ * That is exactly why the name is an env var first and a literal second: the
+ * next time this happens it is a secret to change in the dashboard, not a
+ * function to redeploy. Set GEMINI_MODEL to override without touching code. */
+const MODEL = Deno.env.get('GEMINI_MODEL') || 'gemini-3.6-flash';
 
 // A cross-origin POST carrying an Authorization header is always preflighted, so
 // this has to answer OPTIONS. (The Edge runtime can; the Apps Script backend
