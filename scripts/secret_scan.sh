@@ -185,6 +185,32 @@ if [ "$QUICK" -eq 0 ] && git rev-parse HEAD >/dev/null 2>&1; then
       HIST_BAD=1
     fi
   fi
+  # The service_role key is the one credential that bypasses row level security
+  # outright, so history matters more here than anywhere else — yet this section
+  # checked for a Gemini key and not for this. Two ways in, because either alone
+  # misses a real case: by VALUE, which needs the key to still be on this machine,
+  # and by SHAPE, which does not.
+  if [ -n "${SVC:-}" ]; then
+    HIST_SVC=$(git log -S"$SVC" --oneline --all 2>/dev/null)
+    if [ -n "$HIST_SVC" ]; then
+      fail "the Supabase SERVICE key appears in committed history"
+      printf '        %s\n' "$HIST_SVC" | head -3
+      printf '        %s\n' "rotate it in the Supabase dashboard — removing the commit is not enough"
+      HIST_BAD=1
+    fi
+  fi
+  # A JWT payload is base64url, so the literal text "service_role" never appears
+  # in it. These three fragments are that string encoded at each of the three
+  # possible byte alignments, which is every way it can land inside a real token.
+  # Confirmed against the live key (matches) and the anon key (does not).
+  HIST_SVC_SHAPE=$(git log --oneline --all --pickaxe-regex \
+      -S'InJvbGUiOiJzZXJ2aWNlX3Jv|b2xlIjoic2VydmljZV9yb2|cm9sZSI6InNlcnZpY2Vfcm9|"?role"?[[:space:]]*:[[:space:]]*"service_role"' \
+      -- . ':!scripts/secret_scan.sh' 2>/dev/null)
+  if [ -n "$HIST_SVC_SHAPE" ]; then
+    fail "a service_role credential shape appears in committed history"
+    printf '        %s\n' "$HIST_SVC_SHAPE" | head -3
+    HIST_BAD=1
+  fi
   [ "$HIST_BAD" -eq 0 ] && pass "committed history clean"
 else
   pass "history scan skipped (--quick or no commits yet)"

@@ -96,12 +96,17 @@ Deno.serve(async (req: Request): Promise<Response> => {
 
   /* 4. One person uses this app, so pin it to them — and pin it CLOSED.
    *
-   *    Being signed in is a much weaker statement than it sounds. This project
-   *    allows email signup with auto-confirm, so anyone on the internet can mint
-   *    themselves a `role: authenticated` token against an address they do not
-   *    own, in one request, and sail through checks 1 to 3. Row level security
-   *    still keeps them out of the data, but nothing except this line keeps them
-   *    off Saad's Gemini quota and his bill.
+   *    Being signed in is a weaker statement than it sounds, and this check is
+   *    what makes up the difference. Sign-ups are disabled on the project as of
+   *    30 Aug 2026, so today only Saad can reach check 4 at all — which is
+   *    exactly why the line is easy to mistake for dead weight and delete.
+   *
+   *    It is not. Sign-ups are one dashboard toggle, and the day they are turned
+   *    back on — to add a second device, to try email login, by accident —
+   *    anyone on the internet can mint a `role: authenticated` token and sail
+   *    through checks 1 to 3. Row level security would still keep them out of
+   *    the data; nothing but this line would keep them off the Gemini bill.
+   *    The check has to outlive the setting that currently makes it redundant.
    *
    *    So an unset ALLOWED_USER_ID refuses everyone rather than admitting
    *    everyone. The id stays in an env var and out of the source, where it would
