@@ -249,15 +249,22 @@ filled; `Now` line updates on BOTH devices; same mic flow works on laptop Chrome
 
 ## The Gemini budget — a standing constraint on Stages 5, 6 and 7
 
-Learned on 30 Aug, from hitting it: the free tier allows **20 requests per minute**.
-It is a throttle, not a bill — nothing is charged, and it clears within the minute.
-Google's refusal is worded like an invoice ("check your plan and billing details")
-and is not one.
+Learned on 30 Aug, twice, the second time correctly. The free tier for
+gemini-3.6-flash allows **5 requests per minute and 20 per DAY** — read off Google's
+usage dashboard (`RPM 5/5`, `TPM 375/250K`, `RPD 21/20`), not inferred. Nothing is
+charged; it is a throttle. But 20 a day is a hard architectural constraint.
 
-**Per minute is the only limit that has actually bitten, and ordinary use cannot
-reach it.** Logging costs one call per entry, typed by hand; a heavy day is 30 or
-40 calls spread across sixteen hours. The nightly wrapup is one. A weekly review is
-one. Adding those up is not the risk.
+**The first version of this section said "20 per minute" and concluded ordinary use
+could never reach it.** That was inferred from a "retry in 38s" hint in Google's
+refusal, and it was wrong in the direction that matters: it dismissed a limit that
+actually invalidates a design. Recorded rather than quietly edited, because the
+mistake was reasoning from an error message instead of reading the meter.
+
+**What it means:** a heavy day is 30-40 log entries. One Gemini call per entry is
+30-40 calls against a ceiling of 20. **The per-entry call does not fit the free
+tier.** Tokens are not the problem — 375 of 250,000 per minute were used. Requests
+are. So the unit to economise is the *number of calls*, never their size: a bigger
+prompt covering ten entries is free next to ten small ones.
 
 **Bursts are the risk, and they come from one design mistake:** looping the model
 over a collection. One call per day of the week is 7 at once. One call per project
