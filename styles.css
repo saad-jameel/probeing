@@ -421,6 +421,9 @@ body {
 }
 .banner.ok { background: var(--accent); color: var(--accent-ink); border-color: transparent; }
 .banner.err { background: var(--danger); color: #fff; border-color: transparent; }
+/* Neither success nor failure: the entry saved, something optional did not.
+   Rule 6 does not apply — this sets no `display`, only colour. */
+.banner.warn { background: var(--warn, #7a5b00); color: #fff; border-color: transparent; }
 
 @media (prefers-reduced-motion: reduce) {
   * { transition: none !important; animation: none !important; }

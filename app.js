@@ -2248,6 +2248,8 @@ function extractProject(text, known) {
   });
 }
 
+var lastExtractError = '';
+
 async function askGemini(text, known, ctrl) {
   /* Gemini has one home and it is the Supabase Edge Function — the key is a
    * secret of that function and must never be anywhere else. On the Apps Script
@@ -2286,7 +2288,15 @@ async function askGemini(text, known, ctrl) {
   });
 
   var data = await res.json().catch(function () { return null; });
-  if (!res.ok || !data || !data.ok) return noExtraction();
+  if (!res.ok || !data || !data.ok) {
+    /* Remember WHY. A failed extraction leaves the row unlabelled, which is
+     * correct and also completely silent — and "the names just stopped
+     * appearing" is indistinguishable from "the feature is broken" unless the
+     * reason is kept. The reason only; never the prompt, never the answer. */
+    lastExtractError = (data && data.error) || ('HTTP ' + res.status);
+    return noExtraction();
+  }
+  lastExtractError = '';
   return tidyExtraction(parseExtraction(data.text), known);
 }
 
@@ -2390,7 +2400,20 @@ $('trackerForm').addEventListener('submit', function (e) {
   }
 
   function settle(got) {
-    if (!got.project) { forget(); return; } // understood nothing: the old behaviour
+    if (!got.project) {
+      /* Saved either way — only the NAME is missing. Worth one quiet line when
+       * the cause is the free tier's 20-a-minute ceiling, because otherwise the
+       * names simply stop and nothing says why. Once per spell, not per entry. */
+      /* Short, because the banner clears itself in 2.6 seconds and the full
+       * explanation does not fit in that. Settings -> Test Gemini prints the
+       * long version, including how many seconds are left. */
+      if (quotaWait(lastExtractError) && !quotaTold) {
+        quotaTold = true;
+        flash('Saved. Gemini is rate-limited, so no project name — it clears in a minute.', 'warn');
+      }
+      forget(); return;                     // understood nothing: the old behaviour
+    }
+    quotaTold = false;
     wrote.then(function (ok) {
       // A row that never landed has nothing to label, and the failed write has
       // already scheduled its own reconcile against the store.
@@ -2406,6 +2429,7 @@ $('trackerForm').addEventListener('submit', function (e) {
  * prompt. Counted rather than flagged, because the same sentence can be logged
  * twice before either one is answered. */
 var awaitingLabel = {};
+var quotaTold = false;   // say the quota line once, not on every entry
 
 /** What the model may be told is already open. */
 function openProjects() {
@@ -2949,79 +2973,100 @@ var GEMINI_TEST_PROMPT = 'Reply with exactly this sentence and nothing else: ' +
   'ProBeing can reach Gemini.';
 var GEMINI_TIMEOUT_MS = 30000;   // a cold function plus a model call is not quick
 
+/* One request, not two. This button used to ask Gemini to say hello and THEN
+ * run a real extraction, which is two calls per tap — and on the free tier the
+ * limit is 20 calls a MINUTE, so a few taps while debugging exhausted it and
+ * produced a scary quota error that looked like a billing problem and was not.
+ *
+ * So the real extraction goes first. If it works, reaching Gemini is proven by
+ * the fact that it answered; asking separately was only ever restating that.
+ * The hello call now happens ONLY when extraction fails, to separate "cannot
+ * reach Gemini at all" from "reached it and could not use the answer". */
+async function probeExtraction() {
+  var began = Date.now();
+  var out = { ms: 0, ok: false, project: '', detail: '', status: 0, error: '', raw: '' };
+  try {
+    var got = await sb.auth.getSession();
+    var session = got && got.data ? got.data.session : null;
+    if (!session || !session.access_token) { out.error = 'not signed in'; return out; }
+
+    var base = String(cfg.supaUrl || '').trim().replace(/\/+$/, '');
+    var res = await fetch(base + '/functions/v1/gemini', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': 'Bearer ' + session.access_token,
+        'apikey': String(cfg.supaKey || '').trim()
+      },
+      body: JSON.stringify({
+        prompt: extractPrompt(EXTRACT_PROBE, []),
+        json: true, schema: EXTRACT_SCHEMA, think: 0
+      })
+    });
+    out.status = res.status;
+    var data = await res.json().catch(function () { return null; });
+    if (!res.ok || !data || !data.ok) {
+      out.error = (data && data.error) || ('HTTP ' + res.status);
+      return out;
+    }
+    out.raw = String(data.text || '');
+    var got2 = tidyExtraction(parseExtraction(out.raw), []);
+    out.project = got2.project;
+    out.detail = got2.detail;
+    out.ok = Boolean(got2.project);
+    return out;
+  } catch (e) {
+    out.error = (e && e.message) ? e.message : String(e);
+    return out;
+  } finally {
+    out.ms = Date.now() - began;
+  }
+}
+
+var EXTRACT_PROBE = 'working on the Ahmed case, fixing the auth bug';
+
+/** Google's quota refusal is long, links twice, and reads like a bill. It is
+ *  neither a bill nor a fault — it is 20 requests a minute on the free tier. */
+function quotaWait(msg) {
+  if (!/quota|rate.?limit|RESOURCE_EXHAUSTED|exceeded/i.test(String(msg || ''))) return '';
+  var secs = /retry in ([0-9.]+)s/i.exec(String(msg));
+  return 'Gemini\'s free tier allows 20 requests a minute and that is used up. ' +
+         'Nothing has been charged and nothing is broken — it clears on its own' +
+         (secs ? ' in about ' + Math.ceil(parseFloat(secs[1])) + ' seconds.' : ' within a minute.');
+}
+
 $('testGeminiBtn').addEventListener('click', async function () {
   var out = $('testResult');
   if (cfg.backend !== 'supabase') { out.textContent = 'Gemini runs on Supabase only.'; return; }
   if (!sb || !sbUser) { out.textContent = 'Sign in first.'; return; }
 
-  out.textContent = 'Asking Gemini…';
-  var ctrl = typeof AbortController === 'function' ? new AbortController() : null;
-  var timer = ctrl ? setTimeout(function () { ctrl.abort(); }, GEMINI_TIMEOUT_MS) : 0;
+  out.textContent = 'Testing the real thing (naming a project)…';
 
-  try {
-    var got = await sb.auth.getSession();
-    var session = got && got.data ? got.data.session : null;
-    if (!session || !session.access_token) { out.textContent = 'Sign in first.'; return; }
+  var p = await probeExtraction();
 
-    var base = String(cfg.supaUrl || '').trim().replace(/\/+$/, '');
-    var res = await fetch(base + '/functions/v1/gemini', {
-      method: 'POST',
-      signal: ctrl ? ctrl.signal : undefined,
-      headers: {
-        'Content-Type': 'application/json',
-        // The user's own token, not the anon key: the function rejects anything
-        // whose role is not `authenticated`.
-        'Authorization': 'Bearer ' + session.access_token,
-        'apikey': String(cfg.supaKey || '').trim()
-      },
-      body: JSON.stringify({ prompt: GEMINI_TEST_PROMPT })
-    });
-
-    var data = null;
-    try { data = await res.json(); } catch (e) { /* an error page is not JSON */ }
-
-    if (!res.ok || !data || !data.ok) {
-      out.textContent = '❌ ' + ((data && data.error) || ('HTTP ' + res.status));
-      return;
+  if (p.ok) {
+    // textContent, never innerHTML — this text came from a language model.
+    out.textContent = '\u2705 Works (' + p.ms + 'ms): project "' + p.project +
+      '", detail "' + p.detail + '"';
+    if (p.ms > EXTRACT_DEADLINE_MS) {
+      out.textContent += '\n\u26a0\ufe0f Slower than the ' + EXTRACT_DEADLINE_MS +
+        'ms the tracker waits, so real entries will often stay unnamed.';
     }
-    /* Reaching Gemini is only half of what the tracker needs, and the half that
-     * was already working while project names silently stayed empty. So the
-     * second half is tested too: the SAME structured request the tracker sends,
-     * timed, with the raw answer shown when it will not parse.
-     *
-     * This exists because that failure was diagnosed twice by reasoning and got
-     * the wrong answer both times. A test that only proves the easy half is how
-     * you end up confidently changing the wrong thing. */
-    var plain = '✅ Gemini said: ' + data.text;
-    out.textContent = plain + '\nNow testing project extraction…';
-
-    var began = Date.now();
-    var probe = await askGemini('working on the Ahmed case, fixing the auth bug', []);
-    var took = Date.now() - began;
-
-    if (probe && probe.project) {
-      out.textContent = plain + '\n✅ Extraction works (' + took + 'ms): project "' +
-        probe.project + '", detail "' + probe.detail + '"';
-      if (took > EXTRACT_DEADLINE_MS) {
-        out.textContent += '\n⚠️ Slower than the ' + EXTRACT_DEADLINE_MS +
-          'ms the tracker waits, so real entries will often stay unnamed.';
-      }
-      return;
-    }
-
-    /* It failed. Ask again WITHOUT the schema and show exactly what came back —
-     * that is the difference between "the function is old" and "the model said
-     * something odd", which is not guessable from an empty result. */
-    var raw = await askGeminiRaw('working on the Ahmed case, fixing the auth bug');
-    out.textContent = plain + '\n❌ Extraction returned nothing after ' + took +
-      'ms.\nRaw answer: ' + raw;
-  } catch (err) {
-    out.textContent = '❌ ' + (err && err.name === 'AbortError'
-      ? 'Gemini took too long to answer.'
-      : (err.message || err));
-  } finally {
-    clearTimeout(timer);
+    return;
   }
+
+  var friendly = quotaWait(p.error);
+  if (friendly) { out.textContent = '\u23f3 ' + friendly; return; }
+
+  if (p.error) { out.textContent = '\u274c ' + p.error + ' (after ' + p.ms + 'ms)'; return; }
+
+  /* It answered, and the answer was unusable. Only now is the second call worth
+   * spending: it separates a broken function from a model saying something odd. */
+  out.textContent = '\u274c Gemini answered but the reply could not be read.' +
+    '\nRaw answer: ' + JSON.stringify(p.raw).slice(0, 300) +
+    '\nChecking whether Gemini is reachable at all…';
+  var raw = await askGeminiRaw(EXTRACT_PROBE);
+  out.textContent += '\nWithout the schema it says: ' + raw;
 });
 
 $('saveBtn').addEventListener('click', function () {
