@@ -2410,10 +2410,14 @@ function localProjectName(text) {
 
 /* THE DAILY BUDGET.
  *
- * Google allows 20 requests a day and refuses the 21st with a message that
- * reads like a bill and is not one. Stopping ourselves at 18 means that message
- * is never seen: the two spare absorb a Settings -> Test Gemini tap made after
- * the budget is gone.
+ * Google's free tier allows a fixed number of requests a day and refuses the
+ * next with a message that reads like a bill and is not one. Stopping ourselves
+ * a little short means that message is never seen: the spare absorbs a
+ * Settings -> Test Gemini tap made after the budget is gone.
+ *
+ * How many is a SETTING, because the allowance is per model and they differ
+ * enormously — gemini-3.6-flash gives 20 a day, the Lite models far more. A
+ * constant would silently become the real limit the day the model changed.
  *
  * Counted per LOCAL day, which is not exactly Google's day — their window
  * almost certainly turns over on Pacific time, so a heavy morning and a heavy
@@ -2421,7 +2425,16 @@ function localProjectName(text) {
  * inside one of their days. Named rather than solved: a real day spends about
  * five calls now, and the alternative is guessing at a reset time we cannot
  * observe. If Google ever refuses despite this counter, this is the reason. */
-var GEMINI_DAILY_BUDGET = 18;
+/* 18 was chosen against a model allowing 20 a day. The free tier's limits are PER
+ * MODEL and differ by more than an order of magnitude — the Lite models allow far
+ * more — so a constant here would become the binding limit the moment the model
+ * changes, and would do it silently: names would simply stop, exactly as if the
+ * feature were broken. It is a setting, defaulting to the cautious number. */
+var GEMINI_DAILY_DEFAULT = 18;
+function geminiDailyBudget() {
+  var n = Math.floor(Number(cfg.geminiDaily));
+  return (isFinite(n) && n > 0) ? n : GEMINI_DAILY_DEFAULT;
+}
 
 /** What `lastExtractError` is set to when WE stopped the call rather than
  *  Google. quotaWait() turns it into a sentence; nothing else compares to it. */
@@ -2458,7 +2471,7 @@ function geminiUsedToday() {
 }
 
 function geminiCallsLeft() {
-  return Math.max(0, GEMINI_DAILY_BUDGET - geminiUsedToday());
+  return Math.max(0, geminiDailyBudget() - geminiUsedToday());
 }
 
 /* THE PER-MINUTE PACER, which is the OTHER half of the free tier and the half
@@ -2544,10 +2557,10 @@ function noteGeminiCall() {
  *  is visible, and it is the one that says whether the day fits. */
 function geminiUsageLine() {
   var used = geminiUsedToday();
-  return used + ' of ' + GEMINI_DAILY_BUDGET + ' used today' +
-    (used >= GEMINI_DAILY_BUDGET
+  return used + ' of ' + geminiDailyBudget() + ' used today' +
+    (used >= geminiDailyBudget()
       ? ' — entries keep their own text as the name until tomorrow.'
-      : ' (Google allows 20; the last two are kept for this button).');
+      : ' (this app\'s own limit, set in Settings — leave room under your model\'s).');
 }
 
 /* The batch shape: one object per line, in the order the lines were given. The
@@ -2785,7 +2798,7 @@ function isDailyRefusal(msg) {
 function spendRestOfDay() {
   try {
     localStorage.setItem(GEMINI_DAY_KEY, JSON.stringify({
-      day: localDayStamp(), n: GEMINI_DAILY_BUDGET
+      day: localDayStamp(), n: geminiDailyBudget()
     }));
   } catch (e) { /* private mode: we simply keep trying, as before */ }
 }
@@ -3590,6 +3603,7 @@ $('settingsBtn').addEventListener('click', function () {
   paintBackendFields();
   $('supaUrl').value = cfg.supaUrl || '';
   $('supaKey').value = cfg.supaKey || '';
+  $('geminiDaily').value = cfg.geminiDaily || '';
   $('apiUrl').value = cfg.apiUrl || '';
   $('token').value = cfg.token || '';
   $('boardUrl').value = cfg.boardUrl || '';
@@ -3776,8 +3790,9 @@ function quotaWait(msg) {
   var s = String(msg || '');
 
   if (s === GEMINI_BUDGET_SPENT) {
-    return 'ProBeing has used its ' + GEMINI_DAILY_BUDGET + ' Gemini calls for today, out ' +
-           'of the free tier\'s 20 a day. Nothing is broken and nothing has been charged. ' +
+    return 'ProBeing has used its ' + geminiDailyBudget() + ' Gemini calls for today — ' +
+           'its own limit, set in Settings, not Google\'s. Nothing is broken and nothing ' +
+           'has been charged. ' +
            'Entries are still saved — they keep their own text as the name until tomorrow, ' +
            'and any line naming a project the app already knows is still named for free.';
   }
@@ -3896,6 +3911,7 @@ $('saveBtn').addEventListener('click', function () {
     backend: cfg.backend,
     supaUrl: $('supaUrl').value.trim(),
     supaKey: $('supaKey').value.trim(),
+    geminiDaily: $('geminiDaily').value.trim(),
     apiUrl: $('apiUrl').value.trim(),
     token: $('token').value.trim(),
     boardUrl: safeBoardUrl(typedBoard),

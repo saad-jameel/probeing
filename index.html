@@ -264,6 +264,16 @@
       <p id="supaWho" class="hint"></p>
 
       <div class="dlg-block">
+        <h3>Gemini calls a day</h3>
+        <p class="hint">Gemini names your projects, and Google&rsquo;s free tier limits how
+          many times a day it may be asked &mdash; <strong>per model</strong>. Set this a
+          little below your model&rsquo;s daily limit, which you can see on Google&rsquo;s
+          usage page as <strong>RPD</strong>. Too low and names stop early for no reason;
+          entries are always saved either way.</p>
+        <input id="geminiDaily" type="number" min="1" max="100000" step="1" placeholder="18">
+      </div>
+
+      <div class="dlg-block">
         <h3>Bring the old Sheet across</h3>
         <p class="hint">Your history before the move still lives in the Google Sheet.
           Download the <strong>Log</strong> and <strong>Prayers</strong> tabs as CSV

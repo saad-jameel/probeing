@@ -39,7 +39,14 @@ const GEMINI_URL = 'https://generativelanguage.googleapis.com/v1beta/models/';
  * That is exactly why the name is an env var first and a literal second: the
  * next time this happens it is a secret to change in the dashboard, not a
  * function to redeploy. Set GEMINI_MODEL to override without touching code. */
-const MODEL = Deno.env.get('GEMINI_MODEL') || 'gemini-3.6-flash';
+/* An ALIAS, not a pinned version, and that is the lesson of this week rather than
+ * a preference: `gemini-2.5-flash` was retired mid-session and every call failed
+ * until a human changed a secret. An alias moves on its own.
+ *
+ * Lite, because the free tier's limits are PER MODEL and this task — name the
+ * project in one line — is easy. gemini-3.6-flash allows 20 requests a day, which
+ * one afternoon of testing spent twice over. */
+const MODEL = Deno.env.get('GEMINI_MODEL') || 'gemini-flash-lite-latest';
 
 // A cross-origin POST carrying an Authorization header is always preflighted, so
 // this has to answer OPTIONS. (The Edge runtime can; the Apps Script backend
