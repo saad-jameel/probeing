@@ -3656,7 +3656,8 @@ var GEMINI_TIMEOUT_MS = 30000;   // a cold function plus a model call is not qui
  * reach Gemini at all" from "reached it and could not use the answer". */
 async function probeExtraction() {
   var began = Date.now();
-  var out = { ms: 0, ok: false, project: '', detail: '', status: 0, error: '', raw: '' };
+  var out = { ms: 0, ok: false, project: '', detail: '', status: 0, error: '',
+              raw: '', model: '', numbered: false };
   try {
     var got = await sb.auth.getSession();
     var session = got && got.data ? got.data.session : null;
@@ -3697,6 +3698,11 @@ async function probeExtraction() {
       out.error = (data && data.error) || ('HTTP ' + res.status);
       return out;
     }
+    /* Which model actually answered. The app never sets this — it is a Supabase
+     * secret (GEMINI_MODEL) — so this line is the only way to see what is really
+     * being used, and the free tier's limits are PER MODEL, so it is also the
+     * only way to know which budget is being spent. */
+    out.model = String(data.model || 'unknown');
     out.raw = String(data.text || '');
     var arr = parseExtraction(out.raw);
     if (!arr || !arr.length || arr.length !== EXTRACT_PROBE.length) {
@@ -3805,6 +3811,8 @@ $('testGeminiBtn').addEventListener('click', async function () {
       good += '\n\u26a0\ufe0f Slower than the ' + EXTRACT_DEADLINE_MS +
         'ms the tracker waits, so real entries will often stay unnamed.';
     }
+    good += '\nModel: ' + p.model + '  (set by the GEMINI_MODEL secret; the free ' +
+            'tier counts each model separately)';
     say(good);
     return;
   }
