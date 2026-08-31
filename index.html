@@ -264,13 +264,16 @@
       <p id="supaWho" class="hint"></p>
 
       <div class="dlg-block">
-        <h3>Gemini calls a day</h3>
-        <p class="hint">Gemini names your projects, and Google&rsquo;s free tier limits how
-          many times a day it may be asked &mdash; <strong>per model</strong>. Set this a
-          little below your model&rsquo;s daily limit, which you can see on Google&rsquo;s
-          usage page as <strong>RPD</strong>. Too low and names stop early for no reason;
-          entries are always saved either way.</p>
+        <h3>How often Gemini may be asked</h3>
+        <p class="hint">Gemini names your projects, and Google&rsquo;s free tier caps how
+          often it may be asked &mdash; <strong>per model</strong>. Google&rsquo;s usage page
+          shows both numbers as <strong>RPD</strong> (a day) and <strong>RPM</strong> (a
+          minute); set these a little below them. Too low and names come late or stop early
+          for no reason. Entries are always saved either way.</p>
+        <label class="hint" for="geminiDaily">Calls a day (RPD)</label>
         <input id="geminiDaily" type="number" min="1" max="100000" step="1" placeholder="18">
+        <label class="hint" for="geminiRpm">Calls a minute (RPM)</label>
+        <input id="geminiRpm" type="number" min="1" max="1000" step="1" placeholder="4">
       </div>
 
       <div class="dlg-block">

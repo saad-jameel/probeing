@@ -2504,7 +2504,15 @@ function geminiCallsLeft() {
  * unrecognised entries inside a minute — whose worst outcome is Google's own
  * refusal, which the app already handles by leaving the row unnamed and saying
  * so once. Named rather than solved. */
-var GEMINI_RPM_LIMIT = 4;
+/* 4 was chosen against a model allowing 5 a minute. Like the daily figure this is
+ * per model and varies a lot — gemini-3.5-flash-lite allows 15 — and pacing far
+ * below the real ceiling is not free: it holds a name back for up to a minute for
+ * no reason at all. Same shape as the daily budget, and the same reason. */
+var GEMINI_RPM_DEFAULT = 4;
+function geminiRpmLimit() {
+  var n = Math.floor(Number(cfg.geminiRpm));
+  return (isFinite(n) && n > 0) ? n : GEMINI_RPM_DEFAULT;
+}
 var GEMINI_RPM_WINDOW_MS = 60000;
 
 /** When the recent calls left this device, oldest first. Trimmed to the window
@@ -2530,7 +2538,7 @@ function geminiPacerWaitMs() {
   geminiCallTimes = geminiCallTimes.filter(function (t) {
     return now - t >= 0 && now - t < GEMINI_RPM_WINDOW_MS;
   });
-  if (geminiCallTimes.length < GEMINI_RPM_LIMIT) return 0;
+  if (geminiCallTimes.length < geminiRpmLimit()) return 0;
 
   // Oldest first, because they are appended in order — so the first slot to
   // free is the first one taken.
@@ -2790,7 +2798,7 @@ function isDailyRefusal(msg) {
   // Same asymmetry as quotaWait(): only stop for the day when Google actually
   // says the day. An unnamed limit is treated as the minute, and recovers.
   var lim = /limit:\s*([0-9]+)/i.exec(s);
-  return !!lim && Number(lim[1]) > GEMINI_RPM_LIMIT + 2;
+  return !!lim && Number(lim[1]) > geminiRpmLimit() + 2;
 }
 
 /** Mark our own budget as gone, so nothing else is attempted today. Reversible
@@ -3604,6 +3612,7 @@ $('settingsBtn').addEventListener('click', function () {
   $('supaUrl').value = cfg.supaUrl || '';
   $('supaKey').value = cfg.supaKey || '';
   $('geminiDaily').value = cfg.geminiDaily || '';
+  $('geminiRpm').value = cfg.geminiRpm || '';
   $('apiUrl').value = cfg.apiUrl || '';
   $('token').value = cfg.token || '';
   $('boardUrl').value = cfg.boardUrl || '';
@@ -3814,7 +3823,7 @@ function quotaWait(msg) {
    * do not. */
   var lim = /limit:\s*([0-9]+)/i.exec(s);
   var perMinute = /per.?minute|PerMinute/i.test(s) ||
-                  !lim || Number(lim[1]) <= GEMINI_RPM_LIMIT + 2;
+                  !lim || Number(lim[1]) <= geminiRpmLimit() + 2;
   var secs = /retry in ([0-9.]+)s/i.exec(s);
 
   if (perMinute) {
@@ -3912,6 +3921,7 @@ $('saveBtn').addEventListener('click', function () {
     supaUrl: $('supaUrl').value.trim(),
     supaKey: $('supaKey').value.trim(),
     geminiDaily: $('geminiDaily').value.trim(),
+    geminiRpm: $('geminiRpm').value.trim(),
     apiUrl: $('apiUrl').value.trim(),
     token: $('token').value.trim(),
     boardUrl: safeBoardUrl(typedBoard),
