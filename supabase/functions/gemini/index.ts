@@ -157,9 +157,11 @@ Deno.serve(async (req: Request): Promise<Response> => {
   let wantsJson = false;
   let schema: unknown = null;
   let think: number | null = null;
+  let wantsList = false;
   try {
     const sent = await req.json();
     prompt = String((sent && sent.prompt) || '').trim();
+    wantsList = Boolean(sent && sent.list);
     wantsJson = Boolean(sent && sent.json);
     if (sent && sent.schema && typeof sent.schema === 'object') schema = sent.schema;
     /* `think: 0` turns the model's deliberation off. Measured, not assumed: the
@@ -174,6 +176,39 @@ Deno.serve(async (req: Request): Promise<Response> => {
       think = Math.max(0, Math.floor(sent.think));
     }
   } catch (_e) { /* an unparseable body is just a missing prompt */ }
+
+  /* `list: true` — which models does this key actually have? Added because
+   * "gemini-3.6-flash-lite is not found... Call ModelService.ListModels" is a
+   * refusal that, unlike the one before it, does NOT name its replacement. The
+   * alternative was guessing names one redeploy at a time, or trusting a chatbot's
+   * account of its own product, which had already been wrong once this week.
+   *
+   * Only models supporting generateContent are returned, because any other kind
+   * is a name that cannot be put in GEMINI_MODEL. ListModels is a GET and does
+   * not spend the generateContent quota, which is the point: this stays usable
+   * on exactly the day the quota is gone. */
+  if (wantsList) {
+    try {
+      const lr = await fetch(GEMINI_URL.replace(/\/$/, ''), {
+        headers: { 'x-goog-api-key': key }
+      });
+      const lb = await lr.json().catch(() => null);
+      if (!lr.ok) {
+        return reply(502, { ok: false,
+          error: 'could not list models: ' + scrub((lb && lb.error && lb.error.message) || lr.status) });
+      }
+      const names = ((lb && lb.models) || [])
+        .filter((m: { supportedGenerationMethods?: string[] }) =>
+          (m.supportedGenerationMethods || []).indexOf('generateContent') !== -1)
+        .map((m: { name?: string }) => String(m.name || '').replace(/^models\//, ''))
+        .filter(Boolean)
+        .sort();
+      return reply(200, { ok: true, models: names, model: MODEL });
+    } catch (e) {
+      return reply(502, { ok: false, error: 'could not list models: ' + scrub(e) });
+    }
+  }
+
   if (!prompt) return reply(400, { ok: false, error: 'prompt is required' });
 
   const ask: Record<string, unknown> = { contents: [{ parts: [{ text: prompt }] }] };

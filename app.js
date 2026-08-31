@@ -3654,6 +3654,40 @@ var GEMINI_TIMEOUT_MS = 30000;   // a cold function plus a model call is not qui
  * the fact that it answered; asking separately was only ever restating that.
  * The hello call now happens ONLY when extraction fails, to separate "cannot
  * reach Gemini at all" from "reached it and could not use the answer". */
+/* Which models does this key actually have? Only reachable through the Edge
+ * Function, because listing them needs the key and the key lives only there.
+ * Costs no generateContent quota, so it still works on a day the quota is gone —
+ * which is exactly the day you need it. */
+async function listGeminiModels() {
+  try {
+    var got = await sb.auth.getSession();
+    var session = got && got.data ? got.data.session : null;
+    if (!session || !session.access_token) return null;
+
+    var base = String(cfg.supaUrl || '').trim().replace(/\/+$/, '');
+    var res = await fetch(base + '/functions/v1/gemini', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': 'Bearer ' + session.access_token,
+        'apikey': String(cfg.supaKey || '').trim()
+      },
+      body: JSON.stringify({ list: true })
+    });
+    var data = await res.json().catch(function () { return null; });
+    if (!res.ok || !data || !data.ok) return null;
+    return data.models || [];
+  } catch (e) { return null; }
+}
+
+/** Does this refusal mean "no such model"? Then the useful reply is the list of
+ *  models that DO exist, not the error text — Google's own message here says to
+ *  go and ask, and there is no reason to make a person do that by hand. */
+function isUnknownModel(msg) {
+  return /is not found for API version|ListModels|not supported for generateContent/i
+         .test(String(msg || ''));
+}
+
 async function probeExtraction() {
   var began = Date.now();
   var out = { ms: 0, ok: false, project: '', detail: '', status: 0, error: '',
@@ -3820,7 +3854,25 @@ $('testGeminiBtn').addEventListener('click', async function () {
   var friendly = quotaWait(p.error);
   if (friendly) { say('\u23f3 ' + friendly); return; }
 
-  if (p.error) { say('\u274c ' + p.error + ' (after ' + p.ms + 'ms)'); return; }
+  if (p.error) {
+    var line = '\u274c ' + p.error + ' (after ' + p.ms + 'ms)';
+    if (!isUnknownModel(p.error)) { say(line); return; }
+
+    // The model name is wrong. Say which names are right.
+    out.textContent = line + '\n\nAsking Google which models this key can use…';
+    var models = await listGeminiModels();
+    if (!models || !models.length) {
+      say(line + '\n\nCould not list the available models either.');
+      return;
+    }
+    var lite = models.filter(function (m) { return /lite/i.test(m); });
+    say(line +
+        '\n\nSet the GEMINI_MODEL secret to one of these instead' +
+        (lite.length ? '.\nLighter models, which usually have the bigger free allowance:\n  ' +
+                       lite.join('\n  ') : '.') +
+        '\n\nAll ' + models.length + ' available:\n  ' + models.join('\n  '));
+    return;
+  }
 
   /* It answered, and the answer was unusable. Only now is the second call worth
    * spending: it separates a broken function from a model saying something odd. */
