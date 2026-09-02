@@ -289,6 +289,35 @@ https://ai.google.dev/gemini-api/docs/rate-limits and usage at https://ai.dev/ra
 > glance rather than an essay" needs a week of consistent logging — which is a
 > content problem, not a code one. See *How this gets tested*.
 
+### Redesigned before it was ever signed off — 2 Sep 2026
+
+Saad read the shipped screen and said *"it is very good, I do not want the paragraph."*
+The prose summary is replaced by work grouped under four headings he named — Office
+Projects, Personal Projects, PhD Working, Personal working — each project showing its
+time with its tasks bulleted under it. `docs/Review_Spec.md` carries the full shape.
+
+**The design point worth keeping.** Almost none of that is Gemini's work. Hours,
+projects and bullets are `replayDay()` output and the `detail` column, rendered
+directly. So the model shrank to two jobs — Learning, and a 1-2 line pace verdict —
+the figures became unhallucinatable, and the review still costs **one** call. Even the
+pace comparison is subtracted locally; Gemini is handed both totals and the chosen
+word, and only phrases it.
+
+**A project's heading is one store seen from two sides.** He asked whether to mark
+them in Settings or be asked while the summary is drafted; the answer is both, because
+building either separately costs the same. The category is kept against the project
+name, the review asks about anything undecided in that range, and Settings edits the
+same list later. Skipping never blocks the figures.
+
+**"This week" is Monday → today**, not Monday → Sunday: a range containing days that
+have not happened drags every average down. **"Last week"** was added for the previous
+complete Monday–Sunday, which is what a weekly review usually means.
+
+**The redesign found a bug the first build had.** Reading one range plus its comparison
+period in a single query let the earlier period's nights land in this range's sleep
+figure, with nothing on screen looking wrong. Caught because the comparison was added,
+not because anyone was looking for it.
+
 **The original stage text follows.**
 
 > **The hard half is already written.** `replayDay()` reconstructs a day from

@@ -152,7 +152,9 @@
 <!-- The range picker is a real control, not a test mode. A shortcut that only
      exists while testing means the thing that gets tested is not the thing that
      ships &mdash; and "Last 30 days" is the only option that can reach back past
-     the first row, which is what makes the refusal reachable at all. -->
+     the first row, which is what makes the refusal reachable at all.
+     "This week" is Monday to today; "Last week" is the previous complete Monday
+     to Sunday, and is the only range that never contains today. -->
 <section class="screen" data-screen="review" hidden>
   <h2 class="screen-title">Review</h2>
   <p id="reviewRange" class="screen-sub">&mdash;</p>
@@ -161,8 +163,10 @@
 
   <section class="card">
     <h3 class="card-head"><svg class="card-ico" aria-hidden="true"><use href="#i-chart"></use></svg> Summary</h3>
-    <!-- Every figure below is worked out on this device from your own rows.
-         Gemini only writes the paragraph underneath them. -->
+    <!-- Every figure below, and the whole of the Projects card, is worked out on
+         this device from your own rows. Gemini is left two jobs: the line or two
+         about the pace underneath, and the Learning card. Both can go missing
+         without costing you a single number. -->
     <div id="reviewFigures" class="sum-row three" hidden></div>
     <p id="reviewSleep" class="review-sleep"></p>
     <p id="reviewProse" class="review-prose"></p>
@@ -245,6 +249,26 @@
     <div class="dlg-actions">
       <button type="button" id="projectSkipBtn" class="link-btn">Skip</button>
       <button type="button" id="projectSaveBtn" class="btn btn-accent">Start</button>
+    </div>
+  </form>
+</dialog>
+
+<!-- Asked while a review is being drawn, and never in the way of it: the hours
+     and the projects are already on the screen behind this. Nothing here is
+     required &mdash; an unfiled project is one line under "Uncategorised". -->
+<dialog id="catDlg" class="dlg">
+  <form method="dialog">
+    <h2>Which kind of work is this?</h2>
+    <p class="hint">Only projects the Review has not asked about before. Your answers are
+      kept on this device and decide which heading each project&rsquo;s hours appear under.
+      You can change any of them later in Settings. <strong>Not now</strong> leaves them
+      under &ldquo;Uncategorised&rdquo; &mdash; the review below is already complete either way.</p>
+
+    <div id="catList" class="cat-list"></div>
+
+    <div class="dlg-actions">
+      <button type="button" id="catCancelBtn" class="link-btn">Not now</button>
+      <button type="button" id="catSaveBtn" class="btn btn-accent">Save</button>
     </div>
   </form>
 </dialog>
@@ -337,6 +361,16 @@
       &ldquo;my review&rdquo;, &ldquo;OneNet&rdquo; as &ldquo;one night&rdquo; &mdash; and this
       list is what lets the app put the right name back. What you actually said is always
       kept as well, so nothing is lost if it guesses wrong. Stored on this device only.</p>
+
+    <div class="dlg-block">
+      <h3>Which kind of work each project is</h3>
+      <p class="hint">The Review adds your hours up under these four headings. Nothing in
+        your entries can tell office work from personal, so it is asked once per project
+        &mdash; here, or in the Review the first time a new name turns up. Change one any
+        time a project moves from one to the other. Stored on this device only.</p>
+      <div id="catSettings" class="cat-list"></div>
+      <p id="catSettingsNote" class="hint"></p>
+    </div>
 
     <label for="boardUrl">Taskboard link (optional)</label>
     <input id="boardUrl" type="url" placeholder="https://trello.com/b/... or any board you use">

@@ -314,18 +314,38 @@ body {
 /* Six figures, so three across reads as two tidy rows rather than 4 + 2. */
 .sum-row.three { grid-template-columns: repeat(3, 1fr); }
 
+/* The review's project list is three deep: a category heading, the projects
+   under it, and what was done to each. Indentation is the only thing separating
+   them, so it lives on the row rather than in the markup. None of these set
+   `display` — `.sum-projects li` already does — so Rule 6 has nothing to pair. */
+.sum-projects li.p-group { font-weight: 700; margin-top: 10px; }
+.sum-projects li.p-group:first-child { margin-top: 0; }
+.sum-projects li.p-proj { padding-left: 14px; }
+.sum-projects li.p-task {
+  position: relative;
+  padding-left: 30px;
+  font-size: 13.5px; line-height: 1.35; color: var(--muted);
+}
+/* The bullet is a marker drawn by the stylesheet, not something Saad said —
+   his words go through textContent and nowhere near a `content` property. */
+.sum-projects li.p-task::before {
+  content: "\00b7";
+  position: absolute; left: 18px;
+}
+
 .review-sleep { color: var(--muted); font-size: 14px; margin: 12px 0 0; }
-/* pre-line, because Gemini is asked for five or six separate lines and they
-   are put on screen with textContent — the newlines are all the shape there is,
-   and innerHTML is not an option for text this app did not write. */
+/* pre-line, because Gemini is asked for one or two separate lines and they are
+   put on screen with textContent — the newlines are all the shape there is, and
+   innerHTML is not an option for text this app did not write. */
 .review-prose { font-size: 14.5px; line-height: 1.5; margin: 12px 0 0; white-space: pre-line; }
 
 .review-foot { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
 .review-foot[hidden] { display: none; }
 .review-usage { color: var(--muted); font-size: 12.5px; font-variant-numeric: tabular-nums; }
 
-/* Four ranges, so two by two. The prayer picker's 30% basis would put three on
-   one row and strand the fourth across the whole of the next. */
+/* Two per row. The prayer picker's 30% basis would put three across and squeeze
+   "Last 30 days" onto two lines on a narrow phone; with five ranges the last one
+   simply takes a row of its own. */
 #reviewPicks .pick { flex: 1 1 44%; padding: 10px; font-size: 14px; }
 
 /* An empty paragraph still takes its top margin, which leaves a gap under the
@@ -463,6 +483,26 @@ body {
   border: 1px solid var(--line); border-radius: 10px;
 }
 .dlg-block h3 { margin: 0; font-size: 14px; }
+
+/* One row per project: its name, and the kind of work it is. Drawn identically
+   in the Review's dialog and in Settings, because they are one store. */
+.cat-list { display: grid; gap: 10px; margin-top: 10px; }
+/* Rule 6: this class sets `display`, so an author style would otherwise beat
+   the browser's own `[hidden] { display: none }` the day something hides it. */
+.cat-list[hidden] { display: none; }
+.cat-row { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+.cat-row[hidden] { display: none; }
+.cat-name { min-width: 0; overflow-wrap: anywhere; font-size: 14.5px; }
+.cat-pick {
+  flex: 0 0 auto; max-width: 55%;
+  padding: 9px 10px;
+  /* --panel-2 rather than the --bg every other field uses: this one sits inside
+     a .dlg-block, whose own background IS --bg, and a control the same colour as
+     the panel it is on reads as a label until you tap it. */
+  background: var(--panel-2); color: var(--fg);
+  border: 1px solid var(--line); border-radius: 8px;
+  font-size: 14px; font-family: inherit;
+}
 /* The test result is several lines now (reachability, then extraction, then the
    raw answer when it will not parse). Without this they run together into one
    unreadable paragraph, because textContent keeps the newlines and CSS collapses

@@ -1034,6 +1034,26 @@ async function refresh(opts) {
   }
 }
 
+/* A map whose KEYS ARE THINGS THE USER TYPED — a project, a break reason, a
+ * task, a prayer mode.
+ *
+ * `Object.create(null)`, never `{}`, and only for this kind of map. On a plain
+ * object the one key `__proto__` is not a key at all: it is an accessor
+ * inherited from Object.prototype, so `map['__proto__'] = ms` runs a SETTER,
+ * changes nothing, and reads back as the prototype object. A project called
+ * `__proto__` therefore loses its hours silently — not misfiled, gone — while
+ * still counting in the day's total, so the figures stop adding up and nothing
+ * says why. Every other awkward name (`constructor`, `toString`, `valueOf`)
+ * already worked, which is how this one stayed hidden.
+ *
+ * A map with no prototype has no setter to fall through to, and no inherited
+ * members either — which is the same reason the reads around here go through
+ * hasOwnProperty and Array.isArray. Nothing else changes: Object.keys, delete
+ * and JSON.stringify all behave exactly as before. */
+function userMap() {
+  return Object.create(null);
+}
+
 // -------------------------------------------------------- the current project
 
 /* Point 6: the project comes from what you typed, not from a picker. Walk
@@ -1084,10 +1104,10 @@ function replayDay(log, endMs) {
    * once is two hours of your life and two hours of each project. Same for
    * `paused` against byReason. Anything else would either invent hours or
    * quietly halve the time you spent on something. */
-  var active = {};                          // project -> 1, currently being worked on
-  var reasons = {};                         // break reason -> 1, currently applying
-  var byProject = {};
-  var byReason = {};
+  var active = userMap();                   // project -> 1, currently being worked on
+  var reasons = userMap();                  // break reason -> 1, currently applying
+  var byProject = userMap();
+  var byReason = userMap();
   var worked = 0;
   var paused = 0;
   /* The clock keeps running after the last Done — you are still at work, just
@@ -1156,7 +1176,7 @@ function replayDay(log, endMs) {
       clock = true;
       underWay = true;
       dayClosed = false;
-      reasons = {};
+      reasons = userMap();
     } else if (row.type === 'done') {
       var finished = String(row.project || text).trim();
       delete active[finished];
@@ -1166,7 +1186,7 @@ function replayDay(log, endMs) {
       clock = true;
       underWay = true;
       dayClosed = false;
-      reasons = {};
+      reasons = userMap();
     } else if (row.type === 'break') {
       /* A chip STARTS the day if nothing else has.
        *
@@ -1184,7 +1204,7 @@ function replayDay(log, endMs) {
         clock = false;
         underWay = true;
         var move = parseBreakOp(text, row.detail);
-        if (move.op === 'set') reasons = {};
+        if (move.op === 'set') reasons = userMap();
         if (move.op !== 'keep') {
           move.names.forEach(function (r) {
             if (move.op === 'drop') delete reasons[r]; else reasons[r] = 1;
@@ -1194,7 +1214,7 @@ function replayDay(log, endMs) {
     } else if (row.type === 'off' || row.type === 'sleep') {
       // The day being over is not "on break": nothing accrues after it.
       clock = false;
-      reasons = {};
+      reasons = userMap();
       underWay = false;
       dayClosed = true;
     }
@@ -1271,7 +1291,7 @@ function renderDaySummary() {
   /* A project leaves `activeProjects` only by being pressed Done — `off` and
    * `sleep` stop the clock without closing anything — so "not active" is
    * exactly "finished", and earns the tick. */
-  var open = {};
+  var open = userMap();                     // project names again — see userMap()
   day.activeProjects.forEach(function (p) { open[p] = 1; });
 
   Object.keys(day.byProject)
@@ -2531,6 +2551,76 @@ function savePinnedNames(list) {
   try {
     localStorage.setItem(PINNED_NAMES_KEY, JSON.stringify(pinnedNames));
   } catch (e) { /* a full store costs the list, never a row */ }
+}
+
+/* WHICH KIND OF WORK A PROJECT IS. The review groups its hours under these, and
+ * nothing in the rows can work them out: only Saad knows that OneNet is office
+ * work and ProBeing is not. So it is asked once per project and remembered.
+ *
+ * Same shape as the vocabulary above — localStorage, its own key, keyed
+ * case-insensitively on the name, never evicted. Never evicted matters here for
+ * a different reason: a project you stopped working on in March is still office
+ * work in December, and its hours still have to land somewhere in a review of
+ * March.
+ *
+ * ONE STORE, TWO PLACES TO EDIT IT: a dialog at review time that only ever asks
+ * about names it has not seen, and a list in Settings for the day a personal
+ * project becomes office work. They are the same mechanism seen twice, not two
+ * features, and they share one renderer below for exactly that reason. */
+var PROJECT_CATEGORY_KEY = 'probeing.categories';
+
+var PROJECT_CATEGORIES = [
+  { id: 'office',   label: 'Office Projects' },
+  { id: 'personal', label: 'Personal Projects' },
+  { id: 'phd',      label: 'PhD Working' },
+  { id: 'life',     label: 'Personal working' }
+];
+
+/* A fifth answer, and a real one: "none of these". Stored like any other choice,
+ * so the dialog stops asking — which is the whole difference between a project
+ * that was skipped and one that has never been put in front of anybody. */
+var CATEGORY_SKIP = 'skip';
+
+/** The label for one of the four, or '' for anything else — including the
+ *  functions a plain object inherits, which is why every read of the store goes
+ *  through this rather than trusting whatever came back. */
+function categoryLabel(id) {
+  var found = '';
+  PROJECT_CATEGORIES.forEach(function (c) { if (c.id === id) found = c.label; });
+  return found;
+}
+
+/** The key a project is filed under. Case and stray spacing must not make two
+ *  entries out of "NeuraVue" and "neuravue ". */
+function catKey(name) {
+  return String(name || '').replace(/\s+/g, ' ').trim().toLowerCase();
+}
+
+function loadProjectCategories() {
+  var saved = null;
+  try {
+    saved = JSON.parse(localStorage.getItem(PROJECT_CATEGORY_KEY));
+  } catch (e) { /* corrupt storage is an empty memory, not a broken app */ }
+  if (!saved || typeof saved !== 'object') return userMap();
+
+  /* Rebuilt rather than handed straight back, so a value that is not one of the
+   * five answers — a category renamed, storage edited by hand — is dropped here
+   * instead of becoming a group with no name further down. */
+  var out = userMap();                      // keyed by project name — see userMap()
+  Object.keys(saved).forEach(function (name) {
+    var id = saved[name];
+    if (id === CATEGORY_SKIP || categoryLabel(id)) out[catKey(name)] = id;
+  });
+  return out;
+}
+
+var projectCategories = loadProjectCategories();
+
+function saveProjectCategories(map) {
+  projectCategories = map;
+  try {
+    localStorage.setItem(PROJECT_CATEGORY_KEY, JSON.stringify(map));
+  } catch (e) { /* a full store costs the grouping, never a row */ }
 }
 
 /** Put `name` at the front of the remembered list. Called for every name the
@@ -3793,28 +3883,46 @@ function rangeFloor(startDate, earliestAt) {
   return { ok: true, floor: floor, message: '' };
 }
 
-/** The two halves together: read the floor, then judge the range. */
+/** The two halves together: read the floor, then judge the range.
+ *
+ *  The instant itself is handed back alongside the verdict so that a SECOND
+ *  range — the earlier period the pace line compares against — can be judged
+ *  with the pure function above and no second trip to the database. */
 async function checkRangeFloor(startDate) {
-  return rangeFloor(startDate, await earliestEventAt());
+  var earliest = await earliestEventAt();
+  var got = rangeFloor(startDate, earliest);
+  got.earliest = earliest;
+  return got;
 }
 
 // ------------------------------------------------------------------- review
 
-/* WHAT STAGE 5 ACTUALLY IS: replayDay() run once per day instead of once, the
- * totals added up, and ONE call to Gemini to put the finished figures into
- * sentences. The arithmetic never leaves this device.
+/* WHAT THIS SCREEN ACTUALLY IS: replayDay() run once per day instead of once,
+ * the totals added up, sorted into the four kinds of work, and ONE call to
+ * Gemini. The arithmetic never leaves this device.
  *
  * That split is a budget rule, not a preference. The free tier allows a handful
  * of Gemini calls a day, so a design that asks the model per day, or per
- * project, spends a week's allowance on one screen. It is also the shape that
- * gives the right answer: the model writes prose well and adds up badly.
+ * project, or per category, spends a week's allowance on one screen. It is also
+ * the shape that gives the right answer: the model writes prose well and adds
+ * up badly.
+ *
+ * WHAT THE MODEL IS LEFT WITH, after the redesign: the Learning line, and one or
+ * two lines saying whether this stretch was faster or slower than the one before
+ * it — and even that comparison is subtracted here and handed over finished. The
+ * headings, the hours, the projects and the bullets under them are all local, so
+ * they cannot be hallucinated and they cannot go missing.
  *
  * The order of operations below is the other half of the same idea. Figures
- * first, prose second — the numbers are on screen before Gemini is asked
- * anything, so a spent budget costs a paragraph and never the report. */
+ * first, sentences second — the numbers are on screen before Gemini is asked
+ * anything, so a spent budget costs two lines and never the report. */
 
-/** The four ranges the picker offers. `days` counts back from today inclusive,
+/** The five ranges the picker offers. `days` counts back from today inclusive,
  *  so "Last 7 days" is today plus the six before it.
+ *
+ *  "This week" is Monday to TODAY — a week in progress. "Last week" is the
+ *  previous complete Monday to Sunday, which is what a weekly review usually
+ *  means and is the only range here that never contains today.
  *
  *  Last 30 days is here for a reason beyond wanting a month: it is the only
  *  option that can reach back past 27 Aug 2026, the first row this account has.
@@ -3824,6 +3932,7 @@ var REVIEW_RANGES = [
   { id: 'd2', label: 'Last 2 days', days: 2 },
   { id: 'd7', label: 'Last 7 days', days: 7 },
   { id: 'wk', label: 'This week', week: true },
+  { id: 'lw', label: 'Last week', week: true, back: 1 },
   { id: 'd30', label: 'Last 30 days', days: 30 }
 ];
 
@@ -3849,17 +3958,103 @@ function reviewRangeOf(id, now) {
 
   var today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
   var start;
+  var end = today;
 
   if (spec.week) {
     // Monday, because that is where Saad's week starts and where the Review
     // spec's example week starts. Sunday is day 0 in JS, hence the shuffle.
     var dow = (today.getDay() + 6) % 7;
     start = new Date(today.getFullYear(), today.getMonth(), today.getDate() - dow);
+
+    /* `back` walks whole weeks off THIS week's Monday, which is what makes
+     * "Last week" the previous COMPLETE week on every day of the week. Counting
+     * back from today would be wrong twice over: on a Monday the two weeks are
+     * adjacent, and on a Sunday the current week is finishing but is not
+     * finished — so last week must still be the one before it, and this way it
+     * is, without either case being special-cased. */
+    if (spec.back) {
+      start = new Date(start.getFullYear(), start.getMonth(), start.getDate() - 7 * spec.back);
+      end = new Date(start.getFullYear(), start.getMonth(), start.getDate() + 6);
+    }
   } else {
     start = new Date(today.getFullYear(), today.getMonth(), today.getDate() - (spec.days - 1));
   }
 
-  return { id: spec.id, label: spec.label, start: start, end: today };
+  return { id: spec.id, label: spec.label, start: start, end: end };
+}
+
+/**
+ * The range of the same length immediately before this one: 27 Aug – 2 Sep is
+ * measured against 20 – 26 Aug.
+ *
+ * Worked out here rather than by Gemini, for the same reason every other figure
+ * is. A pace verdict is a subtraction, and the model is being asked to write,
+ * not to count — it gets both totals and the word already chosen.
+ */
+function priorRangeOf(win) {
+  var midnight = function (d) { return new Date(d.getFullYear(), d.getMonth(), d.getDate()); };
+  // Rounded, because a range that spans a clock change is 23 or 25 hours long
+  // on one of its days and would otherwise come out a day short or a day over.
+  var days = Math.round((midnight(win.end) - midnight(win.start)) / 86400000) + 1;
+
+  var end = new Date(win.start.getFullYear(), win.start.getMonth(), win.start.getDate() - 1);
+  var start = new Date(end.getFullYear(), end.getMonth(), end.getDate() - (days - 1));
+  return { start: start, end: end, days: days };
+}
+
+/* When are two periods "about the same"?
+ *
+ * This was a flat minute, which is no band at all once the range is longer than
+ * an afternoon: a week's total lands within a minute of the last one roughly
+ * never, so the report announced a change of pace every single time it was
+ * opened. A band has to scale with what is being measured.
+ *
+ * So: within a twentieth of the earlier period, or within a quarter of an hour,
+ * whichever is the more forgiving. The floor is what keeps a short range sane —
+ * 5% of a two-day period can be three minutes — and the fraction is what keeps
+ * a thirty-day one honest.
+ *
+ * BOTH NUMBERS ARE A JUDGEMENT, NOT A MEASUREMENT. Nothing was counted to
+ * arrive at them; they are a guess at when a difference stops being worth a
+ * sentence. Move them if the pace line starts reading wrong — that is a
+ * preference, not a bug. */
+var PACE_SAME_FRACTION = 0.05;              // a twentieth of the earlier period
+var PACE_SAME_FLOOR_MS = 15 * 60000;        // …but never a band tighter than this
+
+/** How far the two totals may differ and still be called the same. */
+function paceBandMs(priorMs) {
+  var prior = (typeof priorMs === 'number' && priorMs > 0) ? priorMs : 0;
+  return Math.max(prior * PACE_SAME_FRACTION, PACE_SAME_FLOOR_MS);
+}
+
+/**
+ * This range against the one before it, as a finished verdict.
+ *
+ * @param prior from priorRangeOf() — carried through so the prompt can name the
+ *              dates it is comparing against rather than say "before".
+ * @param known false when the earlier period reaches back past the first row
+ *              this account has. Then there is no comparison — not a zero, the
+ *              same refusal the date floor and the sleep line make.
+ */
+function paceOf(workedMs, priorMs, prior, known) {
+  var out = {
+    known: Boolean(known),
+    worked: workedMs,
+    prior: known ? priorMs : 0,
+    diff: 0,
+    word: '',
+    days: (prior && prior.days) || 0,
+    // Dated only if it really has dates: the prompt names the period it is
+    // comparing against, and a half-built one must not put "Invalid Date" there.
+    fromYmd: (prior && prior.start instanceof Date) ? ymdLocal(prior.start) : '',
+    toYmd: (prior && prior.end instanceof Date) ? ymdLocal(prior.end) : ''
+  };
+  if (!out.known) return out;
+
+  out.diff = workedMs - priorMs;
+  out.word = Math.abs(out.diff) < paceBandMs(priorMs) ? 'about the same'
+           : (out.diff > 0 ? 'faster' : 'slower');
+  return out;
 }
 
 /**
@@ -3971,11 +4166,12 @@ function summariseRange(rows, windows) {
     worked: 0,
     paused: 0,
     unattributed: 0,
-    byProject: {},
-    byReason: {},
+    // Keyed by what was typed, so they carry no prototype — see userMap().
+    byProject: userMap(),
+    byReason: userMap(),
     m: 0,
     prayers: 0,
-    byMode: {},
+    byMode: userMap(),
     perDay: [],
     rows: 0
   };
@@ -4030,6 +4226,26 @@ function summariseRange(rows, windows) {
   return sum;
 }
 
+/**
+ * Only the rows that fall inside these day windows.
+ *
+ * Needed because ONE read now covers two ranges — the one being reviewed and
+ * the equal-length one before it, for the pace line. summariseRange() cannot
+ * simply be handed the wider set: it buckets work by window, but sleepInRange()
+ * walks every row it is given, so last week's nights would be added to this
+ * week's total without a single figure looking wrong.
+ */
+function rowsInWindows(rows, windows) {
+  if (!windows || !windows.length) return [];
+  var from = windows[0].startMs;
+  var to = windows[windows.length - 1].endMs;
+
+  return (rows || []).filter(function (row) {
+    var t = instantOf(row.at);
+    return !isNaN(t) && t >= from && t < to;
+  });
+}
+
 /* A project key longer than this is a sentence, not a name.
  *
  * replayDay() keys a row on `project || raw_text`, so an entry Gemini never got
@@ -4046,7 +4262,7 @@ function summariseRange(rows, windows) {
 var REVIEW_NAME_MAX = 40;
 
 function collapseProjects(byProject) {
-  var named = {};
+  var named = userMap();                    // project names, so no prototype
   var otherMs = 0;
   var otherCount = 0;
 
@@ -4069,19 +4285,104 @@ function byTimeDesc(map) {
   return Object.keys(map).sort(function (a, b) { return map[b] - map[a]; });
 }
 
+/* The two groups nobody chooses, and they always come after the four.
+ *
+ * They are not kinds of work; they are what is left over. "Uncategorised" is a
+ * real project whose kind has not been decided (or was declined), so it can move
+ * out of here the moment it is filed. "Unlabelled entries" never can: those are
+ * the sentence-shaped keys above, which are not projects at all, so there is
+ * nothing to file. Keeping them apart is what stops "I have not answered yet"
+ * from reading as "the app could not understand me". */
+var CATEGORY_NONE = { id: 'none', label: 'Uncategorised' };
+var CATEGORY_UNLABELLED = { id: 'unlabelled', label: 'Unlabelled entries' };
+
+/**
+ * Time per project, sorted into the four kinds of work.
+ *
+ * Pure: the stored assignments arrive as an argument rather than being read out
+ * of localStorage here, so the grouping can be tested without a browser — and
+ * so a review that has just been re-filed can be redrawn by calling this again
+ * with the new map, spending nothing.
+ *
+ * A group's total is the sum of its projects, and it inherits the overlap that
+ * comes with them: two projects worked at once each get the full span, so a
+ * heading can read more than the hours worked. That is stated on screen rather
+ * than normalised away — see CLAUDE.md, which forbids deriving either from the
+ * other.
+ *
+ * @param byProject project name to milliseconds.
+ * @param cats      catKey(name) to a category id, or 'skip'.
+ * @returns {{groups: Array, unknown: Array}} — `groups` are the non-empty ones
+ *          in display order; `unknown` is every project nothing has been decided
+ *          about yet, which is exactly the list the dialog asks about.
+ */
+function groupProjects(byProject, cats) {
+  var split = collapseProjects(byProject);
+  var known = cats || {};
+  var bucket = {};
+  var unknown = [];
+
+  byTimeDesc(split.named).forEach(function (name) {
+    /* Validated rather than trusted: a plain object inherits `constructor` and
+     * `toString`, and a project may fairly be called either — without this, one
+     * such name would come back holding a function and open a group with no
+     * label. Anything that is not one of the five answers counts as no answer. */
+    var id = known[catKey(name)];
+    if (id !== CATEGORY_SKIP && !categoryLabel(id)) id = '';
+
+    if (!id) unknown.push(name);
+
+    // No answer and "none of these" land in the same pile: to the report they
+    // are the same thing. They differ only in whether the dialog asks again.
+    var into = (id && id !== CATEGORY_SKIP) ? id : CATEGORY_NONE.id;
+    (bucket[into] = bucket[into] || []).push({ name: name, ms: split.named[name] });
+  });
+
+  var groups = [];
+  PROJECT_CATEGORIES.concat([CATEGORY_NONE]).forEach(function (c) {
+    var list = bucket[c.id];
+    if (!list || !list.length) return;
+    groups.push({
+      id: c.id,
+      label: c.label,
+      projects: list,
+      ms: list.reduce(function (n, p) { return n + p.ms; }, 0)
+    });
+  });
+
+  if (split.otherCount) {
+    groups.push({
+      id: CATEGORY_UNLABELLED.id,
+      label: CATEGORY_UNLABELLED.label + ' (' + split.otherCount + ')',
+      projects: [], ms: split.otherMs, count: split.otherCount
+    });
+  }
+
+  return { groups: groups, unknown: unknown };
+}
+
 /**
  * The sub-tasks logged against each named project across the range, deduped.
  *
- * This is the only free-text the prompt carries, and it is what makes the
- * Learning line possible at all — hours say what was worked on, `detail` says
- * what was actually done to it. Capped hard, because a prompt is cheap and an
- * unbounded one is not.
+ * Two jobs now: these are the bullets under each project on screen, and they are
+ * the only free text the prompt carries — hours say what was worked on, `detail`
+ * says what was actually done to it, and that is what makes the Learning line
+ * possible at all.
+ *
+ * Deduped case-insensitively, because "model retraining" and "Model retraining"
+ * are one thing said twice, and in the order first seen, because that is the
+ * order they were done in.
+ *
+ * NOT capped. It was, at six per project, and the seventh bullet simply never
+ * appeared — no "+3 more", nothing. That is work Saad really did going missing
+ * off his own report, which is the one thing this screen must never do. The cap
+ * that survives is in reviewPrompt(), where the reason for it is tokens rather
+ * than the reader.
  */
-var REVIEW_TASK_PROJECTS = 8;
-var REVIEW_TASK_LINES = 6;
-
 function rangeTasks(rows) {
-  var out = {};
+  // Both keyed by project name — see userMap() for why a plain object loses one.
+  var out = userMap();
+  var seen = userMap();
 
   (rows || []).forEach(function (row) {
     if (row.type !== 'work' && row.type !== 'voice') return;
@@ -4091,9 +4392,18 @@ function rangeTasks(rows) {
     String(row.detail || '').split(TASK_SEP).forEach(function (part) {
       var task = part.trim();
       if (!task || task === name) return;
-      if (!out[name]) out[name] = [];
-      if (out[name].length >= REVIEW_TASK_LINES) return;
-      if (out[name].indexOf(task) !== -1) return;
+      /* hasOwnProperty, not truthiness, and kept even though `out` now has no
+       * prototype to inherit from: it is the check that says exactly what is
+       * meant — is there a list here yet — rather than one that happens to
+       * agree today. Same reason `=== 1` guards the dedupe below. */
+      if (!Object.prototype.hasOwnProperty.call(out, name)) {
+        out[name] = [];
+        seen[name] = userMap();             // the keys here are the tasks themselves
+      }
+
+      var key = task.toLowerCase();
+      if (seen[name][key] === 1) return;
+      seen[name][key] = 1;
       out[name].push(task);
     });
   });
@@ -4101,76 +4411,89 @@ function rangeTasks(rows) {
   return out;
 }
 
+/* How many sub-tasks per project the PROMPT carries. Not a limit on the report:
+ * the card on screen draws every one of them. A dozen examples of what was done
+ * to a project is plenty for naming what was being learned, and everything past
+ * that is tokens spent to say the same thing again. */
+var REVIEW_TASK_PROMPT_LINES = 12;
+
 /**
- * The one prompt. Everything in it is already a finished figure.
+ * The one prompt, and it now asks for TWO things only.
  *
- * The model is told not to do arithmetic, and that instruction is the whole
- * design: it is being asked to write, not to count. Anything it computes here
- * would be a second, worse answer competing with replayDay()'s.
+ * Everything a person actually wants off this screen — the hours, the projects
+ * under each heading, what was done to each — is worked out on this device and
+ * drawn straight. None of it is here. What is left for a language model is the
+ * pair of jobs it is genuinely better at than arithmetic: reading a week's
+ * sub-tasks and naming what was being learned, and turning a subtraction that
+ * has already been done into a sentence.
+ *
+ * The pace figures are handed over finished — both totals, the difference, and
+ * the word "faster"/"slower"/"about the same" already chosen — so the model
+ * cannot arrive at a second, worse answer than paceOf() did. The instruction not
+ * to calculate is the whole design.
+ *
+ * Sleep, prayers, Ms and break reasons are deliberately absent. They were in
+ * here to feed a prose paragraph that no longer exists; a model that is never
+ * asked about sleep cannot state a figure for a night nobody recorded.
  */
-function reviewPrompt(sum, win, tasks) {
+function reviewPrompt(sum, win, tasks, pace) {
   var lines = [
-    'You are writing a short weekly review for one person, about their own logged activity.',
+    'You are helping one person read their own activity log.',
+    'Every figure below is already worked out. Do NOT calculate anything.',
     '',
     'Range: ' + win.label + ', ' + ymdLocal(win.start) + ' to ' + ymdLocal(win.end) +
       ' (' + sum.days + ' calendar days, ' + sum.daysWithRows + ' with entries).',
-    'Worked: ' + reviewDuration(sum.worked) + ' in total, ' +
-      reviewDuration(sum.avgWorked) + ' on an average day that has entries.',
-    'On break: ' + reviewDuration(sum.paused) + '.',
-    'Working time not against any named project: ' + reviewDuration(sum.unattributed) + '.',
-    'Prayers logged: ' + sum.prayers + '. Ms logged: ' + sum.m + '.'
+    'Worked in this range: ' + reviewDuration(sum.worked) + '.'
   ];
 
-  var modes = byTimeDesc(sum.byMode);
-  if (modes.length) {
-    lines.push('Prayer modes: ' + modes.map(function (mo) {
-      return mo + ' ' + sum.byMode[mo];
-    }).join(', ') + '.');
+  if (pace && pace.known) {
+    lines.push('Worked in the ' + pace.days + ' days immediately before it' +
+               (pace.fromYmd ? ' (' + pace.fromYmd + ' to ' + pace.toYmd + ')' : '') +
+               ': ' + reviewDuration(pace.prior) + '.');
+    lines.push('So this range is ' + pace.word + ': ' +
+               reviewDuration(Math.abs(pace.diff)) + ' of difference.');
+  } else {
+    /* Same refusal as the date floor and the sleep line: there is nothing before
+     * the first row this account has, so the earlier period is unmeasured, not
+     * zero. Saying "you worked 0 hours last week" about a week that predates the
+     * app is the one sentence this screen must never produce. */
+    lines.push('The period before this one is NOT RECORDED — there is nothing ' +
+               'logged that far back. Say plainly that there is nothing to ' +
+               'compare against. Do not state a figure for it and do not call it zero.');
   }
 
-  lines.push(sum.sleep.rows
-    ? 'Sleep: ' + reviewDuration(sum.sleep.totalMs) + ' across ' + sum.sleep.nights +
-      ' night(s) that both began and ended inside this range.'
-    : 'Sleep: NOT RECORDED. No sleep or wake entries exist in this range. ' +
-      'Say plainly that sleep was not logged. Do not state a number of hours, ' +
-      'and do not call it zero.');
-
-  var split = collapseProjects(sum.byProject);
-  var names = byTimeDesc(split.named);
-
   lines.push('');
-  lines.push('Time per project (these overlap: two projects worked at once each get the ' +
-             'full span, so they can add up to more than the total worked):');
-  if (!names.length && !split.otherCount) lines.push('  (none named)');
-  names.forEach(function (name) {
-    var t = tasks[name] || [];
-    lines.push('  ' + name + ' — ' + reviewDuration(split.named[name]) +
-               (t.length ? ' — ' + t.join('; ') : ''));
+  lines.push('What was worked on, by project:');
+
+  var said = 0;
+  byTimeDesc(collapseProjects(sum.byProject).named).forEach(function (name) {
+    var t = tasks && Array.isArray(tasks[name]) ? tasks[name] : [];
+    if (!t.length) return;
+    /* THE ONLY CAP, and it is here because the reason for it is token cost.
+     * The screen shows every bullet; a month of one project would otherwise
+     * send a very long list to say something a dozen examples already say. */
+    lines.push('  ' + name + ': ' + t.slice(0, REVIEW_TASK_PROMPT_LINES).join('; '));
+    said += 1;
   });
-  if (split.otherCount) {
-    lines.push('  Unlabelled entries (' + split.otherCount + ') — ' +
-               reviewDuration(split.otherMs) + ' — these were never given a project name.');
-  }
+  if (!said) lines.push('  (the entries do not say what was done)');
 
-  var reasons = byTimeDesc(sum.byReason);
-  if (reasons.length) {
-    lines.push('');
-    lines.push('Break time by reason:');
-    reasons.forEach(function (why) {
-      lines.push('  ' + why + ' — ' + reviewDuration(sum.byReason[why]));
-    });
-  }
-
+  /* NOT NUMBERED, and that is deliberate. This used to read "1. …  2. …", and a
+   * model that echoes the shape it is shown wrote "2. Learning: MQTT" — which
+   * splitProse() then failed to find, so the Learning card claimed nothing had
+   * been named while the model had named plenty. The parser now copes with the
+   * numbering as well; showing a template that invites it was the other half of
+   * the same bug, and the cheaper half to fix. */
   lines.push('');
-  lines.push('Write 5 to 6 short lines summarising the above, in plain English, ' +
-             'addressed to the person as "you".');
-  lines.push('Rules: state the figures as given and do NOT calculate anything new. ' +
-             'Do not praise, encourage, advise or editorialise. Do not invent projects, ' +
-             'hours or facts that are not above. If something was not recorded, say so. ' +
-             'No headings, no bullet points, no markdown.');
-  lines.push('Then, as a final separate line, write "Learning:" followed by the topics ' +
-             'and skills these entries suggest were being picked up, comma separated. ' +
-             'If the entries do not say, write "Learning: not clear from these entries."');
+  lines.push('Write exactly two things and nothing else.');
+  lines.push('First, one or two short lines on the pace, in plain English, addressed ' +
+             'to the person as "you", naming both totals as given above. Shorter ' +
+             'is better when there is little to say. Do not praise, encourage, ' +
+             'advise or editorialise. No headings, no bullet points, no numbering, ' +
+             'no markdown.');
+  lines.push('Then, as a final separate line, write "Learning:" followed by the ' +
+             'topics and skills the entries above suggest were being picked up, ' +
+             'comma separated. If the entries do not say, write ' +
+             '"Learning: not clear from these entries."');
 
   return lines.join('\n');
 }
@@ -4187,15 +4510,32 @@ function reviewPrompt(sum, win, tasks) {
  * own emphasis (`*`, `_`, `#`, before it and around the colon) is skipped over
  * before matching. The stars are dropped rather than shown, because they are
  * the model's formatting, not something Saad wrote.
+ *
+ * Two more shapes, both of them the model doing as it was told:
+ *
+ *   "2. Learning: MQTT"  — the reply numbered, because the instructions were
+ *                          numbered. Fixed on BOTH sides: reviewPrompt() no
+ *                          longer shows a numbered template.
+ *   "## Learning\nMQTT"  — the label as a heading, answer on the next line,
+ *                          no colon anywhere.
+ *
+ * Missing either one left the whole reply in the overview and the Learning card
+ * saying nothing had been named — a false statement about something the model
+ * had in fact done, which is worse than an empty card.
  */
 function splitProse(text) {
   var whole = String(text || '').trim();
-  /* The prefix repeats, because "### **Learning:**" is a heading AND emphasis and
-   * one pass over the class only strips one of them. Bullets are in the class
-   * too: the prompt forbids them and the model uses them anyway, which is the
-   * entire history of this line. */
+  /* Left to right: a newline, an optional list number ("1.", "2)", "3 -"), then
+   * any run of bullets and emphasis — repeated, because "### **Learning:**" is a
+   * heading AND emphasis and one pass over the class strips only one of them —
+   * then the label, then EITHER a colon or the end of the line.
+   *
+   * The colon-less branch is what lets a heading through, and it is why the
+   * label has to be alone on its line: "3. Learning to use MQTT" matches
+   * neither branch, and neither does "Machine learning:", because nothing in
+   * the prefix class can absorb a word. */
   var parts = whole.split(
-    /\n(?:[ \t]*[-*_#\u2022\u00b7]+)*[ \t]*learning[ \t]*[*_]*[ \t]*:[ \t]*[*_]*/i);
+    /\n(?:[ \t]*\d+[.)]?)?(?:[ \t]*[-*_#\u2022\u00b7]+)*[ \t]*learning[ \t]*[*_]*[ \t]*(?::[ \t]*[*_]*|\n)/i);
   if (parts.length < 2) return { summary: whole, learning: '' };
   /* And the CLOSING emphasis, for "**Learning: robotics**" — which splits on the
    * label and then leaves the stars on the answer, putting them in the card. */
@@ -4299,6 +4639,19 @@ var reviewRangeId = REVIEW_DEFAULT_RANGE;
  * different range, and the slower answer must not overwrite the newer one. */
 var reviewRun = 0;
 
+/* "Draw the projects card again with whatever is on screen now", or null when
+ * there is nothing on screen to redraw.
+ *
+ * Held here rather than captured by the dialog, because THE DIALOG OUTLIVES THE
+ * RUN THAT OPENED IT. Switch range while it is up and a second run starts, sees
+ * a dialog already open and leaves it alone — so Save still holds the first
+ * run's callback. Guarding that callback with `mine()` made Save write the
+ * choice to storage and then silently not redraw, leaving the old grouping on
+ * screen until the next run; dropping the guard without this pointer would
+ * redraw the OLD run's figures over the new ones. Pointing at the newest draw
+ * is the only version that is right either way. */
+var reviewRegroup = null;
+
 /** One "12h 30m / worked" figure. */
 function reviewFigure(box, value, label) {
   var wrap = document.createElement('div');
@@ -4316,12 +4669,19 @@ function reviewFigure(box, value, label) {
   box.appendChild(wrap);
 }
 
-/** One "name .... 1h 20m" row in the projects card. `muted` marks break time. */
-function reviewLine(box, name, ms, muted) {
+/** One "name .... 1h 20m" row in the projects card.
+ *
+ *  `cls` goes on the row, not on the name, because the list is three deep now —
+ *  a category heading, the projects under it, the tasks under those — and what
+ *  distinguishes them is indentation, which is a property of the row. `p-why`
+ *  still means break time; the stylesheet reaches it either way, so the Today
+ *  tab's own list is untouched. */
+function reviewLine(box, name, ms, cls) {
   var li = document.createElement('li');
+  if (cls) li.className = cls;
 
   var n = document.createElement('span');
-  n.className = 'p-name' + (muted ? ' p-why' : '');
+  n.className = 'p-name';
   // textContent, never markup: these names came out of what the user typed.
   n.textContent = name;
 
@@ -4333,9 +4693,31 @@ function reviewLine(box, name, ms, muted) {
   box.appendChild(li);
 }
 
+/** One sub-task bullet under a project.
+ *
+ *  No time of its own, and it never will have one: the app records what was
+ *  done, not how long each piece of it took, so a figure here would be the
+ *  first invented number on the screen. The bullet itself is drawn by the
+ *  stylesheet — it is a marker, not something Saad said. */
+function reviewTask(box, text) {
+  var li = document.createElement('li');
+  li.className = 'p-task';
+
+  var n = document.createElement('span');
+  n.className = 'p-name';
+  n.textContent = text;          // his own words, or a model's reading of them
+
+  li.appendChild(n);
+  box.appendChild(li);
+}
+
 /** Wipe every part of the screen that carries a figure or a sentence. Called
  *  before each run, so a refusal can never leave last run's numbers behind it. */
 function clearReview() {
+  /* Including the redraw itself: an empty screen has no grouping to re-group,
+   * and a Save arriving after a refusal must not put the last range's projects
+   * back up underneath the refusal's own message. */
+  reviewRegroup = null;
   $('reviewFigures').hidden = true;
   $('reviewFigures').textContent = '';
   $('reviewSleep').textContent = '';
@@ -4372,24 +4754,47 @@ function renderReviewFigures(sum) {
       'there is nothing to average.';
 }
 
-function renderReviewProjects(sum) {
+/**
+ * The whole of the work half of the review, drawn from local data only.
+ *
+ * Four headings with their hours, the projects under each with theirs, and
+ * under those the sub-tasks that were logged against them. Not one figure or
+ * name here has been anywhere near Gemini: they are replayDay()'s totals and
+ * the `detail` column, which is why they cannot be hallucinated and why they
+ * are on screen before a call is even considered.
+ *
+ * Break reasons and unattributed time keep their place at the foot of the same
+ * card, muted. They are not work and so are not one of the four groups, but
+ * they were on this screen before the redesign and dropping them would quietly
+ * lose hours Saad can currently see.
+ *
+ * @param cats  the stored assignments, passed in rather than read here, so
+ *              re-filing a project redraws by calling this again.
+ * @param tasks from rangeTasks(): project name to its bullets.
+ */
+function renderReviewProjects(sum, cats, tasks) {
   var box = $('reviewProjects');
   var note = $('reviewProjectsNote');
   box.textContent = '';
   note.textContent = '';
 
-  var split = collapseProjects(sum.byProject);
-  byTimeDesc(split.named).forEach(function (name) {
-    reviewLine(box, name, split.named[name]);
+  var got = groupProjects(sum.byProject, cats);
+  var seenTasks = tasks || {};
+
+  got.groups.forEach(function (group) {
+    reviewLine(box, group.label, group.ms, 'p-group');
+    group.projects.forEach(function (p) {
+      reviewLine(box, p.name, p.ms, 'p-proj');
+      // Array.isArray, not truthiness: `tasks['constructor']` is a function.
+      var list = Array.isArray(seenTasks[p.name]) ? seenTasks[p.name] : [];
+      list.forEach(function (task) { reviewTask(box, task); });
+    });
   });
 
-  if (split.otherCount) {
-    reviewLine(box, 'Unlabelled entries (' + split.otherCount + ')', split.otherMs);
-  }
-  if (sum.unattributed > 0) reviewLine(box, 'Not on a named project', sum.unattributed, true);
+  if (sum.unattributed > 0) reviewLine(box, 'Not on a named project', sum.unattributed, 'p-why');
 
   byTimeDesc(sum.byReason).forEach(function (why) {
-    if (sum.byReason[why] > 0) reviewLine(box, why, sum.byReason[why], true);
+    if (sum.byReason[why] > 0) reviewLine(box, why, sum.byReason[why], 'p-why');
   });
 
   if (!box.childNodes.length) {
@@ -4397,11 +4802,25 @@ function renderReviewProjects(sum) {
     return;
   }
 
-  note.textContent = 'Projects can add up to more than the hours worked: two ' +
-    'projects at once is an hour of each.' +
-    (split.otherCount
-      ? ' "Unlabelled entries" is time from lines that never got a project name.'
-      : '');
+  /* Said out loud, because the alternative is Saad reading 21h of office work
+   * in a 15-hour week and concluding the app is broken. It is not: two projects
+   * running at once is an hour of each and an hour of his life, and CLAUDE.md
+   * forbids deriving either total from the other. */
+  var why = ['A project can add up to more than the hours worked: working on ' +
+             'two at once is an hour of each.'];
+
+  var has = function (id) {
+    return got.groups.some(function (g) { return g.id === id; });
+  };
+  if (has(CATEGORY_NONE.id)) {
+    why.push('"Uncategorised" is a project you have not said the kind of yet — ' +
+             'Settings can change that at any time.');
+  }
+  if (has(CATEGORY_UNLABELLED.id)) {
+    why.push('"Unlabelled entries" is time from lines that never got a project ' +
+             'name at all, so there is nothing to categorise.');
+  }
+  note.textContent = why.join(' ');
 }
 
 /** "3 of 18 Gemini calls used today" — on this screen, not only in Settings,
@@ -4486,9 +4905,19 @@ async function runReview(force) {
     return;
   }
 
+  /* The pace line compares this range with the equal-length one before it, and
+   * that earlier period gets the SAME refusal the chosen range just got: if it
+   * reaches back past the first row this account has, there is no comparison to
+   * make. Judged with the pure function and the instant checkRangeFloor() has
+   * already read, so this costs no second trip. */
+  var prior = priorRangeOf(win);
+  var priorKnown = rangeFloor(prior.start, floor.earliest).ok;
+
   var rows;
   try {
-    rows = await rangeEvents(new Date(win.start).toISOString(),
+    // One read covering both periods. Two reads would be two round trips for
+    // one screen, and the second would be entirely for a sentence.
+    rows = await rangeEvents(new Date(priorKnown ? prior.start : win.start).toISOString(),
                              new Date(win.end.getFullYear(), win.end.getMonth(),
                                       win.end.getDate() + 1).toISOString());
   } catch (err) {
@@ -4498,8 +4927,12 @@ async function runReview(force) {
   }
   if (!mine()) return;
 
+  /* Narrowed before summarising, never after: summariseRange() buckets work by
+   * window, but the sleep walk inside it reads every row it is handed, so the
+   * earlier period's nights would land in this one's figure. */
   var windows = dayWindows(win.start, win.end);
-  var sum = summariseRange(rows, windows);
+  var inRange = rowsInWindows(rows, windows);
+  var sum = summariseRange(inRange, windows);
 
   if (sum.empty) {
     /* Nothing at all was logged. Zero Gemini calls: there is nothing for a
@@ -4513,16 +4946,38 @@ async function runReview(force) {
     return;
   }
 
+  var priorWorked = 0;
+  if (priorKnown) {
+    var priorWindows = dayWindows(prior.start, prior.end);
+    priorWorked = summariseRange(rowsInWindows(rows, priorWindows), priorWindows).worked;
+  }
+  var pace = paceOf(sum.worked, priorWorked, prior, priorKnown);
+
+  var tasks = rangeTasks(inRange);
   renderReviewFigures(sum);
-  renderReviewProjects(sum);
+  /* Published for the dialog's Save to find later — see reviewRegroup. Called
+   * immediately, because this IS the first draw. */
+  reviewRegroup = function () { renderReviewProjects(sum, projectCategories, tasks); };
+  reviewRegroup();
   $('reviewNote').textContent = '';
   $('reviewAgainBtn').hidden = false;
 
-  await addReviewProse(win, sum, rows, force, mine);
+  /* Asked AFTER the figures are up and never awaited, so the report is complete
+   * on screen whether this is answered, dismissed or ignored. Saving redraws
+   * the grouping alone: which pile a project sits in changes no figure and no
+   * sentence, so nothing is re-read and no call is spent.
+   *
+   * Through reviewRegroup rather than straight to renderReviewProjects, and
+   * with no `mine()` guard: this callback can outlive the run that made it. */
+  askCategories(groupProjects(sum.byProject, projectCategories).unknown, function () {
+    if (reviewRegroup) reviewRegroup();
+  });
+
+  await addReviewProse(win, sum, tasks, pace, force, mine);
 }
 
-/** The second half: the written summary, which is allowed to fail. */
-async function addReviewProse(win, sum, rows, force, mine) {
+/** The second half: the two written lines, which are allowed to fail. */
+async function addReviewProse(win, sum, tasks, pace, force, mine) {
   var key = reviewCacheKey(win);
   var note = $('reviewNote');
 
@@ -4553,26 +5008,37 @@ async function addReviewProse(win, sum, rows, force, mine) {
 
   /* Google allows a handful of requests a minute as well as a day. Holding back
    * rather than sending into a refusal matters here because a refused call is
-   * still spent — geminiCall() counts a request the moment it leaves. */
-  var pace = geminiPacerWaitMs();
-  if (pace > 0) {
+   * still spent — geminiCall() counts a request the moment it leaves.
+   *
+   * `waitMs`, not `pace`: the pace verdict is a parameter of this function now,
+   * and the two meanings of the word are one letter apart. */
+  var waitMs = geminiPacerWaitMs();
+  if (waitMs > 0) {
     note.textContent = 'Gemini\'s per-minute limit is full — press Regenerate in about ' +
-      Math.ceil(pace / 1000) + ' seconds. The figures above are already complete.';
+      Math.ceil(waitMs / 1000) + ' seconds. The figures above are already complete.';
     $('reviewLearning').textContent = 'Needs the written summary.';
     return;
   }
 
   note.textContent = 'Writing the summary…';
-  var answer = await askReviewProse(reviewPrompt(sum, win, rangeTasks(rows)));
+  var answer = await askReviewProse(reviewPrompt(sum, win, tasks, pace));
   if (!mine()) return;
 
   paintReviewUsage();
 
-  if (answer === null) {
+  /* An answer with no words in it is not an answer, and is treated exactly like
+   * a refusal. geminiCall() turns a `{ok:true, text:""}` reply into an empty
+   * string, which used to pass the `=== null` check below and be CACHED as
+   * today's summary — blank prose, the Learning card falsely saying nothing was
+   * named, and an empty note with no explanation at all. Worse, a cached blank
+   * costs no call to redisplay, so every later visit showed the same nothing
+   * and only Regenerate could escape it. */
+  if (answer === null || !String(answer).trim()) {
     /* Say what happened AND that it does not matter much, in that order.
      * quotaWait() knows the two ceilings by name; anything else is a fault
      * nobody can act on, so it is not put on screen. */
-    var why = quotaWait(lastExtractError);
+    var why = answer === null ? quotaWait(lastExtractError)
+                              : 'Gemini answered with no text. The call is spent either way.';
     note.textContent = 'No written summary this time' + (why ? ' — ' + why : '.') +
       ' The figures above are complete: they are worked out on this device from ' +
       'your own entries, and only the sentences are missing.';
@@ -4603,6 +5069,158 @@ $('reviewAgainBtn').addEventListener('click', function () {
 function openReview() {
   renderReviewPicks();
   runReview(false);
+}
+
+// ------------------------------------------ which kind of work is a project
+
+/* THE SAME STORE, DRAWN THE SAME WAY, IN TWO PLACES.
+ *
+ * Saad offered a choice — mark it in Settings, or be asked while the summary is
+ * being drafted — and they are not alternatives: they are one store seen from
+ * two sides. The dialog is how a new project gets filed the first time it turns
+ * up in a review; Settings is how a personal project becomes office work six
+ * months later. Both call renderCategoryRows(), because two renderers would
+ * eventually be two answers to the same question.
+ *
+ * A <select> rather than the app's usual row of tap buttons, for one reason:
+ * five choices times however many projects is a wall of buttons in a dialog
+ * that is already the longest thing in the app. */
+
+var catDlg = $('catDlg');
+
+/* Set by whichever list was drawn last, and read by that list's own Save. Held
+ * here rather than passed, because the buttons are wired once at load and the
+ * lists are drawn many times. */
+var catDlgRead = null;
+var catDlgSaved = null;
+var catSettingsRead = null;
+
+/**
+ * One row per project: its name, and a menu of the four kinds plus "not one of
+ * these".
+ *
+ * @param chosen catKey(name) to the id currently stored.
+ * @returns a function that reads EVERY menu back as a fresh map of choices, an
+ *          unanswered one as ''. mergedCategories() reads that empty string as
+ *          "forget this project", which is what lets Settings take an answer
+ *          back rather than only change it.
+ */
+function renderCategoryRows(box, names, chosen) {
+  box.textContent = '';
+  var picks = [];
+
+  names.forEach(function (name) {
+    var row = document.createElement('div');
+    row.className = 'cat-row';
+
+    var label = document.createElement('span');
+    label.className = 'cat-name';
+    label.textContent = name;               // his own project names — text only
+
+    var sel = document.createElement('select');
+    sel.className = 'cat-pick';
+
+    var option = function (value, text) {
+      var o = document.createElement('option');
+      o.value = value;
+      o.textContent = text;
+      sel.appendChild(o);
+    };
+
+    option('', 'Choose…');
+    PROJECT_CATEGORIES.forEach(function (c) { option(c.id, c.label); });
+    /* The skip, worded as an answer rather than as a refusal — because that is
+     * what it is: it is remembered, and it stops the dialog asking again. */
+    option(CATEGORY_SKIP, 'Not one of these');
+
+    sel.value = (chosen && chosen[catKey(name)]) || '';
+    row.append(label, sel);
+    box.appendChild(row);
+    picks.push({ name: name, sel: sel });
+  });
+
+  return function () {
+    var out = userMap();                    // keyed by project name — see userMap()
+    // Every row, INCLUDING the ones left on "Choose…", which come back as ''.
+    // That empty string is what lets Settings un-file a project; without it a
+    // wrong answer could be changed but never taken back.
+    picks.forEach(function (p) { out[catKey(p.name)] = p.sel.value || ''; });
+    return out;
+  };
+}
+
+/** The stored map with `chosen` written over the top of it, and an empty choice
+ *  meaning "forget this one".
+ *
+ *  A merge rather than a replacement, because either list only ever shows some
+ *  of the projects — the dialog shows one range's unfiled ones — and the rest
+ *  have to survive being off screen. */
+function mergedCategories(chosen) {
+  var next = userMap();                     // keyed by project name — see userMap()
+  Object.keys(projectCategories).forEach(function (k) { next[k] = projectCategories[k]; });
+  Object.keys(chosen || {}).forEach(function (k) {
+    if (chosen[k]) next[k] = chosen[k];
+    else delete next[k];
+  });
+  return next;
+}
+
+/**
+ * Ask about the projects nothing has been decided about.
+ *
+ * Never blocks the review: it is opened after the figures are drawn, it is not
+ * awaited, and every way out of it — Save, "Not now", the Escape key — leaves
+ * the report complete. An unfiled project is one line under "Uncategorised",
+ * which is a state, not an error.
+ */
+function askCategories(names, onSaved) {
+  if (!names || !names.length) return;
+  // Never on top of another dialog: Settings and the sign-in prompt both open
+  // themselves, and two modals is how a phone ends up with no way back.
+  if (catDlg.open || dlg.open || signInDlg.open) return;
+
+  catDlgRead = renderCategoryRows($('catList'), names, projectCategories);
+  catDlgSaved = onSaved || null;
+  catDlg.showModal();
+}
+
+$('catCancelBtn').addEventListener('click', function () {
+  /* Nothing is written. These projects are asked about again next time, which
+   * is the difference between "not now" and "not one of these" — one is a
+   * postponement and the other is an answer. */
+  catDlg.close();
+});
+
+$('catSaveBtn').addEventListener('click', function () {
+  saveProjectCategories(mergedCategories(catDlgRead ? catDlgRead() : {}));
+  catDlg.close();
+  if (catDlgSaved) catDlgSaved();
+});
+
+/** Every project Settings should offer a category for: the ones this device
+ *  knows, plus any it has already been told about. The second half matters —
+ *  without it a project you have stopped logging could never be re-filed, and a
+ *  wrong answer would be permanent. */
+function categorySettingsNames() {
+  var out = knownNames();
+  var seen = userMap();                     // keyed by project name — see userMap()
+  out.forEach(function (n) { seen[catKey(n)] = 1; });
+
+  /* Falls back to the key, which is lower-cased: the store keeps the id, not
+   * the spelling, and for a name the vocabulary has forgotten that is all
+   * there is. Rare — the vocabulary holds sixty names and pinned ones never
+   * expire — and a recognisable name beats hiding the row. */
+  Object.keys(projectCategories).forEach(function (k) {
+    if (seen[k] !== 1) { seen[k] = 1; out.push(k); }
+  });
+  return out;
+}
+
+function renderCategorySettings() {
+  var names = categorySettingsNames();
+  catSettingsRead = renderCategoryRows($('catSettings'), names, projectCategories);
+  $('catSettingsNote').textContent = names.length ? '' :
+    'No projects yet — log some work and they will appear here.';
 }
 
 // ------------------------------------------------------------------ taskboard
@@ -4846,6 +5464,7 @@ $('settingsBtn').addEventListener('click', function () {
   $('boardUrl').value = cfg.boardUrl || '';
   $('chipsInput').value = chipLabels().join(', ');
   $('projectNames').value = pinnedNames.join('\n');
+  renderCategorySettings();
   $('micHide').checked = Boolean(cfg.hideMic);
   $('testResult').textContent = '';
   dlg.showModal();
@@ -5202,8 +5821,10 @@ $('saveBtn').addEventListener('click', function () {
   saveConfig(cfg);
   /* Kept out of `cfg` on purpose: that object is credentials plus backend
    * choice, rewritten wholesale when the backend is switched. The vocabulary
-   * has no business riding along with it. */
+   * has no business riding along with it, and neither has the grouping — a
+   * project is office work whichever database its rows are in. */
   savePinnedNames(parsePinned($('projectNames').value));
+  if (catSettingsRead) saveProjectCategories(mergedCategories(catSettingsRead()));
   paintMic();
   renderChips();
   dlg.close();
