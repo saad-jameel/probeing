@@ -4711,8 +4711,40 @@ function splitProse(text) {
 var REVIEW_CACHE_KEY = 'probeing.review';
 var REVIEW_CACHE_MAX = 8;
 
+/* WHY THE KEY CARRIES A FINGERPRINT OF THE PROMPT ITSELF.
+ *
+ * The cache exists so re-opening the tab does not spend one of the day's few
+ * calls. It outlived a deploy: the prompt was rewritten, both devices kept
+ * replaying prose the OLD prompt had produced, and the change read as though it
+ * had never shipped. Saad saw exactly that on his phone and his laptop, hours
+ * after the deploy was verified live.
+ *
+ * The stamp is taken from the SOURCE of the two functions that build the prompt,
+ * not from a version number somebody has to remember to raise. A number would
+ * have been forgotten the first time it mattered — which is the same argument
+ * this repo already made about `rid_ok` and about the secret scan: a check that
+ * depends on remembering is not a check. There is no build step here (CLAUDE.md),
+ * so the source text is stable between deploys unless it genuinely changed.
+ *
+ * It over-invalidates: editing a comment inside those functions costs one call.
+ * That is the right way round. A stale summary looks like a broken deploy and
+ * sends someone hunting through the service worker; one spare call does not. */
+var promptStampCache = '';
+
+function promptStamp() {
+  if (promptStampCache) return promptStampCache;
+  var src = String(reviewPrompt) + String(promptPeriod);
+  var h = 5381;
+  for (var i = 0; i < src.length; i++) {
+    h = ((h * 33) ^ src.charCodeAt(i)) >>> 0;   // djb2-xor, kept unsigned
+  }
+  promptStampCache = h.toString(36);
+  return promptStampCache;
+}
+
 function reviewCacheKey(win) {
-  return win.id + '|' + ymdLocal(win.start) + '|' + ymdLocal(win.end) + '|' + localDayStamp();
+  return win.id + '|' + ymdLocal(win.start) + '|' + ymdLocal(win.end) + '|' +
+         localDayStamp() + '|' + promptStamp();
 }
 
 function reviewCacheAll() {
