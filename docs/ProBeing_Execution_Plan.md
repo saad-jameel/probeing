@@ -374,11 +374,24 @@ unblocks 5, 6 and 7a together.
 offline logging (7c) only needs the `rid` scheme, which already exists.
 
 ## Voice Agent Recommendation (your question, answered plainly)
-- **Caveat learned 2 Sep:** every engine mangles unusual project names — "NeuraVue"
-  becomes "my review" in this app *and* in WhatsApp. No dictation tool fixes that; the
-  Settings project-name list is what puts the name back. See *Speech is the weak link*.
-- **Mobile:** no extra agent needed — in-app Web Speech API + Gboard mic cover it. Wispr
-  Flow adds nothing here.
+**Rewritten 2 Sep 2026.** "Wispr Flow adds nothing here" was wrong. Saad installed it,
+taught it "NeuraVue" and "OneNet", and it now transcribes both correctly — which is more
+than the built-in recogniser has ever managed. Corrected rather than quietly edited,
+because the original line would have talked him out of the thing that worked.
+
+- **The two fixes are not alternatives, and the difference is where they act.** Wispr
+  Flow fixes what the microphone *hears*. The Settings project-name list fixes what
+  survives afterwards, and does a second job no dictation tool can: keeping one project
+  *one* project. A perfectly transcribed "NeuraVue" can still come back from Gemini as
+  "Neuravue", "Neura Vue" or "NeuraVue API" — three tiles, three rows in the weekly
+  review. Feeding the known names into the prompt is what prevents that, and it predates
+  the speech problem entirely. Keep both.
+- **Mobile:** Wispr Flow is free and uncapped on Android — but that is *early access*,
+  which is this project's known trap (see the Gemini budget). The in-app Web Speech API
+  and the Gboard mic keep working when it ends, and the Settings list covers all three.
+- **Laptop:** the free desktop tier is **2,000 words a week**, about twenty dictated
+  entries a day. Below the volume this app is built for, and paying is out of scope. Type
+  on the laptop; dictate on the phone.
 - **Laptop:** Web Speech API in Chrome works the same; add Wispr Flow only if you want
   system-wide dictation outside ProBeing.
 - **Locked phone:** no free custom hotword exists; use Stage 8's widget/notification or
