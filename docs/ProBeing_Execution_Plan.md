@@ -386,8 +386,12 @@ because the original line would have talked him out of the thing that worked.
   "Neuravue", "Neura Vue" or "NeuraVue API" — three tiles, three rows in the weekly
   review. Feeding the known names into the prompt is what prevents that, and it predates
   the speech problem entirely. Keep both.
-- **Mobile:** Wispr Flow is free and uncapped on Android — but that is *early access*,
-  which is this project's known trap (see the Gemini budget). The in-app Web Speech API
+- **Mobile:** Wispr Flow is free and uncapped on Android — no word cap, no time cap. The
+  wording is *"free + unlimited during launch"*, and **no end date is published anywhere**;
+  Android launched Feb 2026, so that launch has run seven months already. Unpublished
+  expiry is this project's known trap (see the Gemini budget). The closest guide to where
+  it lands afterwards is the iPhone tier, 1,000 words a week — an inference, not a
+  published figure. The in-app Web Speech API
   and the Gboard mic keep working when it ends, and the Settings list covers all three.
 - **Laptop:** the free desktop tier is **2,000 words a week**, about twenty dictated
   entries a day. Below the volume this app is built for, and paying is out of scope. Type
