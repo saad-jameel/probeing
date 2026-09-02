@@ -3457,70 +3457,193 @@ var VOICE_ERRORS = {
   'audio-capture': 'No microphone found on this device.'
 };
 
+/* HOLD-OPEN DICTATION, and why it is not the one-line change it looks like.
+ *
+ * `continuous = true` is the whole feature on a laptop. On Android it is close
+ * to decorative: Chrome ends the session after a few seconds of quiet whatever
+ * that flag says, and `onend` fires. So "keep listening until I tap again" is
+ * really "start another session every time one ends, until the user says stop"
+ * — a loop around a live microphone, which needs three guards or it becomes a
+ * mic that runs all afternoon:
+ *
+ *   1. A fatal error must not restart. A blocked mic that retries sixty times
+ *      is sixty permission failures and a flat battery, and none of them tells
+ *      the user anything the first one did not.
+ *   2. A session that ends almost as soon as it starts is a refusal wearing
+ *      `onend`'s clothes — the API reports several failures that way. Three in
+ *      a row and we stop and say so.
+ *   3. A ceiling in wall-clock time, because the commonest way this ends badly
+ *      is nobody tapping stop at all.
+ *
+ * `no-speech` is deliberately NOT an error here. It is the silence between two
+ * sentences, and reporting it once a gap is what would make this mode unusable.
+ */
+var MIC_MAX_MS = 2 * 60 * 1000;
+var MIC_FAST_FAIL_MS = 400;
+var MIC_FAST_FAILS = 3;
+
+/* Retrying these achieves nothing: the mic is blocked, absent, or the transcriber
+ * is unreachable. A second tap is the right way to try again, not a loop. */
+var FATAL_VOICE = {
+  'not-allowed': 1, 'service-not-allowed': 1, 'audio-capture': 1, network: 1
+};
+
 var listening = false;
 var recognizer = null;
+var micStop = false;        // the user tapped a second time
+var micFatal = false;       // an error there is no point retrying
+/* Whether the user has already been told why this ended. Without it the
+ * two-minute cutoff was followed by "Did not catch that — tap the mic and say
+ * it again", which contradicts the message before it and blames the user for
+ * something the app decided. */
+var micToldWhy = false;
+var micFastFails = 0;
+var micHeardSomething = false;
+var micTimer = null;
 
-function stopListening() {
-  listening = false;
-  micBtn.classList.remove('listening');
-  micBtn.setAttribute('aria-pressed', 'false');
+function paintListening(on) {
+  micBtn.classList.toggle('listening', on);
+  micBtn.setAttribute('aria-pressed', on ? 'true' : 'false');
+  micBtn.setAttribute('aria-label', on ? 'Stop recording' : 'Voice note');
+  /* The second tap is the only way out of this mode, so the line under the box
+   * says so while it is running. paintMic() puts the normal wording back. */
+  if (on) {
+    $('micHint').textContent =
+      'Listening — keep talking, pauses are fine. Tap the mic again when you are done.';
+  } else {
+    paintMic();
+  }
 }
 
-if (Recognition) micBtn.addEventListener('click', function () {
-  if (listening) {                         // a second tap means "I have finished"
-    try { recognizer.stop(); } catch (e) { /* it may have stopped by itself */ }
-    return;
-  }
+/** End the session for good: no more restarts, button back to normal. */
+function finishListening() {
+  listening = false;
+  recognizer = null;
+  if (micTimer) { clearTimeout(micTimer); micTimer = null; }
+  paintListening(false);
 
+  /* Focus HERE and not on each chunk. Focusing mid-dictation throws the phone
+   * keyboard up over the screen every time a sentence settles. */
+  if (micHeardSomething) $('trackerInput').focus();
+  else if (!micToldWhy) flash(VOICE_ERRORS['no-speech']);
+}
+
+/** Stop, letting the last chunk settle. `stop()` and not `abort()`: abort throws
+ *  away the sentence the user has just finished saying. */
+function askStop() {
+  micStop = true;
+  try { recognizer.stop(); } catch (e) { finishListening(); }
+}
+
+function appendHeard(heard) {
+  /* FILLED, NOT SUBMITTED, and that is a deliberate departure from the plan.
+   * The store is append-only and has no delete, so a misheard sentence written
+   * without anyone reading it is a row you keep for good. One tap on Log is
+   * still comfortably inside the five-second rule, and it is the only moment a
+   * mishearing can be caught. This button is also the LESS accurate mic — the
+   * one a dictation app is used instead of — so auto-submitting here would be
+   * auto-submitting the path most likely to be wrong.
+   *
+   * Appended rather than replacing, so tapping the mic after typing does not
+   * silently destroy what was typed — and so each chunk of a long dictation
+   * joins the last instead of erasing it. */
+  var box = $('trackerInput');
+  var had = box.value.trim();
+  box.value = had ? had + ' ' + heard : heard;
+  voiceFilled = true;
+  micHeardSomething = true;
+}
+
+/** One recognition session. Calls itself again through `onend` until stopped. */
+function spinListening() {
   var rec = new Recognition();
   recognizer = rec;
   rec.lang = navigator.language || 'en-US';  // the device's language, not a guess
-  rec.interimResults = false;              // one settled answer, not a live stream
-  rec.continuous = false;                  // one sentence, then stop on its own
+  rec.interimResults = false;              // settled answers only, not a live stream
+  rec.continuous = true;                   // honoured on a laptop, ignored on Android
   rec.maxAlternatives = 1;
 
-  rec.onresult = function (ev) {
-    var said = ev.results && ev.results[0] && ev.results[0][0]
-      ? ev.results[0][0].transcript : '';
-    var heard = stripWakeWord(said);
-    if (!heard) { flash(VOICE_ERRORS['no-speech']); return; }
+  var began = Date.now();
 
-    /* FILLED, NOT SUBMITTED, and that is a deliberate departure from the plan.
-     * The store is append-only and has no delete, so a misheard sentence written
-     * without anyone reading it is a row you keep for good. One tap on Log is
-     * still comfortably inside the five-second rule, and it is the only moment a
-     * mishearing can be caught. Appended rather than replacing, so tapping the
-     * mic after typing does not silently destroy what was typed. */
-    var box = $('trackerInput');
-    var had = box.value.trim();
-    box.value = had ? had + ' ' + heard : heard;
-    voiceFilled = true;
-    box.focus();
+  rec.onresult = function (ev) {
+    /* From resultIndex, not from 0. A continuous session keeps every result it
+     * has ever produced in `ev.results`, so reading [0] would re-append the
+     * first sentence after every pause. */
+    var fresh = '';
+    for (var i = ev.resultIndex; i < ev.results.length; i++) {
+      var r = ev.results[i];
+      if (r.isFinal && r[0]) fresh += (fresh ? ' ' : '') + r[0].transcript;
+    }
+    var heard = stripWakeWord(fresh);
+    if (heard) appendHeard(heard);         // an empty settled chunk is just quiet
   };
 
   rec.onerror = function (ev) {
     var code = ev && ev.error;
-    if (code === 'aborted') return;        // the user stopped it; nothing to report
-    // no-speech is not a failure, it is a retry — so no red banner for it.
-    var quiet = code === 'no-speech';
-    flash(VOICE_ERRORS[code] || ('Voice failed' + (code ? ' — ' + code : '.')),
-          quiet ? '' : 'err');
+    if (code === 'aborted') return;        // our own stop(); nothing to report
+    if (code === 'no-speech') return;      // the gap between two sentences
+    micToldWhy = true;
+    if (FATAL_VOICE[code]) {
+      micFatal = true;
+      flash(VOICE_ERRORS[code] || ('Voice failed — ' + code), 'err');
+      return;                              // onend follows and will finish up
+    }
+    flash(VOICE_ERRORS[code] || ('Voice failed' + (code ? ' — ' + code : '.')), 'err');
   };
 
-  rec.onend = stopListening;
+  rec.onend = function () {
+    if (micStop || micFatal) { finishListening(); return; }
+
+    if (Date.now() - began < MIC_FAST_FAIL_MS) {
+      micFastFails += 1;
+      if (micFastFails >= MIC_FAST_FAILS) {
+        micToldWhy = true;
+        flash('The microphone keeps stopping. Type it, or use the keyboard\u2019s mic.', 'err');
+        finishListening();
+        return;
+      }
+    } else {
+      micFastFails = 0;                    // a session that really ran clears the count
+    }
+
+    spinListening();                       // silence, not an ending
+  };
 
   try {
     rec.start();
   } catch (e) {
-    stopListening();
     flash('Could not start the microphone.', 'err');
-    return;
+    finishListening();
   }
+}
+
+/** The mic button's whole behaviour, named so it can be driven by a test with a
+ *  fake recogniser. A restart loop is not something to verify by talking to a
+ *  phone and hoping. */
+function toggleListening() {
+  if (listening) { askStop(); return; }    // a second tap means "I have finished"
 
   listening = true;
-  micBtn.classList.add('listening');
-  micBtn.setAttribute('aria-pressed', 'true');
-});
+  micStop = false;
+  micFatal = false;
+  micToldWhy = false;
+  micFastFails = 0;
+  micHeardSomething = false;
+  paintListening(true);                    // red before the first word, not after
+
+  /* Guard 3. Two minutes is far longer than any log entry and far shorter than
+   * an afternoon of an open microphone. */
+  micTimer = setTimeout(function () {
+    if (!listening) return;
+    micToldWhy = true;
+    askStop();
+    flash('Microphone stopped after two minutes.', 'warn');
+  }, MIC_MAX_MS);
+
+  spinListening();
+}
+
+if (Recognition) micBtn.addEventListener('click', toggleListening);
 
 $('refreshBtn').addEventListener('click', function () { refresh({ announce: true }); });
 

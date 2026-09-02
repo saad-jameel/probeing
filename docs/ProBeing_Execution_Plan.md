@@ -30,7 +30,7 @@ shipped in `f733804`; `CLAUDE.md` carries the full reasoning.
 > | ✅ | 2 PWA Shell + Install | done; its sync *test* is obsolete — sync is Realtime now |
 > | ✅ | 3 The Buttons | done; chips were **rebuilt** as durations, not moments |
 > | ✅ | 3.5 Finish the move | done 30 Aug — Gemini key, Edge Function, `reports` table, sign-ups off |
-> | 🟡 | **4 Tracker + Voice** | **end goal met on both devices, awaiting Saad's sign-off.** Three fallback checks remain untested — see the stage |
+> | ✅ | 4 Tracker + Voice | signed off 2 Sep — two fallback checks left untested on purpose, see the stage |
 > | ⬜ | 5 Review Button | shell only; the hard maths is written but reads *today* only |
 > | ⬜ | 6 Weekly & Monthly Reports | not started |
 > | ⬜ | 7 Notifications + wrapup + offline | not started — the 11:30 PM rules are written out in full below |
@@ -87,7 +87,7 @@ flight. Moving these bullets would leave it nothing to walk.
 
 ---
 
-## 🟡 Stage 4 — Tracker + Voice Input — END GOAL MET, AWAITING SIGN-OFF (2 Sep 2026)
+## ✅ Stage 4 — Tracker + Voice Input — SIGNED OFF (2 Sep 2026)
 
 > **Built and shipped:** the text tracker, voice input (`webkitSpeechRecognition`
 > with the "ProBeing" prefix stripped, three distinct failure messages, and the
@@ -145,20 +145,44 @@ second row split into two sub-tasks; the first correctly stayed one.
 | 2 | A typed entry on an **already-known** project getting its tasks | ✅ On a device, 2 Sep — this was the shortcut that ate them |
 | 3 | A **spoken** entry producing the right project and sub-tasks | ✅ The two rows above |
 | 4 | Both devices | ✅ Today's rows carry two different locale formats — `Wed 02 Sept, 11:55` and `Wed, Sep 02, 01:40 PM` — so phone and laptop both wrote and both labelled |
-| 5 | Settings → **Test Gemini** reports mis-heard names repaired | ⬜ Untested fallback |
-| 6 | Mic **blocked** → readable message naming the keyboard mic | ⬜ Untested fallback |
-| 7 | Mic **offline** → "voice needs a connection" | ⬜ Untested fallback |
+| 5 | Settings → **Test Gemini** reports mis-heard names repaired | ✅ Run by Saad, 2 Sep — *"yes it is changing it"* |
+| 6 | Mic **blocked** → readable message naming the keyboard mic | ⬜ **Left untested, deliberately** |
+| 7 | Mic **offline** → "voice needs a connection" | ⬜ **Left untested, deliberately** |
 
-**Rows 5 to 7 all sit on the path Saad no longer uses.** He dictates through Wispr
-Flow and has hidden ProBeing's own mic button, so 6 and 7 are error messages on a
-button that is not on his screen, and 5 repairs a mis-hearing that no longer happens.
-They matter on exactly one day: the day Wispr Flow's free Android tier ends, which
-has no published date. Untested, and named here so that day is not the day it is
-discovered.
+**Signed off with 6 and 7 open, and that was a decision rather than an oversight.**
+Both are error messages on ProBeing's own mic button, which Saad has hidden — he
+dictates through Wispr Flow. They matter on exactly one day: the day Wispr Flow's free
+Android tier ends, which has no published date. Named here so that day is not the day
+they are discovered.
 
 Confirmed already: Done closes instantly on both devices; edits sync between devices
 without a refresh; extraction and batching both verified through Settings → Test
 Gemini.
+
+### Hold-open dictation, added after sign-off (2 Sep)
+
+ProBeing's own mic used to stop on its own after one sentence. It now runs until the
+button is tapped a second time, which is what Saad asked for.
+
+Not the one-line change it looks like. `continuous = true` is the whole feature on a
+laptop; on Android Chrome ends the session after a few seconds of quiet whatever the
+flag says. So "keep listening" is really "start another session each time one ends" —
+a loop around a live microphone, which needs three guards, all of them in `app.js`
+and all of them tested: a fatal error must not restart (a blocked mic retried sixty
+times is sixty failures), a session that ends the instant it starts is a refusal
+wearing `onend`'s clothes and three in a row stops it, and there is a two-minute
+ceiling because the commonest bad ending is nobody tapping stop.
+
+The second tap still does **not** submit. The store is append-only with no delete, and
+this button is the *less* accurate mic — the one a dictation app is used instead of —
+so auto-submitting here would auto-submit the path most likely to be wrong.
+
+**41 assertions against a fake recogniser; never run on a device.** It is off Saad's
+daily path (his mic button is hidden), so it is listed here rather than folded into
+the sign-off above. One bug was found and fixed by the tests before shipping: the
+two-minute cutoff was followed by *"Did not catch that — tap the mic and say it
+again"*, which contradicts the message before it and blames the user for something the
+app decided.
 
 ### A consequence of dictating outside the app: `type:'voice'` stopped meaning anything
 
@@ -168,9 +192,14 @@ box. Wispr Flow types into that box exactly like a keyboard, so the app cannot t
 and both rows above are `type:'work'`.
 
 Nothing is broken: `replayDay()` treats `voice` and `work` identically, so no figure
-anywhere changes. But that question is now unanswerable, and it is unanswerable
-*going forward* as well — it cannot be recovered later from rows that never carried
-the distinction. Stage 5 should either drop it or ask for it another way.
+anywhere changes. But that question is now unanswerable, and it is unanswerable *going
+forward* as well — it cannot be recovered later from rows that never carried the
+distinction.
+
+**Saad was asked and does not want it.** So Stage 5 drops the spoken-versus-typed
+question entirely rather than carrying it as a gap. The `voice` type stays in the data
+model because rows already use it and nothing is gained by rewriting history; it simply
+stops being something any report asks about.
 
 ### Speech is the weak link, and it is not this app's
 
