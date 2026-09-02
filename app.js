@@ -3401,9 +3401,33 @@ function applyLabel(rid, key, row, got, done) {
 var Recognition = window.SpeechRecognition || window.webkitSpeechRecognition;
 var micBtn = $('micBtn');
 
-/* A button that cannot work is worse than no button, and there is a real
- * fallback one line below it in the markup: the keyboard's own mic. */
-if (!Recognition) micBtn.hidden = true;
+/* WHY THERE IS A SETTING FOR HIDING THIS BUTTON.
+ *
+ * This button can only ever reach the Web Speech API, which on Android means
+ * Google's recogniser — the one that hears "NeuraVue" as "my review". A page
+ * cannot invoke a dictation app; those work by typing into whatever field has
+ * focus, from a bubble above the keyboard. So the good transcriber and this
+ * button are not two settings of one thing, they are two different microphones,
+ * and the app can only offer one of them.
+ *
+ * Saad asked for a single mic and the better transcription. That is the
+ * keyboard's, so this button gets out of the way — per device, because the
+ * laptop's free allowance is small enough that its built-in mic still earns its
+ * place while the phone's does not.
+ *
+ * Hidden, never removed: it is the fallback for the day a free tier ends, and
+ * it costs one line to keep. */
+function paintMic() {
+  /* A button that cannot work is worse than no button, and there is a real
+   * fallback one line below it in the markup: the keyboard's own mic. */
+  var off = !Recognition || Boolean(cfg.hideMic);
+  micBtn.hidden = off;
+  $('micHint').textContent = off
+    ? 'Tap the box, then the mic on your keyboard — Gboard\u2019s, or Wispr Flow\u2019s bubble.'
+    : 'Your keyboard\u2019s own mic works in this box too — tap the box, then the mic on the '
+      + 'keyboard. Wispr Flow\u2019s bubble appears there as well.';
+}
+paintMic();
 
 /* Chrome mishears the app's own name more often than it gets it right —
  * "Pro Being", "ProBing", "probing" — and none of those spellings belong in the
@@ -3828,6 +3852,7 @@ $('settingsBtn').addEventListener('click', function () {
   $('boardUrl').value = cfg.boardUrl || '';
   $('chipsInput').value = chipLabels().join(', ');
   $('projectNames').value = pinnedNames.join('\n');
+  $('micHide').checked = Boolean(cfg.hideMic);
   $('testResult').textContent = '';
   dlg.showModal();
 });
@@ -4163,7 +4188,9 @@ $('saveBtn').addEventListener('click', function () {
     token: $('token').value.trim(),
     boardUrl: safeBoardUrl(typedBoard),
     // Device-local on purpose: the chip list does not sync between phone and laptop.
-    chips: (parseChips($('chipsInput').value).join(', ')) || DEFAULT_CHIPS.join(', ')
+    chips: (parseChips($('chipsInput').value).join(', ')) || DEFAULT_CHIPS.join(', '),
+    // Also device-local: the phone has a good keyboard mic, the laptop may not.
+    hideMic: $('micHide').checked
   };
   if (next.backend === 'supabase') {
     if (!next.supaUrl || !next.supaKey) {
@@ -4183,6 +4210,7 @@ $('saveBtn').addEventListener('click', function () {
    * choice, rewritten wholesale when the backend is switched. The vocabulary
    * has no business riding along with it. */
   savePinnedNames(parsePinned($('projectNames').value));
+  paintMic();
   renderChips();
   dlg.close();
   flash('Saved', 'ok');

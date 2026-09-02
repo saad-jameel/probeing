@@ -113,8 +113,10 @@
   <!-- Plan step 4. Visible here rather than buried in Settings, because the
        moment it is needed is the moment the mic button has just refused: on a
        phone whose mic permission is off, or a browser with no Web Speech at all,
-       where app.js hides that button entirely. -->
-  <p class="hint">Your keyboard&rsquo;s own mic (Gboard) works in this box too &mdash; tap the box, then the mic on the keyboard.</p>
+       where app.js hides that button entirely. Written by paintMic() rather than
+       sitting here as markup, because its wording depends on whether that button
+       is on screen — "works in this box too" is wrong when there is no other. -->
+  <p id="micHint" class="hint"></p>
 
   <!-- Point 3: 'off' had no way in except going to bed. This is that way. -->
   <button id="dayBtn" class="btn btn-wide">
@@ -299,6 +301,17 @@
     <input id="token" type="password" placeholder="your TOKEN script property" required>
 
     </div>
+
+    <label class="check">
+      <input id="micHide" type="checkbox">
+      <span>Hide ProBeing&rsquo;s mic button &mdash; I use my keyboard&rsquo;s mic</span>
+    </label>
+    <p class="hint">Turn this on if you dictate with <strong>Wispr Flow</strong> or Gboard.
+      ProBeing&rsquo;s own mic can only use Chrome&rsquo;s built-in speech, which mishears
+      unusual project names; a dictation app cannot be reached from a web page, only from
+      the keyboard. Hiding this leaves you one mic instead of two. Per device, so the phone
+      and the laptop can differ. Everything else &mdash; naming the project, the sub-tasks
+      &mdash; works exactly the same however the words got into the box.</p>
 
     <label for="projectNames">Your project names (one per line)</label>
     <textarea id="projectNames" rows="4" placeholder="NeuraVue&#10;OneNet&#10;NMEA"></textarea>

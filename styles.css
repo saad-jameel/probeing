@@ -425,6 +425,18 @@ body {
    them by default. `pre-line` and not `pre`: still wrap on a narrow phone. */
 #testResult { white-space: pre-line; }
 .dlg input[type="file"] { padding: 10px; font-size: 14px; }
+/* A checkbox row. `.dlg input` above sets width:100% for text fields, which on a
+   checkbox stretches the box itself across the dialog and leaves the label
+   stranded — so both are reset here rather than narrowing the rule above and
+   having to re-check every field in the form. Big tap target: 20px, and the
+   whole row is the <label>, so the words work as well as the box. */
+.dlg label.check {
+  display: flex; align-items: center; gap: 10px;
+  margin: 16px 0 0; font-size: 14px; color: var(--fg); cursor: pointer;
+}
+.dlg label.check input[type="checkbox"] {
+  width: 20px; height: 20px; flex: none; padding: 0; margin: 0; accent-color: var(--accent);
+}
 /* Wraps because the row grew a fourth button: four of them do not fit across a
    phone, and an un-wrapped flex row would push Save off the edge. */
 .dlg-actions { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; justify-content: flex-end; margin-top: 18px; }
