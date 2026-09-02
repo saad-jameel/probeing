@@ -2737,23 +2737,52 @@ var EXTRACT_BATCH_MAX = 20;
  * wrote before any of this existed.
  */
 function extractProject(text, known) {
-  /* THE FREE PATH, and the reason a normal day fits inside the budget at all.
-   * Nothing is spent and nothing is awaited; on a day with five projects this
-   * is where most entries end. */
+  /* THE LOCAL MATCH IS NOW A FALLBACK, NOT THE FIRST CHOICE, and the reason is
+   * worth keeping because the same trap will be dug again.
+   *
+   * It used to run first: if the line named a project already known, the name
+   * was taken for free and Gemini never asked. That was right when the model
+   * allowed 20 calls a DAY and the only thing extraction produced was a name —
+   * `detail` went unread, so losing it cost nothing.
+   *
+   * Both halves of that stopped being true. The tile now lists the sub-tasks
+   * under the heading, so `detail` is the greater part of what a person sees;
+   * and gemini-3.5-flash-lite allows 500 a day, so spending one on an entry is
+   * no longer the scarce thing it was. Matching locally now BUYS a call we can
+   * easily afford and SELLS the sub-tasks, which is the wrong way round — it
+   * showed up as two entries landing with a correct project and no tasks at all.
+   *
+   * So: ask when we can, and keep the free path for exactly the moments we
+   * cannot — budget gone, offline, signed out, Gemini refusing. A named project
+   * with no tasks beats an entry named after its whole sentence. */
+  if (canAskGemini()) {
+    return new Promise(function (resolve) {
+      extractQueue.push({ text: text, known: known || [], resolve: resolve });
+      pumpExtraction();
+    });
+  }
+
+  /* Say WHY, before falling back. geminiCall() used to be the only thing that
+   * set this, and it is no longer reached when the budget is gone — so without
+   * this line the day's ceiling became silent again, and "the tasks stopped
+   * appearing" would once more be indistinguishable from a broken feature. */
+  if (cfg.backend === 'supabase' && sb && sbUser && geminiCallsLeft() <= 0) {
+    lastExtractError = GEMINI_BUDGET_SPENT;
+  }
+
   var mine = localProjectName(text);
   if (mine) {
     rememberProject(mine);                 // using a name is what keeps it fresh
-    /* `detail` stays empty here, and it costs nothing measurable: replayDay()
-     * reads `detail` only on `break` rows (the add/drop that parseBreakOp
-     * decodes), and nothing renders it for a work or voice row. The project is
-     * the half that matters — it names the tile and keys byProject. */
     return Promise.resolve({ project: mine, detail: '' });
   }
+  return Promise.resolve(noExtraction());
+}
 
-  return new Promise(function (resolve) {
-    extractQueue.push({ text: text, known: known || [], resolve: resolve });
-    pumpExtraction();
-  });
+/** Is asking Gemini possible at all right now? Not "is it wise" — the pacer
+ *  handles waiting — but whether a call could be made today. */
+function canAskGemini() {
+  return cfg.backend === 'supabase' && Boolean(sb) && Boolean(sbUser) &&
+         geminiCallsLeft() > 0;
 }
 
 /* Set while the queue is waiting out a full minute, so that the twenty entries
@@ -2798,7 +2827,21 @@ function pumpExtraction() {
   function finish(answers) {
     extractBusy = false;
     batch.forEach(function (item, i) {
-      item.resolve((answers && answers[i]) || noExtraction());
+      var got = (answers && answers[i]) || null;
+
+      /* Gemini had nothing for this line — refused, timed out, or answered
+       * something unusable. Fall back to the free path here rather than giving
+       * up: a project we already know, named from the words in the line, beats a
+       * tile named after the whole sentence. No tasks, because only the model
+       * can read those out of a sentence, but the heading is right. */
+      if (!got || !got.project) {
+        var mine = localProjectName(item.text);
+        if (mine) {
+          rememberProject(mine);
+          got = { project: mine, detail: '' };
+        }
+      }
+      item.resolve(got || noExtraction());
     });
     pumpExtraction();                      // whatever arrived while that was out
   }
