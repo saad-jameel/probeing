@@ -31,9 +31,9 @@ shipped in `f733804`; `CLAUDE.md` carries the full reasoning.
 > | ✅ | 3 The Buttons | done; chips were **rebuilt** as durations, not moments |
 > | ✅ | 3.5 Finish the move | done 30 Aug — Gemini key, Edge Function, `reports` table, sign-ups off |
 > | ✅ | 4 Tracker + Voice | signed off 2 Sep — two fallback checks left untested on purpose, see the stage |
-> | ⬜ | 5 Review Button | shell only; the hard maths is written but reads *today* only |
+> | ⬜ | 5 Review Button | next. Shell only; the hard maths is written but reads *today* only. Testable now — see *How this gets tested* |
 > | ⬜ | 6 Weekly & Monthly Reports | not started |
-> | ⬜ | 7 Notifications + wrapup + offline | not started — the 11:30 PM rules are written out in full below |
+> | ⬜ | 7 Notifications + wrapup + offline | not started — the 11:30 PM rules are written out in full below. **7a is the candidate to run alongside Stage 5**, since 7b needs it |
 > | ⬜ | 8 Native wrapper | not started, correctly deferred |
 >
 > **A great deal was built with no stage number.** Read *Built, but never planned*
@@ -289,6 +289,48 @@ https://ai.google.dev/gemini-api/docs/rate-limits and usage at https://ai.dev/ra
 **End goal (validation):** After a few days of real use, pressing Review returns a short
 overview naming your actual projects with plausible hour splits — reads as a glance, not
 an essay.
+
+### How this gets tested — Saad's heads-up, 2 Sep 2026
+
+He raised it before starting: a weekly review can only be *judged* over a week, so
+signing this off means waiting. Two proposals — a 2-day report for testing, and building
+the home-screen glance meanwhile. Both are right in substance; the numbers change the
+shape of each.
+
+**The wait is shorter than it looks, and the reason is not flattering.** There are
+already six days of rows (27 Aug – 2 Sep), so every mechanical question can be answered
+today: does the window compute, does Gemini return prose, does a range starting before
+27 Aug get refused rather than summed. What cannot be answered today is whether the
+review is any *good* — and that is a content problem, not a calendar one:
+
+```
+2026-08-27   13 rows,  0 work        2026-08-31    2 rows,  2 work
+2026-08-28    8 rows,  1 work        2026-09-01    0 rows        <- a missing day
+2026-08-29    2 rows,  1 work        2026-09-02   12 rows, 12 work
+2026-08-30   18 rows, 14 work
+```
+
+A review of that week would be honest and useless. **So Stage 5 is not blocked for a
+week; only its sign-off is**, and what unblocks it is consistent daily logging rather
+than the passage of time.
+
+**On the 2-day report: build the range as a real choice, not a test mode.** A test-only
+shortcut means the thing Saad tests is not the thing that ships, and this repo has been
+bitten by that twice already — a `goals` action that was deployed and then deleted from
+the repo, and two `secret_scan.sh` bugs that lived in the *checker*. A picker (last 2
+days / last 7 days / this week) costs the same to build, gives the fast feedback loop he
+actually wants on the prose, is needed by Stage 6 for months anyway, and makes
+`earliestEventAt()` — already written, currently dead code — load-bearing.
+
+Note the budget rule still binds: **one Gemini call per summary**, whatever the range.
+`replayDay()` does the arithmetic; Gemini only writes it up.
+
+**On building the home-screen glance meanwhile: it is not a small parallel task.** See
+7b below — it is blocked on a decision only Saad can make, and both answers are large.
+An ongoing notification rides on all of 7a's push work (VAPID signing in the Edge
+Function, a service worker subscription, `pg_cron`); a real widget needs a native
+wrapper, which is Stage 8. Running 7a alongside Stage 5 is a sound use of the week, but
+it should be entered as "7a then 7b", not as a filler task.
 
 ---
 
