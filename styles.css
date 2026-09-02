@@ -244,6 +244,30 @@ body {
 .proj-name { font-size: 17px; font-weight: 600; overflow-wrap: anywhere; }
 .proj-time { color: var(--accent); font-size: 13.5px; font-variant-numeric: tabular-nums; }
 .proj-time.paused { color: var(--muted); }
+
+/* The sub-tasks under a project heading. Indented and quieter than the name so
+   the tile reads as one thing with parts, not as a list of equal items. */
+.proj-tasks {
+  margin: 6px 0 0;
+  padding: 0 0 0 16px;
+  list-style: none;
+  display: grid;
+  gap: 3px;
+}
+.proj-tasks li {
+  position: relative;
+  font-size: 13.5px;
+  line-height: 1.35;
+  color: var(--muted);
+  overflow-wrap: anywhere;    /* a long task must wrap, never widen the tile */
+}
+/* A dash rather than a bullet: these are things you said, not a checklist. */
+.proj-tasks li::before {
+  content: "\2013";
+  position: absolute;
+  left: -14px;
+  color: var(--muted);
+}
 .done-btn {
   flex: 0 0 auto;
   padding: 7px 14px;

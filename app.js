@@ -1211,6 +1211,42 @@ function renderDaySummary() {
     .forEach(function (why) { line(why, day.byReason[why], true); });
 }
 
+/* The sub-tasks logged against one project today, in the order they were said.
+ *
+ * The extraction splits a line into a project and what is being done to it, and
+ * until now only the project half was ever shown — so "Working on NeuraVue,
+ * resolving FPS jitter, model latency and fall modelling" appeared on screen as
+ * the single word "NeuraVue", which reads exactly like the rest was thrown away.
+ * It never was: raw_text keeps the sentence verbatim and `detail` holds the task.
+ * This is what puts the second half back on the screen.
+ *
+ * Keyed the same way replayDay() keys a project — `project || raw_text` — because
+ * two different answers to "which tile is this row on" is how tiles go missing.
+ */
+function projectTasks(rows, name) {
+  var seen = {};
+  var out = [];
+  (rows || []).forEach(function (row) {
+    if (row.type !== 'work' && row.type !== 'voice') return;
+    var text = String(row.raw_text || '').trim();
+    if (String(row.project || text).trim() !== name) return;
+
+    /* No detail means the line was never split — either Gemini has not answered
+     * yet, or it had nothing to add. The tile is already named after the whole
+     * sentence in that case, so repeating it underneath says nothing twice. */
+    String(row.detail || '').split(TASK_SEP).forEach(function (part) {
+      var task = part.trim();
+      if (!task || task === name) return;
+
+      var key = task.toLowerCase();
+      if (seen[key]) return;                // the same task logged twice is one line
+      seen[key] = 1;
+      out.push(task);
+    });
+  });
+  return out;
+}
+
 function renderProject() {
   var day = replayDay(lastLog);
   var list = $('projList');
@@ -1243,6 +1279,20 @@ function renderProject() {
                     (day.running ? '' : ' · paused');
 
     main.append(n, t);
+
+    /* The sub-tasks, under their heading. Every one is either the user's own
+     * words or a model's reading of them, so textContent throughout. */
+    var tasks = projectTasks(lastLog, name);
+    if (tasks.length) {
+      var ul = document.createElement('ul');
+      ul.className = 'proj-tasks';
+      tasks.forEach(function (task) {
+        var item = document.createElement('li');
+        item.textContent = task;
+        ul.appendChild(item);
+      });
+      main.appendChild(ul);
+    }
 
     var done = document.createElement('button');
     done.type = 'button';
@@ -2151,15 +2201,29 @@ function noExtraction() {
  * ignores what comes back: with a single entry there is only one position, so
  * there is nothing to misalign, and discarding a correct name because the model
  * wrote 0 where we wanted 1 would cost a call and buy nothing. */
+/* `tasks` is a LIST, and that is the whole difference between "NeuraVue" and
+ * "NeuraVue, and here is what you did to it". One sentence often carries several
+ * jobs — "resolving FPS jitter, model latency, and fall modelling" is three —
+ * and asking for one string got one run-on line that read like the rest had been
+ * thrown away. It never was: raw_text keeps the sentence exactly as typed.
+ *
+ * Stored joined by TASK_SEP into the existing `detail` column rather than in a
+ * new one, because a schema change means a migration and this does not earn one.
+ * Rows written before this still read correctly: no separator, so one task. */
 var EXTRACT_SCHEMA = {
   type: 'OBJECT',
   properties: {
     n: { type: 'INTEGER' },
     project: { type: 'STRING' },
-    detail: { type: 'STRING' }
+    tasks: { type: 'ARRAY', items: { type: 'STRING' } }
   },
-  required: ['n', 'project', 'detail']
+  required: ['n', 'project', 'tasks']
 };
+
+/* Not a comma: commas appear inside a task ("fixing the login bug, which broke
+ * yesterday") and splitting on them would cut it in half. This does not occur in
+ * ordinary typing. */
+var TASK_SEP = ' \u00b7 ';
 
 /* THE OPEN PROJECTS GO IN THE PROMPT, and that is a correctness requirement
  * rather than a nicety. A project is identified by its exact string, so
@@ -2175,7 +2239,9 @@ function extractPrompt(text, known) {
     // Asked for so the required field means something; the answer is not read.
     'n: the number 1. There is only this one line.',
     'project: the short name of the thing being worked on, two or three words at most.',
-    'detail: what is being done to it, a few words. Use "" if the line does not say.'
+    'tasks: a list of the things being done to it, each a few words. A line that ' +
+    'mentions several jobs becomes several entries. Use [] if the line does not say, ' +
+    'and never invent one the line does not mention.'
   ];
 
   if (known && known.length) {
@@ -2223,7 +2289,19 @@ function tidyExtraction(got, known) {
     return String((got && got[v]) || '').replace(/\s+/g, ' ').trim();
   };
   var project = squash('project');
-  var detail = squash('detail').slice(0, DETAIL_MAX);
+
+  /* A list if the model sent one, a string if it sent that instead — and it will
+   * sometimes, whatever the schema says. Both end up as one joined string, so
+   * everything downstream sees exactly what it saw before. */
+  var raw = got && got.tasks;
+  var detail;
+  if (Object.prototype.toString.call(raw) === '[object Array]') {
+    detail = raw.map(function (t) { return String(t || '').replace(/\s+/g, ' ').trim(); })
+                .filter(Boolean).join(TASK_SEP);
+  } else {
+    detail = squash('tasks') || squash('detail');
+  }
+  detail = detail.slice(0, DETAIL_MAX);
 
   /* Match against the open projects BEFORE capping, and skip the cap on a hit.
    * Every tile logged before this feature existed is named after a whole
@@ -2603,7 +2681,9 @@ function extractManyPrompt(texts, known) {
              'The first object must have n=1, the second n=2, and so on up to n=' +
              texts.length + '. Never renumber, reorder or skip a line.');
   lines.push('project: the short name of the thing being worked on, two or three words at most.');
-  lines.push('detail: what is being done to it, a few words. Use "" if the line does not say.');
+  lines.push('tasks: a list of the things being done to it, each a few words. A line ' +
+             'that mentions several jobs becomes several entries. Use [] if the line ' +
+             'does not say, and never invent one the line does not mention.');
   lines.push('Lines about the same thing must get the same project name, spelled the same way.');
 
   if (known && known.length) {
