@@ -33,7 +33,7 @@ shipped in `f733804`; `CLAUDE.md` carries the full reasoning.
 > | ✅ | 4 Tracker + Voice | signed off 2 Sep — two fallback checks left untested on purpose, see the stage |
 > | ⬜ | 5 Review Button | next. Shell only; the hard maths is written but reads *today* only. Testable now — see *How this gets tested* |
 > | ⬜ | 6 Weekly & Monthly Reports | not started |
-> | ⬜ | 7 Notifications + wrapup + offline | not started — the 11:30 PM rules are written out in full below. **7a is the candidate to run alongside Stage 5**, since 7b needs it |
+> | ⬜ | 7 Notifications + wrapup + offline | not started. **7a runs alongside Stage 5.** The glance (7b) was decided on 2 Sep — an ongoing notification, not a native widget — so 7a is now its only dependency |
 > | ⬜ | 8 Native wrapper | not started, correctly deferred |
 >
 > **A great deal was built with no stage number.** Read *Built, but never planned*
@@ -403,18 +403,39 @@ Gemini key if the compiled summary is to be prose rather than figures.
 He wants, without opening the app: **Working on** (from Home) and **Today so far**
 (from the Today tab).
 
-**The honest constraint, which he has not yet ruled on.** A PWA *cannot* place a
-widget on an Android home screen. The manifest's `widgets` member is Windows-only;
-on a Pixel there is no supported path from an installed web app. So there are two
-real options, and they are very different sizes:
+**The honest constraint.** A PWA *cannot* place a widget on an Android home screen.
+The manifest's `widgets` member is Windows-only; on a Pixel there is no supported path
+from an installed web app. So there were two real options, and they are very different
+sizes:
 
 | | What it is | Cost |
 |---|---|---|
 | **Ongoing notification** | A sticky notification the service worker keeps updated. Sits in the shade and on the lock screen, shows both figures. | Small — rides on 7a's push work |
 | **A true home-screen widget** | Needs a native wrapper (TWA / Bubblewrap) and an Android widget provider. | Large — this is Stage 8 territory |
 
-**Ask before building.** The two are not substitutes for each other and only he can
-say which he meant.
+### ✅ Decided 2 Sep 2026 — the ongoing notification
+
+Saad chose it over a native widget, shown both. What he gets: a notification that sits
+in the shade and on the lock screen and updates itself through the day —
+
+```
+  ProBeing
+  Working on: NeuraVue
+  Today: 4h20m · 3 M · 4 prayers
+```
+
+**Why it is the right call, and what it costs.** It rides on 7a's push work, which he
+wants anyway for the 11:30 PM wrapup, so it is roughly one build instead of two, needs
+no app store and no APK, and updates by `git push` like everything else. The native
+widget would have meant a hand-installed APK, hand-installed updates, and Stage 8's
+whole wrapper for one box on a screen.
+
+**What it is not.** It is not on the home screen next to the app icons; it is one swipe
+down from any screen. Saad has seen both and chose this knowing that.
+
+**So 7b is no longer blocked — 7a is now its only dependency**, which is why 7a is the
+work that runs alongside Stage 5. Nothing in 7b can start before push notifications
+exist, because the notification *is* a push.
 
 ---
 
