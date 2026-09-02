@@ -222,14 +222,21 @@ blocks. The rule this leaves behind: *a check is not verified until it has been 
 to fail.* Nine planted shapes — token, `/exec` URL, Gemini key, each on disk, staged,
 and history-only — now block, twelve runs out of twelve.
 
-## 🟡 Stage 4 — Tracker + Voice Input — PARTIAL (~25%)
+## 🟡 Stage 4 — Tracker + Voice Input — BUILT, NOT YET SIGNED OFF (2 Sep 2026)
 
-> **Done:** the text tracker.
-> **Not done:** voice (zero `SpeechRecognition` in the repo), Gemini extraction
-> into `project`/`detail`, the echo-back of what was understood, the Gboard note.
+> **Built and shipped:** the text tracker, voice input (`webkitSpeechRecognition`
+> with the "ProBeing" prefix stripped, three distinct failure messages, and the
+> button hidden where the API is absent), Gemini extraction into `project` and
+> `tasks`, the echo-back, the Gboard note, and the sub-tasks listed under each
+> project heading.
 > **Superseded:** the `Now` line. There is no such element — two always-visible
 > state pills replaced it, computed from the log rather than written by an LLM.
 > `now_get`/`now_set` are dead code and the `Now` tab is never written.
+>
+> **What is left is verification, not code**, and it is listed under "Still to
+> prove" below. The distinction matters: three separate bugs this week looked
+> like broken code and were a wrong limit, a stale display and an optimisation
+> that had outlived its reason. None would have been found by reading.
 
 **Start:** buttons work, no free text. **Work:**
 1. Tracker input: type "working on project A, fixing auth bug" → `log` action; Gemini
@@ -244,6 +251,21 @@ and history-only — now block, twelve runs out of twelve.
 
 **End goal (validation):** Speak a work log on the phone → correct row with project/detail
 filled; `Now` line updates on BOTH devices; same mic flow works on laptop Chrome.
+
+### Still to prove — the only thing between this stage and done
+
+| # | What | Status |
+|---|---|---|
+| 1 | A **voice** entry producing the RIGHT project and tasks | ⬜ One attempt; the transcript garbled "NeuraVue" away, so the row was a fair reading of the wrong words |
+| 2 | Sub-tasks visible under the project heading | ⬜ Shipped 2 Sep, not yet seen on a device |
+| 3 | A typed entry on an **already-known** project getting its tasks | ⬜ The shortcut that ate them was fixed 2 Sep, untested since |
+| 4 | Mic **blocked** → readable message naming the keyboard mic | ⬜ Never exercised |
+| 5 | Mic **offline** → "voice needs a connection" | ⬜ Never exercised |
+| 6 | All of the above on **both** phone and laptop | ⬜ The standing rule |
+
+Confirmed already: the mic records on both devices; Done closes instantly on both;
+edits sync between devices without a refresh; the Gboard note is live in the shipped
+page; extraction and batching both verified through Settings → Test Gemini.
 
 ---
 
