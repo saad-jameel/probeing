@@ -2225,6 +2225,21 @@ var EXTRACT_SCHEMA = {
  * ordinary typing. */
 var TASK_SEP = ' \u00b7 ';
 
+/* WHY THE MODEL IS TOLD ABOUT SPEECH. A dictated line arrives already mangled:
+ * "NeuraVue" as "my review", "OneNet" as "one night", "NMEA" as "anemia". The
+ * app is handed the wrong words, so the repair has to happen where the real
+ * names are known — in the prompt, against the list below it.
+ *
+ * Bounded deliberately. The model may only pick a name that is already on the
+ * list; it may not invent a correction. And `raw_text` keeps what was actually
+ * heard whatever happens, so a wrong match shows up as a tile whose sentence
+ * plainly does not fit it, rather than as a record quietly rewritten. */
+var SOUNDALIKE =
+  'These lines are often dictated, and speech-to-text mangles unusual names: ' +
+  '"NeuraVue" arrives as "my review", "OneNet" as "one night". If a phrase ' +
+  'sounds like one of the names above, use that name instead. Only when the ' +
+  'sounds plainly match — if you are unsure, go with what was written.';
+
 /* THE OPEN PROJECTS GO IN THE PROMPT, and that is a correctness requirement
  * rather than a nicety. A project is identified by its exact string, so
  * "Sauda Kifyaha", "sauda kifyaha" and "Sauda" are three separate tiles on Home,
@@ -2246,16 +2261,18 @@ function extractPrompt(text, known) {
 
   if (known && known.length) {
     lines.push('');
-    lines.push('Projects already open today: ' + known.map(function (n) {
+    lines.push('Project names already in use: ' + known.map(function (n) {
       return JSON.stringify(String(n));
     }).join(', '));
     lines.push('If this line is about one of those, copy that name EXACTLY, character ' +
                'for character, including its capitals.');
+    lines.push(SOUNDALIKE);
   }
 
   lines.push('');
   lines.push('If no project is named or implied, return "" for both fields.');
-  lines.push('Never reword, translate, expand or correct what was written.');
+  lines.push('Apart from matching a name from that list, never reword, translate, ' +
+             'expand or correct what was written.');
   return lines.join('\n');
 }
 
@@ -2386,6 +2403,57 @@ function loadProjectNames() {
 
 var recentProjects = loadProjectNames();
 
+/* NAMES YOU TYPE IN SETTINGS, and the reason they are a second list rather than
+ * seeds for the one above: SPEECH is what makes them necessary. Android's
+ * recogniser hears "NeuraVue" as "my review", "OneNet" as "one night", "NMEA"
+ * as "anemia" — the real word is gone before a line of this file runs, and no
+ * rule about strings can bring back a sound the microphone never delivered.
+ * What can is a model holding the list of real spellings.
+ *
+ * The remembered list cannot be that vocabulary on its own. It only ever holds
+ * names the app has ALREADY got right once, so a project speech has never
+ * transcribed correctly can never get into it — precisely the projects that
+ * need the help. These are typed with a keyboard, so they are right by
+ * construction, and they are never evicted: a name stays nameable for as long
+ * as it is left in the box. */
+var PINNED_NAMES_KEY = 'probeing.pinned';
+var PINNED_NAMES_MAX = 60;
+
+function loadPinnedNames() {
+  var saved = null;
+  try {
+    saved = JSON.parse(localStorage.getItem(PINNED_NAMES_KEY));
+  } catch (e) { /* corrupt storage is an empty list, not a broken app */ }
+  if (!Array.isArray(saved)) return [];
+  return saved.filter(function (n) {
+    return typeof n === 'string' && n.trim();
+  }).slice(0, PINNED_NAMES_MAX);
+}
+
+var pinnedNames = loadPinnedNames();
+
+/** Read the Settings box: one name per line, or separated by commas. */
+function parsePinned(text) {
+  var seen = {};
+  var out = [];
+  String(text == null ? '' : text).split(/[\n,]/).forEach(function (part) {
+    var clean = part.replace(/\s+/g, ' ').trim().slice(0, PROJECT_MAX);
+    /* `=== 1`, not truthiness — see knownNames(): a project may be called
+     * "constructor" and would otherwise be swallowed by the prototype. */
+    if (!clean || seen[clean.toLowerCase()] === 1 || out.length >= PINNED_NAMES_MAX) return;
+    seen[clean.toLowerCase()] = 1;
+    out.push(clean);
+  });
+  return out;
+}
+
+function savePinnedNames(list) {
+  pinnedNames = list;
+  try {
+    localStorage.setItem(PINNED_NAMES_KEY, JSON.stringify(pinnedNames));
+  } catch (e) { /* a full store costs the list, never a row */ }
+}
+
 /** Put `name` at the front of the remembered list. Called for every name the
  *  app settles on, including one it recognised locally — using a name is what
  *  keeps it near the front, so a project you have stopped working on falls off
@@ -2430,7 +2498,24 @@ function knownNames() {
     if (row.type !== 'work' && row.type !== 'voice' && row.type !== 'done') return;
     add(row.project);
   });
+  pinnedNames.forEach(add);
   recentProjects.forEach(add);
+  return out;
+}
+
+/** The project vocabulary a prompt is shown: today's OPEN projects first, then
+ *  every other name this device knows. Open ones lead because a line that could
+ *  belong to either should join the one already running, and because the model
+ *  reads a list in order. */
+function promptNames(open) {
+  var seen = {};
+  var out = [];
+  (open || []).concat(knownNames()).forEach(function (name) {
+    var clean = String(name || '').replace(/\s+/g, ' ').trim();
+    if (!clean || seen[clean.toLowerCase()] === 1) return;
+    seen[clean.toLowerCase()] = 1;
+    out.push(clean);
+  });
   return out;
 }
 
@@ -2688,16 +2773,18 @@ function extractManyPrompt(texts, known) {
 
   if (known && known.length) {
     lines.push('');
-    lines.push('Projects already open today: ' + known.map(function (n) {
+    lines.push('Project names already in use: ' + known.map(function (n) {
       return JSON.stringify(String(n));
     }).join(', '));
     lines.push('If a line is about one of those, copy that name EXACTLY, character ' +
                'for character, including its capitals.');
+    lines.push(SOUNDALIKE);
   }
 
   lines.push('');
   lines.push('If a line names or implies no project, return "" for both of its fields.');
-  lines.push('Never reword, translate, expand or correct what was written.');
+  lines.push('Apart from matching a name from that list, never reword, translate, ' +
+             'expand or correct what was written.');
   return lines.join('\n');
 }
 
@@ -3162,7 +3249,7 @@ $('trackerForm').addEventListener('submit', function (e) {
    * row we are about to write is itself in that list — keyed on the whole
    * sentence, because it has no project yet — and the prompt would be inviting
    * the model to reuse the sentence as a project name. */
-  var known = openProjects();
+  var known = promptNames(openProjects());
 
   // Typing an entry means you are working — if you were on a break or the day
   // was marked over, this reopens it, so the clock and the label agree.
@@ -3740,6 +3827,7 @@ $('settingsBtn').addEventListener('click', function () {
   $('token').value = cfg.token || '';
   $('boardUrl').value = cfg.boardUrl || '';
   $('chipsInput').value = chipLabels().join(', ');
+  $('projectNames').value = pinnedNames.join('\n');
   $('testResult').textContent = '';
   dlg.showModal();
 });
@@ -3868,7 +3956,7 @@ async function probeExtraction() {
        * A batch of two costs the same one request as a batch of one, so this
        * proves the harder path for free. */
       body: JSON.stringify({
-        prompt: extractManyPrompt(EXTRACT_PROBE, []),
+        prompt: extractManyPrompt(EXTRACT_PROBE, PROBE_VOCAB),
         json: true, schema: { type: 'ARRAY', items: EXTRACT_SCHEMA }, think: 0
       })
     });
@@ -3892,7 +3980,11 @@ async function probeExtraction() {
     }
     /* The whole point of the probe: did it number them? */
     out.numbered = arr.every(function (a, i) { return a && Number(a.n) === i + 1; });
-    var got2 = tidyExtraction(arr[0], []);
+    /* The last line is the mangled one. Did the vocabulary put the name back? */
+    var heard = tidyExtraction(arr[EXTRACT_PROBE.length - 1], PROBE_VOCAB);
+    out.heard = heard.project;
+    out.repaired = heard.project === PROBE_VOCAB[0];
+    var got2 = tidyExtraction(arr[0], PROBE_VOCAB);
     out.project = got2.project;
     out.detail = got2.detail;
     out.ok = Boolean(got2.project);
@@ -3905,10 +3997,21 @@ async function probeExtraction() {
   }
 }
 
-/* Two lines about two different things, so a model that lazily returns one
- * answer, or the same answer twice, is caught rather than flattered. */
+/* Three lines, each catching a different failure.
+ *   1 and 2 are about different things, so a model that lazily returns one
+ *     answer, or the same answer twice, is caught rather than flattered.
+ *   3 is a real speech mangling — Android hears "NeuraVue" as "my review" —
+ *     paired with the fixed vocabulary below. Without it the sound-alike repair
+ *     could only ever be tested by dictating a live entry, which costs a call,
+ *     cannot be repeated identically, and confuses "the model did not repair it"
+ *     with "the microphone heard something else this time". */
 var EXTRACT_PROBE = ['working on the Ahmed case, fixing the auth bug',
-                     'spent an hour on the Falcon migration'];
+                     'spent an hour on the Falcon migration',
+                     'my review is looking better after the frame rate fix'];
+
+/* Fixed, and deliberately NOT the user's own list: a test whose answer depends
+ * on what happens to be in Settings tells you nothing about the model. */
+var PROBE_VOCAB = ['NeuraVue'];
 
 /** Why an entry stayed unnamed, in a sentence, or '' if the reason was not a
  *  ceiling at all.
@@ -3980,14 +4083,25 @@ $('testGeminiBtn').addEventListener('click', async function () {
   if (p.ok) {
     var good = '\u2705 Works (' + p.ms + 'ms): project "' + p.project +
       '", detail "' + p.detail + '"';
-    /* Two lines went out. Whether they came back numbered decides if batching —
-     * the thing that makes a busy day fit in 20 calls — is available at all. */
+    /* Three lines went out. Whether they came back numbered decides if batching
+     * — the thing that makes a busy day fit inside the daily allowance — is
+     * available at all, and it also decides whether the repair check below is
+     * even readable. */
     good += p.numbered
       ? '\n\u2705 Batching works: ' + EXTRACT_PROBE.length +
         ' lines answered and correctly numbered, so busy days cost few calls.'
       : '\n\u26a0\ufe0f Batching is OFF: the answers came back without line numbers, ' +
         'so groups of entries are refused rather than risk naming them wrongly. ' +
         'Everything still works, one call per entry, so a busy day may run out.';
+    /* Only meaningful if the answers lined up: an unnumbered reply means the
+     * "last" object may not be the mangled line at all. */
+    if (p.numbered) {
+      good += p.repaired
+        ? '\n\u2705 Mis-heard names repaired: "my review" was filed under "NeuraVue".'
+        : '\n\u26a0\ufe0f Mis-heard names NOT repaired: "my review" came back as "' +
+          (p.heard || 'nothing') + '" with "NeuraVue" on the list. Dictated project ' +
+          'names will keep landing under whatever the microphone heard.';
+    }
     if (p.ms > EXTRACT_DEADLINE_MS) {
       good += '\n\u26a0\ufe0f Slower than the ' + EXTRACT_DEADLINE_MS +
         'ms the tracker waits, so real entries will often stay unnamed.';
@@ -4065,6 +4179,10 @@ $('saveBtn').addEventListener('click', function () {
                  next.supaUrl !== cfg.supaUrl || next.supaKey !== cfg.supaKey;
   cfg = next;
   saveConfig(cfg);
+  /* Kept out of `cfg` on purpose: that object is credentials plus backend
+   * choice, rewritten wholesale when the backend is switched. The vocabulary
+   * has no business riding along with it. */
+  savePinnedNames(parsePinned($('projectNames').value));
   renderChips();
   dlg.close();
   flash('Saved', 'ok');
