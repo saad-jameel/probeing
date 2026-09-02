@@ -2569,10 +2569,18 @@ function savePinnedNames(list) {
  * features, and they share one renderer below for exactly that reason. */
 var PROJECT_CATEGORY_KEY = 'probeing.categories';
 
+/* `focus` is Saad's own line, drawn in his own words: "just take the projects
+ * and PhD time". Three of the four kinds are the work a week is judged on; the
+ * fourth is life — groceries, errands — and counting it as productivity would
+ * make a busy Saturday read as a good week.
+ *
+ * The flag lives HERE rather than as a list of ids somewhere near the review,
+ * because a fifth kind added to this array would otherwise be silently outside
+ * the headline figure and nothing would say so. */
 var PROJECT_CATEGORIES = [
-  { id: 'office',   label: 'Office Projects' },
-  { id: 'personal', label: 'Personal Projects' },
-  { id: 'phd',      label: 'PhD Working' },
+  { id: 'office',   label: 'Office Projects',   focus: true },
+  { id: 'personal', label: 'Personal Projects', focus: true },
+  { id: 'phd',      label: 'PhD Working',       focus: true },
   { id: 'life',     label: 'Personal working' }
 ];
 
@@ -2588,6 +2596,16 @@ function categoryLabel(id) {
   var found = '';
   PROJECT_CATEGORIES.forEach(function (c) { if (c.id === id) found = c.label; });
   return found;
+}
+
+/** Is this one of the kinds that count towards focused hours? False for
+ *  anything that is not one of the four, which is deliberate: Uncategorised and
+ *  Unlabelled are "nobody has said what this is", and a headline figure must not
+ *  quietly include a guess. */
+function isFocusCategory(id) {
+  var yes = false;
+  PROJECT_CATEGORIES.forEach(function (c) { if (c.id === id && c.focus) yes = true; });
+  return yes;
 }
 
 /** The key a project is filed under. Case and stray spacing must not make two
@@ -4362,6 +4380,47 @@ function groupProjects(byProject, cats) {
 }
 
 /**
+ * The headline figure for a period: the hours that were actually spent on work.
+ *
+ * Office Projects + Personal Projects + PhD Working, and nothing else. Saad
+ * named the rule himself — "just take the projects and PhD time" — and the
+ * exclusions are the point of it: "Personal working" is groceries, and
+ * Uncategorised and Unlabelled are time nobody has said the kind of yet. Adding
+ * either would make the one number on this screen that answers "was this a good
+ * week" a guess.
+ *
+ * The rest is not thrown away. `outside` carries every group that is not
+ * focused work, with its hours, because a figure that silently leaves out a
+ * third of the week is worse than one that shows its own edges — and the
+ * summary is written from these two together.
+ *
+ * Built on groupProjects(), so it inherits the same collapse of sentence-shaped
+ * keys and the same overlap: two projects at once is an hour of each, and this
+ * total may therefore exceed the hours worked. Never normalised — CLAUDE.md.
+ */
+function focusOf(byProject, cats) {
+  var got = groupProjects(byProject, cats);
+  var out = { ms: 0, groups: [], outside: [], filed: false };
+
+  got.groups.forEach(function (g) {
+    if (isFocusCategory(g.id)) {
+      out.ms += g.ms;
+      out.groups.push(g);
+    } else {
+      out.outside.push(g);
+    }
+  });
+
+  /* NOTHING FILED IS NOT ZERO HOURS. Until at least one project has been put in
+   * one of the three kinds, `ms` is 0 because nobody has answered the question —
+   * not because no work was done. Everything downstream reads this flag rather
+   * than testing `ms`, so a period of unfiled work is reported as unknown, the
+   * same refusal the date floor and the sleep line make. */
+  out.filed = out.groups.length > 0;
+  return out;
+}
+
+/**
  * The sub-tasks logged against each named project across the range, deduped.
  *
  * Two jobs now: these are the bullets under each project on screen, and they are
@@ -4418,64 +4477,134 @@ function rangeTasks(rows) {
 var REVIEW_TASK_PROMPT_LINES = 12;
 
 /**
- * The one prompt, and it now asks for TWO things only.
+ * One period, written out for the model: the headline figure, the projects
+ * under each kind of work with their hours, and what was actually done to them.
+ *
+ * BOTH PERIODS GO THROUGH HERE, which is the point of it existing. The old
+ * prompt described this range in full and gave the earlier one a single total,
+ * so the only comparison a model could make was "more hours" or "fewer hours".
+ * Saad asked for the comparison he actually reads — which project stopped, which
+ * one started, where the time went — and that needs the same detail on both
+ * sides.
+ *
+ * Every project is listed, not only the ones with sub-tasks. A project worked on
+ * last period and not this one is exactly the thing the summary is meant to
+ * notice, and it has no sub-tasks here to be noticed by.
+ */
+function promptPeriod(heading, sum, cats, tasks) {
+  var lines = [heading];
+  var focus = focusOf(sum.byProject, cats);
+  var seen = tasks || {};
+
+  if (!focus.groups.length && !focus.outside.length) {
+    lines.push('  Nothing was logged against any project in this period.');
+    return lines;
+  }
+
+  lines.push(focus.filed
+    ? '  Focused hours (office projects, personal projects and PhD): ' +
+      reviewDuration(focus.ms)
+    : '  Focused hours: NOT KNOWN. None of the projects below has been filed as ' +
+      'office, personal or PhD work yet, so there is no figure. Do not call it zero.');
+
+  var draw = function (group) {
+    lines.push('  ' + group.label + ' ' + reviewDuration(group.ms));
+    group.projects.forEach(function (p) {
+      // Array.isArray, not truthiness: `tasks['constructor']` is a function.
+      var t = Array.isArray(seen[p.name]) ? seen[p.name] : [];
+      /* THE ONLY CAP, and it is here because the reason for it is token cost.
+       * The screen shows every bullet; a month of one project would otherwise
+       * send a very long list to say something a dozen examples already say. */
+      lines.push('    ' + p.name + ' ' + reviewDuration(p.ms) +
+                 (t.length ? ': ' + t.slice(0, REVIEW_TASK_PROMPT_LINES).join('; ') : ''));
+    });
+  };
+
+  focus.groups.forEach(draw);
+  if (focus.outside.length) {
+    lines.push('  Not counted in the focused hours:');
+    focus.outside.forEach(draw);
+  }
+
+  return lines;
+}
+
+/**
+ * The one prompt, and it asks for THREE things.
  *
  * Everything a person actually wants off this screen — the hours, the projects
  * under each heading, what was done to each — is worked out on this device and
- * drawn straight. None of it is here. What is left for a language model is the
- * pair of jobs it is genuinely better at than arithmetic: reading a week's
- * sub-tasks and naming what was being learned, and turning a subtraction that
- * has already been done into a sentence.
+ * drawn straight, so none of the figures here can be hallucinated. What is left
+ * for a language model is the job it is genuinely better at than arithmetic:
+ * reading two lists of work side by side and saying what moved.
  *
- * The pace figures are handed over finished — both totals, the difference, and
- * the word "faster"/"slower"/"about the same" already chosen — so the model
- * cannot arrive at a second, worse answer than paceOf() did. The instruction not
- * to calculate is the whole design.
+ * WHAT THIS PROMPT NO LONGER CONTAINS is as deliberate as what it does. The
+ * range, the calendar-day count and the total worked used to head it, and the
+ * model dutifully handed them back — "Over the last 7 days from 2026-08-27 to
+ * 2026-09-02, you worked 41h 42m across 6 calendar days with entries" — directly
+ * underneath the range label and the figures card that already say all three.
+ * Instructing it not to repeat them would have been a weaker fix than not
+ * giving them: a figure that is not in the prompt cannot be restated.
+ *
+ * The pace verdict is still handed over finished — both totals, the difference
+ * and the word already chosen — because a subtraction is exactly what the model
+ * must not do. It is now a comparison of FOCUSED hours rather than of wall-clock
+ * hours worked, because that is the figure Saad defined as the one worth judging.
  *
  * Sleep, prayers, Ms and break reasons are deliberately absent. They were in
  * here to feed a prose paragraph that no longer exists; a model that is never
  * asked about sleep cannot state a figure for a night nobody recorded.
+ *
+ * @param win   the range being reviewed — only its label is used, never its dates.
+ * @param now   {sum, tasks} for that range.
+ * @param prior {sum, tasks, days} for the equal-length period before it, or null
+ *              when nothing is recorded that far back.
+ * @param cats  the stored category assignments, passed in rather than read here.
+ * @param pace  paceOf() on the two FOCUSED totals. `known` false means the
+ *              difference is not worth stating — which is not the same thing as
+ *              `prior` being null, and the two are reported differently.
  */
-function reviewPrompt(sum, win, tasks, pace) {
+function reviewPrompt(win, now, prior, cats, pace) {
   var lines = [
     'You are helping one person read their own activity log.',
-    'Every figure below is already worked out. Do NOT calculate anything.',
-    '',
-    'Range: ' + win.label + ', ' + ymdLocal(win.start) + ' to ' + ymdLocal(win.end) +
-      ' (' + sum.days + ' calendar days, ' + sum.daysWithRows + ' with entries).',
-    'Worked in this range: ' + reviewDuration(sum.worked) + '.'
+    'Every figure below is already worked out. Do NOT calculate anything: never ' +
+      'add, subtract, average or round. Every number you write must be copied ' +
+      'from below exactly as it is written there.',
+    ''
   ];
 
-  if (pace && pace.known) {
-    lines.push('Worked in the ' + pace.days + ' days immediately before it' +
-               (pace.fromYmd ? ' (' + pace.fromYmd + ' to ' + pace.toYmd + ')' : '') +
-               ': ' + reviewDuration(pace.prior) + '.');
-    lines.push('So this range is ' + pace.word + ': ' +
-               reviewDuration(Math.abs(pace.diff)) + ' of difference.');
+  lines = lines.concat(promptPeriod('THIS PERIOD (' + win.label + '):',
+                                    now.sum, cats, now.tasks));
+  lines.push('');
+
+  if (prior) {
+    lines = lines.concat(promptPeriod('THE PERIOD BEFORE IT (the ' + prior.days +
+                                      ' days immediately before):',
+                                      prior.sum, cats, prior.tasks));
+    if (pace && pace.known) {
+      /* Its own paragraph, not the tail of the earlier period's list: it is a
+       * fact about both of them. */
+      lines.push('');
+      lines.push('Change in focused hours: ' + pace.word + ' — ' +
+                 reviewDuration(pace.prior) + ' then, ' + reviewDuration(pace.worked) +
+                 ' now, a difference of ' + reviewDuration(Math.abs(pace.diff)) + '.');
+    }
   } else {
     /* Same refusal as the date floor and the sleep line: there is nothing before
      * the first row this account has, so the earlier period is unmeasured, not
      * zero. Saying "you worked 0 hours last week" about a week that predates the
-     * app is the one sentence this screen must never produce. */
-    lines.push('The period before this one is NOT RECORDED — there is nothing ' +
-               'logged that far back. Say plainly that there is nothing to ' +
-               'compare against. Do not state a figure for it and do not call it zero.');
+     * app is the one sentence this screen must never produce.
+     *
+     * The second half of this instruction is newer and is Saad's: the absence
+     * was being announced in a sentence of its own — "There is nothing to
+     * compare against from the period before this one" — which is a whole line
+     * of a five-line summary spent saying nothing happened. */
+    lines.push('THE PERIOD BEFORE IT is NOT RECORDED — there is nothing logged ' +
+               'that far back. Write about this period only. Do not state a ' +
+               'figure for the earlier one and do not call it zero. Do not spend ' +
+               'a sentence explaining that it is missing: a short clause, or ' +
+               'nothing at all.');
   }
-
-  lines.push('');
-  lines.push('What was worked on, by project:');
-
-  var said = 0;
-  byTimeDesc(collapseProjects(sum.byProject).named).forEach(function (name) {
-    var t = tasks && Array.isArray(tasks[name]) ? tasks[name] : [];
-    if (!t.length) return;
-    /* THE ONLY CAP, and it is here because the reason for it is token cost.
-     * The screen shows every bullet; a month of one project would otherwise
-     * send a very long list to say something a dozen examples already say. */
-    lines.push('  ' + name + ': ' + t.slice(0, REVIEW_TASK_PROMPT_LINES).join('; '));
-    said += 1;
-  });
-  if (!said) lines.push('  (the entries do not say what was done)');
 
   /* NOT NUMBERED, and that is deliberate. This used to read "1. …  2. …", and a
    * model that echoes the shape it is shown wrote "2. Learning: MQTT" — which
@@ -4484,16 +4613,35 @@ function reviewPrompt(sum, win, tasks, pace) {
    * numbering as well; showing a template that invites it was the other half of
    * the same bug, and the cheaper half to fix. */
   lines.push('');
-  lines.push('Write exactly two things and nothing else.');
-  lines.push('First, one or two short lines on the pace, in plain English, addressed ' +
-             'to the person as "you", naming both totals as given above. Shorter ' +
-             'is better when there is little to say. Do not praise, encourage, ' +
-             'advise or editorialise. No headings, no bullet points, no numbering, ' +
-             'no markdown.');
+  lines.push('Write three things, in this order, and nothing else.');
+  /* With nothing before it there is no change to name, and asking for one
+   * anyway is what produced a whole sentence about the absence. The shape is
+   * otherwise identical, which is the point: the first range of a new account
+   * gets a real summary, not an apology. */
+  lines.push(prior
+    ? 'First, one or two short lines naming what CHANGED between the two ' +
+      'periods — a project dropped entirely, a new one picked up, time moving ' +
+      'from one to another. Name the projects, address the person as "you", ' +
+      'and quote figures only as they are written above.'
+    : 'First, one or two short lines naming what this period actually went on: ' +
+      'which projects, and what was done to them. Name the projects, address ' +
+      'the person as "you", and quote figures only as they are written above.');
+  lines.push('In those same lines you may judge the WORK and not only the clock: ' +
+             'the sub-tasks say what was actually being done, some of it is ' +
+             'inherently slower than the rest, and fewer hours on hard work is ' +
+             'not less done. Say that only where the sub-tasks bear it out.');
+  lines.push('Then, on a short line of its own, write "Productivity:" followed by ' +
+             'your verdict in a few words. Be rational, not encouraging: say ' +
+             'plainly when a period was worse, and do not praise, congratulate, ' +
+             'advise or reassure. "Productivity: down, and the tasks do not ' +
+             'explain it" is a perfectly good answer.');
   lines.push('Then, as a final separate line, write "Learning:" followed by the ' +
              'topics and skills the entries above suggest were being picked up, ' +
              'comma separated. If the entries do not say, write ' +
              '"Learning: not clear from these entries."');
+  lines.push('Do not restate the dates, the length of the range, or how many days ' +
+             'had entries: they are already on the screen above your words.');
+  lines.push('No headings, no bullet points, no numbering, no markdown.');
 
   return lines.join('\n');
 }
@@ -4946,12 +5094,31 @@ async function runReview(force) {
     return;
   }
 
-  var priorWorked = 0;
+  /* The earlier period gets EVERYTHING this one gets — its own project totals
+   * and its own sub-tasks — because the comparison Saad reads is per project,
+   * not per total. Same rows, same one read: rowsInWindows() narrows the wide
+   * result twice rather than the database being asked twice. */
+  var earlier = null;
   if (priorKnown) {
     var priorWindows = dayWindows(prior.start, prior.end);
-    priorWorked = summariseRange(rowsInWindows(rows, priorWindows), priorWindows).worked;
+    var priorRows = rowsInWindows(rows, priorWindows);
+    earlier = { sum: summariseRange(priorRows, priorWindows),
+                tasks: rangeTasks(priorRows), days: prior.days };
   }
-  var pace = paceOf(sum.worked, priorWorked, prior, priorKnown);
+
+  /* The verdict is on FOCUSED hours — office, personal and PhD projects — which
+   * is the line Saad drew: "just take the projects and PhD time".
+   *
+   * `known` needs both periods to have something filed, and that is not the
+   * same test as `priorKnown`. A period whose projects have never been put in a
+   * kind has 0 focused hours because nobody answered the question, and
+   * subtracting one of those from the other would be a difference between two
+   * figures that do not exist. The prompt then falls back to the two project
+   * lists, which is where the answer really is anyway. */
+  var focus = focusOf(sum.byProject, projectCategories);
+  var priorFocus = earlier ? focusOf(earlier.sum.byProject, projectCategories) : null;
+  var pace = paceOf(focus.ms, priorFocus ? priorFocus.ms : 0, prior,
+                    Boolean(priorFocus) && focus.filed && priorFocus.filed);
 
   var tasks = rangeTasks(inRange);
   renderReviewFigures(sum);
@@ -4973,11 +5140,19 @@ async function runReview(force) {
     if (reviewRegroup) reviewRegroup();
   });
 
-  await addReviewProse(win, sum, tasks, pace, force, mine);
+  /* Built here, from the same figures that were just drawn, and handed over
+   * finished. addReviewProse() decides whether to SPEND a call; deciding what
+   * would be in it is this function's job, and splitting them that way means the
+   * prompt can never be built from a different set of numbers than the screen. */
+  await addReviewProse(win, reviewPrompt(win, { sum: sum, tasks: tasks }, earlier,
+                                         projectCategories, pace),
+                       force, mine);
 }
 
-/** The second half: the two written lines, which are allowed to fail. */
-async function addReviewProse(win, sum, tasks, pace, force, mine) {
+/** The second half: the written lines, which are allowed to fail. Takes the
+ *  finished prompt rather than the figures, because the only decision left here
+ *  is whether to spend a call on it. */
+async function addReviewProse(win, prompt, force, mine) {
   var key = reviewCacheKey(win);
   var note = $('reviewNote');
 
@@ -5010,8 +5185,8 @@ async function addReviewProse(win, sum, tasks, pace, force, mine) {
    * rather than sending into a refusal matters here because a refused call is
    * still spent — geminiCall() counts a request the moment it leaves.
    *
-   * `waitMs`, not `pace`: the pace verdict is a parameter of this function now,
-   * and the two meanings of the word are one letter apart. */
+   * `waitMs`, not `pace`: this file already uses "pace" for the faster/slower
+   * verdict, and the two meanings of the word are one letter apart. */
   var waitMs = geminiPacerWaitMs();
   if (waitMs > 0) {
     note.textContent = 'Gemini\'s per-minute limit is full — press Regenerate in about ' +
@@ -5021,7 +5196,7 @@ async function addReviewProse(win, sum, tasks, pace, force, mine) {
   }
 
   note.textContent = 'Writing the summary…';
-  var answer = await askReviewProse(reviewPrompt(sum, win, tasks, pace));
+  var answer = await askReviewProse(prompt);
   if (!mine()) return;
 
   paintReviewUsage();
