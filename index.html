@@ -149,28 +149,45 @@
 </section>
 
 <!-- =========================================================== REVIEW -->
+<!-- The range picker is a real control, not a test mode. A shortcut that only
+     exists while testing means the thing that gets tested is not the thing that
+     ships &mdash; and "Last 30 days" is the only option that can reach back past
+     the first row, which is what makes the refusal reachable at all. -->
 <section class="screen" data-screen="review" hidden>
-  <h2 class="screen-title">Weekly Review</h2>
+  <h2 class="screen-title">Review</h2>
   <p id="reviewRange" class="screen-sub">&mdash;</p>
+
+  <div id="reviewPicks" class="pick-grid"></div>
 
   <section class="card">
     <h3 class="card-head"><svg class="card-ico" aria-hidden="true"><use href="#i-chart"></use></svg> Summary</h3>
-    <p class="pending">Hours worked, daily average and sleep average land here once
-      the backend can read a whole week. The numbers exist in the Sheet already.</p>
+    <!-- Every figure below is worked out on this device from your own rows.
+         Gemini only writes the paragraph underneath them. -->
+    <div id="reviewFigures" class="sum-row three" hidden></div>
+    <p id="reviewSleep" class="review-sleep"></p>
+    <p id="reviewProse" class="review-prose"></p>
+    <p id="reviewNote" class="pending"></p>
   </section>
 
   <section class="card">
     <h3 class="card-head"><svg class="card-ico" aria-hidden="true"><use href="#i-work"></use></svg> Projects</h3>
-    <p class="pending">Time per project, split out by Gemini from what you typed.</p>
+    <ul id="reviewProjects" class="sum-projects"></ul>
+    <p id="reviewProjectsNote" class="pending"></p>
   </section>
 
   <section class="card">
     <h3 class="card-head"><svg class="card-ico" aria-hidden="true"><use href="#i-target"></use></svg> Learning</h3>
-    <p class="pending">What you picked up this week, pulled out of your own entries.</p>
+    <p id="reviewLearning" class="pending"></p>
   </section>
 
+  <div class="review-foot">
+    <button type="button" id="reviewAgainBtn" class="link-btn" hidden>Regenerate summary</button>
+    <span id="reviewUsage" class="review-usage"></span>
+  </div>
+
   <h3 class="screen-title sm">Past Reports</h3>
-  <p class="pending">Nothing archived yet &mdash; the first report is written at the end of your first full week.</p>
+  <p class="pending">Nothing archived yet &mdash; reviews are worked out fresh each time and
+    the written part is kept on this device only. Saving them is Stage 6.</p>
 </section>
 
 </main>

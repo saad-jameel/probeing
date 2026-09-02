@@ -364,6 +364,45 @@ async function callSupabase(action, payload) {
   throw unknown;
 }
 
+/**
+ * Every row between two instants, oldest first — the `today` read widened to a
+ * date range, and the only new read Stage 5 needs.
+ *
+ * NOT AN ACTION, and not through api(). It sits outside the ACTIONS map for the
+ * same reason earliestEventAt() does: reviews run on Supabase only, so there is
+ * no Apps Script half to keep in step, and inventing one would mean an
+ * ANSWER_FIELD entry and a Code.gs branch for a backend that will never serve
+ * this screen. Rule 0's serialised queue is about Apps Script under a burst;
+ * this is one Postgres select that nobody is mid-tap behind.
+ *
+ * PRAYERS ARE KEPT. The `today` branch splits them into their own list because
+ * the Today tab draws them separately; the review counts them out of the same
+ * stream as everything else, so splitting here would only mean rejoining later.
+ *
+ * The second `order` is the tie-break. `at` carries milliseconds, so two rows
+ * sharing one instant is rare — but when it happens, Postgres is free to return
+ * them in any order, and replayDay() reads position as append order. created_at
+ * is the row's actual arrival, so ordering on it makes that assumption true
+ * rather than lucky.
+ */
+async function rangeEvents(startIso, endIso) {
+  if (!sb || !sbUser) throw new Error('Sign in to read your rows.');
+
+  var res = await sb.from('events').select('*')
+    .gte('at', startIso)
+    .lte('at', endIso)
+    .order('at', { ascending: true })
+    .order('created_at', { ascending: true })
+    .limit(5000);
+  if (res.error) throw errorFrom(res.error);
+
+  /* `lte` can pick up a row stamped exactly at the closing midnight, which
+   * belongs to the next day. Harmless: the day windows below drop it, because
+   * a day is [midnight, next midnight) — closed at the start, open at the end,
+   * so no instant can land in two days or in none. */
+  return (res.data || []).map(sbRow);
+}
+
 // ---------------------------------------------------------------------- api
 
 /** This device's IANA timezone, e.g. "Asia/Karachi". The backend stamps rows
@@ -684,6 +723,28 @@ function humanDuration(ms) {
   return h + 'h ' + m + 'm';
 }
 
+/**
+ * The same duration, but honest below a minute. THE REVIEW USES THIS; the
+ * Today tab deliberately does not.
+ *
+ * Rounded to the minute, a 17-second entry reads "0m" — and a zero on a review
+ * screen is a claim that no time was spent on something Saad really did spend
+ * time on. Same rule as the date floor and the sleep line: refuse to state a
+ * confident nothing. Dropping the row instead would hide it altogether, and a
+ * minimum threshold would be a made-up number.
+ *
+ * Today keeps whole minutes because its figures are live and a seconds field
+ * that ticks is noise while you are working; a review is a record being read
+ * once, so the small true number is worth the extra character.
+ */
+function reviewDuration(ms) {
+  var n = Math.max(0, Math.round(Number(ms) || 0));
+  var secs = Math.round(n / 1000);
+  // 0 is reserved for nothing at all: any real span shows at least 1s.
+  if (n > 0 && secs < 60) return Math.max(1, secs) + 's';
+  return humanDuration(n);
+}
+
 /** Point one <use> element at a different sprite symbol. */
 function setIcon(el, id) {
   el.setAttribute('href', '#' + id);
@@ -719,7 +780,7 @@ function showScreen(name) {
 
   window.scrollTo(0, 0);
   if (name === 'today') renderDaySummary();     // catch up the clock on arrival
-  if (name === 'review') renderReviewRange();
+  if (name === 'review') openReview();
 }
 
 /* Only tabs that name a screen switch screens. The taskboard tab is also a
@@ -981,7 +1042,19 @@ async function refresh(opts) {
  *
  * A break does not change the project — you come back to the same thing — it
  * only pauses the clock, because "hours worked" must not include the coffee. */
-function replayDay(log) {
+/**
+ * @param log    the day's rows, NEWEST FIRST (see the tie-break note below).
+ * @param endMs  where the day stops, in milliseconds. Omit it for today, which
+ *               stops now.
+ *
+ * `endMs` is what makes this reusable for the review, and leaving it out was
+ * the single most expensive thing the range code could have inherited. An open
+ * clock runs to the ceiling: 31 Aug has two work rows and nothing closing them,
+ * so replaying that day with today's ceiling reports about 2.9 DAYS worked
+ * instead of seven hours. The review passes the end of each day; nothing else
+ * passes anything, so today is unchanged.
+ */
+function replayDay(log, endMs) {
   /* Sheet timestamps are second-precision, so two rows written inside the same
    * second tie. A stable sort would then keep the input order — and today()
    * hands rows back NEWEST FIRST, which replays a same-second pair backwards
@@ -1033,8 +1106,14 @@ function replayDay(log) {
   /* Never credit past this instant. A device clock running behind the server
    * makes real rows look like the future, and the day would inflate until the
    * clock was corrected — 14 hours "worked" at 5pm, from one row stamped 23:00.
-   * The old code guarded only negative spans, so this is an old hole, closed. */
-  var ceiling = Date.now();
+   * The old code guarded only negative spans, so this is an old hole, closed.
+   *
+   * Math.min, so a caller can only ever pull the ceiling BACK. A past day stops
+   * at its own midnight; today's window asks for midnight tonight and still
+   * stops now. That keeps the future guard above where it belongs — inside this
+   * function — rather than making every caller remember it. */
+  var now = Date.now();
+  var ceiling = (typeof endMs === 'number' && isFinite(endMs)) ? Math.min(endMs, now) : now;
 
   /** Credit everything active up to `t`, then move the cursor there. */
   function advance(t) {
@@ -3721,17 +3800,809 @@ async function checkRangeFloor(startDate) {
 
 // ------------------------------------------------------------------- review
 
-/** Last week, Monday to Sunday, in the device's own locale. */
-function renderReviewRange() {
-  var now = new Date();
-  var dow = (now.getDay() + 6) % 7;              // 0 = Monday
-  var end = new Date(now.getFullYear(), now.getMonth(), now.getDate() - dow - 1);
-  var start = new Date(end.getFullYear(), end.getMonth(), end.getDate() - 6);
+/* WHAT STAGE 5 ACTUALLY IS: replayDay() run once per day instead of once, the
+ * totals added up, and ONE call to Gemini to put the finished figures into
+ * sentences. The arithmetic never leaves this device.
+ *
+ * That split is a budget rule, not a preference. The free tier allows a handful
+ * of Gemini calls a day, so a design that asks the model per day, or per
+ * project, spends a week's allowance on one screen. It is also the shape that
+ * gives the right answer: the model writes prose well and adds up badly.
+ *
+ * The order of operations below is the other half of the same idea. Figures
+ * first, prose second — the numbers are on screen before Gemini is asked
+ * anything, so a spent budget costs a paragraph and never the report. */
 
-  var f = function (d) {
+/** The four ranges the picker offers. `days` counts back from today inclusive,
+ *  so "Last 7 days" is today plus the six before it.
+ *
+ *  Last 30 days is here for a reason beyond wanting a month: it is the only
+ *  option that can reach back past 27 Aug 2026, the first row this account has.
+ *  Without it the refusal below is unreachable from the shipped UI, and an
+ *  untriggerable safeguard is one nobody has ever seen work. */
+var REVIEW_RANGES = [
+  { id: 'd2', label: 'Last 2 days', days: 2 },
+  { id: 'd7', label: 'Last 7 days', days: 7 },
+  { id: 'wk', label: 'This week', week: true },
+  { id: 'd30', label: 'Last 30 days', days: 30 }
+];
+
+var REVIEW_DEFAULT_RANGE = 'd7';
+
+/** A Date as the local calendar day it falls on, 'YYYY-MM-DD'.
+ *  rangeFloor() above has its own copy on purpose — it is written to be a pure
+ *  function of two strings with no helpers at all, so it can be tested without
+ *  a clock or a browser. Three lines is a cheap price for that. */
+function ymdLocal(d) {
+  var pad = function (n) { return String(n).padStart(2, '0'); };
+  return d.getFullYear() + '-' + pad(d.getMonth() + 1) + '-' + pad(d.getDate());
+}
+
+/**
+ * Turn a picker id into the two local calendar days it covers, inclusive.
+ * Takes `now` rather than reading the clock, so the tests can ask for any day.
+ */
+function reviewRangeOf(id, now) {
+  var spec = null;
+  REVIEW_RANGES.forEach(function (r) { if (r.id === id) spec = r; });
+  if (!spec) spec = REVIEW_RANGES[1];
+
+  var today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+  var start;
+
+  if (spec.week) {
+    // Monday, because that is where Saad's week starts and where the Review
+    // spec's example week starts. Sunday is day 0 in JS, hence the shuffle.
+    var dow = (today.getDay() + 6) % 7;
+    start = new Date(today.getFullYear(), today.getMonth(), today.getDate() - dow);
+  } else {
+    start = new Date(today.getFullYear(), today.getMonth(), today.getDate() - (spec.days - 1));
+  }
+
+  return { id: spec.id, label: spec.label, start: start, end: today };
+}
+
+/**
+ * One window per local calendar day, [midnight, next midnight).
+ *
+ * Built by adding to the day-of-month rather than adding 24 hours, which is the
+ * whole point: on a day the clocks move, 24 hours is the wrong length and the
+ * windows would drift an hour out of step with the days they are meant to
+ * name. Asia/Karachi has no daylight saving, so this costs nothing today and
+ * cannot be got wrong later by somebody travelling.
+ *
+ * The 400 is a stop, not a limit: a bad pair of dates must not spin forever.
+ */
+function dayWindows(startDate, endDate) {
+  var out = [];
+  var d = new Date(startDate.getFullYear(), startDate.getMonth(), startDate.getDate());
+  var last = new Date(endDate.getFullYear(), endDate.getMonth(), endDate.getDate()).getTime();
+
+  for (var guard = 0; d.getTime() <= last && guard < 400; guard++) {
+    var next = new Date(d.getFullYear(), d.getMonth(), d.getDate() + 1);
+    out.push({ ymd: ymdLocal(d), startMs: d.getTime(), endMs: next.getTime() });
+    d = next;
+  }
+  return out;
+}
+
+/**
+ * Split rows into their local days.
+ *
+ * Each day comes back NEWEST FIRST, which looks backwards and is not.
+ * replayDay() breaks a same-instant tie on where a row sits in the array —
+ * "the later it sits, the older it is" — because today() hands it rows in that
+ * order. Feeding it oldest-first would replay every tied pair backwards, so
+ * "End the day, Start the day" would read as starting after ending. reverse()
+ * rather than a sort, because a sort would have to re-derive the order that
+ * the query already established.
+ */
+function bucketByWindow(rows, windows) {
+  var buckets = windows.map(function () { return []; });
+
+  (rows || []).forEach(function (row) {
+    var t = instantOf(row.at);
+    if (isNaN(t)) return;
+    for (var i = 0; i < windows.length; i++) {
+      if (t >= windows[i].startMs && t < windows[i].endMs) { buckets[i].push(row); break; }
+    }
+  });
+
+  return buckets.map(function (b) { return b.reverse(); });
+}
+
+/**
+ * Sleep, measured the only way it can be: from a `sleep` row to the `wake` row
+ * that closes it.
+ *
+ * Walked across the WHOLE range rather than day by day, because a night starts
+ * on one date and ends on the next — the one figure in the review that cannot
+ * be summed out of per-day answers.
+ *
+ * NOT TESTED AGAINST REAL ROWS, and it cannot be: there is not one `sleep` or
+ * `wake` row in the database. That is exactly why the caller prints "no sleep
+ * logged" instead of "0h" — a zero here would be a claim about how Saad slept,
+ * and the honest answer is that nothing was recorded.
+ *
+ * @param rows oldest first.
+ */
+function sleepInRange(rows) {
+  var seen = 0;
+  var nights = 0;
+  var totalMs = 0;
+  var openAt = 0;
+
+  (rows || []).forEach(function (row) {
+    if (row.type !== 'sleep' && row.type !== 'wake') return;
+    var t = instantOf(row.at);
+    if (isNaN(t)) return;
+    seen += 1;
+
+    if (row.type === 'sleep') {
+      // A second Sleep with no Wake between is the same night, still open.
+      if (!openAt) openAt = t;
+      return;
+    }
+    // A Wake with nothing open closes nothing — the night began before this
+    // range, and half a night is not a measurement.
+    if (openAt && t > openAt) { totalMs += t - openAt; nights += 1; }
+    openAt = 0;
+  });
+
+  return { rows: seen, nights: nights, totalMs: totalMs, unclosed: Boolean(openAt) };
+}
+
+/**
+ * The whole range as numbers. Pure: rows and windows in, figures out.
+ *
+ * THE TOTALS OVERLAP ON PURPOSE, exactly as they do for a single day.
+ * sum(byProject) may exceed `worked` — two hours on two projects at once is two
+ * hours of your life and two hours of each — and may also fall short of it,
+ * which is what `unattributed` measures. Neither is ever derived from the
+ * other, here or anywhere.
+ *
+ * @param rows    every row in the range, oldest first.
+ * @param windows one per local day, from dayWindows().
+ */
+function summariseRange(rows, windows) {
+  var sum = {
+    days: windows.length,
+    daysWithRows: 0,
+    worked: 0,
+    paused: 0,
+    unattributed: 0,
+    byProject: {},
+    byReason: {},
+    m: 0,
+    prayers: 0,
+    byMode: {},
+    perDay: [],
+    rows: 0
+  };
+
+  var buckets = bucketByWindow(rows, windows);
+
+  windows.forEach(function (w, i) {
+    var dayRows = buckets[i];
+    sum.rows += dayRows.length;
+    if (dayRows.length) sum.daysWithRows += 1;
+
+    // The day's own end, so an unclosed clock stops at midnight instead of
+    // running to this moment. replayDay() pulls it back to now for today.
+    var day = replayDay(dayRows, w.endMs);
+
+    sum.worked += day.worked;
+    sum.paused += day.paused;
+    sum.unattributed += day.unattributed;
+
+    Object.keys(day.byProject).forEach(function (p) {
+      sum.byProject[p] = (sum.byProject[p] || 0) + day.byProject[p];
+    });
+    Object.keys(day.byReason).forEach(function (r) {
+      sum.byReason[r] = (sum.byReason[r] || 0) + day.byReason[r];
+    });
+
+    /* Counted per day, not over the raw range, and that is what makes them
+     * LOCAL-day counts. Karachi is five hours ahead of UTC, so 27 Aug's seven M
+     * rows are stamped the 27th here and mostly the 27th in UTC — but the same
+     * rows late on a UTC evening would fall on the next date entirely. The
+     * windows are the device's own midnights, so this counts the days Saad
+     * lived through. */
+    dayRows.forEach(function (row) {
+      if (row.type === 'M') sum.m += 1;
+      if (row.type === 'prayer') {
+        sum.prayers += 1;
+        var mode = String(row.detail || '').trim();
+        if (mode) sum.byMode[mode] = (sum.byMode[mode] || 0) + 1;
+      }
+    });
+
+    sum.perDay.push({ ymd: w.ymd, rows: dayRows.length, worked: day.worked });
+  });
+
+  /* Divided by the days that HAVE rows, never by the calendar. 1 Sep has no
+   * rows at all — a day nothing was logged is a day with no measurement, not a
+   * day of zero hours, and averaging it in would quietly drag every figure in
+   * the report down by a seventh. */
+  sum.avgWorked = sum.daysWithRows ? Math.round(sum.worked / sum.daysWithRows) : 0;
+  sum.empty = sum.daysWithRows === 0;
+  sum.sleep = sleepInRange(rows);
+  return sum;
+}
+
+/* A project key longer than this is a sentence, not a name.
+ *
+ * replayDay() keys a row on `project || raw_text`, so an entry Gemini never got
+ * to label is filed under its whole sentence — "working on 5-Link Humanoid
+ * Project, solving issues for dynamic…". Twelve of the twenty-two work rows in
+ * the store are like that, and a week's project list made of them is unreadable.
+ *
+ * The keying itself is deliberately left alone: the Today tab shares it, and
+ * two answers to "which project is this row" is how tiles go missing. So the
+ * collapse happens HERE, in the review only, and it is honest about what it is
+ * doing — those hours stop being attributed to a project, because they never
+ * were. A real name over 40 characters would be swept up too; that is the
+ * trade, and it has not happened in 55 rows. */
+var REVIEW_NAME_MAX = 40;
+
+function collapseProjects(byProject) {
+  var named = {};
+  var otherMs = 0;
+  var otherCount = 0;
+
+  Object.keys(byProject || {}).forEach(function (name) {
+    var ms = byProject[name];
+    if (!name || !(ms > 0)) return;
+    if (name.length > REVIEW_NAME_MAX) {
+      otherMs += ms;
+      otherCount += 1;
+      return;
+    }
+    named[name] = ms;
+  });
+
+  return { named: named, otherMs: otherMs, otherCount: otherCount };
+}
+
+/** Names sorted by time, longest first. */
+function byTimeDesc(map) {
+  return Object.keys(map).sort(function (a, b) { return map[b] - map[a]; });
+}
+
+/**
+ * The sub-tasks logged against each named project across the range, deduped.
+ *
+ * This is the only free-text the prompt carries, and it is what makes the
+ * Learning line possible at all — hours say what was worked on, `detail` says
+ * what was actually done to it. Capped hard, because a prompt is cheap and an
+ * unbounded one is not.
+ */
+var REVIEW_TASK_PROJECTS = 8;
+var REVIEW_TASK_LINES = 6;
+
+function rangeTasks(rows) {
+  var out = {};
+
+  (rows || []).forEach(function (row) {
+    if (row.type !== 'work' && row.type !== 'voice') return;
+    var name = String(row.project || row.raw_text || '').trim();
+    if (!name || name.length > REVIEW_NAME_MAX) return;
+
+    String(row.detail || '').split(TASK_SEP).forEach(function (part) {
+      var task = part.trim();
+      if (!task || task === name) return;
+      if (!out[name]) out[name] = [];
+      if (out[name].length >= REVIEW_TASK_LINES) return;
+      if (out[name].indexOf(task) !== -1) return;
+      out[name].push(task);
+    });
+  });
+
+  return out;
+}
+
+/**
+ * The one prompt. Everything in it is already a finished figure.
+ *
+ * The model is told not to do arithmetic, and that instruction is the whole
+ * design: it is being asked to write, not to count. Anything it computes here
+ * would be a second, worse answer competing with replayDay()'s.
+ */
+function reviewPrompt(sum, win, tasks) {
+  var lines = [
+    'You are writing a short weekly review for one person, about their own logged activity.',
+    '',
+    'Range: ' + win.label + ', ' + ymdLocal(win.start) + ' to ' + ymdLocal(win.end) +
+      ' (' + sum.days + ' calendar days, ' + sum.daysWithRows + ' with entries).',
+    'Worked: ' + reviewDuration(sum.worked) + ' in total, ' +
+      reviewDuration(sum.avgWorked) + ' on an average day that has entries.',
+    'On break: ' + reviewDuration(sum.paused) + '.',
+    'Working time not against any named project: ' + reviewDuration(sum.unattributed) + '.',
+    'Prayers logged: ' + sum.prayers + '. Ms logged: ' + sum.m + '.'
+  ];
+
+  var modes = byTimeDesc(sum.byMode);
+  if (modes.length) {
+    lines.push('Prayer modes: ' + modes.map(function (mo) {
+      return mo + ' ' + sum.byMode[mo];
+    }).join(', ') + '.');
+  }
+
+  lines.push(sum.sleep.rows
+    ? 'Sleep: ' + reviewDuration(sum.sleep.totalMs) + ' across ' + sum.sleep.nights +
+      ' night(s) that both began and ended inside this range.'
+    : 'Sleep: NOT RECORDED. No sleep or wake entries exist in this range. ' +
+      'Say plainly that sleep was not logged. Do not state a number of hours, ' +
+      'and do not call it zero.');
+
+  var split = collapseProjects(sum.byProject);
+  var names = byTimeDesc(split.named);
+
+  lines.push('');
+  lines.push('Time per project (these overlap: two projects worked at once each get the ' +
+             'full span, so they can add up to more than the total worked):');
+  if (!names.length && !split.otherCount) lines.push('  (none named)');
+  names.forEach(function (name) {
+    var t = tasks[name] || [];
+    lines.push('  ' + name + ' — ' + reviewDuration(split.named[name]) +
+               (t.length ? ' — ' + t.join('; ') : ''));
+  });
+  if (split.otherCount) {
+    lines.push('  Unlabelled entries (' + split.otherCount + ') — ' +
+               reviewDuration(split.otherMs) + ' — these were never given a project name.');
+  }
+
+  var reasons = byTimeDesc(sum.byReason);
+  if (reasons.length) {
+    lines.push('');
+    lines.push('Break time by reason:');
+    reasons.forEach(function (why) {
+      lines.push('  ' + why + ' — ' + reviewDuration(sum.byReason[why]));
+    });
+  }
+
+  lines.push('');
+  lines.push('Write 5 to 6 short lines summarising the above, in plain English, ' +
+             'addressed to the person as "you".');
+  lines.push('Rules: state the figures as given and do NOT calculate anything new. ' +
+             'Do not praise, encourage, advise or editorialise. Do not invent projects, ' +
+             'hours or facts that are not above. If something was not recorded, say so. ' +
+             'No headings, no bullet points, no markdown.');
+  lines.push('Then, as a final separate line, write "Learning:" followed by the topics ' +
+             'and skills these entries suggest were being picked up, comma separated. ' +
+             'If the entries do not say, write "Learning: not clear from these entries."');
+
+  return lines.join('\n');
+}
+
+/**
+ * Split the model's answer into the overview and the Learning line.
+ *
+ * Forgiving on purpose: a missing marker means the whole answer is the
+ * overview, and the Learning card says so, rather than the screen losing a
+ * paragraph Gemini did write.
+ *
+ * The prompt asks for no markdown and the model writes it anyway — "**Learning:**"
+ * was the observed failure, and it cost the whole Learning card. So the label's
+ * own emphasis (`*`, `_`, `#`, before it and around the colon) is skipped over
+ * before matching. The stars are dropped rather than shown, because they are
+ * the model's formatting, not something Saad wrote.
+ */
+function splitProse(text) {
+  var whole = String(text || '').trim();
+  /* The prefix repeats, because "### **Learning:**" is a heading AND emphasis and
+   * one pass over the class only strips one of them. Bullets are in the class
+   * too: the prompt forbids them and the model uses them anyway, which is the
+   * entire history of this line. */
+  var parts = whole.split(
+    /\n(?:[ \t]*[-*_#\u2022\u00b7]+)*[ \t]*learning[ \t]*[*_]*[ \t]*:[ \t]*[*_]*/i);
+  if (parts.length < 2) return { summary: whole, learning: '' };
+  /* And the CLOSING emphasis, for "**Learning: robotics**" — which splits on the
+   * label and then leaves the stars on the answer, putting them in the card. */
+  var learning = parts.slice(1).join(' ').trim().replace(/[ \t]*[*_]+$/, '').trim();
+  return { summary: parts[0].trim(), learning: learning };
+}
+
+/* ---------------------------------------------------------------------------
+ * From here down it talks to storage, the network and the DOM. Everything above
+ * is pure, and the tests in claudeWorkingDocs/tests/ lift it straight out of
+ * this file so they cannot drift from what ships.
+ * ------------------------------------------------------------------------- */
+
+/* THE PROSE IS CACHED; THE FIGURES ARE NEVER CACHED.
+ *
+ * Rule 3 says the store wins and a stale "today" is worse than a spinner — so
+ * every number on this screen is re-read and re-computed on every visit. What
+ * is kept is the paragraph Gemini wrote, because re-opening a tab must not cost
+ * one of the day's handful of calls. Regenerate is a button, so spending one is
+ * always something Saad did on purpose.
+ *
+ * The key carries the local day, so tomorrow's visit writes tomorrow's summary
+ * even for the same range. A few entries are kept rather than one, so flipping
+ * between 2 days and 7 days to compare them does not re-spend a call each way. */
+var REVIEW_CACHE_KEY = 'probeing.review';
+var REVIEW_CACHE_MAX = 8;
+
+function reviewCacheKey(win) {
+  return win.id + '|' + ymdLocal(win.start) + '|' + ymdLocal(win.end) + '|' + localDayStamp();
+}
+
+function reviewCacheAll() {
+  try {
+    var saved = JSON.parse(localStorage.getItem(REVIEW_CACHE_KEY));
+    return (saved && typeof saved === 'object') ? saved : {};
+  } catch (e) {
+    return {};                             // unreadable storage is an empty cache
+  }
+}
+
+function reviewCacheGet(key) {
+  var one = reviewCacheAll()[key];
+  return (one && typeof one.text === 'string') ? one : null;
+}
+
+function reviewCachePut(key, text) {
+  var all = reviewCacheAll();
+  all[key] = { text: text, at: Date.now() };
+
+  // Oldest out first, so the cache cannot grow without limit in storage the
+  // rest of the app also uses.
+  var keys = Object.keys(all).sort(function (a, b) {
+    return (all[b].at || 0) - (all[a].at || 0);
+  });
+  keys.slice(REVIEW_CACHE_MAX).forEach(function (k) { delete all[k]; });
+
+  try {
+    localStorage.setItem(REVIEW_CACHE_KEY, JSON.stringify(all));
+  } catch (e) { /* private mode: the summary is simply asked for again */ }
+}
+
+/* Longer than the extraction deadline, and for the opposite reason. Extraction
+ * runs while somebody is logging, so it gives up fast and the row keeps its own
+ * text. Nothing is waiting on a review — the figures are already on screen —
+ * so it can afford to wait for a slower answer over more input. */
+var REVIEW_PROSE_MS = 45000;
+
+/** One call, one paragraph. Never throws: null means "no prose today", and the
+ *  reason is left in lastExtractError for the line under the figures. */
+async function askReviewProse(prompt) {
+  var ctrl = typeof AbortController === 'function' ? new AbortController() : null;
+  var timer = setTimeout(function () {
+    if (ctrl) { try { ctrl.abort(); } catch (e) { /* already finished */ } }
+  }, REVIEW_PROSE_MS);
+
+  /* Cleared first, because the caller turns whatever is left here into the
+   * sentence explaining why there is no summary. geminiCall() has one exit —
+   * no access token — that returns null without writing a reason, and an old
+   * message from this morning's extraction would then be shown as the cause of
+   * something that just happened. */
+  lastExtractError = '';
+
+  try {
+    /* No `json`, no `schema`, and `think` deliberately left unset. The 28.6
+     * seconds that made think:0 necessary on the logging path was a thinking
+     * model being handed a SHAPE to fill; this asks for sentences, which is
+     * what the model is for, and nobody is waiting on it. */
+    return await geminiCall({ prompt: prompt }, ctrl);
+  } catch (e) {
+    lastExtractError = String((e && e.message) || e);
+    return null;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+// ------------------------------------------------------------ review screen
+
+var reviewRangeId = REVIEW_DEFAULT_RANGE;
+/* Which run owns the screen. Every await below is a chance for Saad to tap a
+ * different range, and the slower answer must not overwrite the newer one. */
+var reviewRun = 0;
+
+/** One "12h 30m / worked" figure. */
+function reviewFigure(box, value, label) {
+  var wrap = document.createElement('div');
+  wrap.className = 'sum';
+
+  var n = document.createElement('span');
+  n.className = 'sum-n';
+  n.textContent = value;
+
+  var l = document.createElement('span');
+  l.className = 'sum-l';
+  l.textContent = label;
+
+  wrap.append(n, l);
+  box.appendChild(wrap);
+}
+
+/** One "name .... 1h 20m" row in the projects card. `muted` marks break time. */
+function reviewLine(box, name, ms, muted) {
+  var li = document.createElement('li');
+
+  var n = document.createElement('span');
+  n.className = 'p-name' + (muted ? ' p-why' : '');
+  // textContent, never markup: these names came out of what the user typed.
+  n.textContent = name;
+
+  var t = document.createElement('span');
+  t.className = 'p-time';
+  t.textContent = reviewDuration(ms);
+
+  li.append(n, t);
+  box.appendChild(li);
+}
+
+/** Wipe every part of the screen that carries a figure or a sentence. Called
+ *  before each run, so a refusal can never leave last run's numbers behind it. */
+function clearReview() {
+  $('reviewFigures').hidden = true;
+  $('reviewFigures').textContent = '';
+  $('reviewSleep').textContent = '';
+  $('reviewProse').textContent = '';
+  $('reviewNote').textContent = '';
+  $('reviewProjects').textContent = '';
+  $('reviewProjectsNote').textContent = '';
+  $('reviewLearning').textContent = '';
+  $('reviewAgainBtn').hidden = true;
+}
+
+function renderReviewFigures(sum) {
+  var box = $('reviewFigures');
+  box.textContent = '';
+
+  reviewFigure(box, reviewDuration(sum.worked), 'worked');
+  reviewFigure(box, reviewDuration(sum.avgWorked), 'per day');
+  reviewFigure(box, reviewDuration(sum.paused), 'on break');
+  reviewFigure(box, String(sum.prayers), 'prayers');
+  reviewFigure(box, String(sum.m), 'M');
+  reviewFigure(box, sum.daysWithRows + '/' + sum.days, 'days logged');
+  box.hidden = false;
+
+  /* "no sleep logged", never "0h". There is not a single sleep or wake row in
+   * the whole store, so a zero would not be a small figure — it would be a
+   * false statement about Saad's nights. Same rule as the date floor: refuse
+   * rather than report a confident nothing. */
+  var sleep = sum.sleep;
+  $('reviewSleep').textContent = sleep.rows
+    ? 'Sleep ' + reviewDuration(sleep.totalMs) + ' across ' + sleep.nights +
+      (sleep.nights === 1 ? ' night' : ' nights') +
+      (sleep.unclosed ? ' — one night has no Wake yet, so it is not counted.' : '.')
+    : 'No sleep logged in this range — Sleep and Wake were never pressed, so ' +
+      'there is nothing to average.';
+}
+
+function renderReviewProjects(sum) {
+  var box = $('reviewProjects');
+  var note = $('reviewProjectsNote');
+  box.textContent = '';
+  note.textContent = '';
+
+  var split = collapseProjects(sum.byProject);
+  byTimeDesc(split.named).forEach(function (name) {
+    reviewLine(box, name, split.named[name]);
+  });
+
+  if (split.otherCount) {
+    reviewLine(box, 'Unlabelled entries (' + split.otherCount + ')', split.otherMs);
+  }
+  if (sum.unattributed > 0) reviewLine(box, 'Not on a named project', sum.unattributed, true);
+
+  byTimeDesc(sum.byReason).forEach(function (why) {
+    if (sum.byReason[why] > 0) reviewLine(box, why, sum.byReason[why], true);
+  });
+
+  if (!box.childNodes.length) {
+    note.textContent = 'No time was booked against anything in this range.';
+    return;
+  }
+
+  note.textContent = 'Projects can add up to more than the hours worked: two ' +
+    'projects at once is an hour of each.' +
+    (split.otherCount
+      ? ' "Unlabelled entries" is time from lines that never got a project name.'
+      : '');
+}
+
+/** "3 of 18 Gemini calls used today" — on this screen, not only in Settings,
+ *  because this is the screen where spending one is a decision. */
+function paintReviewUsage() {
+  $('reviewUsage').textContent = geminiUsedToday() + ' of ' + geminiDailyBudget() +
+    ' Gemini calls used today';
+}
+
+function renderReviewPicks() {
+  var box = $('reviewPicks');
+  box.textContent = '';
+
+  REVIEW_RANGES.forEach(function (r) {
+    box.appendChild(pickButton(r.label, r.id === reviewRangeId, false, function () {
+      if (r.id === reviewRangeId) return;
+      reviewRangeId = r.id;
+      renderReviewPicks();
+      runReview(false);
+    }));
+  });
+}
+
+/**
+ * Build the review for the chosen range.
+ *
+ * THE ORDER IS THE FEATURE. Floor check, then read, then compute, then RENDER,
+ * and only then ask Gemini. Everything the report is actually about is on the
+ * screen before a single call is spent, so a spent budget, a refusal, an
+ * offline phone or the Apps Script fallback each cost one paragraph and leave
+ * the numbers standing. A review that goes blank because a quota ran out would
+ * be worse than no review at all.
+ *
+ * @param force true only from the Regenerate button — the one path allowed to
+ *              spend a call when a cached summary already exists.
+ */
+async function runReview(force) {
+  var run = ++reviewRun;
+  var mine = function () { return run === reviewRun; };
+
+  var win = reviewRangeOf(reviewRangeId, new Date());
+  var human = function (d) {
     return d.toLocaleDateString(undefined, { weekday: 'short', day: 'numeric', month: 'short' });
   };
-  $('reviewRange').textContent = 'Last week (' + f(start) + ' – ' + f(end) + ')';
+  $('reviewRange').textContent = win.label + ' (' + human(win.start) + ' – ' + human(win.end) + ')';
+
+  clearReview();
+  paintReviewUsage();
+
+  /* Reviews read a date range straight out of Postgres. The Apps Script
+   * fallback has no such action and is not getting one — it is kept for the
+   * day the primary backend misbehaves, not as a second full app. Saying so
+   * beats an error, and beats an empty screen. */
+  if (!usingSupabase()) {
+    $('reviewNote').textContent = 'Reviews need the Supabase backend. Settings is ' +
+      'currently set to Apps Script, which cannot read a date range.';
+    return;
+  }
+  if (!supabaseReady()) {
+    $('reviewNote').textContent = 'Sign in to read your entries.';
+    return;
+  }
+
+  $('reviewNote').textContent = 'Reading your entries…';
+
+  var floor;
+  try {
+    // Before any reading of rows: a range reaching back past the first row must
+    // be refused, not answered with a confident zero for the days before it.
+    floor = await checkRangeFloor(win.start);
+  } catch (err) {
+    if (!mine()) return;
+    $('reviewNote').textContent = 'Could not check the range: ' + String(err.message || err);
+    return;
+  }
+  if (!mine()) return;
+
+  if (!floor.ok) {
+    // The message and nothing else. No figures are computed, so none can leak
+    // onto a screen that has just said it cannot answer.
+    $('reviewNote').textContent = floor.message;
+    return;
+  }
+
+  var rows;
+  try {
+    rows = await rangeEvents(new Date(win.start).toISOString(),
+                             new Date(win.end.getFullYear(), win.end.getMonth(),
+                                      win.end.getDate() + 1).toISOString());
+  } catch (err) {
+    if (!mine()) return;
+    $('reviewNote').textContent = 'Could not read your entries: ' + String(err.message || err);
+    return;
+  }
+  if (!mine()) return;
+
+  var windows = dayWindows(win.start, win.end);
+  var sum = summariseRange(rows, windows);
+
+  if (sum.empty) {
+    /* Nothing at all was logged. Zero Gemini calls: there is nothing for a
+     * paragraph to be about, and "you worked 0 hours" is a sentence about a
+     * day that was simply never recorded. */
+    $('reviewNote').textContent = 'Nothing was logged between ' + ymdLocal(win.start) +
+      ' and ' + ymdLocal(win.end) + ', so there is nothing to summarise. No Gemini ' +
+      'call was used.';
+    $('reviewProjectsNote').textContent = 'Nothing to show.';
+    $('reviewLearning').textContent = 'Nothing to show.';
+    return;
+  }
+
+  renderReviewFigures(sum);
+  renderReviewProjects(sum);
+  $('reviewNote').textContent = '';
+  $('reviewAgainBtn').hidden = false;
+
+  await addReviewProse(win, sum, rows, force, mine);
+}
+
+/** The second half: the written summary, which is allowed to fail. */
+async function addReviewProse(win, sum, rows, force, mine) {
+  var key = reviewCacheKey(win);
+  var note = $('reviewNote');
+
+  var cached = force ? null : reviewCacheGet(key);
+  if (cached) {
+    showProse(cached.text);
+    note.textContent = 'Written summary from earlier today. Regenerate spends one Gemini call.';
+    return;
+  }
+
+  if (!canAskGemini()) {
+    /* quotaWait() already writes this app's own budget refusal as a sentence,
+     * and it is the same sentence the tracker shows — one explanation of the
+     * ceiling, in one voice.
+     *
+     * The second branch looks unreachable, because runReview() has already
+     * turned away the Apps Script backend and a signed-out session. It is here
+     * for the case those checks cannot cover: a token that expired during the
+     * two reads above. */
+    note.textContent = geminiCallsLeft() <= 0
+      ? quotaWait(GEMINI_BUDGET_SPENT) + ' The figures above are unaffected: they ' +
+        'are worked out on this device and never involve Gemini.'
+      : 'The written summary needs Gemini, which is unavailable right now. The ' +
+        'figures above are unaffected.';
+    $('reviewLearning').textContent = 'Needs the written summary.';
+    return;
+  }
+
+  /* Google allows a handful of requests a minute as well as a day. Holding back
+   * rather than sending into a refusal matters here because a refused call is
+   * still spent — geminiCall() counts a request the moment it leaves. */
+  var pace = geminiPacerWaitMs();
+  if (pace > 0) {
+    note.textContent = 'Gemini\'s per-minute limit is full — press Regenerate in about ' +
+      Math.ceil(pace / 1000) + ' seconds. The figures above are already complete.';
+    $('reviewLearning').textContent = 'Needs the written summary.';
+    return;
+  }
+
+  note.textContent = 'Writing the summary…';
+  var answer = await askReviewProse(reviewPrompt(sum, win, rangeTasks(rows)));
+  if (!mine()) return;
+
+  paintReviewUsage();
+
+  if (answer === null) {
+    /* Say what happened AND that it does not matter much, in that order.
+     * quotaWait() knows the two ceilings by name; anything else is a fault
+     * nobody can act on, so it is not put on screen. */
+    var why = quotaWait(lastExtractError);
+    note.textContent = 'No written summary this time' + (why ? ' — ' + why : '.') +
+      ' The figures above are complete: they are worked out on this device from ' +
+      'your own entries, and only the sentences are missing.';
+    $('reviewLearning').textContent = 'Needs the written summary.';
+    return;
+  }
+
+  reviewCachePut(key, answer);
+  showProse(answer);
+  note.textContent = '';
+}
+
+/** Put the model's answer on screen. textContent throughout — this text came
+ *  out of a language model, and it is describing user input. */
+function showProse(text) {
+  var got = splitProse(text);
+  $('reviewProse').textContent = got.summary;
+  $('reviewLearning').textContent = got.learning ||
+    'Gemini did not name anything learned in this range.';
+}
+
+$('reviewAgainBtn').addEventListener('click', function () {
+  runReview(true);
+});
+
+/** Opening the tab. Figures are always recomputed — rule 3, the store wins —
+ *  and the prose comes from the cache unless Regenerate is pressed. */
+function openReview() {
+  renderReviewPicks();
+  runReview(false);
 }
 
 // ------------------------------------------------------------------ taskboard
