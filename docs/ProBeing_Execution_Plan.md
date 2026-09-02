@@ -304,11 +304,19 @@ today: does the window compute, does Gemini return prose, does a range starting 
 review is any *good* — and that is a content problem, not a calendar one:
 
 ```
-2026-08-27   13 rows,  0 work        2026-08-31    2 rows,  2 work
-2026-08-28    8 rows,  1 work        2026-09-01    0 rows        <- a missing day
-2026-08-29    2 rows,  1 work        2026-09-02   12 rows, 12 work
-2026-08-30   18 rows, 14 work
+              rows   work                          rows   work
+2026-08-27     12      0            2026-08-31      2      2
+2026-08-28      8      1            2026-09-01      0      0   <- a missing day
+2026-08-29      3      1            2026-09-02     12     12
+2026-08-30     18     14
 ```
+
+**Counted in Asia/Karachi, and that is not a detail.** This table first appeared here
+counted in UTC, which put 27 Aug at 13 rows and 29 Aug at 2: two `off` rows land at
+00:39 local and belong to the following day. One row moving is trivial; the habit is
+not, because **every figure in a review depends on which midnight it uses**. Stage 5
+splits a range into local days for exactly this reason, and its checklist says
+"counted in Asia/Karachi" wherever a hand count appears.
 
 A review of that week would be honest and useless. **So Stage 5 is not blocked for a
 week; only its sign-off is**, and what unblocks it is consistent daily logging rather
