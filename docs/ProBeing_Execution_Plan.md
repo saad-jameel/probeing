@@ -31,7 +31,7 @@ shipped in `f733804`; `CLAUDE.md` carries the full reasoning.
 > | ✅ | 3 The Buttons | done; chips were **rebuilt** as durations, not moments |
 > | ✅ | 3.5 Finish the move | done 30 Aug — Gemini key, Edge Function, `reports` table, sign-ups off |
 > | ✅ | 4 Tracker + Voice | signed off 2 Sep — two fallback checks left untested on purpose, see the stage |
-> | ⬜ | 5 Review Button | next. Shell only; the hard maths is written but reads *today* only. Testable now — see *How this gets tested* |
+> | 🟡 | **5 Review Button** | **built and shipped 2 Sep (`86bb2f6`), not signed off.** Passed validation twice; never opened in a browser and no Gemini call ever spent |
 > | ⬜ | 6 Weekly & Monthly Reports | not started |
 > | ⬜ | 7 Notifications + wrapup + offline | not started. **7a runs alongside Stage 5.** The glance (7b) was decided on 2 Sep — an ongoing notification, not a native widget — so 7a is now its only dependency |
 > | ⬜ | 8 Native wrapper | not started, correctly deferred |
@@ -272,7 +272,24 @@ https://ai.google.dev/gemini-api/docs/rate-limits and usage at https://ai.dev/ra
 
 ---
 
-## ⬜ Stage 5 — Review Button (Weekly Overview) — NOT STARTED (shell only)
+## 🟡 Stage 5 — Review Button — BUILT AND SHIPPED, NOT SIGNED OFF (2 Sep 2026)
+
+> **Shipped** in `86bb2f6`: a range picker (last 2 days / last 7 days / this week /
+> last 30 days), figures computed locally by `replayDay()` over each **local** day,
+> and one Gemini call turning them into prose. Validated twice — 13 of 13 checklist
+> items, then a narrow re-check of four fixes — with zero failures both times.
+>
+> **What that pass does NOT cover, and it is the whole of what is left:** nothing
+> has been opened in a real browser. No Gemini call was ever spent, because the
+> Edge Function needs a signed-in session and the validator was told not to mint
+> one. So the figures are heavily tested and **the written summary has never been
+> seen**. Layout on a phone is likewise unverified.
+>
+> Sign-off needs Saad on both devices, and the judgement "does this read as a
+> glance rather than an essay" needs a week of consistent logging — which is a
+> content problem, not a code one. See *How this gets tested*.
+
+**The original stage text follows.**
 
 > **The hard half is already written.** `replayDay()` reconstructs a day from
 > paired events — hours worked, per project, break reasons, unattributed time,
