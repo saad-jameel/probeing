@@ -30,7 +30,7 @@ shipped in `f733804`; `CLAUDE.md` carries the full reasoning.
 > | ✅ | 2 PWA Shell + Install | done; its sync *test* is obsolete — sync is Realtime now |
 > | ✅ | 3 The Buttons | done; chips were **rebuilt** as durations, not moments |
 > | ✅ | 3.5 Finish the move | done 30 Aug — Gemini key, Edge Function, `reports` table, sign-ups off |
-> | 🟡 | **4 Tracker + Voice** | **built and shipped, not signed off.** What is left is verification, not code — see *Still to prove* |
+> | 🟡 | **4 Tracker + Voice** | **end goal met on both devices, awaiting Saad's sign-off.** Three fallback checks remain untested — see the stage |
 > | ⬜ | 5 Review Button | shell only; the hard maths is written but reads *today* only |
 > | ⬜ | 6 Weekly & Monthly Reports | not started |
 > | ⬜ | 7 Notifications + wrapup + offline | not started — the 11:30 PM rules are written out in full below |
@@ -87,7 +87,7 @@ flight. Moving these bullets would leave it nothing to walk.
 
 ---
 
-## 🟡 Stage 4 — Tracker + Voice Input — BUILT, NOT YET SIGNED OFF (2 Sep 2026)
+## 🟡 Stage 4 — Tracker + Voice Input — END GOAL MET, AWAITING SIGN-OFF (2 Sep 2026)
 
 > **Built and shipped:** the text tracker, voice input (`webkitSpeechRecognition`
 > with the "ProBeing" prefix stripped, three distinct failure messages, and the
@@ -117,21 +117,60 @@ flight. Moving these bullets would leave it nothing to walk.
 **End goal (validation):** Speak a work log on the phone → correct row with project/detail
 filled; `Now` line updates on BOTH devices; same mic flow works on laptop Chrome.
 
-### Still to prove — the only thing between this stage and done
+### The end goal, checked against the rows — 2 Sep 2026
+
+The stage's own end goal is *"speak a work log on the phone → correct row with
+project/detail filled; same mic flow works on laptop Chrome."* Read straight out of
+`events`, newest first, not off anyone's screen:
+
+```
+raw_text  I am working on the OneNet project and solving the NMEA ingestion
+          pipeline issue in the MQTT broker. …
+project   OneNet
+tasks     solving the NMEA ingestion pipeline issue in the MQTT broker
+
+raw_text  Hello I am working on the NeuraVue project and solving the issues of
+          FPS throughput and model retraining.
+project   NeuraVue
+tasks     solving the issues of FPS throughput | model retraining
+```
+
+Dictated through Wispr Flow. **"OneNet", "NeuraVue", "NMEA" and "MQTT" all survived**
+— every one of them a word the built-in recogniser had previously destroyed. The
+second row split into two sub-tasks; the first correctly stayed one.
 
 | # | What | Status |
 |---|---|---|
-| 1 | Sub-tasks visible under the project heading | ✅ Confirmed on a device, 2 Sep |
-| 2 | A typed entry on an **already-known** project getting its tasks | ✅ Confirmed on a device, 2 Sep — this was the shortcut that ate them |
-| 3 | Settings → **Test Gemini** reports mis-heard names repaired | ⬜ Shipped 2 Sep; one tap, one call |
-| 4 | A **voice** entry producing the RIGHT project and tasks | ⬜ See *Speech is the weak link* below |
-| 5 | Mic **blocked** → readable message naming the keyboard mic | ⬜ Never exercised |
-| 6 | Mic **offline** → "voice needs a connection" | ⬜ Never exercised |
-| 7 | All of the above on **both** phone and laptop | ⬜ The standing rule |
+| 1 | Sub-tasks visible under the project heading | ✅ On a device, 2 Sep |
+| 2 | A typed entry on an **already-known** project getting its tasks | ✅ On a device, 2 Sep — this was the shortcut that ate them |
+| 3 | A **spoken** entry producing the right project and sub-tasks | ✅ The two rows above |
+| 4 | Both devices | ✅ Today's rows carry two different locale formats — `Wed 02 Sept, 11:55` and `Wed, Sep 02, 01:40 PM` — so phone and laptop both wrote and both labelled |
+| 5 | Settings → **Test Gemini** reports mis-heard names repaired | ⬜ Untested fallback |
+| 6 | Mic **blocked** → readable message naming the keyboard mic | ⬜ Untested fallback |
+| 7 | Mic **offline** → "voice needs a connection" | ⬜ Untested fallback |
 
-Confirmed already: the mic records on both devices; Done closes instantly on both;
-edits sync between devices without a refresh; the Gboard note is live in the shipped
-page; extraction and batching both verified through Settings → Test Gemini.
+**Rows 5 to 7 all sit on the path Saad no longer uses.** He dictates through Wispr
+Flow and has hidden ProBeing's own mic button, so 6 and 7 are error messages on a
+button that is not on his screen, and 5 repairs a mis-hearing that no longer happens.
+They matter on exactly one day: the day Wispr Flow's free Android tier ends, which
+has no published date. Untested, and named here so that day is not the day it is
+discovered.
+
+Confirmed already: Done closes instantly on both devices; edits sync between devices
+without a refresh; extraction and batching both verified through Settings → Test
+Gemini.
+
+### A consequence of dictating outside the app: `type:'voice'` stopped meaning anything
+
+The `voice` row type exists for one reason — so Stage 5 could answer *"how much of
+this did I speak rather than type?"*. It is set when ProBeing's **own** mic fills the
+box. Wispr Flow types into that box exactly like a keyboard, so the app cannot tell,
+and both rows above are `type:'work'`.
+
+Nothing is broken: `replayDay()` treats `voice` and `work` identically, so no figure
+anywhere changes. But that question is now unanswerable, and it is unanswerable
+*going forward* as well — it cannot be recovered later from rows that never carried
+the distinction. Stage 5 should either drop it or ask for it another way.
 
 ### Speech is the weak link, and it is not this app's
 
