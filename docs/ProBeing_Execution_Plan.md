@@ -4,187 +4,70 @@ A basic, free activity-keeper app for **mobile + laptop, always in sync**.
 
 **Stack (all free):**
 - **PWA** (HTML/CSS/JS) — one codebase, installable on Android home screen and as a desktop app in Chrome/Edge
-- **Google Apps Script Web App** — backend API, runs as your Google account
-- **Google Sheet** — the database and your human-readable record
-- **Gemini API (free tier)** — summaries, extraction, reviews
+- **Supabase** — Postgres for the data, Auth for the sign-in, Realtime for live sync, Edge Functions for anything holding a key
+- **Gemini API (free tier)** — extraction and reviews, called only from the `gemini` Edge Function
 - **Web Speech API** (built into Chrome) — free voice input, no external service
 - **GitHub Pages** — free hosting for the PWA
 - *(Optional last stage)* **Capacitor** — free native Android wrapper for widget / lock-screen buttons
+- *(Fallback, still selectable)* **Apps Script + Google Sheet** — the original backend, frozen
 
-**Why this stack:** sync is automatic (both devices hit the same Sheet), and "connect my
-Google account" is mostly free — Apps Script natively reads your Google Tasks, Calendar,
-and Sheets without building any OAuth flow.
+**This is not the stack this plan was written against**, and the difference is why
+several stage descriptions below carry a "superseded" note. It said Apps Script and a
+Google Sheet, chosen because both devices hitting one Sheet made sync automatic. That
+backend was too slow to keep — `ping`, which touches no spreadsheet, measured 16.8s /
+30.5s / 30.0s / 30.9s — and it could not push, which made live sync, the 11:30 PM
+notification and the home-screen glance not merely unbuilt but impossible. The move
+shipped in `f733804`; `CLAUDE.md` carries the full reasoning.
 
 ---
 
-> ## Where we actually are — audited 27 Aug 2026
->
-> Verdicts below were checked against the running code and the live backends, not
-> against anyone's memory. Each stage heading carries its result.
+> ## Where things stand — 2 Sep 2026
 >
 > | | Stage | |
 > |---|---|---|
 > | ✅ | 0 Foundation | done |
-> | ✅ | 1 Backend API | done — but **superseded as primary** by Supabase |
-> | ✅ | 2 PWA Shell + Install | done — the *sync test* is obsolete, see the stage |
-> | ✅ | 3 The Buttons | done — chips were **rebuilt** as durations |
-> | 🟡 | **3.5 Finish the move** | in progress — history migration **declined** (it was test data); Gemini key done; Edge Function next |
-> | 🟡 | 4 Tracker + Voice | ~25% — the text box works, voice and Gemini do not exist |
-> | ⬜ | 5 Review Button | shell only; the hard maths is written but only reads *today* |
-> | ⬜ | 6 Weekly & Monthly Reports | not started, and has **nowhere to store a report** yet |
-> | ⬜ | 7 Notifications + wrapup + offline | not started — **the 11:30 PM rules and the home-screen glance are written out in full here** |
+> | ✅ | 1 Backend API (Apps Script) | done, **superseded as primary** by Supabase |
+> | ✅ | 2 PWA Shell + Install | done; its sync *test* is obsolete — sync is Realtime now |
+> | ✅ | 3 The Buttons | done; chips were **rebuilt** as durations, not moments |
+> | ✅ | 3.5 Finish the move | done 30 Aug — Gemini key, Edge Function, `reports` table, sign-ups off |
+> | 🟡 | **4 Tracker + Voice** | **built and shipped, not signed off.** What is left is verification, not code — see *Still to prove* |
+> | ⬜ | 5 Review Button | shell only; the hard maths is written but reads *today* only |
+> | ⬜ | 6 Weekly & Monthly Reports | not started |
+> | ⬜ | 7 Notifications + wrapup + offline | not started — the 11:30 PM rules are written out in full below |
 > | ⬜ | 8 Native wrapper | not started, correctly deferred |
 >
-> **The plan was not followed, and that was mostly right.** A great deal was built
-> that has no stage number — see *Built, but never planned* at the end. Read that
-> section before assuming a gap is a gap.
->
-> **Three things nobody has looked at in weeks:**
-> 1. **The Gemini API key from Stage 0 step 2 was never created.** Stages 4, 5 and 6
->    all depend on it. It is two minutes of work sitting in front of half the roadmap.
-> 2. **Gemini has no server-side home any more.** The whole justification for Apps
->    Script was that the key stayed on the server. With Apps Script demoted, that
->    guarantee needs a new owner — a Supabase Edge Function — or the key ends up in
->    a public repo's browser bundle.
-> 3. **`Reports` has no table in `docs/supabase_schema.sql`.** Stage 6 cannot store
->    anything until it does.
+> **A great deal was built with no stage number.** Read *Built, but never planned*
+> at the end before assuming a gap is a gap.
 
-## Data Model (Google Sheet, 4 tabs)
+## Stages 0 to 3.5 — done, and moved out of this file
 
-| Tab | Columns |
-|---|---|
-| `Log` | timestamp, type (`work` / `status` / `M` / `prayer` / `voice`), raw_text, project, detail |
-| `Prayers` | timestamp, prayer (Fajr/Dhuhr/Asr/Maghrib/Isha), mode (Takbeer-e-oola / Partial Jamat / Individual) |
-| `Reports` | period (week/month), start_date, text, m_count, prayer_stats, hours_overview |
-| `Now` | one row: current one-line status, last_updated |
+Their task lists, their validation checklists and the story of the move are in
+`claudeWorkingDocs/finished-stages.md`, word for word. Nothing was cut. They were
+simply the largest thing in this file and the least likely to be read again. That file
+is gitignored, so a fresh clone will not have it; the same text is in this file's own
+history at `git show 4b716e6:docs/ProBeing_Execution_Plan.md`. The
+Google Sheet data model this plan was originally written against went with them;
+`CLAUDE.md` carries both that one and the live Supabase table.
 
----
+Three things they left behind that still bind every later stage:
 
-## ✅ Stage 0 — Foundation — DONE
-**Start:** nothing exists. **Work:**
-1. Create the Google Sheet with the 4 tabs.
-2. Create the Apps Script project bound to it; store a random secret token + Gemini key in Script Properties.
-3. Create a GitHub account/repo `probeing`; enable GitHub Pages.
-4. Sketch the front page on paper: ProBeing logo, mic button, red **M** button, **Prayer** button, tracker input, **Review** button, today's log list.
+- **Never add `-X POST` to the Apps Script `curl` test.** It forces the method
+  through the 302 redirect and gets HTTP 405, which looks exactly like a dead
+  deployment. This cost a real misdiagnosis.
+- **There is nothing before 27 Aug 2026.** The old Sheet rows were testing data and
+  Saad declined to import them, correctly. Any feature that reads a date range must
+  refuse a range starting earlier rather than report a confident zero.
+- **A check is not verified until it has been seen to fail.** Two bugs cleared the
+  Stage 3.5 checklist because both were in the checker: `grep -q` killing `git log`
+  with SIGPIPE under `set -o pipefail`, and a bare `git grep` that reads the working
+  tree but not the index. Neither was findable by reading. Both were found by
+  planting secrets and counting blocks.
 
-**End goal (validation):** Sheet exists with correct tabs; empty page deployed at your
-`github.io` URL loads on both phone and laptop.
+### Stage 3.5 — End goal (validation) — all met, 30 Aug 2026
 
----
-
-## ✅ Stage 1 — Backend API (Apps Script) — DONE, superseded as primary
-
-> **Superseded 27 Aug.** All seven actions work and the deployment still answers
-> correctly — but `ping`, which touches no spreadsheet, was measured at 16.8s /
-> 30.5s / 30.0s / 30.9s / 1.8s. Supabase is now the primary; Apps Script stays
-> selectable in Settings as a fallback.
->
-> **The `curl` test in the old docs was wrong and would mislead you:** `-X POST`
-> forces the method through Apps Script's 302 and gets HTTP 405, which looks
-> exactly like a dead deployment. Drop `-X POST` and let curl follow the redirect.
-
-**Start:** empty script. **Work:** implement `doPost(e)` as a mini JSON API (every request
-must carry your secret token; reject otherwise):
-
-| action | does |
-|---|---|
-| `log` | append row to `Log` (type, raw_text) |
-| `prayer` | append row to `Prayers` (prayer, mode) |
-| `m` | append `M` row to `Log` |
-| `today` | return today's rows (to display in the app) |
-| `now_get` / `now_set` | read/write the `Now` line |
-| `review` | (stub for Stage 5) |
-
-Deploy as Web App ("anyone with link"; the token is your real lock).
-
-**End goal (validation):** from laptop, `curl` each action → correct rows appear in the
-Sheet; wrong token → rejected; `today` returns valid JSON of today's entries.
-
----
-
-## ✅ Stage 2 — PWA Shell + Install + Sync — DONE, sync mechanism superseded
-
-> **The sync test in this stage is now meaningless.** "Type a row into the Sheet
-> and watch it appear" cannot work: the Sheet is no longer the store. Sync is
-> Supabase Realtime — the database announces an insert and the app re-reads. It
-> never trusts the announcement's payload, so there is exactly one code path
-> that reads data.
-
-**Start:** blank hosted page. **Work:**
-1. Front page layout from your sketch: logo top, buttons, text input, today's log list below.
-2. `manifest.json` (name ProBeing, icon, standalone) + minimal service worker → makes it installable.
-3. Wire "today's log" list to the `today` endpoint; refresh on load and on a pull/refresh button.
-4. Store the API URL + token once in the app (settings screen, saved in localStorage).
-
-**End goal (validation):** App installs to Android home screen AND as desktop app; add a
-test row directly in the Sheet → it shows in the app on both devices → sync is proven
-(shared backend = sync).
-
----
-
-## ✅ Stage 3 — The Buttons (M, Prayer, Quick Status) — DONE, chips superseded
-
-> **The chips were rebuilt, deliberately.** The plan's one-tap `status` row is a
-> *moment*, so "Lunch" could never become a duration and "Prayer-break" sat
-> alongside a running work clock. A chip now writes the `break` edge carrying its
-> reason, and the next `resume` closes it. Several can apply at once.
-
-**Start:** static buttons. **Work:**
-1. **M button:** red, prominent. Press → confirm flash → `m` action logs date+time. No
-   other UI. Show today's M count subtly under it.
-2. **Prayer button:** press → popup listing Fajr, Dhuhr, Asr, Maghrib, Isha; selecting one
-   opens a dropdown: *Takbeer-e-oola / Partial Jamat / Individual* → Save → `prayer` action.
-   Already-logged prayers today get a checkmark.
-3. **Quick statuses:** small chips (Tea, Lunch, Prayer-break, Rest, PUBG…) → one tap logs a
-   `status` row. Chips editable in settings.
-
-**End goal (validation):** Press M → row in `Log` within seconds and counter increments.
-Log Asr as "Partial Jamat" → correct row in `Prayers`; reopening popup shows Asr checked.
-One-tap chip logs a status row. All verified from BOTH devices.
-
----
-
-
-## ✅ Stage 3.5 — Finish the move — DONE (30 Aug 2026)
-
-Added 27 Aug after the audit; **scope reduced 28 Aug** when Saad declined the data
-migration.
-
-### The history was NOT migrated, deliberately
-
-The audit argued hard for importing the Sheet before building anything that reads a
-date range. Saad overruled it: *"I do not want to import the history, why should I?
-It was created during the testing."*
-
-He is right, and the evidence backs him. Supabase holds 13 rows — five M presses in
-seven seconds, five prayers in twenty, one `off`. The Sheet's rows are the same
-shape: a fortnight of exercising buttons, not a fortnight of living. The audit's
-reasoning was sound for *real* history and simply did not apply to this history.
-
-**What this costs, recorded so nobody is surprised later:** the weekly review and the
-wrapup have nothing before **27 Aug 2026**. The first genuine week starts from there.
-An importer still exists in Settings if that judgement ever changes; nothing was
-thrown away, the old Sheet is intact and frozen.
-
-**What survives from the audit:** a range-reading feature must still refuse to report
-on a range starting before the first row in `events`, or it will confidently announce
-zero hours slept for a week that predates the database.
-
-### Tasks
-
-1. ~~`[USER]` Import the Log and Prayers tabs~~ — **declined, deliberately.**
-2. `[USER]` Create a Gemini API key — specified in Stage 0 step 2, never done. ✅ done 28 Aug.
-3. `[AGENT]` A Supabase Edge Function to hold that key server-side. The same function
-   is what the nightly schedule calls, so building it once unblocks Stages 5, 6 and 7a.
-   ✅ `supabase/functions/gemini/index.ts`, deployed by hand 30 Aug.
-4. `[AGENT]` Add a `reports` table to `docs/supabase_schema.sql`. ✅ applied 30 Aug.
-5. `[AGENT]` Stop writing to Apps Script; keep it selectable but no longer primary.
-   ✅ `app.js:123` defaults `backend` to `supabase`; Apps Script stays in the picker.
-6. `[USER]` Disable sign-ups. ✅ 30 Aug — `/auth/v1/signup` now answers
-   `422 signup_disabled`. Not on the original list; added once it was clear that
-   "signed in" meant nothing while anyone could mint an account.
-
-### End goal (validation) — all met, 30 Aug 2026
+Kept here while the rest of 3.5 moved out: `milestone-planner` proves a stage landed
+by walking the **previous** stage's checklist, and 3.5 is the stage before the one in
+flight. Moving these bullets would leave it nothing to walk.
 
 - ✅ The Gemini key appears in **zero** bytes of `app.js`, `index.html` and `vendor/`.
   The key was never on this machine at all: it went from Saad's screen into Supabase's
@@ -202,33 +85,15 @@ zero hours slept for a week that predates the database.
 - ✅ **End to end:** Test Gemini returned "ProBeing can reach Gemini" from the live
   function, on the real account, with the key never leaving the server.
 
-### What the validation missed, and what it cost
-
-Two bugs got through the checklist above, because both were in the *checker*.
-
-`git log … | grep -q .` under `set -o pipefail` reported "no match" roughly three runs
-in four: `grep -q` exits on its first match, `git log` dies of SIGPIPE, and 141 becomes
-the pipeline's status. Three history checks were silently passing. A gate that lies
-three times in four is worse than no gate, because it is trusted.
-
-Then three checks used a bare `git grep`, which reads the working tree but not the
-index — so a secret `git add`ed and then wiped from the file passed, while `git commit`
-would have committed exactly that staged copy. **The gate's own file was in that state
-when this was found**: the fixed script was on disk, the broken one was staged, and
-every test run had been against a file that was not going to ship.
-
-Neither was findable by reading. Both were found by planting secrets and counting
-blocks. The rule this leaves behind: *a check is not verified until it has been seen
-to fail.* Nine planted shapes — token, `/exec` URL, Gemini key, each on disk, staged,
-and history-only — now block, twelve runs out of twelve.
+---
 
 ## 🟡 Stage 4 — Tracker + Voice Input — BUILT, NOT YET SIGNED OFF (2 Sep 2026)
 
 > **Built and shipped:** the text tracker, voice input (`webkitSpeechRecognition`
 > with the "ProBeing" prefix stripped, three distinct failure messages, and the
 > button hidden where the API is absent), Gemini extraction into `project` and
-> `tasks`, the echo-back, the Gboard note, and the sub-tasks listed under each
-> project heading.
+> `tasks`, the echo-back, the Gboard note, the sub-tasks listed under each project
+> heading, and the project-name vocabulary that repairs a mis-heard name.
 > **Superseded:** the `Now` line. There is no such element — two always-visible
 > state pills replaced it, computed from the log rather than written by an LLM.
 > `now_get`/`now_set` are dead code and the `Now` tab is never written.
@@ -256,16 +121,43 @@ filled; `Now` line updates on BOTH devices; same mic flow works on laptop Chrome
 
 | # | What | Status |
 |---|---|---|
-| 1 | A **voice** entry producing the RIGHT project and tasks | ⬜ One attempt; the transcript garbled "NeuraVue" away, so the row was a fair reading of the wrong words |
-| 2 | Sub-tasks visible under the project heading | ⬜ Shipped 2 Sep, not yet seen on a device |
-| 3 | A typed entry on an **already-known** project getting its tasks | ⬜ The shortcut that ate them was fixed 2 Sep, untested since |
-| 4 | Mic **blocked** → readable message naming the keyboard mic | ⬜ Never exercised |
-| 5 | Mic **offline** → "voice needs a connection" | ⬜ Never exercised |
-| 6 | All of the above on **both** phone and laptop | ⬜ The standing rule |
+| 1 | Sub-tasks visible under the project heading | ✅ Confirmed on a device, 2 Sep |
+| 2 | A typed entry on an **already-known** project getting its tasks | ✅ Confirmed on a device, 2 Sep — this was the shortcut that ate them |
+| 3 | Settings → **Test Gemini** reports mis-heard names repaired | ⬜ Shipped 2 Sep; one tap, one call |
+| 4 | A **voice** entry producing the RIGHT project and tasks | ⬜ See *Speech is the weak link* below |
+| 5 | Mic **blocked** → readable message naming the keyboard mic | ⬜ Never exercised |
+| 6 | Mic **offline** → "voice needs a connection" | ⬜ Never exercised |
+| 7 | All of the above on **both** phone and laptop | ⬜ The standing rule |
 
 Confirmed already: the mic records on both devices; Done closes instantly on both;
 edits sync between devices without a refresh; the Gboard note is live in the shipped
 page; extraction and batching both verified through Settings → Test Gemini.
+
+### Speech is the weak link, and it is not this app's
+
+Android's recogniser hears **"NeuraVue" as "my review"**, **"OneNet" as "one night"**,
+**"NMEA" as "anemia"** — reproduced in WhatsApp too, so it is the engine, not this
+page. Chrome ignores the vocabulary hint the Web Speech API defines, so there is no
+lever on the client at all: the wrong words are what the app is handed.
+
+**What was built instead (2 Sep):** a Settings box for your project names, spelled the
+way you want them. The whole list goes into the Gemini prompt — not just today's open
+projects — with a rule that a phrase *sounding like* a name on the list becomes that
+name. Bounded deliberately: the model may only pick a name already on the list, never
+invent a correction, and `raw_text` keeps what was actually heard either way, so a
+wrong match shows as a tile whose sentence plainly does not fit rather than a record
+quietly rewritten.
+
+**The rejected alternative** was to reuse the list of names the app already remembers.
+It cannot work: that list only ever holds names the app has *already got right once*, so
+a project speech has never transcribed correctly can never enter it — exactly the project
+that needs the help.
+
+Row 3 above checks this without spending a dictated entry: the Test Gemini probe sends a
+real mangling with `NeuraVue` in a fixed vocabulary and reports whether it was repaired. A
+live dictation cannot serve as that test — it costs a call, cannot be repeated
+identically, and confuses "the model did not repair it" with "the microphone heard
+something else this time".
 
 ---
 
@@ -453,20 +345,23 @@ OS-assistant territory; not buildable solo for free. The achievable versions:
 
 ## Stage Order & Dependencies
 
-Updated 27 Aug. The original order assumed one backend and no user accounts; both
-turned out to be wrong, so this is what actually blocks what.
+Updated 27 Aug, and 3.5 has since cleared. The original order assumed one backend and
+no user accounts; both turned out to be wrong, so this is what actually blocks what.
 
 ```
-  3.5 Finish the move ─┬─► 5 Review ──► 6 Reports
-   (import + Gemini    │
-    key + Edge Fn)     └─► 7a Wrapup ──► 7b Glance (if "notification")
-                                              │
-   4 Voice ─────────────(independent)         └─► 8 Native wrapper (if "real widget")
+  ✅ 3.5 Finish the move ─┬─► 5 Review ──► 6 Reports
+     (Gemini key +        │
+      Edge Function)      └─► 7a Wrapup ──► 7b Glance (if "notification")
+                                                 │
+  🟡 4 Voice ─────────────(independent)          └─► 8 Native wrapper (if "real widget")
 
-   7c Offline ──────────(independent)
+     7c Offline ──────────(independent)
 ```
 
-**Why 3.5 gates so much:** Stages 5, 6 and 7a all read a *date range*. Built before
+**Nothing is blocked any more.** 3.5 landed on 30 Aug, so Stage 5 can start whenever
+Stage 4 is signed off — and even that is a sequencing preference, not a dependency.
+
+**Why 3.5 gated so much:** Stages 5, 6 and 7a all read a *date range*. Built before
 the history is in one place, each would report on half the data — and look correct
 doing it, because a real number would come back.
 
@@ -479,6 +374,9 @@ unblocks 5, 6 and 7a together.
 offline logging (7c) only needs the `rid` scheme, which already exists.
 
 ## Voice Agent Recommendation (your question, answered plainly)
+- **Caveat learned 2 Sep:** every engine mangles unusual project names — "NeuraVue"
+  becomes "my review" in this app *and* in WhatsApp. No dictation tool fixes that; the
+  Settings project-name list is what puts the name back. See *Speech is the weak link*.
 - **Mobile:** no extra agent needed — in-app Web Speech API + Gboard mic cover it. Wispr
   Flow adds nothing here.
 - **Laptop:** Web Speech API in Chrome works the same; add Wispr Flow only if you want
@@ -488,8 +386,12 @@ offline logging (7c) only needs the `rid` scheme, which already exists.
 
 ## Rules
 - A stage is done only when its validation passes on BOTH devices.
-- The Sheet is always the source of truth — if app and Sheet ever disagree, the Sheet wins.
+- **The store is the source of truth** — if the app and the database ever disagree, the
+  database wins. This line said "the Sheet" until 2 Sep; the Sheet has not been the store
+  since `f733804`, and the rule was always about the store rather than about a Sheet.
 - Keep every logging action under 5 seconds or simplify it; the habit is the product.
+- A summary is **one** Gemini call, with the figures computed locally by `replayDay()` and
+  handed over to be put into prose. Never loop the model over days or projects.
 
 ---
 

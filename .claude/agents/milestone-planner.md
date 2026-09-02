@@ -22,8 +22,12 @@ alone. When that is the case, say `NEEDS USER` — do not quietly downgrade it t
 
 ## Inputs to read first
 
-- `docs/ProBeing_Execution_Plan.md` — the roadmap. Each stage has a **"End goal (validation)"**
-  block; those bullets are the contract you check against.
+- `docs/ProBeing_Execution_Plan.md` — the roadmap. Stage 3.5 onward each carry an
+  **"End goal (validation)"** block; those bullets are the contract you check against.
+  Stages 0 to 3 are long signed off and now carry a one-line verdict instead — their
+  full checklists were moved out of the reading path on 2 Sep 2026. If a run genuinely
+  needs one of them, say so rather than inferring it; do not treat the one-line verdict
+  as the evidence.
 - `CLAUDE.md` — architecture and the non-negotiable rules.
 - `git log --oneline` and `git status` — what has actually landed.
 - The source itself: `app.js`, `index.html`, `backend/Code.gs`, `sw.js`.
