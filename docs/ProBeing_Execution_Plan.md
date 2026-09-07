@@ -21,7 +21,7 @@ shipped in `f733804`; `CLAUDE.md` carries the full reasoning.
 
 ---
 
-> ## Where things stand — 2 Sep 2026
+> ## Where things stand — 8 Sep 2026
 >
 > | | Stage | |
 > |---|---|---|
@@ -31,9 +31,9 @@ shipped in `f733804`; `CLAUDE.md` carries the full reasoning.
 > | ✅ | 3 The Buttons | done; chips were **rebuilt** as durations, not moments |
 > | ✅ | 3.5 Finish the move | done 30 Aug — Gemini key, Edge Function, `reports` table, sign-ups off |
 > | ✅ | 4 Tracker + Voice | signed off 2 Sep — two fallback checks left untested on purpose, see the stage |
-> | 🟡 | **5 Review Button** | **built and shipped 2 Sep (`86bb2f6`), not signed off.** Passed validation twice; never opened in a browser and no Gemini call ever spent |
+> | ✅ | **5 Review Button** | **signed off 8 Sep** on both devices, against real rows and real Gemini calls. One change came out of the first read — see the stage |
 > | ⬜ | 6 Weekly & Monthly Reports | not started |
-> | ⬜ | 7 Notifications + wrapup + offline | not started. **7a runs alongside Stage 5.** The glance (7b) was decided on 2 Sep — an ongoing notification, not a native widget — so 7a is now its only dependency |
+> | ⬜ | 7 Notifications + wrapup + offline | not started. **7a was to run alongside Stage 5, which is now closed.** The glance (7b) was decided on 2 Sep — an ongoing notification, not a native widget — so 7a is now its only dependency |
 > | ⬜ | 8 Native wrapper | not started, correctly deferred |
 >
 > **A great deal was built with no stage number.** Read *Built, but never planned*
@@ -272,22 +272,42 @@ https://ai.google.dev/gemini-api/docs/rate-limits and usage at https://ai.dev/ra
 
 ---
 
-## 🟡 Stage 5 — Review Button — BUILT AND SHIPPED, NOT SIGNED OFF (2 Sep 2026)
+## ✅ Stage 5 — Review Button — SIGNED OFF (8 Sep 2026)
 
+> **Signed off by Saad on 8 Sep**, on both devices, against real rows and real
+> Gemini calls. Three things were checked by hand and all three passed: the
+> summary reads correctly on the laptop, **"Last 30 days" refuses the range by
+> name** rather than reporting a confident zero for the days before 27 Aug, and
+> the screen reads at a glance on the phone without scrolling for the point.
+>
 > **Shipped** in `86bb2f6`: a range picker (last 2 days / last 7 days / this week /
-> last 30 days), figures computed locally by `replayDay()` over each **local** day,
-> and one Gemini call turning them into prose. Validated twice — 13 of 13 checklist
-> items, then a narrow re-check of four fixes — with zero failures both times.
+> last week / last 30 days), figures computed locally by `replayDay()` over each
+> **local** day, and one Gemini call turning them into prose. Validated twice by
+> the validator — 13 of 13, then a narrow re-check of four fixes — and then, on
+> 7 Sep, read by a person for the first time.
 >
-> **What that pass does NOT cover, and it is the whole of what is left:** nothing
-> has been opened in a real browser. No Gemini call was ever spent, because the
-> Edge Function needs a signed-in session and the validator was told not to mint
-> one. So the figures are heavily tested and **the written summary has never been
-> seen**. Layout on a phone is likewise unverified.
+> **That first read changed the prompt** (`17bd56a`). The summary opened by
+> reciting the card directly above it — *"You spent 47h 20m on office projects,
+> personal projects and PhD, with 35h 16m going to NeuraVue (17h 39m)…"* — and
+> Saad asked for the clause gone. The overview now names no duration at all; only
+> the Productivity line may, and only when there is an earlier period to compare
+> against. `docs/Review_Spec.md` carries the reasoning.
 >
-> Sign-off needs Saad on both devices, and the judgement "does this read as a
-> glance rather than an essay" needs a week of consistent logging — which is a
-> content problem, not a code one. See *How this gets tested*.
+> **The week-long wait predicted below never happened, and the reason is worth
+> keeping.** *How this gets tested* argued that "does this read as a glance rather
+> than an essay" could only be judged over a week of consistent logging. It was
+> judged on the first real summary, in one sitting, and it produced a concrete
+> change rather than a verdict. What the wait would actually have bought is
+> unclear — the fault was in the prompt, not in the thinness of the data, and a
+> week of rows would have shown it no more plainly. **Sparse data was enough to
+> judge the shape**; treat "wait for more data" as a claim to test, not a rule.
+>
+> **What was NOT covered, and stays open by the same explicit decision as before:**
+> the six-bullet cap (`REVIEW_TASK_LINES`) still drops silently, and the junk
+> project keys the extraction produces — "throughput and model" at 21s, "aap
+> development" at 14s standing as the whole PhD Working heading — are visible in a
+> real summary and unaddressed. Neither blocks the stage; both are named in
+> *Open questions* in `docs/Review_Spec.md`.
 
 ### Redesigned before it was ever signed off — 2 Sep 2026
 

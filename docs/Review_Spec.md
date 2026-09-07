@@ -118,6 +118,11 @@ this one to compare against.
   including days that have not happened drags every average down. "Last week" was added for
   the previous complete Monday–Sunday, which is what a weekly review usually means.
 - Monthly report: same shape, or trends versus the previous month?
+- **Sentence-shaped project keys, seen in the first real summary (7 Sep).** Extraction
+  produced "throughput and model" (21s), "aap development" (14s — and it stands as the
+  entire PhD Working heading), and "hello probing I am working on project a" (17s). They
+  are not projects; they are stray entries that got named. Merge them, hide anything under
+  a floor, or fix the extraction — undecided, and it does not block Stage 5.
 - The bullet cap (`REVIEW_TASK_LINES`) currently keeps the six oldest tasks per project and
   drops the rest. Fine on today's data — four is the most any project has in a week — but it
   is silent, which is the part to decide.
