@@ -4546,6 +4546,18 @@ function promptPeriod(heading, sum, cats, tasks) {
  * Instructing it not to repeat them would have been a weaker fix than not
  * giving them: a figure that is not in the prompt cannot be restated.
  *
+ * THE OVERVIEW NOW NAMES NO FIGURE AT ALL, and here the weaker fix is the only
+ * one available. Saad read a summary that opened "You spent 47h 20m on office
+ * projects, personal projects and PhD, with 35h 16m going to NeuraVue (17h 39m),
+ * OneNet (17h 36m)…" — every one of those numbers already drawn, in that order,
+ * in the card immediately above it — and asked for that clause gone, keeping
+ * only the half that judged the work. The per-project hours cannot be taken out
+ * of the prompt to force it: they are how the model tells a seventeen-hour
+ * project from a twenty-one-second one, and without them it weighs a stray
+ * entry the same as OneNet. So they stay, and the instruction names the single
+ * line that may carry a figure — the Productivity verdict, per Review_Spec.md's
+ * "slower or faster, with the hours named" — and forbids it everywhere else.
+ *
  * The pace verdict is still handed over finished — both totals, the difference
  * and the word already chosen — because a subtraction is exactly what the model
  * must not do. It is now a comparison of FOCUSED hours rather than of wall-clock
@@ -4622,10 +4634,11 @@ function reviewPrompt(win, now, prior, cats, pace) {
     ? 'First, one or two short lines naming what CHANGED between the two ' +
       'periods — a project dropped entirely, a new one picked up, time moving ' +
       'from one to another. Name the projects, address the person as "you", ' +
-      'and quote figures only as they are written above.'
-    : 'First, one or two short lines naming what this period actually went on: ' +
-      'which projects, and what was done to them. Name the projects, address ' +
-      'the person as "you", and quote figures only as they are written above.');
+      'and write NO hours, minutes or seconds in these lines.'
+    : 'First, one or two short lines on what the WORK in this period was ' +
+      'actually like — what was being done, and how it went. Name a project ' +
+      'only where the point needs it, address the person as "you", and write ' +
+      'NO hours, minutes or seconds in these lines.');
   lines.push('In those same lines you may judge the WORK and not only the clock: ' +
              'the sub-tasks say what was actually being done, some of it is ' +
              'inherently slower than the rest, and fewer hours on hard work is ' +
@@ -4639,8 +4652,22 @@ function reviewPrompt(win, now, prior, cats, pace) {
              'topics and skills the entries above suggest were being picked up, ' +
              'comma separated. If the entries do not say, write ' +
              '"Learning: not clear from these entries."');
+  /* Split on whether the comparison fact exists, and not only for tidiness:
+   * pointing at a "Change in focused hours" line that was never written is an
+   * invitation to supply one. With nothing to compare, the rule is simply that
+   * no figure belongs anywhere in the answer. */
+  lines.push(pace && pace.known
+    ? 'THE ONE PLACE A FIGURE MAY APPEAR is the Productivity line, and only the ' +
+      'two totals in the "Change in focused hours" fact above. Nowhere else.'
+    : 'WRITE NO FIGURE ANYWHERE — no hours, no minutes, no seconds, in any of ' +
+      'the three lines.');
+  lines.push('Never list the projects with their times, and never add up a ' +
+             'heading or a period: those figures are drawn on the screen ' +
+             'directly above your words, and handing them back is the one thing ' +
+             'this summary must not do. They are given to you so you can see ' +
+             'what was large and what was small, not so you can repeat them.');
   lines.push('Do not restate the dates, the length of the range, or how many days ' +
-             'had entries: they are already on the screen above your words.');
+             'had entries: same reason.');
   lines.push('No headings, no bullet points, no numbering, no markdown.');
 
   return lines.join('\n');

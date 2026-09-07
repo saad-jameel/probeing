@@ -103,6 +103,14 @@ numbers cannot be invented and why the redesign still costs exactly one call. Th
 comparison against the preceding period is subtracted locally too; the model is handed both
 totals and the chosen word, and only phrases it.
 
+**And it names no hours — 7 Sep 2026.** The first summary Saad read opened *"You spent
+47h 20m on office projects, personal projects and PhD, with 35h 16m going to NeuraVue
+(17h 39m), OneNet (17h 36m)…"* — every figure of it already drawn in the card directly
+above — and he asked for that clause gone, keeping only the half that judged the work.
+The overview now carries no duration at all. The **Productivity** line still may, per
+"slower or faster, with the hours named" above, and only when there is a period before
+this one to compare against.
+
 ## Open questions
 
 - An unclosed session (forgot to press Wake) — cap it at some sane maximum, or ask?
