@@ -156,14 +156,30 @@ do $$ begin
     for insert with check (auth.uid() = user_id);
 exception when duplicate_object then null; end $$;
 
--- No update or delete policy for the browser, and the difference from `events`
--- is deliberate: an event is append-only because it is a fact, while a report is
--- derived and may legitimately be rebuilt. The Edge Function does that rebuild
--- with the service_role key and `on conflict do update`, which bypasses these
--- policies — so the app itself never needs the power to rewrite a report.
+-- THE BROWSER CAN NOW UPDATE A REPORT, and this paragraph used to say the
+-- opposite. It assumed an Edge Function with the service_role key would write
+-- the reports, and Stage 6 established that it cannot: the gemini function
+-- refuses any token whose role is not `authenticated`, and the four headings a
+-- report groups work under live in the browser's own localStorage. So the app
+-- writes its own reports, and rewriting one has to be allowed.
 --
--- Stage 5 must therefore write reports like this, naming the owner explicitly,
--- because service_role has no auth.uid() to fall back on:
+-- The difference from `events` is still deliberate, and is the reason this is
+-- safe: an event is append-only because it is a FACT, while a report is DERIVED
+-- from those facts and may legitimately be rebuilt from them. Regenerating last
+-- week — say after a project has been filed under a heading — must replace that
+-- week's report, not add a second one. There is still no delete policy, and no
+-- per-column grant is needed here because there is no column of a report that
+-- is a fact somebody typed.
+do $$ begin
+  create policy "update own reports" on public.reports
+    for update using (auth.uid() = user_id)
+    with check (auth.uid() = user_id);
+exception when duplicate_object then null; end $$;
+
+-- The write the app makes, in SQL. `user_id` is named explicitly even though it
+-- has a default, because it is part of the conflict target; `generated_at` is
+-- named because a column default only fires on an INSERT, so without it a
+-- rewritten report would still be stamped with the first version's time.
 --
 --   insert into public.reports (user_id, period, start_date, end_date, text, stats, model)
 --   values ($1, 'week', $2, $3, $4, $5, $6)

@@ -117,7 +117,18 @@ this one to compare against.
 - ~~Weekly boundary~~ — **answered 2 Sep.** "This week" is Monday → today, because a range
   including days that have not happened drags every average down. "Last week" was added for
   the previous complete Monday–Sunday, which is what a weekly review usually means.
-- Monthly report: same shape, or trends versus the previous month?
+- ~~Monthly report: same shape, or trends versus the previous month?~~ — **answered
+  8 Sep, in Stage 6: the same shape.** One renderer, one prompt, one set of
+  figures; the period is a `period` column and a pair of dates, and nothing else
+  about a month differs from a week. Two shapes would mean two prompts to keep
+  true, and Stage 5 already showed what that costs — a single prompt edit had to
+  invalidate every cached summary on both devices before the change was visible.
+  The trend question is not dropped, it is already answered by the shape: every
+  report is compared against the equal-length period immediately before it
+  (`priorRangeOf()`), so a monthly report IS a comparison with the previous
+  month. What a month does not get is anything a week does not — no per-week
+  breakdown inside it, because that is one Gemini call per week of the month,
+  which is the looping failure the plan forbids.
 - **Sentence-shaped project keys, seen in the first real summary (7 Sep).** Extraction
   produced "throughput and model" (21s), "aap development" (14s — and it stands as the
   entire PhD Working heading), and "hello probing I am working on project a" (17s). They

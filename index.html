@@ -190,8 +190,19 @@
   </div>
 
   <h3 class="screen-title sm">Past Reports</h3>
-  <p class="pending">Nothing archived yet &mdash; reviews are worked out fresh each time and
-    the written part is kept on this device only. Saving them is Stage 6.</p>
+  <!-- Written by this app, not by a server. The four headings a report groups
+       work under live in this browser's localStorage, so nothing else could build
+       one with the right shape &mdash; see the long note above the reports code in
+       app.js. Saved in Postgres and re-read on every visit; never in the service
+       worker cache, per rule 3. Every string below is put on the page with
+       textContent, because a language model wrote it. -->
+  <section class="card">
+    <ul id="reportList" class="report-list"></ul>
+    <p id="reportNote" class="pending"></p>
+    <div class="review-foot">
+      <button type="button" id="reportMakeBtn" class="link-btn" hidden>Write the weekly report</button>
+    </div>
+  </section>
 </section>
 
 </main>

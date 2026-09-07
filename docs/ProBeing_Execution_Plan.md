@@ -32,7 +32,7 @@ shipped in `f733804`; `CLAUDE.md` carries the full reasoning.
 > | ✅ | 3.5 Finish the move | done 30 Aug — Gemini key, Edge Function, `reports` table, sign-ups off |
 > | ✅ | 4 Tracker + Voice | signed off 2 Sep — two fallback checks left untested on purpose, see the stage |
 > | ✅ | **5 Review Button** | **signed off 8 Sep** on both devices, against real rows and real Gemini calls. One change came out of the first read — see the stage |
-> | ⬜ | 6 Weekly & Monthly Reports | not started |
+> | 🟡 | **6 Weekly & Monthly Reports** | **built and shipped 8 Sep, not signed off.** The app writes reports when Review opens; `pg_cron` deferred to Stage 7 by Saad's decision. Needs one SQL policy run by hand, then a read on both devices |
 > | ⬜ | 7 Notifications + wrapup + offline | not started. **7a was to run alongside Stage 5, which is now closed.** The glance (7b) was decided on 2 Sep — an ongoing notification, not a native widget — so 7a is now its only dependency |
 > | ⬜ | 8 Native wrapper | not started, correctly deferred |
 >
@@ -264,10 +264,12 @@ That is also why `docs/Review_Spec.md`'s figures are computed, not asked for. If
 future stage genuinely needs several calls, space them and cap them — but the first
 question is always whether one call with more context would do, and it usually will.
 
-**Unverified and worth checking before Stage 6:** whether the free tier also caps
-requests per *day*. The refusal named only the per-minute metric, so the daily
-ceiling is unknown rather than known to be absent. Current usage is nowhere near
-any plausible daily cap; a design that loops could be. Limits are at
+**Verified, and it is the tighter of the two ceilings: 20 requests a DAY**, read off
+Google's own dashboard (`RPD 22/20`) after an afternoon of testing spent it twice
+over. Per model, so changing `GEMINI_MODEL` moves to a fresh allowance — see
+"The Gemini budget" in `CLAUDE.md`, which carries the detail. Against 30-40 log
+entries a day, one call per entry does not fit and never did, which is what makes
+the rule above architectural rather than tidy. Limits are at
 https://ai.google.dev/gemini-api/docs/rate-limits and usage at https://ai.dev/rate-limit.
 
 ---
@@ -408,22 +410,47 @@ it should be entered as "7a then 7b", not as a filler task.
 
 ---
 
-## ⬜ Stage 6 — Weekly & Monthly Reports — NOT STARTED
+## 🟡 Stage 6 — Weekly & Monthly Reports — BUILT AND SHIPPED, NOT SIGNED OFF (8 Sep 2026)
 
-> **Blocked on a table that does not exist.** `docs/supabase_schema.sql` creates
-> exactly one table, `events`. There is nowhere to put a report.
-> See `docs/Review_Spec.md` for the output actually wanted — it is more specific
-> than this stage.
+> **Nobody has opened this in a browser, and no report has ever been written.**
+> The validator passed all 14 checklist items it could run and re-passed a
+> two-item fix round, but four are marked SKIPPED for the same reason Stage 5's
+> were: there is no signed-in session on this machine, so `generateReport()` has
+> never spent a real Gemini call and `reports` is still empty. **One thing must
+> happen before any of it works** — the `update own reports` policy in
+> `docs/supabase_schema.sql` is not on the live database, and the validator
+> proved the consequence rather than assuming it: a rewrite returns `42501 new
+> row violates row-level security policy`. First write of a span succeeds;
+> the second fails until Saad runs the SQL.
+
+
+> The `reports` table exists — added 30 Aug, and `docs/supabase_schema.sql` is
+> the whole of it. See `docs/Review_Spec.md` for the output actually wanted; it
+> is more specific than this stage.
+>
+> **THE APP WRITES THE REPORT, NOT A SERVER.** Saad's decision, and the three
+> reasons behind it are all things a scheduled job cannot get past: the `gemini`
+> Edge Function refuses any token whose role is not `authenticated`, so a
+> `pg_cron` job holding `service_role` gets a 401 before it reaches the model;
+> the four headings a report groups work under live in the browser's own
+> localStorage (`probeing.categories`), so a server cannot build the shape the
+> spec asks for; and a second `replayDay()` in Deno would be the `goals`-action
+> drift story a second time. Scheduling waits for **Stage 7**, which is where
+> push notifications give a server a reason to be awake at 11:30 PM at all.
 
 **Start:** on-demand review only. **Work:**
-1. Time trigger Sunday (weekly) + 1st of month (monthly): compute **M count**, **prayer
-   stats** (per prayer: how many, and breakdown by Takbeer-e-oola / Partial Jamat /
-   Individual / missed), hours by project, learning vs other time.
-2. Gemini turns it into a short report; save to `Reports` tab; app shows a "Reports" screen
-   listing them (newest first).
+1. On opening Review, for the last complete week and the last complete month: compute
+   **M count**, **prayer stats** (per prayer: how many, and breakdown by
+   Takbeer-e-oola / Partial Jamat / Individual / missed), hours by project,
+   learning vs other time.
+2. Gemini turns it into a short report — **one call**, over figures already finished;
+   save it to the `reports` table; the Review screen lists them, newest first.
+   Generating on open is gated on the day's Gemini budget having room to spare, so
+   opening a tab can never spend the last of the twenty.
 
-**End goal (validation):** Sunday report exists in the tab and in the app, and its M count
-and prayer breakdown exactly match a manual count of the raw rows (spot-check honesty).
+**End goal (validation):** the week's report exists in the `reports` table and in the
+app, and its M count and prayer breakdown exactly match a manual count of the raw rows
+(spot-check honesty).
 
 ---
 

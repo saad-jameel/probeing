@@ -3,6 +3,13 @@
  * Deliberately does NOT cache API traffic: the Sheet is the source of truth and
  * a cached "today" would silently show you stale logs. Offline *logging* is
  * Stage 7 and will use a localStorage queue, not this cache.
+ *
+ * SAVED REPORTS ARE API TRAFFIC TOO, and the same rule covers them: they are
+ * read from Supabase on every visit to the Review tab. Nothing below has to be
+ * changed for that to hold — Supabase is a different origin, and the guard in
+ * the fetch handler already lets every cross-origin request straight through —
+ * but it is worth saying, because "it is only a report, it barely changes" is
+ * exactly the argument that would put a stale one on screen.
  */
 
 var CACHE = 'probeing-shell-v3';

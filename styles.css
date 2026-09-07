@@ -348,6 +348,32 @@ body {
    simply takes a row of its own. */
 #reviewPicks .pick { flex: 1 1 44%; padding: 10px; font-size: 14px; }
 
+/* --------------------------------------------------- past reports (Stage 6) */
+
+/* A saved report is a heading, one line of figures and the words Gemini wrote —
+   the same three things the Review card shows, kept smaller because this list is
+   a history rather than the thing being read today.
+
+   Rule 6: both rules below set `display`, so both declare their `[hidden]` pair.
+   Neither is hidden by the app today; the pair is what stops the next person who
+   hides one from finding a list that is still on screen. */
+.report-list { list-style: none; margin: 0; padding: 0; display: grid; gap: 14px; }
+.report-list[hidden] { display: none; }
+.report-list:empty { display: none; }
+.report-list li {
+  display: grid; gap: 3px;
+  padding-bottom: 12px; border-bottom: 1px solid var(--line);
+}
+.report-list li[hidden] { display: none; }
+.report-list li:last-child { border-bottom: 0; padding-bottom: 0; }
+
+.report-head { font-size: 14.5px; font-weight: 700; margin: 0; }
+.report-figs { font-size: 12.5px; color: var(--muted); margin: 0;
+  font-variant-numeric: tabular-nums; }
+/* pre-line for the same reason .review-prose has it: the model is asked for
+   separate lines, and textContent is the only way this app renders its words. */
+.report-text { font-size: 14px; line-height: 1.5; margin: 4px 0 0; white-space: pre-line; }
+
 /* An empty paragraph still takes its top margin, which leaves a gap under the
    figures where a message used to be. These are the ones that get cleared and
    refilled as a review runs. */

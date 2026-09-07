@@ -3176,6 +3176,13 @@ function keepNames(batch, got) {
 
 var lastExtractError = '';
 
+/* Which model actually answered, straight out of the Edge Function's reply.
+ * This app never chooses the model — it is a Supabase secret (GEMINI_MODEL) —
+ * so reading it back is the only way a saved report can say which one wrote it,
+ * and the free tier's allowance is counted per model, so it is also the only
+ * record of which budget a report was paid for out of. */
+var lastGeminiModel = '';
+
 /**
  * The one place this app talks to Gemini on the logging path: post `body` to
  * the Edge Function and hand back the model's text, or null.
@@ -3264,6 +3271,7 @@ async function geminiCall(body, ctrl) {
   }
 
   lastExtractError = '';
+  lastGeminiModel = String(data.model || '');
   quotaTold = '';                          // Gemini answered: any quota spell is over
   return String(data.text || '');
 }
@@ -4245,6 +4253,90 @@ function summariseRange(rows, windows) {
 }
 
 /**
+ * The five prayers crossed with the three modes, and what was missed.
+ *
+ * summariseRange() already counts prayers twice — a total, and a breakdown by
+ * mode across all five — and neither can answer "how was Fajr this month".
+ * This walks the same day windows and keeps the two apart.
+ *
+ * MISSED IS COUNTED ONLY ON DAYS THAT HAVE ROWS, which is the rule
+ * `daysWithRows` and the daily average already follow. A day with nothing
+ * logged at all is a day with no measurement — the phone was off, or the app
+ * was never opened — and booking five misses against it would turn silence into
+ * a claim about how Saad prayed. A day that has rows and no Fajr among them is
+ * a real miss, and is counted as one.
+ *
+ * `logged` is every prayer row seen, and it is deliberately the same figure
+ * summariseRange() reports as `prayers`: the two are counted from the same
+ * buckets in the same order, so a report whose breakdown disagrees with its own
+ * total is a bug in one of them rather than a difference of opinion.
+ *
+ * @param rows    every row in the range. Only `type:'prayer'` rows are counted,
+ *                but the rest decide which days count as measured at all.
+ * @param windows one per local day, from dayWindows().
+ */
+function prayerStats(rows, windows) {
+  var wins = windows || [];
+  var out = {
+    byPrayer: [],
+    modes: PRAYER_MODES.slice(),
+    logged: 0,
+    other: 0,
+    days: wins.length,
+    daysWithRows: 0
+  };
+
+  // Keyed by prayer name, so it carries no prototype — see userMap(). Without
+  // it a row naming itself "constructor" would find a function here.
+  var index = userMap();
+  PRAYER_NAMES.forEach(function (name) {
+    var one = { name: name, total: 0, missed: 0, noMode: 0, byMode: userMap() };
+    // Every mode present at zero, so a month with no Takbeer-e-oola says so
+    // rather than leaving the reader to notice a key that is not there.
+    PRAYER_MODES.forEach(function (mode) { one.byMode[mode] = 0; });
+    index[name] = one;
+    out.byPrayer.push(one);
+  });
+
+  var buckets = bucketByWindow(rows, wins);
+
+  wins.forEach(function (w, i) {
+    var dayRows = buckets[i];
+    if (!dayRows.length) return;           // unmeasured: not five misses
+    out.daysWithRows += 1;
+
+    var seen = userMap();                  // the prayer names logged this day
+    dayRows.forEach(function (row) {
+      if (row.type !== 'prayer') return;
+      out.logged += 1;
+
+      /* The name lives in `project`, exactly as the data model says. raw_text is
+       * the same fallback the rest of the review uses for a row that never got
+       * one, and a name that is neither of the five is counted apart rather than
+       * dropped — see `other` below. */
+      var one = index[String(row.project || row.raw_text || '').trim()];
+      if (!one) { out.other += 1; return; }
+
+      one.total += 1;
+      seen[one.name] = 1;
+
+      /* A mode that is not one of the three is counted too. `total` must always
+       * equal the modes plus `noMode`, or the breakdown loses a prayer that was
+       * really offered — the same rule that makes `other` exist. */
+      var mode = String(row.detail || '').trim();
+      if (one.byMode[mode] === undefined) one.noMode += 1;
+      else one.byMode[mode] += 1;
+    });
+
+    out.byPrayer.forEach(function (one) {
+      if (seen[one.name] !== 1) one.missed += 1;
+    });
+  });
+
+  return out;
+}
+
+/**
  * Only the rows that fall inside these day windows.
  *
  * Needed because ONE read now covers two ranges — the one being reviewed and
@@ -4718,6 +4810,64 @@ function splitProse(text) {
   return { summary: parts[0].trim(), learning: learning };
 }
 
+/**
+ * Every figure a summary is made of, for one span and for the equal-length
+ * period before it. Rows in, numbers out: no awaits, no screen, no storage.
+ *
+ * EXTRACTED WHEN STAGE 6 ARRIVED, and the reason is worth keeping. A saved
+ * report needs exactly this arithmetic and none of the drawing, so the report
+ * path started life with its own copy of it — and the mutation harness noticed
+ * within the hour: three of its mutations stopped being applicable because the
+ * line each one breaks had begun to appear twice. Two copies would have been two
+ * answers to "how many hours was last week", which is the same argument this
+ * repo has already made about two renderers, about one code path reading data,
+ * and about a second replayDay() living in Deno.
+ *
+ * @param rows       one read covering BOTH periods, oldest first.
+ * @param win        the span being summarised.
+ * @param prior      priorRangeOf(win) — the equal-length period before it.
+ * @param priorKnown false when that period reaches back past the first row this
+ *                   account has, in which case there is no comparison to make.
+ * @param cats       the stored category assignments, passed in rather than read.
+ */
+function spanFigures(rows, win, prior, priorKnown, cats) {
+  /* Narrowed before summarising, never after: summariseRange() buckets work by
+   * window, but the sleep walk inside it reads every row it is handed, so the
+   * earlier period's nights would land in this one's figure. */
+  var windows = dayWindows(win.start, win.end);
+  var inRange = rowsInWindows(rows, windows);
+  var sum = summariseRange(inRange, windows);
+
+  /* The earlier period gets EVERYTHING this one gets — its own project totals
+   * and its own sub-tasks — because the comparison Saad reads is per project,
+   * not per total. Same rows, same one read: rowsInWindows() narrows the wide
+   * result twice rather than the database being asked twice. */
+  var earlier = null;
+  if (priorKnown) {
+    var priorWindows = dayWindows(prior.start, prior.end);
+    var priorRows = rowsInWindows(rows, priorWindows);
+    earlier = { sum: summariseRange(priorRows, priorWindows),
+                tasks: rangeTasks(priorRows), days: prior.days };
+  }
+
+  /* The verdict is on FOCUSED hours — office, personal and PhD projects — which
+   * is the line Saad drew: "just take the projects and PhD time".
+   *
+   * `known` needs both periods to have something filed, and that is not the
+   * same test as `priorKnown`. A period whose projects have never been put in a
+   * kind has 0 focused hours because nobody answered the question, and
+   * subtracting one of those from the other would be a difference between two
+   * figures that do not exist. The prompt then falls back to the two project
+   * lists, which is where the answer really is anyway. */
+  var focus = focusOf(sum.byProject, cats);
+  var priorFocus = earlier ? focusOf(earlier.sum.byProject, cats) : null;
+  var pace = paceOf(focus.ms, priorFocus ? priorFocus.ms : 0, prior,
+                    Boolean(priorFocus) && focus.filed && priorFocus.filed);
+
+  return { windows: windows, inRange: inRange, sum: sum, tasks: rangeTasks(inRange),
+           earlier: earlier, focus: focus, pace: pace };
+}
+
 /* ---------------------------------------------------------------------------
  * From here down it talks to storage, the network and the DOM. Everything above
  * is pure, and the tests in claudeWorkingDocs/tests/ lift it straight out of
@@ -5134,12 +5284,12 @@ async function runReview(force) {
   }
   if (!mine()) return;
 
-  /* Narrowed before summarising, never after: summariseRange() buckets work by
-   * window, but the sleep walk inside it reads every row it is handed, so the
-   * earlier period's nights would land in this one's figure. */
-  var windows = dayWindows(win.start, win.end);
-  var inRange = rowsInWindows(rows, windows);
-  var sum = summariseRange(inRange, windows);
+  /* Every figure, in one call, from the same function the saved reports use —
+   * see spanFigures(). Nothing between here and the render below reads the
+   * database or the clock. */
+  var got = spanFigures(rows, win, prior, priorKnown, projectCategories);
+  var sum = got.sum;
+  var tasks = got.tasks;
 
   if (sum.empty) {
     /* Nothing at all was logged. Zero Gemini calls: there is nothing for a
@@ -5153,33 +5303,6 @@ async function runReview(force) {
     return;
   }
 
-  /* The earlier period gets EVERYTHING this one gets — its own project totals
-   * and its own sub-tasks — because the comparison Saad reads is per project,
-   * not per total. Same rows, same one read: rowsInWindows() narrows the wide
-   * result twice rather than the database being asked twice. */
-  var earlier = null;
-  if (priorKnown) {
-    var priorWindows = dayWindows(prior.start, prior.end);
-    var priorRows = rowsInWindows(rows, priorWindows);
-    earlier = { sum: summariseRange(priorRows, priorWindows),
-                tasks: rangeTasks(priorRows), days: prior.days };
-  }
-
-  /* The verdict is on FOCUSED hours — office, personal and PhD projects — which
-   * is the line Saad drew: "just take the projects and PhD time".
-   *
-   * `known` needs both periods to have something filed, and that is not the
-   * same test as `priorKnown`. A period whose projects have never been put in a
-   * kind has 0 focused hours because nobody answered the question, and
-   * subtracting one of those from the other would be a difference between two
-   * figures that do not exist. The prompt then falls back to the two project
-   * lists, which is where the answer really is anyway. */
-  var focus = focusOf(sum.byProject, projectCategories);
-  var priorFocus = earlier ? focusOf(earlier.sum.byProject, projectCategories) : null;
-  var pace = paceOf(focus.ms, priorFocus ? priorFocus.ms : 0, prior,
-                    Boolean(priorFocus) && focus.filed && priorFocus.filed);
-
-  var tasks = rangeTasks(inRange);
   renderReviewFigures(sum);
   /* Published for the dialog's Save to find later — see reviewRegroup. Called
    * immediately, because this IS the first draw. */
@@ -5203,9 +5326,39 @@ async function runReview(force) {
    * finished. addReviewProse() decides whether to SPEND a call; deciding what
    * would be in it is this function's job, and splitting them that way means the
    * prompt can never be built from a different set of numbers than the screen. */
-  await addReviewProse(win, reviewPrompt(win, { sum: sum, tasks: tasks }, earlier,
-                                         projectCategories, pace),
+  await addReviewProse(win, reviewPrompt(win, { sum: sum, tasks: tasks }, got.earlier,
+                                         projectCategories, got.pace),
                        force, mine);
+}
+
+/**
+ * Is the model's answer usable, and if not, why not.
+ *
+ * AN ANSWER WITH NO WORDS IN IT IS NOT AN ANSWER, and is treated exactly like a
+ * refusal. geminiCall() turns a `{ok:true, text:""}` reply into an empty string,
+ * which used to pass a `=== null` check and then be CACHED as today's summary —
+ * blank prose, a Learning card falsely saying nothing had been named, and an
+ * empty note with no explanation at all. Worse, a cached blank costs no call to
+ * redisplay, so every later visit showed the same nothing and only Regenerate
+ * could escape it.
+ *
+ * One copy, because the review and the saved report both have to make this
+ * judgement and it would be indefensible for them to make different ones.
+ *
+ * @returns {{ok: boolean, why: string}} — `why` is a clause for the note, and is
+ *          legitimately empty for a fault nobody can act on. Read `ok`, never
+ *          the emptiness of `why`.
+ */
+function judgeProse(answer) {
+  if (answer === null || !String(answer).trim()) {
+    /* Say what happened. quotaWait() knows the two ceilings by name; anything
+     * else is a fault nobody can do anything about, so it is not put on screen. */
+    return { ok: false,
+             why: answer === null
+               ? quotaWait(lastExtractError)
+               : 'Gemini answered with no text. The call is spent either way.' };
+  }
+  return { ok: true, why: '' };
 }
 
 /** The second half: the written lines, which are allowed to fail. Takes the
@@ -5260,20 +5413,11 @@ async function addReviewProse(win, prompt, force, mine) {
 
   paintReviewUsage();
 
-  /* An answer with no words in it is not an answer, and is treated exactly like
-   * a refusal. geminiCall() turns a `{ok:true, text:""}` reply into an empty
-   * string, which used to pass the `=== null` check below and be CACHED as
-   * today's summary — blank prose, the Learning card falsely saying nothing was
-   * named, and an empty note with no explanation at all. Worse, a cached blank
-   * costs no call to redisplay, so every later visit showed the same nothing
-   * and only Regenerate could escape it. */
-  if (answer === null || !String(answer).trim()) {
-    /* Say what happened AND that it does not matter much, in that order.
-     * quotaWait() knows the two ceilings by name; anything else is a fault
-     * nobody can act on, so it is not put on screen. */
-    var why = answer === null ? quotaWait(lastExtractError)
-                              : 'Gemini answered with no text. The call is spent either way.';
-    note.textContent = 'No written summary this time' + (why ? ' — ' + why : '.') +
+  // Say what happened AND that it does not matter much, in that order.
+  var verdict = judgeProse(answer);
+  if (!verdict.ok) {
+    note.textContent = 'No written summary this time' +
+      (verdict.why ? ' — ' + verdict.why : '.') +
       ' The figures above are complete: they are worked out on this device from ' +
       'your own entries, and only the sentences are missing.';
     $('reviewLearning').textContent = 'Needs the written summary.';
@@ -5302,8 +5446,549 @@ $('reviewAgainBtn').addEventListener('click', function () {
  *  and the prose comes from the cache unless Regenerate is pressed. */
 function openReview() {
   renderReviewPicks();
-  runReview(false);
+  /* The reports come AFTER the review has finished, never alongside it. Both
+   * halves of this screen can spend a Gemini call, the day allows about twenty
+   * in total, and two spent on one tab open is a tenth of the day gone before
+   * anything has been read. Chained rather than started together so the budget
+   * check below sees the review's call already counted. */
+  runReview(false).then(refreshReports, refreshReports);
 }
+
+// ------------------------------------------------------------------ reports
+
+/* WHY REPORTS ARE MADE HERE AND NOT BY A SERVER AT MIDNIGHT.
+ *
+ * The obvious shape for a weekly report is pg_cron waking an Edge Function on
+ * Monday morning. Three things stop it, and they are written down because the
+ * idea will come back:
+ *
+ *   - the gemini Edge Function refuses any token whose role is not
+ *     `authenticated`, and a scheduled job holds `service_role`. It would be
+ *     turned away with a 401 before it ever reached the model;
+ *   - the four headings a report groups work under live in THIS BROWSER, in
+ *     localStorage under `probeing.categories`. A server cannot read them, so
+ *     its report could not have the shape docs/Review_Spec.md asks for;
+ *   - and replayDay() would have to exist a second time, in Deno. This repo
+ *     already has one story about a live copy drifting from the repo (the
+ *     `goals` action) and does not need a second one where the two copies
+ *     disagree about how many hours a week was.
+ *
+ * So the app writes the report when the Review tab is opened, and Postgres
+ * keeps it. Scheduling belongs to Stage 7, where push notifications give a
+ * server a reason to be awake at 11:30 PM at all.
+ *
+ * A report is the Review screen's own summary for a fixed span — the same
+ * figures, the same prompt, ONE call — with the answer saved instead of cached.
+ * Nothing here loops the model over days, projects or prayers.
+ */
+
+/* Week before month, and the order is load-bearing: at most one report is
+ * written per tab open, so the first of these that is missing is the one that
+ * gets written and the other waits for the next visit. The recent one is the
+ * one somebody would look for. */
+var REPORT_PERIODS = ['week', 'month'];
+
+/* How many reports the list shows. Roughly a year of weeks and months, which is
+ * more history than this screen has any way of filling yet. */
+var REPORT_LIST_MAX = 24;
+
+/**
+ * The span a report covers: the last COMPLETE one of its kind, never the one in
+ * progress. Takes `now` rather than reading the clock, so the tests can ask for
+ * any day.
+ *
+ * A week is the picker's own "Last week", by calling it rather than by copying
+ * it — one definition of Monday-to-Sunday, used by two screens, so they cannot
+ * drift apart.
+ *
+ * A month is the previous calendar month on every day INCLUDING the 1st: asked
+ * on 1 September, August has just finished and is exactly what is wanted, and
+ * the month in progress is never reported on for the same reason "This week" is
+ * not — days that have not happened drag every average down.
+ *
+ * Anything that is not 'month' is a week, which mirrors reviewRangeOf() falling
+ * back to a real range rather than crashing on an id it does not know.
+ */
+function reportRangeOf(period, now) {
+  if (period === 'month') {
+    var start = new Date(now.getFullYear(), now.getMonth() - 1, 1);
+    /* Day 0 of this month is the last day of the previous one, and Date rolls
+     * January back into December by itself — so no month-length table, and no
+     * February special case. */
+    var end = new Date(now.getFullYear(), now.getMonth(), 0);
+    return { period: 'month', label: monthLabel(start), start: start, end: end };
+  }
+
+  var lw = reviewRangeOf('lw', now);
+  return { period: 'week', label: 'Last week', start: lw.start, end: lw.end };
+}
+
+/** "August 2026", in whatever the device calls August. */
+function monthLabel(d) {
+  try {
+    return d.toLocaleDateString(undefined, { month: 'long', year: 'numeric' });
+  } catch (e) {
+    return ymdLocal(d).slice(0, 7);        // a browser that cannot format it
+  }
+}
+
+/** 'YYYY-MM-DD' as "31 Aug 2026". Split by hand, because new Date('2026-08-31')
+ *  is midnight UTC — which is the day BEFORE in every zone west of London, and
+ *  a report titled with the wrong day is exactly the kind of small lie this
+ *  screen must not tell. */
+function humanYmd(ymd) {
+  var p = String(ymd || '').slice(0, 10).split('-');
+  if (p.length !== 3) return String(ymd || '');
+
+  var d = new Date(Number(p[0]), Number(p[1]) - 1, Number(p[2]));
+  if (isNaN(d.getTime())) return String(ymd || '');
+  try {
+    return d.toLocaleDateString(undefined, { day: 'numeric', month: 'short', year: 'numeric' });
+  } catch (e) {
+    return String(ymd);
+  }
+}
+
+/** "Last week (31 Aug 2026 – 6 Sep 2026)" — a span named in full, for a note
+ *  that has to say which one it is talking about. */
+function spanText(win) {
+  return win.label + ' (' + humanYmd(ymdLocal(win.start)) + ' – ' +
+         humanYmd(ymdLocal(win.end)) + ')';
+}
+
+/**
+ * The half of a saved report that is not prose: NUMBERS ONLY.
+ *
+ * `text` is what Gemini wrote; `stats` is what this device counted. Keeping them
+ * in separate columns is what makes the honesty check possible at all — the M
+ * count in a saved report can be compared against a hand count of the raw rows
+ * without anybody parsing English out of a paragraph. Not one sentence belongs
+ * in here.
+ */
+function reportStats(sum, prayers) {
+  return {
+    worked: sum.worked,
+    paused: sum.paused,
+    unattributed: sum.unattributed,
+    byProject: sum.byProject,
+    byReason: sum.byReason,
+    m: sum.m,
+    prayers: sum.prayers,
+    prayerBreakdown: prayers,
+    sleep: sum.sleep,
+    days: sum.days,
+    daysWithRows: sum.daysWithRows,
+    avgWorked: sum.avgWorked
+  };
+}
+
+/** Every saved report, newest first. Re-read on every visit and never cached —
+ *  rule 3 applies to a report exactly as it does to today's rows. */
+async function savedReports() {
+  if (!sb || !sbUser) throw new Error('Sign in to read your reports.');
+
+  var res = await sb.from('reports')
+    .select('period,start_date,end_date,text,stats,model,generated_at')
+    .order('start_date', { ascending: false })
+    .order('generated_at', { ascending: false })
+    .limit(REPORT_LIST_MAX);
+  if (res.error) throw errorFrom(res.error);
+  return res.data || [];
+}
+
+/**
+ * Write the report, replacing whatever was there for the same span.
+ *
+ * The conflict target is the unique index in docs/supabase_schema.sql,
+ * (user_id, period, start_date), so pressing Generate twice for one week leaves
+ * one row and not two. Two things are sent that could in principle be defaulted,
+ * and both are deliberate: `user_id`, because the conflict target names it and
+ * a half-specified target is a silent second row; and `generated_at`, because a
+ * column default only fires on an INSERT — without it a rewritten report would
+ * still be stamped with the moment the first version was written.
+ *
+ * This needs an UPDATE policy on `reports`, which the schema file now carries.
+ * Rewriting a report is not the same as rewriting an event: an event is a fact
+ * and is append-only, a report is derived from those facts and may legitimately
+ * be rebuilt from them.
+ */
+async function saveReport(win, text, stats, model) {
+  var res = await sb.from('reports').upsert({
+    user_id: sbUser.id,
+    period: win.period,
+    start_date: ymdLocal(win.start),
+    end_date: ymdLocal(win.end),
+    text: String(text || ''),
+    stats: stats,
+    model: String(model || ''),
+    generated_at: new Date().toISOString()
+  }, { onConflict: 'user_id,period,start_date' });
+  if (res.error) throw errorFrom(res.error);
+}
+
+/** "Week · 31 Aug 2026 – 6 Sep 2026". Built from the dates the report was SAVED
+ *  with, never from today's clock, so an old report is titled by the days it
+ *  actually covers. */
+function reportHeading(row) {
+  return (row.period === 'month' ? 'Month' : 'Week') + ' · ' +
+         humanYmd(row.start_date) + ' – ' + humanYmd(row.end_date);
+}
+
+/** The one line of figures under a saved report's heading, read out of `stats`
+ *  — the copy that was true when it was written. Never recomputed here, or the
+ *  numbers would quietly disagree with the words printed beside them. */
+function reportFigureLine(stats) {
+  var bits = [reviewDuration(stats.worked || 0) + ' worked'];
+  if (stats.avgWorked) bits.push(reviewDuration(stats.avgWorked) + ' per day');
+  bits.push(Number(stats.m || 0) + ' M');
+  bits.push(Number(stats.prayers || 0) + ' prayers');
+  if (stats.days) bits.push(Number(stats.daysWithRows || 0) + '/' + Number(stats.days) +
+                            ' days logged');
+  return bits.join(' · ');
+}
+
+/**
+ * The saved reports, newest first.
+ *
+ * textContent on every string here, and rule 5 is only half the reason: the
+ * project names inside `stats` are what Saad typed, and `text` came out of a
+ * language model, which is text this app trusts even less than its own user's.
+ * Nothing on this path builds markup from a string.
+ */
+function renderReports(rows) {
+  var box = $('reportList');
+  box.textContent = '';
+
+  (rows || []).forEach(function (r) {
+    var stats = (r.stats && typeof r.stats === 'object') ? r.stats : {};
+
+    var li = document.createElement('li');
+
+    var head = document.createElement('p');
+    head.className = 'report-head';
+    head.textContent = reportHeading(r);
+
+    var figs = document.createElement('p');
+    figs.className = 'report-figs';
+    figs.textContent = reportFigureLine(stats);
+
+    var body = document.createElement('p');
+    body.className = 'report-text';
+    body.textContent = String(r.text || '');
+
+    li.append(head, figs, body);
+    box.appendChild(li);
+  });
+}
+
+/**
+ * One report: the figures worked out on this device, ONE Gemini call for the
+ * words, and a row in `reports`.
+ *
+ * It reuses the Review screen's own prompt on purpose. The report IS that
+ * screen's summary for a fixed span, and a second prompt would be a second
+ * voice and twice as much to keep true — the Stage 5 lesson, where one prompt
+ * edit had to invalidate every cached summary on both devices.
+ *
+ * THE MODEL IS NEVER LOOPED. One call, for the whole span, over figures that
+ * are already finished. A call per day, per project or per prayer is the
+ * failure mode `docs/ProBeing_Execution_Plan.md` names, and against twenty
+ * calls a day it is fatal rather than merely slow.
+ *
+ * @returns a sentence saying what went wrong, for the note under the list, or
+ *          '' when the report was written and saved.
+ */
+async function generateReport(win) {
+  // Before anything is read: a span reaching back past the first row is refused
+  // by name, never answered with a confident zero for the days before it.
+  var floor = await checkRangeFloor(win.start);
+  if (!floor.ok) return floor.message;
+
+  var prior = priorRangeOf(win);
+  var priorKnown = rangeFloor(prior.start, floor.earliest).ok;
+
+  // One read covering both spans, exactly as runReview() does it.
+  var rows = await rangeEvents(
+    new Date(priorKnown ? prior.start : win.start).toISOString(),
+    new Date(win.end.getFullYear(), win.end.getMonth(), win.end.getDate() + 1).toISOString());
+
+  /* THE SAME ARITHMETIC THE REVIEW SCREEN DRAWS, out of the same function. Not
+   * a copy of it: a second copy would be a second answer to "how many hours was
+   * last week", and the saved report would slowly stop matching the screen. */
+  var got = spanFigures(rows, win, prior, priorKnown, projectCategories);
+
+  if (got.sum.empty) {
+    /* Nothing was logged, so there is nothing for a paragraph to be about and
+     * no call is spent. Saving an empty report would also make this span read
+     * as "already reported" for ever. */
+    return 'Nothing was logged between ' + ymdLocal(win.start) + ' and ' +
+           ymdLocal(win.end) + ', so there is no report to write. No Gemini call was used.';
+  }
+
+  var prompt = reviewPrompt(win, { sum: got.sum, tasks: got.tasks }, got.earlier,
+                            projectCategories, got.pace);
+
+  /* Checked HERE rather than by the caller, and checked twice over. Everything
+   * above this line is free — no call has left the device — and the pacer's
+   * answer thirty seconds ago is not its answer now. */
+  if (!canAskGemini()) {
+    return geminiCallsLeft() <= 0
+      ? quotaWait(GEMINI_BUDGET_SPENT) + ' The report can be written tomorrow, ' +
+        'and nothing is lost by waiting: it is worked out from rows that are not going anywhere.'
+      : 'The report needs Gemini, which is unavailable right now.';
+  }
+  var waitMs = geminiPacerWaitMs();
+  if (waitMs > 0) {
+    return 'Gemini\'s per-minute limit is full — try again in about ' +
+           Math.ceil(waitMs / 1000) + ' seconds.';
+  }
+
+  var answer = await askReviewProse(prompt);      // the one call, and the only one
+  paintReviewUsage();
+
+  /* NOTHING IS SAVED WITHOUT WORDS. A row with an empty `text` would count as
+   * "this span has been reported" for ever and the span would never be written
+   * properly. Refusing costs nothing: the figures are recomputed from the rows
+   * every time anyway. Judged by the same function the review screen uses, so
+   * the two cannot come to different conclusions about the same reply. */
+  var verdict = judgeProse(answer);
+  if (!verdict.ok) {
+    return 'No report written' + (verdict.why ? ' — ' + verdict.why : '.') +
+           ' Nothing was saved.';
+  }
+
+  await saveReport(win, answer,
+                   reportStats(got.sum, prayerStats(got.inRange, got.windows)),
+                   lastGeminiModel);
+  return '';
+}
+
+/* HOW MUCH OF THE DAY MUST BE LEFT before a report is written WITHOUT being
+ * asked for. Opening a tab must never spend the last call: the ones after it
+ * are what name the projects on everything Saad logs for the rest of the day,
+ * and a report is worth less than that. Below this line the button appears and
+ * says so — the same decision, made out loud instead of silently. */
+var REPORT_AUTO_RESERVE = 3;
+
+/* Which spans have already been attempted in this page's lifetime AND cost a
+ * call. Review is a tab somebody flicks in and out of, and a refused call is
+ * spent whether or not it answered — without this a bad afternoon could spend
+ * the whole allowance three taps at a time. Only failures that really sent
+ * something are recorded, so a refusal that cost nothing (a span before the
+ * first row, a span with no entries) is free to be re-read next time. In memory
+ * only: a reload is a fresh decision. */
+var reportTried = userMap();
+
+/** The span the button will write. Held here because the button is wired once
+ *  at load and the list is drawn many times. */
+var reportWanted = null;
+
+/** One at a time. Two fast tab switches must not start two reports, which is
+ *  two Gemini calls for one thing nobody asked for twice. */
+var reportsBusy = false;
+
+/**
+ * The first span with no report saved for it, or null when there is nothing
+ * left that can be written. Compared on (period, start_date), which is the same
+ * pair the unique index uses — so "already reported" means exactly what the
+ * database means by it.
+ *
+ * A SPAN THE FLOOR REFUSES IS NOT MISSING, IT IS UNREPORTABLE. Telling those two
+ * apart is the whole job of `earliestAt`, and treating them as one thing is a
+ * button that never changes: August 2026 opens on the 1st, this account's first
+ * row is the 27th, so August can never be written — offered on every visit,
+ * refused the instant it is pressed, and hiding the rewrite path for the week
+ * that did work behind it. Skipping it costs nothing, because a span that opens
+ * before the first row has no rows for a report to be about.
+ *
+ * @param earliestAt the account's min(at) as an ISO instant, or '' when there
+ *        are no rows at all — which makes every span unreportable, and for an
+ *        empty account that is the right answer rather than an edge case.
+ */
+function missingReport(saved, now, earliestAt) {
+  var have = userMap();                    // keyed by period|date, so no prototype
+  (saved || []).forEach(function (r) {
+    have[String(r.period) + '|' + String(r.start_date).slice(0, 10)] = 1;
+  });
+
+  var want = null;
+  REPORT_PERIODS.forEach(function (period) {
+    if (want) return;
+    var win = reportRangeOf(period, now);
+    if (!rangeFloor(win.start, earliestAt).ok) return;   // unreportable, so skip it
+    if (have[win.period + '|' + ymdLocal(win.start)] !== 1) want = win;
+  });
+  return want;
+}
+
+/** Write `win`'s report and put the refreshed list on screen. Returns a sentence
+ *  for the note — empty when it worked. */
+async function writeReport(win) {
+  $('reportNote').textContent = 'Writing the report for ' + spanText(win) +
+    ' — one Gemini call…';
+
+  var trouble;
+  try {
+    trouble = await generateReport(win);
+  } catch (err) {
+    trouble = 'Could not write the report: ' + String((err && err.message) || err);
+  }
+  if (trouble) return trouble;
+
+  try {
+    renderReports(await savedReports());
+  } catch (err) {
+    return 'The report was saved, but the list could not be re-read: ' +
+           String((err && err.message) || err);
+  }
+  return '';
+}
+
+/**
+ * The Past Reports half of the screen: read what is saved, draw it, and write
+ * the missing one — but only when there is room in the day to do it unasked.
+ *
+ * Never throws. This runs after the review has drawn itself, and a report that
+ * cannot be written must cost a line of explanation and nothing else.
+ *
+ * DELIBERATELY NOT CALLED BY THE BUTTON. Pressing Write is one decision to spend
+ * one call, and re-entering here afterwards would find the OTHER span still
+ * missing and write that too — two calls for one press. The button therefore
+ * updates the list and its own label itself, and the next visit picks up
+ * whatever is still outstanding.
+ */
+async function refreshReports() {
+  if (reportsBusy) return;
+  reportsBusy = true;
+
+  try {
+    var note = $('reportNote');
+    var btn = $('reportMakeBtn');
+    btn.hidden = true;
+    reportWanted = null;
+
+    if (!usingSupabase() || !supabaseReady()) {
+      $('reportList').textContent = '';
+      note.textContent = 'Saved reports need the Supabase backend and a signed-in account.';
+      return;
+    }
+
+    var saved;
+    try {
+      saved = await savedReports();
+    } catch (err) {
+      note.textContent = 'Could not read your saved reports: ' +
+                         String((err && err.message) || err);
+      return;
+    }
+    renderReports(saved);
+    note.textContent = saved.length ? '' : 'No reports saved yet.';
+
+    var now = new Date();
+
+    /* How far back the data goes, read before anything is decided, because a
+     * span that opens before the first row cannot be reported at all and must
+     * not be what the button advertises. One indexed row — nowhere near a
+     * Gemini call. */
+    var earliest;
+    try {
+      earliest = await earliestEventAt();
+    } catch (err) {
+      /* No button, deliberately: its label and its target both come from
+       * `earliest`, so offering one here risks spending a Gemini call on the
+       * wrong month. But every other refusal on this card ends with something
+       * Saad can do, and this one ended with a browser's own error string.
+       * Reopening the tab IS the retry — showScreen('review') calls
+       * openReview() on every visit — and nothing said so. */
+      note.textContent = 'Could not check how far back your data goes: ' +
+                         String((err && err.message) || err) +
+                         '. Open this tab again to retry.';
+      return;
+    }
+
+    var want = missingReport(saved, now, earliest);
+
+    /* With nothing missing the button still points at the last complete week,
+     * so a report can be rewritten deliberately — a week whose projects have
+     * since been filed under their headings reads quite differently. Pressing it
+     * overwrites that week's row rather than adding a second one; the unique
+     * index sees to that. That fallback is offered only when the week is itself
+     * inside the data, for the same reason an unreportable span is skipped
+     * above: a button that is refused every time it is pressed is worse than no
+     * button. */
+    var week = reportRangeOf('week', now);
+    var weekFloor = rangeFloor(week.start, earliest);
+    reportWanted = want || (weekFloor.ok ? week : null);
+
+    if (!reportWanted) {
+      /* Nothing here can be written yet — not even a rewrite. Name the span and
+       * give rangeFloor()'s own reason, rather than leaving a card with no
+       * button and no explanation for why. */
+      note.textContent = spanText(week) + ': ' + weekFloor.message;
+      return;
+    }
+
+    var kind = reportWanted.period === 'week' ? 'weekly' : 'monthly';
+    btn.textContent = (want ? 'Write the ' : 'Rewrite the ') + kind + ' report';
+    btn.hidden = false;
+
+    if (!want) return;
+
+    var key = want.period + '|' + ymdLocal(want.start) + '|' + localDayStamp();
+    var left = geminiCallsLeft();
+    var waitMs = geminiPacerWaitMs();
+    var why = '';
+
+    if (reportTried[key] === 1) why = 'It was tried a moment ago and did not work.';
+    else if (left <= REPORT_AUTO_RESERVE) {
+      why = 'It was not written by itself because only ' + left + ' of today\'s ' +
+            geminiDailyBudget() + ' Gemini calls are left, and opening a tab must ' +
+            'never spend the last of them.';
+    } else if (waitMs > 0) {
+      why = 'Gemini\'s per-minute limit is full for another ' +
+            Math.ceil(waitMs / 1000) + ' seconds.';
+    }
+
+    if (why) {
+      note.textContent = spanText(want) + ' has no report yet. ' + why +
+        ' Press the button to write it anyway — it costs a single Gemini call.';
+      return;
+    }
+
+    var before = geminiUsedToday();
+    var trouble = await writeReport(want);
+    if (geminiUsedToday() > before) reportTried[key] = 1;
+
+    /* Named, exactly as the branch above names it. This sentence lands under a
+     * list that may have another span's report sitting at the top of it, and a
+     * bare "No data before …" then reads as a verdict on the report you can
+     * see rather than on the one that was refused. */
+    note.textContent = trouble ? spanText(want) + ': ' + trouble : '';
+    // It exists now, so the button's job changes from writing to rewriting.
+    if (!trouble) btn.textContent = 'Rewrite the ' + kind + ' report';
+  } finally {
+    reportsBusy = false;
+  }
+}
+
+$('reportMakeBtn').addEventListener('click', async function () {
+  var win = reportWanted;
+  if (!win || reportsBusy) return;
+
+  reportsBusy = true;
+  this.disabled = true;
+  try {
+    var trouble = await writeReport(win);
+    $('reportNote').textContent = trouble;
+    if (!trouble) {
+      this.textContent = 'Rewrite the ' +
+        (win.period === 'week' ? 'weekly' : 'monthly') + ' report';
+    }
+  } finally {
+    this.disabled = false;
+    reportsBusy = false;
+  }
+});
 
 // ------------------------------------------ which kind of work is a project
 
