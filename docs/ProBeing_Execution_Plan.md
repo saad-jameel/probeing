@@ -32,7 +32,7 @@ shipped in `f733804`; `CLAUDE.md` carries the full reasoning.
 > | ✅ | 3.5 Finish the move | done 30 Aug — Gemini key, Edge Function, `reports` table, sign-ups off |
 > | ✅ | 4 Tracker + Voice | signed off 2 Sep — two fallback checks left untested on purpose, see the stage |
 > | ✅ | **5 Review Button** | **signed off 8 Sep** on both devices, against real rows and real Gemini calls. One change came out of the first read — see the stage |
-> | 🟡 | **6 Weekly & Monthly Reports** | **built and shipped 8 Sep, not signed off.** The app writes reports when Review opens; `pg_cron` deferred to Stage 7 by Saad's decision. Needs one SQL policy run by hand, then a read on both devices |
+> | ✅ | **6 Weekly & Monthly Reports** | **signed off 8 Sep** on both devices, including a rewrite leaving one row. M and prayer figures unverified until **14 Sep** — last week had zero of both |
 > | ⬜ | 7 Notifications + wrapup + offline | not started. **7a was to run alongside Stage 5, which is now closed.** The glance (7b) was decided on 2 Sep — an ongoing notification, not a native widget — so 7a is now its only dependency |
 > | ⬜ | 8 Native wrapper | not started, correctly deferred |
 >
@@ -410,18 +410,35 @@ it should be entered as "7a then 7b", not as a filler task.
 
 ---
 
-## 🟡 Stage 6 — Weekly & Monthly Reports — BUILT AND SHIPPED, NOT SIGNED OFF (8 Sep 2026)
+## ✅ Stage 6 — Weekly & Monthly Reports — SIGNED OFF (8 Sep 2026)
 
-> **Nobody has opened this in a browser, and no report has ever been written.**
-> The validator passed all 14 checklist items it could run and re-passed a
-> two-item fix round, but four are marked SKIPPED for the same reason Stage 5's
-> were: there is no signed-in session on this machine, so `generateReport()` has
-> never spent a real Gemini call and `reports` is still empty. **One thing must
-> happen before any of it works** — the `update own reports` policy in
-> `docs/supabase_schema.sql` is not on the live database, and the validator
-> proved the consequence rather than assuming it: a rewrite returns `42501 new
-> row violates row-level security policy`. First write of a span succeeds;
-> the second fails until Saad runs the SQL.
+> **Built, shipped and signed off the same day.** Saad ran the `update own
+> reports` policy in the Supabase SQL editor, then checked three things and all
+> three worked: last week's report wrote itself when Review opened on the
+> laptop; pressing the button again rewrote it and left **exactly one** row for
+> that week — which is the policy and the unique index agreeing in practice, the
+> thing the validator could only reason about; and the phone showed the saved
+> report at no Gemini cost.
+>
+> **One pair of figures is NOT verified, and the date it gets checked is
+> 14 Sep 2026.** Last week (31 Aug – 6 Sep) contains **zero M rows and zero
+> prayer rows** — counted against the live database, not assumed — so the report
+> honestly reads `0 M · 0 prayers`. That proves the code does not invent
+> numbers; it proves nothing about counting real ones. The breakdown logic has
+> 36 fixture tests behind it, but the path from a real `type:'prayer'` row
+> (name in `project`, mode in `detail`) through to the saved `stats` has never
+> carried a real row. Reports only cover completed periods, so nothing logged
+> after 7 Sep can be reported until **Monday 14 Sep**, when the current week
+> closes. No special test logging was asked for — ordinary use over that week is
+> the check.
+>
+> **Open by decision, not oversight: the per-prayer breakdown is computed and
+> saved but never shown.** `reportStats()` writes `prayerBreakdown` — five
+> prayers crossed with three modes plus a missed count — into `stats`, and the
+> card on screen shows only a total (`… · 5 M · 12 prayers · 5/7 days logged`).
+> Reading which prayers were missed means opening the Supabase table editor.
+> `docs/Review_Spec.md` asks for the breakdown by name, so this is a gap between
+> the spec and the screen. Raised with Saad at sign-off and left undecided.
 
 
 > The `reports` table exists — added 30 Aug, and `docs/supabase_schema.sql` is
