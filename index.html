@@ -331,6 +331,23 @@
       </div>
 
       <div class="dlg-block">
+        <h3>Bedtime notifications</h3>
+        <p class="hint">If your day is still open at <strong>11:30 pm</strong>, ProBeing
+          asks &ldquo;still awake?&rdquo; as a real notification &mdash; on the lock screen,
+          with the app closed. Tap <strong>Yes</strong> and it asks again at 1 am. Ignore it
+          and your day is recorded as having ended <strong>at 11:30</strong>, not at half past
+          midnight when it gave up waiting.</p>
+        <p class="hint">Turn this on once per device. Android may also need ProBeing&rsquo;s
+          battery setting to be <strong>Unrestricted</strong>, or Chrome sleeps and the
+          notification arrives in the morning.</p>
+        <div class="dlg-actions" style="justify-content: flex-start">
+          <button type="button" id="pushOnBtn" class="btn">Turn on notifications</button>
+          <button type="button" id="pushTestBtn" class="btn">Send me a test push now</button>
+        </div>
+        <p id="pushResult" class="hint"></p>
+      </div>
+
+      <div class="dlg-block">
         <h3>Bring the old Sheet across</h3>
         <p class="hint">Your history before the move still lives in the Google Sheet.
           Download the <strong>Log</strong> and <strong>Prayers</strong> tabs as CSV

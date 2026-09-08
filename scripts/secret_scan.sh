@@ -153,7 +153,70 @@ else
   pass "no service_role credential shape in tracked files"
 fi
 
-# --- 7. history, not just the working tree ----------------------------------
+# --- 7. the VAPID pair, and the cron secret (Stage 7a) -----------------------
+# The push notification keys are a PAIR, and the two halves have opposite rules.
+#
+# The PUBLIC half is hard-coded in app.js on purpose, exactly like the Supabase
+# anon key above it: it names the sender, it can only ever CHECK a signature, and
+# the browser needs it before any network call has happened. So this section does
+# not flag it — it checks that what is committed really is the public half. A
+# P-256 public key is a 65-byte point beginning 0x04; a private key is not, and
+# pasting one where the other belongs is the mistake worth catching here.
+#
+# The PRIVATE half and the cron secret live only in ~/.probeing/ and in Supabase's
+# secret store. The private key can forge a push from ProBeing to any device that
+# has ever subscribed; the cron secret can make the wrapup function write rows as
+# you, at any hour it likes.
+VAPID_IN_APP=$(scan -hoE -- "VAPID_PUBLIC_KEY = '[A-Za-z0-9_-]{80,}'" -- '*.js' '*.html')
+if [ -n "$VAPID_IN_APP" ]; then
+  VAPID_KEY=$(printf '%s' "$VAPID_IN_APP" | head -1 | sed "s/.*'\(.*\)'.*/\1/")
+  # Decoded by hand, because the shape IS the check: 65 bytes starting 0x04.
+  VPAD=$(( (4 - ${#VAPID_KEY} % 4) % 4 ))
+  VBYTES=$(printf '%s%s' "$VAPID_KEY" "$(printf '=%.0s' $(seq 1 $VPAD) 2>/dev/null)" \
+           | tr '_-' '/+' | base64 -d 2>/dev/null | od -An -tu1 | tr -s ' ' '\n' | grep -c .)
+  VFIRST=$(printf '%s%s' "$VAPID_KEY" "$(printf '=%.0s' $(seq 1 $VPAD) 2>/dev/null)" \
+           | tr '_-' '/+' | base64 -d 2>/dev/null | od -An -tu1 -N1 | tr -d ' ')
+  if [ "$VBYTES" = "65" ] && [ "$VFIRST" = "4" ]; then
+    pass "committed VAPID key is the PUBLIC half (65-byte P-256 point) — deliberate, and safe"
+  else
+    fail "the VAPID key in a tracked file is not a 65-byte public point ($VBYTES bytes, first byte $VFIRST)"
+    printf '        %s\n' "if that is the PRIVATE key, rotate it: node scripts/make_vapid.js"
+  fi
+else
+  pass "no VAPID key in tracked files"
+fi
+
+# By value: the two files this machine holds must appear in nothing tracked.
+for pair in "vapid_private.txt:VAPID private key" "cron_secret.txt:cron secret"; do
+  SFILE="$HOME/.probeing/${pair%%:*}"
+  SWHAT="${pair#*:}"
+  if [ -r "$SFILE" ]; then
+    SVAL=$(tr -d '[:space:]' < "$SFILE")
+    if [ ${#SVAL} -ge 20 ]; then
+      SHITS=$(scan -lI --fixed-strings -- "$SVAL")
+      if [ -n "$SHITS" ]; then
+        fail "the $SWHAT is in a tracked file:"
+        printf '        %s\n' $SHITS
+      else
+        pass "$SWHAT absent from tracked files"
+      fi
+    fi
+  fi
+done
+
+# By shape, which works even on a machine that does not hold the files. The
+# prefix below is the DER header every P-256 PKCS#8 private key starts with —
+# confirmed against the one scripts/make_vapid.js writes, not guessed.
+KEY_SHAPE=$(scan -nIE -- 'MIGHAgEAMBMGByqGSM49AgEGCCqGSM49AwEH|BEGIN (EC )?PRIVATE KEY' \
+            -- . ':!scripts/secret_scan.sh')
+if [ -n "$KEY_SHAPE" ]; then
+  fail "a private key is in a tracked file:"
+  printf '        %s\n' "$KEY_SHAPE" | head -3
+else
+  pass "no private key shape in tracked files"
+fi
+
+# --- 8. history, not just the working tree ----------------------------------
 # A secret removed in a later commit is still public in an earlier one.
 if [ "$QUICK" -eq 0 ] && git rev-parse HEAD >/dev/null 2>&1; then
   HIST_BAD=0
@@ -176,6 +239,33 @@ if [ "$QUICK" -eq 0 ] && git rev-parse HEAD >/dev/null 2>&1; then
     printf '        %s\n' "rotate that key in Google AI Studio — deleting the commit is not enough"
     HIST_BAD=1
   fi
+  # Stage 7a's two. A key removed in the next commit is still public in this
+  # one, and the VAPID private key is the one credential here that cannot be
+  # rotated without silently unsubscribing every device.
+  for pair in "vapid_private.txt:VAPID private key" "cron_secret.txt:cron secret"; do
+    HFILE="$HOME/.probeing/${pair%%:*}"
+    HWHAT="${pair#*:}"
+    if [ -r "$HFILE" ]; then
+      HVAL=$(tr -d '[:space:]' < "$HFILE")
+      if [ ${#HVAL} -ge 20 ]; then
+        HIST_ONE=$(git log -S"$HVAL" --oneline --all 2>/dev/null)
+        if [ -n "$HIST_ONE" ]; then
+          fail "the $HWHAT appears in committed history"
+          printf '        %s\n' "$HIST_ONE" | head -3
+          HIST_BAD=1
+        fi
+      fi
+    fi
+  done
+  HIST_PRIV=$(git log -S'MIGHAgEAMBMGByqGSM49AgEGCCqGSM49AwEH' --pickaxe-regex --oneline --all \
+                -- . ':!scripts/secret_scan.sh' 2>/dev/null)
+  if [ -n "$HIST_PRIV" ]; then
+    fail "a P-256 private key appears in committed history"
+    printf '        %s\n' "$HIST_PRIV" | head -3
+    printf '        %s\n' "regenerate the VAPID pair and re-subscribe both devices; removing the commit is not enough"
+    HIST_BAD=1
+  fi
+
   HIST_URL=$(git log -S'macros/s/' --oneline --all -- . 2>/dev/null | head -3)
   if [ -n "$HIST_URL" ]; then
     # Only fail on a real-length id, not the placeholder in docs.

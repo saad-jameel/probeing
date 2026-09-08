@@ -193,6 +193,12 @@ function adoptSession(session) {
     signInDlg.close();
     watchLive();
     refresh();
+    /* Every launch, not just the first: a push subscription dies silently — a
+     * browser update or a long idle and the endpoint answers 410 Gone — so the
+     * only thing that keeps the 11:30 PM check working past a few weeks is
+     * writing it down again each time the app opens. Nothing is asked of the
+     * user here; it does nothing at all unless permission was already given. */
+    syncPushSubscription();
   } else if (!sbUser) {
     stopLive();
     askSignIn();
@@ -6386,6 +6392,7 @@ $('settingsBtn').addEventListener('click', function () {
   renderCategorySettings();
   $('micHide').checked = Boolean(cfg.hideMic);
   $('testResult').textContent = '';
+  paintPushState();
   dlg.showModal();
 });
 
@@ -6756,6 +6763,236 @@ $('saveBtn').addEventListener('click', function () {
     initSupabase();
   }
   if (usingSupabase() && !sbUser) askSignIn(); else refresh();
+});
+
+// ------------------------------------------------- bedtime notifications
+
+/* Stage 7a. The app's half of the 11:30 PM check: get a postbox from the
+ * browser's push service, tell Supabase where it is, and keep it current.
+ * Everything after that happens in sw.js and in the `wrapup` Edge Function,
+ * because by then the app is closed and the phone is face down.
+ *
+ * NOTHING HERE ADDS A TAP TO LOGGING. It runs on launch and from Settings, and
+ * never from the path an M or a prayer takes.
+ */
+
+/* SHIPPED ON PURPOSE, and safe to — for exactly the reason the anon key at the
+ * top of this file is. This is the PUBLIC half of the VAPID pair: it says who
+ * the sender is, and it can only be used to check a signature, never to make
+ * one. The private half was written to ~/.probeing/ by scripts/make_vapid.js and
+ * lives in the Edge Function's secrets.
+ *
+ * It has to be here rather than in Settings because the browser wants it at
+ * subscribe time, before anything has been read from the network, and because a
+ * key nobody can type wrongly is a key nobody types. */
+var VAPID_PUBLIC_KEY = 'BBXOK45W7ya1yq1YB7rGNtHOri4Ur6a3bqgBP9f1-hs15jv-kVbjsjZtyP7SLNP6gUd4WUuT8tpFxbglF29E7Zk';
+
+/** base64url text -> bytes. `pushManager.subscribe` wants the key as bytes, and
+ *  atob is the only decoder a browser ships. */
+function b64urlBytes(text) {
+  var norm = String(text || '').replace(/-/g, '+').replace(/_/g, '/');
+  var raw = atob(norm + '='.repeat((4 - (norm.length % 4)) % 4));
+  var out = new Uint8Array(raw.length);
+  for (var i = 0; i < raw.length; i++) out[i] = raw.charCodeAt(i);
+  return out;
+}
+
+/** bytes -> base64url, for the two keys the subscription hands back. */
+function bytesB64url(buf) {
+  var bytes = new Uint8Array(buf);
+  var s = '';
+  for (var i = 0; i < bytes.length; i++) s += String.fromCharCode(bytes[i]);
+  return btoa(s).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+}
+
+function pushSupported() {
+  return 'serviceWorker' in navigator && 'PushManager' in window &&
+         typeof Notification !== 'undefined';
+}
+
+/** Which device this row is, in words. There is nothing else in the table that
+ *  tells the phone's subscription from the laptop's. */
+function deviceLabel() {
+  var ua = String(navigator.userAgent || '');
+  if (/Android/i.test(ua)) return 'Phone (Android)';
+  if (/iPhone|iPad/i.test(ua)) return 'Phone (iOS)';
+  if (/Windows/i.test(ua)) return 'Laptop (Windows)';
+  if (/Mac OS X/i.test(ua)) return 'Laptop (Mac)';
+  if (/Linux/i.test(ua)) return 'Laptop (Linux)';
+  return 'Unknown device';
+}
+
+/**
+ * This device's push subscription, made if it does not exist.
+ *
+ * A SUBSCRIPTION ALREADY SIGNED TO A DIFFERENT KEY IS THROWN AWAY FIRST. The
+ * browser refuses to re-subscribe with a new applicationServerKey and throws
+ * InvalidStateError instead, which would read as "notifications are broken" for
+ * ever afterwards. Regenerating the VAPID pair should cost one silent
+ * re-subscribe, not a support case.
+ */
+async function pushSubscription() {
+  var reg = await navigator.serviceWorker.ready;
+  var have = await reg.pushManager.getSubscription();
+
+  if (have) {
+    var signedTo = have.options && have.options.applicationServerKey;
+    if (signedTo && bytesB64url(signedTo) !== VAPID_PUBLIC_KEY) {
+      await have.unsubscribe();
+      have = null;
+    }
+  }
+  if (have) return have;
+
+  return reg.pushManager.subscribe({
+    // Chrome only grants a subscription on the promise that every push shows
+    // something. sw.js keeps that promise; see the push handler there.
+    userVisibleOnly: true,
+    applicationServerKey: b64urlBytes(VAPID_PUBLIC_KEY)
+  });
+}
+
+/**
+ * Write the subscription down where the Edge Function can find it.
+ *
+ * An overwrite, keyed on the endpoint, because THE POSTBOX CHANGES WITHOUT
+ * WARNING. A browser update, a long idle spell, a reinstall — the old endpoint
+ * starts answering 410 Gone and the new one is simply different. The failure is
+ * completely silent: everything goes on working for three weeks and then the
+ * notifications stop, with no error anywhere. Overwriting on every launch is the
+ * cheap half of the fix; the Edge Function deleting a 410'd row is the other.
+ */
+async function savePushSubscription(sub) {
+  var res = await sb.from('push_subscriptions').upsert({
+    // Named explicitly: the column's default only fires on an insert, and this
+    // statement is an insert-or-update.
+    user_id: sbUser.id,
+    endpoint: sub.endpoint,
+    p256dh: bytesB64url(sub.getKey('p256dh')),
+    auth: bytesB64url(sub.getKey('auth')),
+    label: deviceLabel(),
+    last_seen_at: new Date().toISOString()
+  }, { onConflict: 'endpoint' });
+  if (res.error) throw errorFrom(res.error);
+}
+
+/** On every launch, quietly. Never asks for permission — that is the Settings
+ *  button's job, and a permission prompt on startup is how a person clicks
+ *  Block once and never sees a notification again. */
+async function syncPushSubscription() {
+  if (!pushSupported() || !usingSupabase() || !supabaseReady()) return;
+  if (Notification.permission !== 'granted') return;
+  try {
+    await savePushSubscription(await pushSubscription());
+  } catch (e) { /* a device that cannot subscribe still logs perfectly well */ }
+}
+
+/** Where the `wrapup` function lives, from whatever Settings holds. */
+function wrapupUrl() {
+  return String(cfg.supaUrl || '').trim().replace(/\/+$/, '') + '/functions/v1/wrapup';
+}
+
+/** Ask the Edge Function to push something to every device on the account. */
+async function callWrapup(body) {
+  var got = await sb.auth.getSession();
+  var session = got && got.data ? got.data.session : null;
+  if (!session || !session.access_token) throw new Error('Sign in first.');
+
+  var res = await fetch(wrapupUrl(), {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'Authorization': 'Bearer ' + session.access_token,
+      'apikey': String(cfg.supaKey || '').trim()
+    },
+    body: JSON.stringify(body)
+  });
+  var data = await res.json().catch(function () { return null; });
+  if (!res.ok || !data || !data.ok) {
+    throw new Error((data && data.error) || ('HTTP ' + res.status));
+  }
+  return data;
+}
+
+/** What the Settings block says about this device, before anything is pressed. */
+function paintPushState() {
+  var out = $('pushResult');
+  if (!out) return;
+
+  if (!pushSupported()) {
+    out.textContent = 'This browser cannot do notifications at all.';
+    return;
+  }
+  if (Notification.permission === 'denied') {
+    out.textContent = 'Notifications are blocked for this site. Chrome will not ask ' +
+      'again — turn them back on in the padlock menu next to the address bar ' +
+      '(Site settings → Notifications), then press the button.';
+    return;
+  }
+  if (Notification.permission !== 'granted') {
+    out.textContent = 'Not on for this device yet.';
+    return;
+  }
+  out.textContent = 'On for this device.';
+}
+
+$('pushOnBtn').addEventListener('click', async function () {
+  var out = $('pushResult');
+  if (!pushSupported()) { out.textContent = 'This browser cannot do notifications.'; return; }
+  if (cfg.backend !== 'supabase') { out.textContent = 'Notifications run on Supabase only.'; return; }
+  if (!sb || !sbUser) { out.textContent = 'Sign in first.'; return; }
+
+  out.textContent = 'Asking the browser…';
+  var granted;
+  try {
+    granted = await Notification.requestPermission();
+  } catch (e) {
+    out.textContent = 'The browser refused: ' + ((e && e.message) || e);
+    return;
+  }
+  if (granted !== 'granted') {
+    paintPushState();
+    return;
+  }
+
+  out.textContent = 'Registering this device…';
+  try {
+    await savePushSubscription(await pushSubscription());
+  } catch (e) {
+    out.textContent = '❌ Could not register this device: ' + ((e && e.message) || e);
+    return;
+  }
+  out.textContent = '✅ On for this device. Press "Send me a test push now" to prove it.';
+});
+
+$('pushTestBtn').addEventListener('click', async function () {
+  var out = $('pushResult');
+  if (cfg.backend !== 'supabase') { out.textContent = 'Notifications run on Supabase only.'; return; }
+  if (!sb || !sbUser) { out.textContent = 'Sign in first.'; return; }
+
+  out.textContent = 'Sending…';
+  try {
+    /* Re-registering first, because the commonest reason a test push does not
+     * arrive is a subscription this device made before it was signed in — the
+     * row was never written, and the function has nowhere to send to. */
+    if (pushSupported() && Notification.permission === 'granted') {
+      await savePushSubscription(await pushSubscription());
+    }
+    var data = await callWrapup({ test: true });
+    if (!data.sent) {
+      out.textContent = '⚠️ Nothing was sent: no device is registered' +
+        (data.dropped ? ' (' + data.dropped + ' dead one dropped)' : '') +
+        '. Press "Turn on notifications" first.';
+      return;
+    }
+    out.textContent = '✅ Sent to ' + data.sent + ' device' +
+      (data.sent === 1 ? '' : 's') +
+      (data.failed ? ', ' + data.failed + ' refused' : '') +
+      (data.dropped ? ', ' + data.dropped + ' dead one dropped' : '') +
+      '. It should arrive within a few seconds.';
+  } catch (e) {
+    out.textContent = '❌ ' + ((e && e.message) || e);
+  }
 });
 
 // -------------------------------------------------------------------- boot

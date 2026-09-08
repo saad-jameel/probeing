@@ -32,8 +32,10 @@ shipped in `f733804`; `CLAUDE.md` carries the full reasoning.
 > | ✅ | 3.5 Finish the move | done 30 Aug — Gemini key, Edge Function, `reports` table, sign-ups off |
 > | ✅ | 4 Tracker + Voice | signed off 2 Sep — two fallback checks left untested on purpose, see the stage |
 > | ✅ | **5 Review Button** | **signed off 8 Sep** on both devices, against real rows and real Gemini calls. One change came out of the first read — see the stage |
-> | ✅ | **6 Weekly & Monthly Reports** | **signed off 8 Sep** on both devices, including a rewrite leaving one row. M and prayer figures unverified until **14 Sep** — last week had zero of both |
-> | ⬜ | 7 Notifications + wrapup + offline | not started. **7a was to run alongside Stage 5, which is now closed.** The glance (7b) was decided on 2 Sep — an ongoing notification, not a native widget — so 7a is now its only dependency |
+> | ✅ | **6 Weekly & Monthly Reports** | **signed off 8 Sep** on both devices, including a rewrite leaving one row. M and prayer counting verified the same day through Review's own "This week" |
+> | 🟡 | **7a Push + the nightly wrapup** | **built and shipped 8 Sep, not signed off.** Needs the dashboard steps run and a real push received on both devices. No Gemini in it |
+> | ⬜ | 7b The home-screen glance | not started, and **not blocked on 7a** — a page can post its own notification. See the stage |
+> | ⬜ | 7c Offline logging | not started; touches the write path only, overlaps nothing |
 > | ⬜ | 8 Native wrapper | not started, correctly deferred |
 >
 > **A great deal was built with no stage number.** Read *Built, but never planned*
@@ -420,17 +422,21 @@ it should be entered as "7a then 7b", not as a filler task.
 > thing the validator could only reason about; and the phone showed the saved
 > report at no Gemini cost.
 >
-> **One pair of figures is NOT verified, and the date it gets checked is
-> 14 Sep 2026.** Last week (31 Aug – 6 Sep) contains **zero M rows and zero
-> prayer rows** — counted against the live database, not assumed — so the report
-> honestly reads `0 M · 0 prayers`. That proves the code does not invent
-> numbers; it proves nothing about counting real ones. The breakdown logic has
-> 36 fixture tests behind it, but the path from a real `type:'prayer'` row
-> (name in `project`, mode in `detail`) through to the saved `stats` has never
-> carried a real row. Reports only cover completed periods, so nothing logged
-> after 7 Sep can be reported until **Monday 14 Sep**, when the current week
-> closes. No special test logging was asked for — ordinary use over that week is
-> the check.
+> **The M and prayer figures were closed the same day, and the deferral that
+> stood here for an afternoon was wrong.** This section first said they could
+> not be checked before 14 Sep, because last week (31 Aug – 6 Sep) holds zero M
+> rows and zero prayer rows and a saved report only covers a completed period.
+> Both halves were true; the conclusion was not. `renderReviewFigures()` draws
+> `sum.m` and `sum.prayers` from `spanFigures()` — **the same function
+> `generateReport()` uses** — so the Review picker's "This week" exercises the
+> identical counting path against live rows, today. Saad opened it on 8 Sep and
+> read `2 M` and `2 prayers`, matching the two of each logged that morning.
+>
+> The lesson is the one Stage 5 already taught in a different costume: *a thing
+> is unverifiable* and *the obvious route to it is closed* are different claims,
+> and this file conflated them twice in a week. What genuinely waits for 14 Sep
+> is only cosmetic — a **saved report** whose figures are not zero — and it runs
+> the same function, so nothing rides on it.
 >
 > **Open by decision, not oversight: the per-prayer breakdown is computed and
 > saved but never shown.** `reportStats()` writes `prayerBreakdown` — five
@@ -471,7 +477,12 @@ app, and its M count and prayer breakdown exactly match a manual count of the ra
 
 ---
 
-## ⬜ Stage 7 — Notifications, the daily wrapup, and offline — NOT STARTED
+## 🟡 Stage 7 — Notifications, the daily wrapup, and offline — SPLIT; 7a BUILT
+
+**Split into three on 8 Sep 2026**, because they turned out to share almost nothing.
+7a (the 11:30 PM wrapup) is **built and not yet verified** — no stage is done until it
+passes on both phone and laptop, and this one also needs a night nobody can simulate.
+7b and 7c are not started, and neither of them waits on 7a; see each.
 
 Rewritten 27 Aug from three requirements Saad gave verbatim and asked to have
 recorded, because he expected to forget them. They are reproduced here in full;
@@ -511,8 +522,59 @@ in-app banner, explicitly not email — asked and confirmed twice. An in-app ban
 fails the actual requirement, because the app is closed when he is asleep, which is
 precisely when this fires.
 
-**Depends on:** Stage 3.5 (a wrapup that reads a range must read a whole one), and a
-Gemini key if the compiled summary is to be prose rather than figures.
+**Depends on:** Stage 3.5 (a wrapup that reads a range must read a whole one).
+
+### 7a NEEDS NO GEMINI — corrected 8 Sep 2026
+
+This line used to end "…and a Gemini key, if the compiled summary is to be prose rather
+than figures." It is cut, and the three reasons are structural rather than preference:
+
+- The free tier is 20 calls a **DAY**. A nightly call spends a twentieth of it for ever,
+  every day, whether or not anything happened.
+- **The counter that rations those 20 lives in the browser** (`GEMINI_DAY_KEY` in
+  `app.js`). A call made on a server is invisible to it, so the app would not know it had
+  less than it thought — and would meet the shortfall as a refusal in the middle of the
+  afternoon, on a screen with no way to explain where the calls went.
+- 7a's two outputs are **a push notification and an event row**. Neither is prose.
+
+**A saved prose day-summary is therefore not part of 7a either.** If it is ever wanted it
+is one word — `'day'` — added to `REPORT_PERIODS` in `app.js`, on the architecture Stage 6
+already built and proved: the app writes the report when Review opens, from figures
+`replayDay()` has already computed. That is a small, known job, and it is not this one.
+
+**Which also means the two "compile" lines at the top of this section are not 7a's.**
+"Day ended after 9 PM → compile immediately" and "before 9 PM → wait until 11:30" are
+rules about producing a REPORT, and 7a produces none. What 7a implements is everything
+below them: the 11:30 PM question, the hour's wait, the 1:00 AM repeat, and closing the
+day at the time the question went out.
+
+### Built 8 Sep 2026 — the shape of it, for whoever reads this next
+
+- **`supabase/functions/wrapup/index.ts`** — one Edge Function, three doors. `pg_cron`
+  knocks with a shared secret in `x-cron-secret`; the Settings test button knocks with
+  the owner's own signed-in token; and the notification's Yes button knocks with a
+  **nonce**, because a service worker cannot read `localStorage` and therefore cannot see
+  the sign-in at all. It signs VAPID ES256 and encrypts the payload (RFC 8291) with
+  Deno's own Web Crypto — no library, no Firebase, no third party.
+- **`shouldWrapUp(last, open, now)`** — the decision, pure, taking `now` as an argument
+  like `reportRangeOf()` does, so 11:30 PM behaviour is testable at four in the
+  afternoon. `claudeWorkingDocs/tests/wrapup.js` lifts it out of the source rather than
+  copying it.
+- **Two tables**, `push_subscriptions` and `awake_checks`, in `docs/supabase_schema.sql`.
+- **Three decisions worth knowing**, because none is obvious from the spec:
+  - *The follow-up is 90 minutes after the question, not an hour after the answer.* The
+    spec names 11:30 PM and 1:00 AM; that gap is what it is. Measuring from the answer
+    would move the second question by however long his thumb took.
+  - *The closing edge is `max(when the question went out, the last row of the day)`.*
+    Ignoring the notification and carrying on working until 11:45 must not produce a day
+    that ended before its own last row. With no such row it is exactly 11:30, which is
+    the whole point of the stage.
+  - *If no push could be delivered, the check row is deleted rather than left open.*
+    Silence from a phone that was never rung is not an answer, and closing the day on it
+    would be the worst possible bug here — a wrong figure, produced quietly.
+- **The Karachi offset is a constant (+5:00), not a timezone lookup.** Pakistan has had
+  no daylight saving since 2009, and a fixed offset is what lets the decision stay pure.
+  Anywhere else this would be a bug waiting for a clock change.
 
 ---
 
@@ -551,9 +613,23 @@ whole wrapper for one box on a screen.
 **What it is not.** It is not on the home screen next to the app icons; it is one swipe
 down from any screen. Saad has seen both and chose this knowing that.
 
-**So 7b is no longer blocked — 7a is now its only dependency**, which is why 7a is the
-work that runs alongside Stage 5. Nothing in 7b can start before push notifications
-exist, because the notification *is* a push.
+### 7b DOES NOT DEPEND ON 7a — corrected 8 Sep 2026
+
+This section used to end: "7a is now its only dependency… nothing in 7b can start before
+push notifications exist, because the notification *is* a push." That is wrong about how
+notifications work, and it made 7b look like the tail of a large job.
+
+**A push is how a SERVER starts a notification while the app is closed.**
+`registration.showNotification()` is how the **app** starts one while it is open, and it
+needs no VAPID pair, no subscriptions table, no Edge Function and no `pg_cron` — only the
+same permission 7a asks for. The glance is a sticky notification the app rewrites
+whenever it has new figures to show, and it has new figures exactly when it is open. The
+table above still reads "rides on 7a's push work"; what it actually rides on is the
+**permission** and the service worker registration, both of which exist already.
+
+So 7b can be built before 7a, after it, or instead of it, and it is a good deal smaller
+than this section implies. What it does inherit from 7a is a live example of
+`showNotification` with an icon and a tag, in `sw.js`.
 
 ---
 
@@ -567,16 +643,24 @@ Note this got easier too: writes already carry a `rid`, and the unique index mak
 replayed write a no-op. The queue can retry as bluntly as it likes without
 duplicating anything.
 
-**End goal (validation)**
+**End goal (validation), 7c only**
 - Airplane mode → press M and log a status → reconnect → both rows appear, with the
   timestamps from when they were pressed.
+
+**End goal (validation), 7a** — this list sat under 7c until the stage was split on
+8 Sep, which is why it reads as one thing.
 - A day left open at 11:30 PM produces a notification with a Yes button, on the lock
   screen, with the phone's screen off.
 - Ignoring that notification closes the day at **23:30**, not at 00:30.
-- Answering it produces a second notification at 01:00, and no report until that one
-  resolves.
-- A day ended at 6 PM produces no report until 11:30 PM.
-- A day ended at 10 PM produces its report immediately.
+- Answering it produces a second notification at 01:00.
+- Two identical runs write one closing row, not two — the `rid` is deterministic.
+- A `curl` to the function with no `x-cron-secret` is refused and sends nothing.
+
+**Cut from 7a on 8 Sep, and named here so they are not mistaken for regressions.** The
+last three lines of the old list were about a *report*: "no report until that one
+resolves", "a day ended at 6 PM produces no report until 11:30 PM", "a day ended at
+10 PM produces its report immediately". 7a produces no report — see "7a needs no
+Gemini" above for why, and for the one word that would add one later.
 
 ## ⬜ Stage 8 (Optional) — Native Wrapper — NOT STARTED, correctly deferred
 **The honest scope:** a custom always-listening "ProBeing" hotword on a locked phone is
@@ -600,11 +684,15 @@ no user accounts; both turned out to be wrong, so this is what actually blocks w
 ```
   ✅ 3.5 Finish the move ─┬─► 5 Review ──► 6 Reports
      (Gemini key +        │
-      Edge Function)      └─► 7a Wrapup ──► 7b Glance (if "notification")
-                                                 │
-  🟡 4 Voice ─────────────(independent)          └─► 8 Native wrapper (if "real widget")
+      Edge Function)      └─► 7a Wrapup
 
-     7c Offline ──────────(independent)
+  🟡 4 Voice ─────────────(independent)
+
+     7b Glance ──────────(independent — corrected 8 Sep. It needs the
+                          notification PERMISSION, which is not a push.)
+     7c Offline ─────────(independent)
+     8 Native wrapper ───(only if the glance is ever wanted as a REAL home-screen
+                          widget, which 2 Sep decided against)
 ```
 
 **Nothing is blocked any more.** 3.5 landed on 30 Aug, so Stage 5 can start whenever
@@ -617,10 +705,13 @@ doing it, because a real number would come back.
 **Why the Edge Function is in 3.5 rather than 5:** the Gemini key cannot ship to the
 browser in a public repo, so it needs a server-side home. That home is one Edge
 Function, and it is the same one `pg_cron` calls at 11:30 PM. Building it once
-unblocks 5, 6 and 7a together.
+unblocks 5, 6 and 7a together. (One correction, 8 Sep: `pg_cron` does **not** call the
+`gemini` function at 11:30 PM. It calls `wrapup`, which is a second Edge Function and
+touches no model at all — see 7a.)
 
-**What is genuinely independent:** voice input (Stage 4) touches nothing else, and
-offline logging (7c) only needs the `rid` scheme, which already exists.
+**What is genuinely independent:** voice input (Stage 4) touches nothing else, offline
+logging (7c) only needs the `rid` scheme, which already exists, and the home-screen
+glance (7b) needs the notification permission rather than the push machinery.
 
 ## Voice Agent Recommendation (your question, answered plainly)
 **Rewritten 2 Sep 2026.** "Wispr Flow adds nothing here" was wrong. Saad installed it,
