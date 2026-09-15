@@ -6816,6 +6816,7 @@ $('saveBtn').addEventListener('click', function () {
     lastLog = [];
     todayPrayers = [];
     forgetGlance();                  // another database's day is not this one's
+    closeGlance();
     initSupabase();
   }
   // Applied here and not on the tick, so Cancel leaves the shade as it found it.
@@ -7148,13 +7149,20 @@ function glanceClock(ms) {
  * The words, from dayFigures() — the Today card's own function — and the moment
  * those figures are true as of. Plain strings throughout: the project name is
  * the user's own text, and it goes out exactly as typed.
+ *
+ * It opens with the weekday, not "Today" (Saad, 15 Sep). Nothing runs while the
+ * app is closed, so a read made at 11:58 PM is still on the lock screen at 7 AM,
+ * where "Today" would be false. The day is taken from the same instant, on the
+ * same device clock, as the time after "as of" — so the two cannot disagree —
+ * and is fixed English for the same reason that time is a fixed shape.
  */
 function glanceText(figures, asOfMs) {
   var title = figures.project
     ? 'Working on: ' + figures.project + (figures.running ? '' : ' · paused')
     : 'Working on: nothing open';
 
-  var body = 'Today ' + humanDuration(figures.worked) +
+  var day = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'][new Date(asOfMs).getDay()];
+  var body = day + ' ' + humanDuration(figures.worked) +
              ' · ' + figures.mCount + ' M' +
              ' · ' + figures.prayersDone + '/5 prayers' +
              ' · as of ' + glanceClock(asOfMs);
@@ -7236,9 +7244,10 @@ function forgetGlance() {
  * Put the last read in the shade, replacing what is there. Nothing to do if it
  * reads exactly as what was last handed over.
  *
- * Yesterday's read is never painted: the body says "Today", and no "as of" time
- * makes that true. It is dropped and the glance taken down until today's first
- * read lands — offline, that means no glance rather than a wrong one.
+ * Yesterday's read is not painted once the day has turned here. Its weekday keeps
+ * it honest, but the glance is for the day in progress (Saad kept this on 15 Sep):
+ * it is dropped and taken down until today's first read lands, which offline
+ * means no glance at all.
  */
 function paintGlance() {
   try {

@@ -629,51 +629,32 @@ So 7b can be built before 7a, after it, or instead of it, and it is a good deal 
 than this section implies. What it does inherit from 7a is a live example of
 `showNotification` with an icon and a tag, in `sw.js`.
 
-### Built 14 Sep 2026 — Saad's answers, and what shipped
+### Built 14 Sep 2026 — off by default, per device; ships after a real 7a night
 
-- **Off by default on every device.** Settings → "Show today in the notification shade
-  (this device)"; he ticks it once on the phone. Deployed after that night's 7a run.
-- **Wording:** `Working on: NeuraVue` (`· paused` on a break, `nothing open` when nothing
-  is), then `Today 4h 20m · 3 M · 4/5 prayers · as of 5:42 PM`. Project names on the lock
-  screen are accepted.
-- **It shows the last read of the table, and "as of" is when that read was sent** — not
-  when it was painted. The first build stamped the paint time, and the validator caught a
-  phone opened offline stamping the current time over hours-old figures. It changes when
-  this device reads the table: on every change live sync announces, on every return to
-  the app, otherwise every 5 minutes. So left idle on screen it can trail the Today card
-  by up to 5 minutes, and says so. Once the app is closed nothing reads, and it goes
-  stale under its old time. Yesterday's read is never shown under "Today": it is taken
-  down until today's first read lands. Rejected: stamping "now" while live sync looks
-  connected (the app does not track that, and the socket can die silently); figures from
-  the server (a second `replayDay()` in Deno; the headings live in `localStorage`); and
-  Periodic Background Sync (a few runs a day at best).
-- **Shipped `silent: true`** — one line in `GLANCE_OPTIONS`, `app.js`. If a Pixel hides it
-  from the lock screen, flip that line: one buzz when it first appears, quiet after.
-- A web notification cannot be pinned. A swipe hides it until the app is next on screen:
-  back within a minute, or at once on reopening. Unticking is the off switch.
+- **Wording:** `Working on: NeuraVue` (`· paused` / `nothing open`), then
+  `Mon 4h 20m · 3 M · 4/5 prayers · as of 5:42 PM`; project names on the lock screen are
+  accepted. The weekday, not "Today" (Saad, 15 Sep): nothing runs while the app is closed.
+- **"as of" is when the last read was sent**, and the hours stop there: never a newer time
+  over older figures, at the cost of trailing the Today card by up to 5 minutes when idle.
+  Reasons and rejected alternatives: `app.js`, above `GLANCE_OPTIONS`.
 
 **End goal (validation), 7b**
-- Never ticked → no glance. Ticked and saved → exactly one. Its figures are the Today
-  card's *as of the time it shows*: just after reopening the app they match the card;
-  left idle on screen, the card's hours keep counting and the glance's do not, for up to
-  5 minutes. That gap is the design, not a fault.
-- Press M → that one entry updates in place within 2s; on the phone, no sound or buzz.
-- Press M and lock the phone at once → the lock screen shows the new M.
-- Phone app open, log on the laptop → the phone's glance updates within ~5s.
-- Phone backgrounded, log on the laptop, wait 2 minutes → either unchanged under its old
-  "as of", or updated *with* the laptop's row — never a newer time over the old figures.
-  Reopen → the time moves on.
-- Airplane mode: open the app, wait 3 minutes, leave → the "as of" is still the last time
-  it was online, and the figures are that time's.
-- Next morning, airplane mode, open the app → no glance, rather than yesterday's under
-  "Today". Turn the network back on → today's appears.
-- Readable on the lock screen — or the `silent` fallback applied, and recorded here.
-- Tapping it opens ProBeing and leaves it in the shade; swiped away, it returns on reopen.
-- Laptop: ProBeing idle on screen for 10 minutes with the glance on → no new toast.
-- A test push arrives as its own entry; its **Yes** works and the glance survives it.
-- Untick and save, or sign out → gone.
-- Tick it, block notifications in the padlock menu, reopen Settings → it says why
-  nothing shows.
+- Never ticked → none. Ticked and saved → one, matching the Today card after reopening.
+  Untick and save, sign out, or switch Supabase project → gone.
+- Press M → updated in place, silently: within 2s with live sync on (it reads 400ms after
+  the row lands), about 9s without. Press M and lock at once → the lock screen has it.
+- Phone open, log on the laptop → updates within ~5s with live sync on (up to 5 minutes
+  without). Backgrounded → unchanged, or
+  updated *with* that row; never a newer "as of" over old figures.
+- Airplane mode, 3 minutes on screen → "as of" and figures stay at the last online read.
+- Read late, lock, look next morning → yesterday's weekday. Open offline → no glance;
+  back online, switch away and back → today's (nothing rereads on reconnect by itself).
+- Readable on the lock screen — if a Pixel hides it, flip `silent` and record it here.
+- Tap → opens ProBeing, stays in the shade. Swiped (it cannot be pinned) → back on reopen.
+- Laptop idle on screen 10 minutes → at most 2 silent replacements, as each 5-minute read
+  moves "as of"; record whether Windows shows a toast for them.
+- A test push is its own entry; its **Yes** works and the glance survives it.
+- Blocked in the padlock menu → Settings says why nothing shows.
 - Rule 4: the M tile still counts up the instant it is tapped.
 
 ---
