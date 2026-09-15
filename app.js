@@ -201,6 +201,13 @@ function adoptSession(session) {
     syncPushSubscription();
   } else if (!sbUser) {
     stopLive();
+    /* Nothing repaints the glance until a signed-in read lands again, and a real
+     * sign-out takes it out of the shade. Only a REAL one: a launch that could
+     * not restore the session (offline, say) comes through here too, with nobody
+     * signed in before it, and closing the glance then would throw away the last
+     * true figures for nothing. */
+    forgetGlance();
+    if (before) closeGlance();
     askSignIn();
   }
 }
@@ -1032,8 +1039,15 @@ async function refresh(opts) {
     showEmpty('Open Settings to connect.');
     return;
   }
+  /* For the glance (Stage 7b). The time is taken BEFORE the read is sent, so the
+   * "as of" it prints can only ever be earlier than what the rows really cover,
+   * never later. The epoch is how a sign-out disowns a read already on its way. */
+  var readAt = Date.now();
+  var epoch = glanceEpoch;
   try {
-    renderToday(await api('today', null, opts));
+    var data = await api('today', null, opts);
+    renderToday(data);
+    if (epoch === glanceEpoch) armGlance(data, readAt);
     if (opts && opts.announce) flash('Up to date', 'ok');
   } catch (err) {
     flash(String(err.message || err), 'err');
@@ -1247,19 +1261,51 @@ function replayDay(log, endMs) {
   };
 }
 
+/* The Today card's figures AND the notification-shade glance's (Stage 7b). One
+ * function, so the two cannot count differently.
+ *
+ * They can still differ, and on purpose: the card is the last read PLUS every
+ * tap since, with the clock running to now; the glance is the last read alone,
+ * with the clock stopped at the moment that read was made (see paintGlance).
+ *
+ * Rows come in as arguments instead of being read from lastLog / todayPrayers,
+ * which is what lets a test hand it any day at all.
+ *
+ * The M figure is the rows counted, not the Home tile's number. The tile shows
+ * the server's reply to a write, and mid-write that lags by whatever taps are
+ * still in flight. "Working on" is renderProject's rule: the most recently
+ * opened project that is still open, paused whenever the clock is not running.
+ *
+ * @param endMs  where the work clock stops. Omit it for now, as the card does. */
+function dayFigures(log, prayers, endMs) {
+  log = log || [];
+  prayers = prayers || [];
+  var day = replayDay(log, endMs);
+
+  return {
+    day: day,                               // the whole replay, for the card's list
+    worked: day.worked,
+    project: day.project,                   // '' when nothing is open
+    running: day.running,
+    // A prayer logged twice is still one prayer out of five.
+    prayersDone: PRAYER_NAMES.filter(function (n) {
+      return prayers.some(function (p) { return p.prayer === n; });
+    }).length,
+    mCount: log.filter(function (r) { return r.type === 'M'; }).length
+  };
+}
+
 /* The Today tab's header. Everything here is derived from the same rows the
  * list below shows — one source of truth, nothing stored, and it is right the
  * instant a row is written rather than after a round trip. */
 function renderDaySummary() {
-  var day = replayDay(lastLog);
+  var figures = dayFigures(lastLog, todayPrayers);
+  var day = figures.day;
 
-  $('sumWorked').textContent = humanDuration(day.worked);
+  $('sumWorked').textContent = humanDuration(figures.worked);
   $('sumBreak').textContent = humanDuration(day.paused);
-
-  var done = PRAYER_NAMES.filter(function (n) { return loggedToday(n); }).length;
-  $('sumPrayers').textContent = done + '/5';
-
-  $('sumM').textContent = lastLog.filter(function (r) { return r.type === 'M'; }).length;
+  $('sumPrayers').textContent = figures.prayersDone + '/5';
+  $('sumM').textContent = figures.mCount;
 
   var box = $('sumProjects');
   box.textContent = '';
@@ -6221,6 +6267,10 @@ function paintAccount() {
 $('signOutBtn').addEventListener('click', async function () {
   if (!sb) return;
   stopLive();
+  /* The shade must not keep this account's day — nor get it back from a read
+   * that was already on its way when this was pressed. */
+  forgetGlance();
+  closeGlance();
   try { await sb.auth.signOut(); } catch (e) { /* already gone */ }
   dlg.close();
   flash('Signed out', 'ok');
@@ -6391,6 +6441,8 @@ $('settingsBtn').addEventListener('click', function () {
   $('projectNames').value = pinnedNames.join('\n');
   renderCategorySettings();
   $('micHide').checked = Boolean(cfg.hideMic);
+  $('glanceOn').checked = Boolean(cfg.glance);
+  $('glanceResult').textContent = glanceBlockedNote();
   $('testResult').textContent = '';
   paintPushState();
   dlg.showModal();
@@ -6729,7 +6781,10 @@ $('saveBtn').addEventListener('click', function () {
     // Device-local on purpose: the chip list does not sync between phone and laptop.
     chips: (parseChips($('chipsInput').value).join(', ')) || DEFAULT_CHIPS.join(', '),
     // Also device-local: the phone has a good keyboard mic, the laptop may not.
-    hideMic: $('micHide').checked
+    hideMic: $('micHide').checked,
+    // Device-local as well, and off unless ticked: the phone wants it, a laptop
+    // may not want a toast every minute.
+    glance: $('glanceOn').checked
   };
   if (next.backend === 'supabase') {
     if (!next.supaUrl || !next.supaKey) {
@@ -6760,8 +6815,11 @@ $('saveBtn').addEventListener('click', function () {
     stopLive();
     lastLog = [];
     todayPrayers = [];
+    forgetGlance();                  // another database's day is not this one's
     initSupabase();
   }
+  // Applied here and not on the tick, so Cancel leaves the shade as it found it.
+  applyGlanceSetting();
   if (usingSupabase() && !sbUser) askSignIn(); else refresh();
 });
 
@@ -6994,6 +7052,333 @@ $('pushTestBtn').addEventListener('click', async function () {
     out.textContent = '❌ ' + ((e && e.message) || e);
   }
 });
+
+// ------------------------------------------------ the glance in the shade
+
+/* Stage 7b. "Working on" and "Today so far", one swipe down, WITHOUT a push.
+ *
+ * A push is how a server starts a notification while the app is closed. This is
+ * the app posting one itself, with registration.showNotification(), while it is
+ * running — so it needs the notification permission and the service worker, and
+ * none of 7a's VAPID, Edge Function or pg_cron machinery.
+ *
+ * "AS OF" IS WHEN THE ROWS WERE READ, NOT WHEN THEY WERE PAINTED. That is the
+ * whole honesty of this feature, and the first build got it wrong: it stamped
+ * the paint instant, so a phone opened in airplane mode went on stamping the
+ * current time over figures hours old, then left that on the lock screen. So the
+ * glance shows exactly what the last successful read of the table returned, with
+ * the work clock stopped at the moment that read was sent — not the taps made
+ * since (the read each one triggers brings it in a second later), and not the
+ * clock running on to now.
+ *
+ * Rejected: stamping "now" while live sync looks connected. This file does not
+ * track the Realtime channel's state, and the heartbeat poll exists precisely
+ * because that socket can die without saying so; a gate on it would bring the
+ * same lie back, only more rarely. What the snapshot costs is lag while the app
+ * sits idle on screen. Reads come on every change Realtime announces, on every
+ * return to the app, and otherwise every five minutes — so the glance can trail
+ * the Today card by that much. It is never wrong about when it was right.
+ *
+ * Rejected from the start: figures from the server (a second replayDay() in
+ * Deno, and the project headings live in this browser's localStorage — the
+ * reasons Stage 6 stayed in the browser too), and Periodic Background Sync
+ * (Chrome runs it a few times a day at best, and a service worker cannot read
+ * the session anyway).
+ *
+ * NOTHING HERE MAY SLOW A TAP (rule 4). It paints when a read lands, never inside
+ * a button's own render; the notification is handed to the browser without
+ * waiting for it, and every error is swallowed.
+ */
+
+/* The fixed options, in one place. The tag is its own — not 7a's probeing-awake
+ * or probeing-awake-failed — so repainting the glance can never replace the
+ * 11:30 PM question. It is a matched pair with GLANCE_TAG in sw.js.
+ *
+ * `silent` IS THE ONE LINE TO FLIP. Shipped true, because an update must not
+ * buzz. The untested risk: Android may file a silent notification under its
+ * "Silent" section, which a Pixel can hide from the lock screen. If so, set it
+ * to false — the phone buzzes once when the glance first appears, and later
+ * repaints under the same tag stay quiet anyway.
+ *
+ * Deliberately absent: `renotify` (Chrome throws when it is paired with silent),
+ * the pin-until-clicked flag 7a's question uses (it parks a toast on a Windows
+ * screen), and `actions` (a button would make it look like the Yes question). */
+var GLANCE_OPTIONS = {
+  tag: 'probeing-glance',
+  silent: true,
+  icon: 'icons/icon-192.png',
+  badge: 'icons/favicon-32.png'
+};
+
+/* Once a minute while the app is on screen: put back a glance that was swiped
+ * away, and take down one left from a previous day. Neither changes a figure, so
+ * a minute with nothing to fix makes no call at all. */
+var GLANCE_TICK_MS = 60000;
+
+/* The last successful read of today: its rows, copied, and the moment it was
+ * sent. Null until one lands — the readiness gate. Before that lastLog is empty,
+ * and a paint would put "0m · 0 M" in the shade over the true figures from last
+ * time. */
+var glanceSnap = null;
+
+/* Moved on by forgetGlance(). refresh() notes it before sending a read and arms
+ * the glance only if it has not moved, so a read sent before Sign out cannot
+ * bring that account's day back after it. */
+var glanceEpoch = 0;
+
+/* The title and body last handed over. A read that changes nothing — the
+ * heartbeat, a return to the app in the same minute — is no call at all. */
+var glanceShown = '';
+
+/* The last showNotification, still on its way or not. tidyGlance() looks at the
+ * shade only after it has landed; otherwise a glance being put up this instant
+ * looks exactly like one that was swiped away, and goes up twice. */
+var glanceShowing = Promise.resolve();
+
+/** "5:42 PM" by the device's clock. A fixed shape rather than the locale's,
+ *  because that is the wording Saad chose. */
+function glanceClock(ms) {
+  var d = new Date(ms);
+  var h = d.getHours();
+  var m = d.getMinutes();
+  return ((h % 12) || 12) + ':' + (m < 10 ? '0' : '') + m + (h < 12 ? ' AM' : ' PM');
+}
+
+/**
+ * The words, from dayFigures() — the Today card's own function — and the moment
+ * those figures are true as of. Plain strings throughout: the project name is
+ * the user's own text, and it goes out exactly as typed.
+ */
+function glanceText(figures, asOfMs) {
+  var title = figures.project
+    ? 'Working on: ' + figures.project + (figures.running ? '' : ' · paused')
+    : 'Working on: nothing open';
+
+  var body = 'Today ' + humanDuration(figures.worked) +
+             ' · ' + figures.mCount + ' M' +
+             ' · ' + figures.prayersDone + '/5 prayers' +
+             ' · as of ' + glanceClock(asOfMs);
+
+  return { title: title, body: body };
+}
+
+/** The options for one paint — a fresh object, so nothing can edit the constant.
+ *  `timestamp` is the "as of" too: Android prints its age in the shade's header,
+ *  which says how old the figures are a second time. */
+function glanceOptions(body, atMs) {
+  var options = { body: body, timestamp: atMs };
+  Object.keys(GLANCE_OPTIONS).forEach(function (k) { options[k] = GLANCE_OPTIONS[k]; });
+  return options;
+}
+
+function glanceSupported() {
+  return 'serviceWorker' in navigator && typeof Notification !== 'undefined';
+}
+
+/** Ticked on this device, and allowed. Reads the permission; never asks for it. */
+function glanceWanted() {
+  return Boolean(cfg.glance) && glanceSupported() && Notification.permission === 'granted';
+}
+
+/**
+ * What Settings says under the box when it is ticked but cannot work. Empty when
+ * all is well.
+ *
+ * The case this exists for: permission given when the box was ticked, then taken
+ * back in Chrome's site settings. The box stays ticked — the choice is still
+ * his, and allowing notifications again brings the glance straight back — but
+ * without this line nothing appears and nothing says why.
+ */
+function glanceBlockedNote() {
+  if (!cfg.glance) return '';
+  if (!glanceSupported()) {
+    return 'Ticked, but this browser cannot show notifications, so nothing appears.';
+  }
+  if (Notification.permission === 'denied') {
+    return 'Ticked, but notifications are now blocked for this site, so nothing appears. ' +
+      'Allow them in the padlock menu next to the address bar (Site settings → Notifications).';
+  }
+  if (Notification.permission !== 'granted') {
+    return 'Ticked, but this site is no longer allowed to show notifications, so nothing ' +
+      'appears. Untick this and tick it again to be asked.';
+  }
+  return '';
+}
+
+/**
+ * A read of today has landed: keep it for the shade, and paint.
+ *
+ * The rows are copied because lastLog is the same array, and every tap unshifts
+ * into it — the glance would otherwise count a tap the table has not confirmed,
+ * under a time from before it was made.
+ *
+ * Painted even while the page is hidden. The M tapped just before the phone is
+ * locked arrives in exactly such a read, and every figure in it is true as of
+ * the time it carries. The first build refused hidden paints only because its
+ * time was the paint's own.
+ */
+function armGlance(data, readAt) {
+  glanceSnap = {
+    log: (data.log || []).slice(),
+    prayers: (data.prayers || []).slice(),
+    at: readAt
+  };
+  paintGlance();
+}
+
+/** Forget the read this page holds, and disown any read still on its way. */
+function forgetGlance() {
+  glanceSnap = null;
+  glanceEpoch += 1;
+}
+
+/**
+ * Put the last read in the shade, replacing what is there. Nothing to do if it
+ * reads exactly as what was last handed over.
+ *
+ * Yesterday's read is never painted: the body says "Today", and no "as of" time
+ * makes that true. It is dropped and the glance taken down until today's first
+ * read lands — offline, that means no glance rather than a wrong one.
+ */
+function paintGlance() {
+  try {
+    if (!glanceSnap || !glanceWanted()) return;
+    var snap = glanceSnap;
+    if (ymdLocal(new Date(snap.at)) !== ymdLocal(new Date(Date.now()))) {
+      glanceSnap = null;
+      closeGlance();
+      return;
+    }
+
+    var text = glanceText(dayFigures(snap.log, snap.prayers, snap.at), snap.at);
+    var shown = text.title + '\n' + text.body;
+    if (shown === glanceShown) return;
+    glanceShown = shown;
+
+    glanceShowing = navigator.serviceWorker.ready.then(function (reg) {
+      return reg.showNotification(text.title, glanceOptions(text.body, snap.at));
+    }).catch(function () {
+      // It never appeared, so the next paint must not skip it.
+      if (glanceShown === shown) glanceShown = '';
+    });
+  } catch (e) { /* a convenience: it must never break the read it rides on */ }
+}
+
+/** Take the glance out of the shade. Safe to call when there is none. */
+function closeGlance() {
+  glanceShown = '';
+  try {
+    if (!glanceSupported()) return;
+    navigator.serviceWorker.getRegistration().then(function (reg) {
+      return reg ? reg.getNotifications({ tag: GLANCE_OPTIONS.tag }) : [];
+    }).then(function (list) {
+      list.forEach(function (n) { n.close(); });
+    }).catch(function () { /* nothing there to close */ });
+  } catch (e) { /* likewise */ }
+}
+
+/**
+ * Check the shade against what was put there. Changes no figure.
+ *
+ * Swiped away: forget it was shown, so the paint at the end puts it back. Asking
+ * the browser, rather than re-showing the same text every minute to be sure, is
+ * what keeps an idle minute to no call — the first build made three a minute,
+ * and on Windows each can surface as a toast.
+ *
+ * From a previous day, going by its timestamp (which is its "as of"): close it.
+ * That catches a glance left by an earlier visit, which this page never painted.
+ */
+function tidyGlance() {
+  try {
+    if (!cfg.glance || !glanceSupported()) return;
+    glanceShowing.then(function () {
+      return navigator.serviceWorker.getRegistration();
+    }).then(function (reg) {
+      if (!reg) return;
+      var looked = glanceShown;
+      return reg.getNotifications({ tag: GLANCE_OPTIONS.tag }).then(function (list) {
+        var today = ymdLocal(new Date(Date.now()));
+        var left = list.filter(function (n) {
+          var old = typeof n.timestamp === 'number' && n.timestamp > 0 &&
+                    ymdLocal(new Date(n.timestamp)) !== today;
+          if (old) n.close();
+          return !old;
+        });
+        // Nothing of ours in the shade, and nothing painted while looking: swiped.
+        if (!left.length && glanceShown === looked) glanceShown = '';
+        paintGlance();
+      });
+    }).catch(function () { /* nothing to tidy */ });
+  } catch (e) { /* likewise */ }
+}
+
+/** Save's half: take the glance down when unticked, and when ticked put the last
+ *  read up at once rather than at the next read. */
+function applyGlanceSetting() {
+  if (cfg.glance) {
+    tidyGlance();
+  } else {
+    closeGlance();
+  }
+}
+
+/* Ticking the box asks for the permission there and then, from the tap itself —
+ * the same browser prompt "Turn on notifications" raises. Only a tick ever asks;
+ * nothing on launch does, because a prompt nobody asked for is how a person
+ * presses Block once and never sees a notification again. The setting itself
+ * changes on Save, like every other box in this dialog. */
+$('glanceOn').addEventListener('change', async function () {
+  var box = $('glanceOn');
+  var out = $('glanceResult');
+  out.textContent = '';
+  if (!box.checked) return;
+
+  if (!glanceSupported()) {
+    box.checked = false;
+    out.textContent = 'This browser cannot show notifications.';
+    return;
+  }
+  if (Notification.permission === 'granted') return;
+  if (Notification.permission === 'denied') {
+    box.checked = false;
+    out.textContent = 'Notifications are blocked for this site. Chrome will not ask again — ' +
+      'allow them in the padlock menu next to the address bar, then tick this again.';
+    return;
+  }
+
+  out.textContent = 'Asking the browser…';
+  var answer = 'default';
+  try {
+    answer = await Notification.requestPermission();
+  } catch (e) { /* treated as a no */ }
+  paintPushState();                  // the bedtime block reads the same permission
+
+  if (answer === 'granted') {
+    out.textContent = 'Allowed. Press Save to show it.';
+    return;
+  }
+  box.checked = false;
+  out.textContent = 'Not allowed, so this stays off.';
+});
+
+/* Only while on screen. A backgrounded page's timers run at the browser's whim,
+ * and a tick from one would put back a glance swiped away on the lock screen. */
+setInterval(function () {
+  if (document.visibilityState !== 'visible') return;
+  tidyGlance();
+}, GLANCE_TICK_MS);
+
+/* Coming back: it may have been swiped, or the day may have turned, while the
+ * app was away. The refresh this same return triggers brings the figures up to
+ * date a moment later. Leaving needs nothing: only a read changes the glance,
+ * and it paints whenever one lands. */
+document.addEventListener('visibilitychange', function () {
+  if (document.visibilityState === 'visible') tidyGlance();
+});
+
+/* And once on launch, for a glance an earlier visit left from a previous day.
+ * It only reads the permission; nothing on launch asks for it. */
+tidyGlance();
 
 // -------------------------------------------------------------------- boot
 

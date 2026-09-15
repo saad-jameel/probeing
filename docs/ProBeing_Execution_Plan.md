@@ -403,12 +403,11 @@ actually wants on the prose, is needed by Stage 6 for months anyway, and makes
 Note the budget rule still binds: **one Gemini call per summary**, whatever the range.
 `replayDay()` does the arithmetic; Gemini only writes it up.
 
-**On building the home-screen glance meanwhile: it is not a small parallel task.** See
-7b below — it is blocked on a decision only Saad can make, and both answers are large.
-An ongoing notification rides on all of 7a's push work (VAPID signing in the Edge
-Function, a service worker subscription, `pg_cron`); a real widget needs a native
-wrapper, which is Stage 8. Running 7a alongside Stage 5 is a sound use of the week, but
-it should be entered as "7a then 7b", not as a filler task.
+**On building the home-screen glance meanwhile.** This used to say the glance rode on
+all of 7a's push work and should be entered as "7a then 7b". It does not: the app posts
+the notification itself while it is open, which needs only the notification permission
+(see "7b does not depend on 7a"). A real home-screen widget still needs Stage 8's native
+wrapper.
 
 ---
 
@@ -590,7 +589,7 @@ sizes:
 
 | | What it is | Cost |
 |---|---|---|
-| **Ongoing notification** | A sticky notification the service worker keeps updated. Sits in the shade and on the lock screen, shows both figures. | Small — rides on 7a's push work |
+| **Ongoing notification** | A notification the open app keeps rewriting. Sits in the shade and on the lock screen, shows both figures. | Small — needs only the notification permission (corrected 8 Sep, below) |
 | **A true home-screen widget** | Needs a native wrapper (TWA / Bubblewrap) and an Android widget provider. | Large — this is Stage 8 territory |
 
 ### ✅ Decided 2 Sep 2026 — the ongoing notification
@@ -604,9 +603,8 @@ in the shade and on the lock screen and updates itself through the day —
   Today: 4h20m · 3 M · 4 prayers
 ```
 
-**Why it is the right call, and what it costs.** It rides on 7a's push work, which he
-wants anyway for the 11:30 PM wrapup, so it is roughly one build instead of two, needs
-no app store and no APK, and updates by `git push` like everything else. The native
+**Why it is the right call, and what it costs.** It needs no app store and no APK, and
+updates by `git push` like everything else. The native
 widget would have meant a hand-installed APK, hand-installed updates, and Stage 8's
 whole wrapper for one box on a screen.
 
@@ -623,13 +621,60 @@ notifications work, and it made 7b look like the tail of a large job.
 `registration.showNotification()` is how the **app** starts one while it is open, and it
 needs no VAPID pair, no subscriptions table, no Edge Function and no `pg_cron` — only the
 same permission 7a asks for. The glance is a sticky notification the app rewrites
-whenever it has new figures to show, and it has new figures exactly when it is open. The
-table above still reads "rides on 7a's push work"; what it actually rides on is the
-**permission** and the service worker registration, both of which exist already.
+whenever it has new figures to show, and it has new figures exactly when it is open. What
+it rides on is the **permission** and the service worker registration, both of which
+exist already.
 
 So 7b can be built before 7a, after it, or instead of it, and it is a good deal smaller
 than this section implies. What it does inherit from 7a is a live example of
 `showNotification` with an icon and a tag, in `sw.js`.
+
+### Built 14 Sep 2026 — Saad's answers, and what shipped
+
+- **Off by default on every device.** Settings → "Show today in the notification shade
+  (this device)"; he ticks it once on the phone. Deployed after that night's 7a run.
+- **Wording:** `Working on: NeuraVue` (`· paused` on a break, `nothing open` when nothing
+  is), then `Today 4h 20m · 3 M · 4/5 prayers · as of 5:42 PM`. Project names on the lock
+  screen are accepted.
+- **It shows the last read of the table, and "as of" is when that read was sent** — not
+  when it was painted. The first build stamped the paint time, and the validator caught a
+  phone opened offline stamping the current time over hours-old figures. It changes when
+  this device reads the table: on every change live sync announces, on every return to
+  the app, otherwise every 5 minutes. So left idle on screen it can trail the Today card
+  by up to 5 minutes, and says so. Once the app is closed nothing reads, and it goes
+  stale under its old time. Yesterday's read is never shown under "Today": it is taken
+  down until today's first read lands. Rejected: stamping "now" while live sync looks
+  connected (the app does not track that, and the socket can die silently); figures from
+  the server (a second `replayDay()` in Deno; the headings live in `localStorage`); and
+  Periodic Background Sync (a few runs a day at best).
+- **Shipped `silent: true`** — one line in `GLANCE_OPTIONS`, `app.js`. If a Pixel hides it
+  from the lock screen, flip that line: one buzz when it first appears, quiet after.
+- A web notification cannot be pinned. A swipe hides it until the app is next on screen:
+  back within a minute, or at once on reopening. Unticking is the off switch.
+
+**End goal (validation), 7b**
+- Never ticked → no glance. Ticked and saved → exactly one. Its figures are the Today
+  card's *as of the time it shows*: just after reopening the app they match the card;
+  left idle on screen, the card's hours keep counting and the glance's do not, for up to
+  5 minutes. That gap is the design, not a fault.
+- Press M → that one entry updates in place within 2s; on the phone, no sound or buzz.
+- Press M and lock the phone at once → the lock screen shows the new M.
+- Phone app open, log on the laptop → the phone's glance updates within ~5s.
+- Phone backgrounded, log on the laptop, wait 2 minutes → either unchanged under its old
+  "as of", or updated *with* the laptop's row — never a newer time over the old figures.
+  Reopen → the time moves on.
+- Airplane mode: open the app, wait 3 minutes, leave → the "as of" is still the last time
+  it was online, and the figures are that time's.
+- Next morning, airplane mode, open the app → no glance, rather than yesterday's under
+  "Today". Turn the network back on → today's appears.
+- Readable on the lock screen — or the `silent` fallback applied, and recorded here.
+- Tapping it opens ProBeing and leaves it in the shade; swiped away, it returns on reopen.
+- Laptop: ProBeing idle on screen for 10 minutes with the glance on → no new toast.
+- A test push arrives as its own entry; its **Yes** works and the glance survives it.
+- Untick and save, or sign out → gone.
+- Tick it, block notifications in the padlock menu, reopen Settings → it says why
+  nothing shows.
+- Rule 4: the M tile still counts up the instant it is tapped.
 
 ---
 

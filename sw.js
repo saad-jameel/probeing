@@ -158,7 +158,44 @@ function answerCheck(data) {
   });
 }
 
+// ------------------------------------------------------------- the glance
+/* Stage 7b. The app itself posts and rewrites this notification while it is open
+ * (paintGlance in app.js), so nothing in this file creates it; this only answers
+ * a tap on it.
+ *
+ * THE TAG IS A MATCHED PAIR with GLANCE_OPTIONS in app.js. Change one without
+ * the other and a tap on the glance falls through to the 11:30 PM branch below,
+ * which closes whatever it is handed. */
+var GLANCE_TAG = 'probeing-glance';
+
+/** Bring a ProBeing window forward, or open one.
+ *
+ *  Matched against this worker's own scope, not just the origin. On github.io
+ *  every Pages site under one account shares an origin, so "the first window"
+ *  can be a different site. The 7a body-tap branch below still takes the first
+ *  window; it is left exactly as Stage 7a shipped it. */
+function showApp() {
+  var scope = self.registration.scope;
+  return self.clients.matchAll({ type: 'window', includeUncontrolled: true })
+    .then(function (list) {
+      for (var i = 0; i < list.length; i++) {
+        if (String(list[i].url).indexOf(scope) === 0 && 'focus' in list[i]) {
+          return list[i].focus();
+        }
+      }
+      return self.clients.openWindow('./');
+    });
+}
+
 self.addEventListener('notificationclick', function (event) {
+  /* Tested first and returned from, so nothing below runs for it. The glance is
+   * deliberately NOT closed: it is a readout, and opening the app from it should
+   * leave it in the shade for the next look. */
+  if (event.notification && event.notification.tag === GLANCE_TAG) {
+    event.waitUntil(showApp());
+    return;
+  }
+
   var data = (event.notification && event.notification.data) || {};
   var pressedYes = event.action === 'yes';
   event.notification.close();
