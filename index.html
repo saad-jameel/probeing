@@ -348,6 +348,24 @@
       </div>
 
       <div class="dlg-block">
+        <h3>Home-screen widget</h3>
+        <p class="hint">The Android widget shows the same two lines as the notification
+          shade &mdash; what you are working on, and today so far &mdash; on your home
+          screen. It is <strong>look-only</strong>: tapping it opens ProBeing, and there is
+          nothing on it to press. It shows what the app knew <strong>the last time it was
+          open</strong>, and the line says when that was.</p>
+        <p class="hint">Pair it once. Press the button, write the code down, and type it
+          into the widget. ProBeing keeps only a fingerprint of the code, so it can never be
+          shown to you again &mdash; if it is lost, revoke it here and make another.</p>
+        <div class="dlg-actions" style="justify-content: flex-start">
+          <button type="button" id="pairBtn" class="btn">Pair a widget</button>
+        </div>
+        <p id="pairCode" class="pair-code" hidden></p>
+        <p id="pairResult" class="hint"></p>
+        <div id="deviceList" class="cat-list"></div>
+      </div>
+
+      <div class="dlg-block">
         <h3>Bring the old Sheet across</h3>
         <p class="hint">Your history before the move still lives in the Google Sheet.
           Download the <strong>Log</strong> and <strong>Prayers</strong> tabs as CSV

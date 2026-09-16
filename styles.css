@@ -529,6 +529,25 @@ body {
   border: 1px solid var(--line); border-radius: 8px;
   font-size: 14px; font-family: inherit;
 }
+/* The pairing code for the home-screen widget (Stage 8), shown once and never
+   again. Large and spaced out because it is read off this screen and typed into
+   another one, and monospace so the groups line up while that is happening.
+   `user-select: all` makes one tap select the whole thing on a laptop. */
+.pair-code {
+  display: block;
+  margin: 12px 0 0; padding: 12px;
+  background: var(--panel-2);
+  border: 1px solid var(--line); border-radius: 10px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 18px; letter-spacing: 2px; text-align: center;
+  overflow-wrap: anywhere;
+  -webkit-user-select: all; user-select: all;
+}
+/* Rule 6: this class sets `display`, so it must declare its [hidden] pair — or
+   the author style beats the browser's own `[hidden] { display: none }` and an
+   empty code box sits in Settings before any code has been made. */
+.pair-code[hidden] { display: none; }
+
 /* The test result is several lines now (reachability, then extraction, then the
    raw answer when it will not parse). Without this they run together into one
    unreadable paragraph, because textContent keeps the newlines and CSS collapses

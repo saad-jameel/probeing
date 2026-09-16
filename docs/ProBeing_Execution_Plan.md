@@ -8,7 +8,9 @@ A basic, free activity-keeper app for **mobile + laptop, always in sync**.
 - **Gemini API (free tier)** — extraction and reviews, called only from the `gemini` Edge Function
 - **Web Speech API** (built into Chrome) — free voice input, no external service
 - **GitHub Pages** — free hosting for the PWA
-- *(Optional last stage)* **Capacitor** — free native Android wrapper for widget / lock-screen buttons
+- *(Stage 8)* **Bubblewrap / Trusted Web Activity** — free native Android wrapper, so a real
+  home-screen widget can exist. Not Capacitor: a plain WebView has no Web Push and its own
+  separate storage, so it would lose the sign-in and Stages 7a and 7b with it
 - *(Fallback, still selectable)* **Apps Script + Google Sheet** — the original backend, frozen
 
 **This is not the stack this plan was written against**, and the difference is why
@@ -36,7 +38,7 @@ shipped in `f733804`; `CLAUDE.md` carries the full reasoning.
 > | 🟡 | **7a Push + the nightly wrapup** | **built and shipped 8 Sep, not signed off.** Needs the dashboard steps run and a real push received on both devices. No Gemini in it |
 > | ⬜ | 7b The home-screen glance | not started, and **not blocked on 7a** — a page can post its own notification. See the stage |
 > | ⬜ | 7c Offline logging | not started; touches the write path only, overlaps nothing |
-> | ⬜ | 8 Native wrapper | not started, correctly deferred |
+> | 🟡 | **8 Home-screen widget** | **web + database half built 16 Sep**; the Android wrapper is in progress. A TWA, not Capacitor, and the widget is look-only |
 >
 > **A great deal was built with no stage number.** Read *Built, but never planned*
 > at the end before assuming a gap is a gap.
@@ -688,17 +690,45 @@ resolves", "a day ended at 6 PM produces no report until 11:30 PM", "a day ended
 10 PM produces its report immediately". 7a produces no report — see "7a needs no
 Gemini" above for why, and for the one word that would add one later.
 
-## ⬜ Stage 8 (Optional) — Native Wrapper — NOT STARTED, correctly deferred
-**The honest scope:** a custom always-listening "ProBeing" hotword on a locked phone is
-OS-assistant territory; not buildable solo for free. The achievable versions:
-1. Wrap the PWA with **Capacitor** (free) → real Android APK of the same app.
-2. Add a **home-screen widget / persistent notification** with three buttons: M, Prayer,
-   Mic — one tap from the lock screen opens straight into that action.
-3. Set up "Hey Google, open ProBeing" (App shortcut) as the semi-hands-free path: say it,
-   phone opens the app with the mic already listening (launch parameter).
+## 🟡 Stage 8 — A real home-screen widget — WEB + DATABASE HALF BUILT (16 Sep 2026)
 
-**End goal (validation):** From a locked phone: one tap on the notification's M logs an M;
-"Hey Google, open ProBeing" lands you in listening mode within ~3 seconds.
+Asked for on 16 Sep, after living with 7b: a box on the home screen, like the Pixel's
+"Screen time" card. **7b's notification glance stays** — this is an addition to it.
+
+**The wrapper is a Trusted Web Activity (Bubblewrap), NOT Capacitor**, and this plan said
+Capacitor until today. A TWA runs real Chrome on the real GitHub Pages address, so the
+sign-in, the push subscription and everything in `localStorage` carry straight across.
+Capacitor wraps a plain WebView instead: no Web Push, no `showNotification`, and storage of
+its own — which would throw away Stages 7a and 7b and open on an empty sign-in screen.
+
+**The widget is LOOK-ONLY**, Saad's decision the same day. Two lines, and tapping it opens
+the app. No M button, no prayer button, no mic on it or on the lock screen — so the phone's
+credential needs exactly one power, and the planner's `log_quick` write path is cancelled.
+
+**How it reads, given that a widget cannot sign in** (it is not a browser: no session, and
+nowhere to keep one): Settings makes a ~78-bit pairing code, shows it once, and stores only
+its SHA-256 fingerprint. The widget quotes the code at `glance_for()`, which hands back the
+two lines and nothing else; a wrong code gets zero rows, never an error that admits an
+account exists. Revoking deletes the row, and there is nothing else to withdraw.
+`docs/supabase_schema.sql` carries `glance`, `device_keys` and that function, commented.
+
+**It is only as fresh as the last time the app was open**, and the line says so itself:
+`as of 5:42 PM` is when the rows were READ, exactly as in 7b. Nothing refreshes it in the
+background — the app writes the `glance` row as it works out the shade's own words.
+
+**A server-side refresh is deferred on purpose.** Doing it means lifting `replayDay()` into
+one module that both `app.js` and an Edge Function import. Worth doing once; not worth doing
+as a second copy in Deno, which is the `goals`-action drift story over again.
+
+**End goal (validation)**
+- Within a minute of a log on either device, the widget and the shade read the same two
+  lines. **Except across midnight:** the shade takes itself down when the day turns and the
+  widget does not, so until the app is next opened it still shows the previous day's line,
+  named by its own weekday.
+- Its "as of" never runs ahead of the last read; in airplane mode both freeze together.
+- Tapping it opens ProBeing. There is nothing on it to press.
+- A made-up code returns `[]`; so does a revoked one, by its next refresh.
+- The APK installs, and 7a's 11:30 pm push and 7b's glance both still work inside it.
 
 ---
 
@@ -717,8 +747,8 @@ no user accounts; both turned out to be wrong, so this is what actually blocks w
      7b Glance ──────────(independent — corrected 8 Sep. It needs the
                           notification PERMISSION, which is not a push.)
      7c Offline ─────────(independent)
-     8 Native wrapper ───(only if the glance is ever wanted as a REAL home-screen
-                          widget, which 2 Sep decided against)
+     8 Widget (TWA) ─────(asked for on 16 Sep, having lived with the shade
+                          version. Reuses 7b's words rather than recomputing them)
 ```
 
 **Nothing is blocked any more.** 3.5 landed on 30 Aug, so Stage 5 can start whenever
@@ -764,8 +794,8 @@ because the original line would have talked him out of the thing that worked.
   on the laptop; dictate on the phone.
 - **Laptop:** Web Speech API in Chrome works the same; add Wispr Flow only if you want
   system-wide dictation outside ProBeing.
-- **Locked phone:** no free custom hotword exists; use Stage 8's widget/notification or
-  "Hey Google, open ProBeing."
+- **Locked phone:** no free custom hotword exists, and Stage 8's widget is look-only by
+  choice — so it is the shade notification, or "Hey Google, open ProBeing."
 
 ## Rules
 - A stage is done only when its validation passes on BOTH devices.

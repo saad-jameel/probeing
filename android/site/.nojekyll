@@ -1,0 +1,10 @@
+This file makes GitHub Pages serve the .well-known folder beside it.
+
+GitHub Pages runs Jekyll over a site by default, and Jekyll skips every file and
+folder whose name begins with a dot. Without this file, .well-known/assetlinks.json
+is silently not published: the URL returns 404, Chrome cannot verify that the
+ProBeing APK owns saad-jameel.github.io, and the app opens with a URL bar across
+the top instead of as a Trusted Web Activity.
+
+An empty file would do the same job. The words are here because a mysterious
+empty dotfile is the kind of thing that gets tidied away.

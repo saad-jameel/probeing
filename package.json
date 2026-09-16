@@ -9,6 +9,7 @@
     "deploy": "clasp deploy --project backend/.clasp.json"
   },
   "devDependencies": {
+    "@bubblewrap/cli": "^1.25.0",
     "@google/clasp": "^3.3.0"
   }
 }

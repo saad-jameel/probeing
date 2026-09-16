@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+    updatePeriodMillis is 30 minutes because that is the platform's floor:
+    Android silently ignores anything smaller, so asking for 5 minutes would look
+    like a working setting and behave like a broken one. It also does not wake a
+    sleeping phone — the update lands at the next wake — which is fine here,
+    since nobody is reading a home screen that is off.
+
+    targetCellWidth / targetCellHeight and previewLayout are Android 12 (API 31)
+    attributes. Older versions ignore attributes they do not know, which is why
+    they can sit in one file rather than a v31-qualified copy; previewImage is
+    the pre-12 fallback for the picker.
+-->
+<appwidget-provider xmlns:android="http://schemas.android.com/apk/res/android"
+    android:minWidth="250dp"
+    android:minHeight="70dp"
+    android:minResizeWidth="180dp"
+    android:minResizeHeight="70dp"
+    android:targetCellWidth="4"
+    android:targetCellHeight="2"
+    android:updatePeriodMillis="1800000"
+    android:initialLayout="@layout/glance_widget"
+    android:previewLayout="@layout/glance_widget_preview"
+    android:previewImage="@mipmap/ic_launcher"
+    android:description="@string/glance_widget_description"
+    android:resizeMode="horizontal|vertical"
+    android:widgetCategory="home_screen" />

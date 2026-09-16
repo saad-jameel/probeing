@@ -316,6 +316,257 @@ exception when duplicate_object then null; end $$;
 -- Deliberately NOT added to the realtime publication, for the same reason
 -- `reports` is not: this fires at 11:30 PM with nothing on screen watching.
 
+-- ============================================== the home-screen widget
+-- Stage 8. A real box on the Android home screen, next to the app icons, showing
+-- the same two lines as the notification shade.
+--
+-- IT IS LOOK-ONLY, by Saad's decision of 16 Sep 2026, and that decision is what
+-- makes everything below small. No M button, no prayer button, no microphone on
+-- the widget: tapping it opens ProBeing, and that is all it does. So the
+-- credential a widget holds needs exactly one power — read two lines of text —
+-- and nothing here gives `anon` a way to write a single row of anything.
+--
+-- THE PROBLEM THIS SOLVES: a widget is not a browser. It has no sign-in, no
+-- session to keep and nowhere to keep it, so it cannot be the signed-in user the
+-- way the app is. It is PAIRED instead: Settings makes a short code, shows it
+-- once, and stores only its fingerprint; the widget shows that code at the door.
+--
+--   glance        the two lines, written by the app whenever it works them out
+--   device_keys   which widgets may read them
+--   glance_for()  the door, and the only thing a signed-out caller may knock on
+
+-- ----------------------------------------------------------------- glance
+-- One row per person: exactly what the notification shade is showing, in exactly
+-- the same words. The app computes those words once and sends them both places,
+-- so the widget and the shade cannot drift into disagreeing.
+--
+-- DERIVED STATE, AND FREELY REWRITTEN — the same kind of row as
+-- push_subscriptions above, and the opposite of `events`. Nothing here is a fact
+-- about a day; it is a copy of a sentence worked out from rows that are. Delete
+-- the whole table and the cost is that the widget is blank until the app is next
+-- opened. That is why it is rewritten in place rather than appended to.
+--
+-- `as_of` IS THE HONEST PART, AND IT IS NOT "now". It is when the app last READ
+-- the rows these lines were computed from. A widget that cannot say how old it
+-- is will show yesterday's hours as though they were this morning's, which is
+-- the exact bug Stage 7b found in the shade and fixed there the same way.
+create table if not exists public.glance (
+  -- Primary key, which is unique and not-null in one word, and gives the app's
+  -- upsert something to conflict on. One row per person, replaced for ever.
+  user_id    uuid        primary key default auth.uid() references auth.users on delete cascade,
+
+  title      text        not null default '',   -- "Working on: NeuraVue"
+  body       text        not null default '',   -- "Wed 4h 20m · 3 M · 4/5 prayers · as of 5:42 PM"
+
+  as_of      timestamptz not null default now(),   -- when those figures were read
+  updated_at timestamptz not null default now()    -- when this row was last written
+);
+
+alter table public.glance enable row level security;
+
+do $$ begin
+  create policy "read own glance" on public.glance
+    for select using (auth.uid() = user_id);
+exception when duplicate_object then null; end $$;
+
+-- An upsert is an insert that may turn into an update, so it needs BOTH of the
+-- next two policies. With only the insert, the first write of the day succeeds
+-- and every one after it fails — and it fails quietly, which would look exactly
+-- like "the widget froze at breakfast time".
+do $$ begin
+  create policy "insert own glance" on public.glance
+    for insert with check (auth.uid() = user_id);
+exception when duplicate_object then null; end $$;
+
+do $$ begin
+  create policy "update own glance" on public.glance
+    for update using (auth.uid() = user_id) with check (auth.uid() = user_id);
+exception when duplicate_object then null; end $$;
+
+-- No delete policy: nothing in the app deletes this, and revoking a widget is
+-- done by removing its key below, not by emptying the line it reads.
+
+-- ------------------------------------------------------------ device_keys
+-- One row per paired widget.
+--
+-- WHY THE FINGERPRINT AND NOT THE CODE ITSELF. The code is a password: whatever
+-- holds it can read your glance line. `secret_sha256` is a one-way fingerprint
+-- of it — easy to compute from the code, impossible to run backwards — so this
+-- table can recognise the right code without being able to say what any code IS.
+-- Anyone who ever reads this table (a leaked backup, a stray service key, a
+-- glance over your shoulder at the Supabase editor) gets 64 characters of noise
+-- and no way into anything. It is the same reason a website stores a fingerprint
+-- of your password instead of your password, and here it costs nothing at all:
+-- the widget sends the code on every read, so nothing ever needs to remember it.
+--
+-- THE CODE IS THEREFORE UNRECOVERABLE ON PURPOSE. Lost it, or never wrote it
+-- down? Revoke the row and pair again. Settings says exactly that at the moment
+-- it shows you the code.
+create table if not exists public.device_keys (
+  id            uuid        primary key default gen_random_uuid(),
+  user_id       uuid        not null default auth.uid() references auth.users on delete cascade,
+
+  -- sha256 of the code with its dashes and its case taken off, as lowercase hex.
+  -- pairCodeHash() in app.js builds the identical string, and glance_for() below
+  -- normalises a typed-in code the same way before comparing. All three must
+  -- agree or pairing silently never works.
+  secret_sha256 text        not null,
+
+  label         text        not null default '',   -- for a human reading the table
+  created_at    timestamptz not null default now(),
+
+  -- NULL until the widget's first successful read, which is the only thing that
+  -- tells "paired and working" from "paired, and the code was typed in wrong".
+  last_seen_at  timestamptz
+);
+
+-- Unique across EVERYBODY, not merely per person: the fingerprint is the whole
+-- of the identity here, so two rows sharing one would mean a single code opening
+-- two accounts. At 78.5 bits (30^16, about 4.3 x 10^23 codes) that cannot happen
+-- by accident; the index is what
+-- makes it a guarantee rather than an expectation.
+create unique index if not exists device_keys_secret_idx
+  on public.device_keys (secret_sha256);
+
+create index if not exists device_keys_user_idx
+  on public.device_keys (user_id);
+
+alter table public.device_keys enable row level security;
+
+do $$ begin
+  create policy "read own device keys" on public.device_keys
+    for select using (auth.uid() = user_id);
+exception when duplicate_object then null; end $$;
+
+do $$ begin
+  create policy "insert own device keys" on public.device_keys
+    for insert with check (auth.uid() = user_id);
+exception when duplicate_object then null; end $$;
+
+-- REVOKE, FROM THE LIST IN SETTINGS. This is the one table in this file a
+-- browser may delete from, and it has to be: a pairing you cannot take back is a
+-- lock you cannot change. Deleting the row is what makes the code dead — there
+-- is nothing else to withdraw, because nothing else was ever given out.
+do $$ begin
+  create policy "delete own device keys" on public.device_keys
+    for delete using (auth.uid() = user_id);
+exception when duplicate_object then null; end $$;
+
+-- Deliberately no update policy. A pairing is not edited; it is revoked and made
+-- again. The one column that does change afterwards is `last_seen_at`, and it is
+-- written by the function below, which runs with its owner's rights rather than
+-- the caller's.
+
+-- ----------------------------------------------------------- glance_for()
+-- THE ONLY DOOR THE WIDGET HAS, and the only thing a signed-out caller may do
+-- anywhere in this database.
+--
+--   POST  {project URL}/rest/v1/rpc/glance_for
+--   apikey: <the anon key that already ships inside app.js>
+--   Content-Type: application/json
+--   {"secret": "ABCD-EFGH-JKMN-PQRS"}
+--
+--   -> [{"title": "Working on: NeuraVue",
+--        "body":  "Wed 4h 20m · 3 M · 4/5 prayers · as of 5:42 PM",
+--        "as_of": "2026-09-16T12:42:00+00:00"}]
+--   -> []   for any code that is not paired, and for a paired account that has
+--           not written a glance line yet
+--
+-- `security definer` means this runs with the rights of whoever created it — you
+-- — instead of the caller's. That is how a signed-out widget reads one row of a
+-- table it otherwise cannot see at all, and it is a real privilege, so the body
+-- is deliberately tiny and takes exactly one decision: does this code name a row.
+--
+-- `set search_path = ''` belongs with it and is not decoration. Without it the
+-- CALLER gets to choose where the name `device_keys` is looked up, and can point
+-- it at a table of their own making. So every table below is written out in full
+-- as public.something. The built-ins (sha256, encode, upper …) need no such
+-- spelling: pg_catalog is searched first whether or not it is named.
+--
+-- A WRONG CODE RETURNS NO ROWS. Not an error, and not a different error from the
+-- one an unknown code gets — there is nothing to be learnt by calling this. Not
+-- whether an account exists, not whether a code is half right, not how many
+-- people use ProBeing. The only thing between a stranger and the glance line is
+-- guessing 78.5 bits — 4.3 x 10^23 codes, which at a million guesses a second
+-- takes about fourteen billion years, and Supabase would tire of the attempt
+-- long before that.
+--
+-- WHY THE COMPARISON IS BETWEEN FINGERPRINTS. Both sides are hashed first and
+-- the fixed-length digests are what get compared, so how LONG the comparison
+-- takes cannot leak how much of a guessed code was right. Comparing the codes
+-- themselves would stop at the first wrong character, and a patient caller can
+-- read a password out of that, one character at a time. A digest gives that
+-- attack nothing to hold: change one character of the code and every character
+-- of the fingerprint changes with it.
+--
+-- Re-running this file replaces the function in place. If you ever change what
+-- it RETURNS rather than what it does, Postgres will refuse — run
+-- `drop function public.glance_for(text);` once, then this, and the two grants
+-- at the bottom put its permissions back.
+create or replace function public.glance_for(secret text)
+returns table (title text, body text, as_of timestamptz)
+language plpgsql
+security definer
+set search_path = ''
+as $$
+declare
+  typed    text;
+  key_hash text;
+  owner_id uuid;
+begin
+  -- Typed in by a person off another screen: the dashes are there to make it
+  -- readable and the capitals to make it sayable, so neither is part of the
+  -- secret. normalisePairCode() in app.js strips exactly the same things before
+  -- hashing, which is why a code works with the dashes or without them.
+  typed := upper(regexp_replace(coalesce(secret, ''), '[^0-9A-Za-z]', '', 'g'));
+
+  -- THE LENGTH THAT COUNTS IS THE NORMALISED ONE, and this line measured the raw
+  -- argument until 16 Sep. Eight dashes therefore passed a guard that seven
+  -- dashes failed — and eight dashes strip down to nothing at all, hash to the
+  -- sha256 of the empty string, and would have matched a key that held that
+  -- fingerprint. Nothing can store such a key (the generator only ever emits 16
+  -- characters, and inserting a key at all means being signed in), so it was a
+  -- defence that did not defend rather than a way in. Measured here, after the
+  -- stripping, a code made of punctuation is exactly as empty as it looks.
+  --
+  -- 12 rather than 16, because this is a FLOOR and not the format: the generator
+  -- makes 16, and pinning that number here is how a shorter code would one day
+  -- be refused by a database nobody remembered to re-run.
+  if length(typed) < 12 then
+    return;
+  end if;
+
+  key_hash := encode(sha256(convert_to(typed, 'UTF8')), 'hex');
+
+  -- One statement does the recognising AND the "it was used just now", so a
+  -- stranger's guess writes nothing: no row matches, so no row is touched.
+  update public.device_keys k
+     set last_seen_at = now()
+   where k.secret_sha256 = key_hash
+  returning k.user_id into owner_id;
+
+  if owner_id is null then
+    return;                    -- not paired: no rows, no error, and no hint
+  end if;
+
+  return query
+    select g.title, g.body, g.as_of
+      from public.glance g
+     where g.user_id = owner_id;
+end;
+$$;
+
+-- Postgres hands EXECUTE on a brand-new function to everybody by default, so the
+-- blanket permission is taken away first and given back by name. `anon` is the
+-- signed-out role the widget calls as; `authenticated` is here only so the app
+-- itself could test a code without pretending to be signed out.
+revoke all on function public.glance_for(text) from public;
+grant execute on function public.glance_for(text) to anon, authenticated;
+
+-- AND THAT IS THE WHOLE OF WHAT `anon` MAY DO. No table in this file grants the
+-- signed-out role anything — it cannot read an event, cannot write one, cannot
+-- learn that an account exists. One function, one argument, two lines of text.
+
 -- ================================================== the schedule (pg_cron)
 -- NOT RUN BY THIS FILE. It is commented out on purpose, because it carries two
 -- values that must never be committed — paste it into the SQL editor with your

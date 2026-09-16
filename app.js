@@ -6445,6 +6445,9 @@ $('settingsBtn').addEventListener('click', function () {
   $('glanceResult').textContent = glanceBlockedNote();
   $('testResult').textContent = '';
   paintPushState();
+  hidePairCode();                    // never a code left over from a past visit
+  $('pairResult').textContent = '';
+  loadDeviceKeys();                  // not awaited: the dialog opens now
   dlg.showModal();
 });
 
@@ -7054,6 +7057,250 @@ $('pushTestBtn').addEventListener('click', async function () {
   }
 });
 
+// ------------------------------------------- the home-screen widget (Stage 8)
+
+/* Stage 8. The widget is a native box on the Android home screen, put there by
+ * the Trusted Web Activity wrapper, and it shows the SAME two lines as the
+ * notification shade — the ones glanceWords() works out further down.
+ *
+ * IT IS LOOK-ONLY (Saad, 16 Sep 2026). Tapping it opens ProBeing; there is no M
+ * button on it, no prayer button and no microphone. That decision is the whole
+ * of its security story: the credential a widget holds can do exactly one thing,
+ * read two lines of text. Rule 4 is untouched either way — nothing in this
+ * section sits on the path an M or a prayer takes.
+ *
+ * A WIDGET CANNOT SIGN IN. It is not a browser: no session, nowhere to keep one,
+ * and no way to run the GitHub sign-in at all. So it is PAIRED instead. Settings
+ * makes a short code, shows it once, and stores only its FINGERPRINT; the widget
+ * quotes the code at a door called glance_for(), which hands back those two
+ * lines and nothing else. The door itself is in docs/supabase_schema.sql.
+ */
+
+/* THE CODE'S ALPHABET, AND WHY IT IS NOT THE WHOLE OF A TO Z.
+ *
+ * Thirty characters, with I, L, O, U and the digits 0 and 1 left out on purpose:
+ * this is read off one screen and typed into another, and a code that can be
+ * read two ways is a support case rather than a code.
+ *
+ * SIXTEEN OF THEM IS 78.5 BITS — 30^16, which is 4.3 x 10^23 codes. At a million
+ * guesses a second that is about fourteen billion years, near enough the age of
+ * the universe, and nobody gets a million guesses a second out of a database
+ * answering over the internet. It is far more than this job needs: the code
+ * guards two lines of text that are already on display on a home screen. What it
+ * must be is unguessable by somebody who knows exactly what shape it is, and it
+ * is that many times over.
+ */
+var PAIR_CODE_CHARS = 'ABCDEFGHJKMNPQRSTVWXYZ23456789';
+var PAIR_CODE_LEN = 16;
+var PAIR_CODE_GROUP = 4;                     // "ABCD-EFGH-JKMN-PQRS", to be typed
+
+/**
+ * A fresh pairing code.
+ *
+ * crypto.getRandomValues(), NEVER Math.random(). Math.random is built to look
+ * random rather than to be unpredictable: a handful of its outputs is enough to
+ * work out the state behind them and print every number it will produce after.
+ * That is fine for shuffling a list and useless for a credential.
+ */
+function newPairCode() {
+  var n = PAIR_CODE_CHARS.length;                       // 30
+  /* THE BIAS THIS AVOIDS. A byte is 0-255 and 256 does not divide by 30, so
+   * `byte % 30` on its own would land on the first sixteen characters of the
+   * alphabet slightly more often than on the last fourteen. Small enough never
+   * to be noticed, and exactly the kind of lean that makes a code easier to
+   * guess than its length claims. So the top 16 byte values are thrown away
+   * rather than wrapped round, leaving 240 — eight whole alphabets, every
+   * character equally likely. */
+  var limit = 256 - (256 % n);                          // 240
+  var out = '';
+
+  while (out.length < PAIR_CODE_LEN) {
+    var buf = new Uint8Array(PAIR_CODE_LEN);
+    crypto.getRandomValues(buf);
+    for (var i = 0; i < buf.length && out.length < PAIR_CODE_LEN; i++) {
+      if (buf[i] >= limit) continue;                    // discarded, not wrapped
+      out += PAIR_CODE_CHARS.charAt(buf[i] % n);
+    }
+  }
+  return out;
+}
+
+/** "ABCDEFGHJKMNPQRS" -> "ABCD-EFGH-JKMN-PQRS". The grouping is for the eye and
+ *  the thumb; the dashes are not part of the secret. */
+function pairCodeDisplay(code) {
+  var out = [];
+  var plain = String(code || '');
+  for (var i = 0; i < plain.length; i += PAIR_CODE_GROUP) {
+    out.push(plain.slice(i, i + PAIR_CODE_GROUP));
+  }
+  return out.join('-');
+}
+
+/**
+ * What is actually hashed: letters and digits only, in capitals.
+ *
+ * So a code works typed with the dashes or without them, in lower case, or with
+ * a stray space from a paste. glance_for() in docs/supabase_schema.sql strips
+ * exactly the same things before it compares. If those two ever disagree,
+ * pairing fails in the one way that is genuinely hard to diagnose — silently,
+ * with both halves looking correct.
+ */
+function normalisePairCode(typed) {
+  return String(typed || '').replace(/[^0-9A-Za-z]/g, '').toUpperCase();
+}
+
+/** Bytes as lowercase hex, which is the shape Postgres's encode(…, 'hex')
+ *  produces — the two strings are compared character for character. */
+function hexOf(buf) {
+  var bytes = new Uint8Array(buf);
+  var out = '';
+  for (var i = 0; i < bytes.length; i++) {
+    out += (bytes[i] < 16 ? '0' : '') + bytes[i].toString(16);
+  }
+  return out;
+}
+
+/** The fingerprint that goes into device_keys. The code itself is never stored,
+ *  never sent anywhere but here, and never written to the console. */
+async function pairCodeHash(code) {
+  var bytes = new TextEncoder().encode(normalisePairCode(code));
+  return hexOf(await crypto.subtle.digest('SHA-256', bytes));
+}
+
+/** crypto.subtle exists only in a secure context — https, or localhost. Over
+ *  plain http on a LAN address it is simply absent, and this is what lets the
+ *  button say so instead of throwing something unreadable. */
+function pairingSupported() {
+  return typeof crypto !== 'undefined' && Boolean(crypto.subtle) &&
+         typeof crypto.getRandomValues === 'function' && typeof TextEncoder !== 'undefined';
+}
+
+/** The paired widgets, a row each with a Revoke beside it. textContent
+ *  throughout: the label is a string out of the database (rule 5). */
+function renderDeviceKeys(rows) {
+  var box = $('deviceList');
+  box.textContent = '';
+
+  if (!rows || !rows.length) {
+    var none = document.createElement('p');
+    none.className = 'hint';
+    none.textContent = 'No widget is paired yet.';
+    box.appendChild(none);
+    return;
+  }
+
+  rows.forEach(function (r) {
+    var row = document.createElement('div');
+    row.className = 'cat-row';
+
+    var name = document.createElement('span');
+    name.className = 'cat-name';
+    /* "last read" is the only thing that tells a working pairing from a code
+     * typed in wrongly, which is the reason that column exists at all. */
+    name.textContent = (r.label || 'Widget') + ' · ' +
+      (r.last_seen_at ? 'last read ' + humanYmd(ymdLocal(new Date(r.last_seen_at)))
+                      : 'never used yet');
+
+    var kill = document.createElement('button');
+    kill.type = 'button';
+    kill.className = 'link-btn';
+    kill.textContent = 'Revoke';
+    kill.addEventListener('click', function () { revokeDeviceKey(r.id); });
+
+    row.append(name, kill);
+    box.appendChild(row);
+  });
+}
+
+/**
+ * Read the list.
+ *
+ * `secret_sha256` IS DELIBERATELY NOT ASKED FOR. Nothing on screen needs it, and
+ * a column that is never fetched cannot reach a DOM node by accident. It is only
+ * a fingerprint, so this is tidiness rather than a defence — but the tidy habit
+ * is what keeps the real defences honest.
+ */
+async function loadDeviceKeys() {
+  if (cfg.backend !== 'supabase' || !sb || !sbUser) { renderDeviceKeys([]); return; }
+  try {
+    var res = await sb.from('device_keys')
+      .select('id,label,created_at,last_seen_at')
+      .order('created_at', { ascending: false });
+    if (res.error) throw errorFrom(res.error);
+    renderDeviceKeys(res.data || []);
+  } catch (e) {
+    renderDeviceKeys([]);
+    $('pairResult').textContent = 'Could not read the paired list: ' + ((e && e.message) || e);
+  }
+}
+
+/** Take one widget's key away, named by its id. Deleting the row is the whole of
+ *  revoking: there is nothing else to withdraw, because the code itself was
+ *  never kept. */
+async function revokeDeviceKey(id) {
+  var out = $('pairResult');
+  out.textContent = 'Revoking…';
+  try {
+    var res = await sb.from('device_keys').delete().eq('id', id);
+    if (res.error) throw errorFrom(res.error);
+    hidePairCode();
+    out.textContent = 'Revoked. That code opens nothing now.';
+    await loadDeviceKeys();
+  } catch (e) {
+    out.textContent = '❌ ' + ((e && e.message) || e);
+  }
+}
+
+/** Take the code off the screen — when Settings opens, and after a revoke, so a
+ *  code cannot sit there from an earlier visit. */
+function hidePairCode() {
+  $('pairCode').textContent = '';
+  $('pairCode').hidden = true;
+}
+
+/* Make a code, store its fingerprint, then show it.
+ *
+ * IN THAT ORDER ON PURPOSE. If the database refuses the row nothing is shown, so
+ * a code can never be copied onto a scrap of paper while the door it is supposed
+ * to open was never fitted. */
+$('pairBtn').addEventListener('click', async function () {
+  var out = $('pairResult');
+  hidePairCode();
+
+  if (cfg.backend !== 'supabase') {
+    out.textContent = 'The widget reads from Supabase only.';
+    return;
+  }
+  if (!sb || !sbUser) { out.textContent = 'Sign in first.'; return; }
+  if (!pairingSupported()) {
+    out.textContent = 'This browser cannot make a code here. Open ProBeing over https ' +
+      '(the GitHub Pages address, or localhost) and try again.';
+    return;
+  }
+
+  out.textContent = 'Making a code…';
+  try {
+    var code = newPairCode();
+    var res = await sb.from('device_keys').insert({
+      // Named explicitly, as every other write here does: the column's default
+      // only fires for a signed-in browser, and being explicit costs nothing.
+      user_id: sbUser.id,
+      secret_sha256: await pairCodeHash(code),
+      label: 'Widget · ' + humanLocal()
+    });
+    if (res.error) throw errorFrom(res.error);
+
+    $('pairCode').textContent = pairCodeDisplay(code);        // shown, never logged
+    $('pairCode').hidden = false;
+    out.textContent = 'Type this into the widget once. Write it down first — ProBeing ' +
+      'keeps only a fingerprint of it, so it can never be shown again. Lost it? Revoke ' +
+      'it below and make another.';
+    await loadDeviceKeys();
+  } catch (e) {
+    out.textContent = '❌ ' + ((e && e.message) || e);
+  }
+});
+
 // ------------------------------------------------ the glance in the shade
 
 /* Stage 7b. "Working on" and "Today so far", one swipe down, WITHOUT a push.
@@ -7130,6 +7377,12 @@ var glanceEpoch = 0;
 /* The title and body last handed over. A read that changes nothing — the
  * heartbeat, a return to the app in the same minute — is no call at all. */
 var glanceShown = '';
+
+/* The same, for the widget's row in the database: the two lines last written
+ * there. Kept apart from glanceShown because the two go to different places
+ * and fail separately — the shade can be switched off while the widget is
+ * wanted, and a write can be refused while the shade is perfectly happy. */
+var glanceSaved = '';
 
 /* The last showNotification, still on its way or not. tidyGlance() looks at the
  * shade only after it has landed; otherwise a glance being put up this instant
@@ -7214,6 +7467,69 @@ function glanceBlockedNote() {
 }
 
 /**
+ * The words for the last read, or null while no read has landed.
+ *
+ * THE ONE PLACE THE GLANCE'S TEXT IS WORKED OUT. The shade and the widget's row
+ * in the database are the same two lines, from the same snapshot, under the same
+ * "as of" — so they cannot drift into describing the same afternoon differently.
+ * Computing it twice would only be two chances to be right.
+ */
+function glanceWords() {
+  if (!glanceSnap) return null;
+  var snap = glanceSnap;
+  var text = glanceText(dayFigures(snap.log, snap.prayers, snap.at), snap.at);
+  return { title: text.title, body: text.body, at: snap.at };
+}
+
+/**
+ * Put those same two lines where the home-screen widget can read them (Stage 8).
+ *
+ * WRITTEN WHETHER OR NOT THE SHADE IS TICKED, and that is a decision rather than
+ * an oversight. The box in Settings is per device and switches off a
+ * NOTIFICATION; the widget is a different surface with an opt-in of its own,
+ * which is the pairing code. Tying the two together would mean the laptop —
+ * where a notification is least wanted and the app is open longest — quietly
+ * stopped feeding the phone's widget, and the symptom would be a widget going
+ * stale for no visible reason.
+ *
+ * FIRE AND FORGET, ALWAYS. Nothing waits for it, nothing retries it, every
+ * failure is swallowed. It rides on a read that has already been drawn on
+ * screen, so it cannot slow a tap (rule 4): a widget is a convenience, and the
+ * log is the product.
+ *
+ * `as_of` IS THE READ'S OWN TIME, never now — the shade's rule, for the shade's
+ * reason. And, like the shade, a read saying nothing new is not written at all:
+ * the figures have not moved, so the row already on file is still true as of the
+ * earlier moment it names. It can be older than the app knows. It can never be
+ * newer than the rows behind it.
+ */
+function saveGlanceRow() {
+  try {
+    var words = glanceWords();
+    if (!words) return;
+    if (!usingSupabase() || !sb || !sbUser) return;
+
+    var written = words.title + '\n' + words.body;
+    if (written === glanceSaved) return;
+    glanceSaved = written;
+
+    sb.from('glance').upsert({
+      // Explicit because it is the conflict target, and a half-named target is
+      // how a second row appears where a rewrite was meant.
+      user_id: sbUser.id,
+      title: words.title,
+      body: words.body,
+      as_of: new Date(words.at).toISOString(),
+      // A column default only fires on an INSERT, and this is usually an update.
+      updated_at: new Date().toISOString()
+    }, { onConflict: 'user_id' }).then(function (res) {
+      // It never landed, so the next read must not skip it as already written.
+      if (res && res.error) glanceSaved = '';
+    }).catch(function () { glanceSaved = ''; });
+  } catch (e) { /* the widget must never break the read it rides on */ }
+}
+
+/**
  * A read of today has landed: keep it for the shade, and paint.
  *
  * The rows are copied because lastLog is the same array, and every tap unshifts
@@ -7232,12 +7548,18 @@ function armGlance(data, readAt) {
     at: readAt
   };
   paintGlance();
+  /* And the widget's copy of the same words. Last, and never waited for: the
+   * shade is on this device and must not queue behind a network call. */
+  saveGlanceRow();
 }
 
 /** Forget the read this page holds, and disown any read still on its way. */
 function forgetGlance() {
   glanceSnap = null;
   glanceEpoch += 1;
+  /* So the next account's first read is written even in the unlikely case
+   * that it reads exactly like this one's last. */
+  glanceSaved = '';
 }
 
 /**
@@ -7259,7 +7581,7 @@ function paintGlance() {
       return;
     }
 
-    var text = glanceText(dayFigures(snap.log, snap.prayers, snap.at), snap.at);
+    var text = glanceWords();
     var shown = text.title + '\n' + text.body;
     if (shown === glanceShown) return;
     glanceShown = shown;

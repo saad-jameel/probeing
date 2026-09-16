@@ -3,16 +3,19 @@
 A basic, free activity keeper for mobile + laptop, always in sync.
 
 Two mandatory buttons (**M** and **Prayer**), a tracker input for everything else, and weekly
-reviews. Free end to end: a PWA on GitHub Pages, a Google Apps Script backend, and a Google
-Sheet as the database.
+reviews. Free end to end: a PWA on GitHub Pages with **Supabase** behind it — Postgres for the
+rows, GitHub sign-in and row level security so they are yours alone, Realtime so the phone and
+the laptop correct each other without a refresh, and Edge Functions for the two jobs that hold
+a key (Gemini, and the 11:30 pm push). The original Apps Script + Google Sheet backend is
+frozen, and is still selectable in Settings as a fallback.
 
 ## Setup
 
-1. **Sheet + backend** — create a Google Sheet, open `Extensions → Apps Script`, paste
-   `backend/Code.gs`, add a `TOKEN` script property, run `setupSheet()`, then deploy as a Web
-   App (*Execute as: Me*, *Access: Anyone*).
-2. **App** — open the GitHub Pages URL in Chrome, tap the gear, paste the Web App URL and token,
-   press **Test**, then **Save**.
+1. **Database** — create a Supabase project and run `docs/supabase_schema.sql` in its SQL
+   editor. It is safe to run more than once and never rewrites existing rows.
+2. **App** — open the GitHub Pages URL in Chrome and sign in with GitHub. The project address
+   and its public anon key already ship in the app; Settings is where you would change them,
+   and where the per-device options live.
 3. **Install** — Chrome's install prompt on the laptop; `⋮ → Add to Home screen` on Android.
 
 Repeat step 2 once per device. Nothing else to install.

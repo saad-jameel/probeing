@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+    The card behind the widget. The radius comes from a dimen so that Android 12
+    can substitute the launcher's own value (see values-v31/glance.xml) while
+    older versions get a fixed 16dp.
+-->
+<shape xmlns:android="http://schemas.android.com/apk/res/android"
+    android:shape="rectangle">
+    <corners android:radius="@dimen/glance_corner_radius" />
+    <solid android:color="@color/glance_background" />
+</shape>

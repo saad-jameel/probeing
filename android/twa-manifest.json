@@ -1,0 +1,54 @@
+{
+  "packageId": "io.github.saad_jameel.probeing",
+  "host": "saad-jameel.github.io",
+  "name": "ProBeing",
+  "launcherName": "ProBeing",
+  "display": "standalone",
+  "themeColor": "#101828",
+  "themeColorDark": "#000000",
+  "navigationColor": "#000000",
+  "navigationColorDark": "#000000",
+  "navigationDividerColor": "#000000",
+  "navigationDividerColorDark": "#000000",
+  "backgroundColor": "#101828",
+  "enableNotifications": false,
+  "startUrl": "/probeing/",
+  "iconUrl": "https://saad-jameel.github.io/probeing/icons/icon-512.png",
+  "maskableIconUrl": "https://saad-jameel.github.io/probeing/icons/icon-maskable-512.png",
+  "splashScreenFadeOutDuration": 300,
+  "signingKey": {
+    "path": "/home/saad-wsl/.probeing/probeing-upload.jks",
+    "alias": "probeing"
+  },
+  "appVersionName": "1",
+  "appVersionCode": 1,
+  "shortcuts": [
+    {
+      "name": "Open ProBeing",
+      "shortName": "ProBeing",
+      "url": "/probeing/",
+      "chosenIconUrl": "https://saad-jameel.github.io/probeing/icons/icon-192.png"
+    }
+  ],
+  "generatorApp": "unknown",
+  "webManifestUrl": "https://saad-jameel.github.io/probeing/manifest.webmanifest",
+  "fallbackType": "customtabs",
+  "features": {},
+  "alphaDependencies": {
+    "enabled": false
+  },
+  "enableSiteSettingsShortcut": true,
+  "isChromeOSOnly": false,
+  "isMetaQuest": false,
+  "fullScopeUrl": "https://saad-jameel.github.io/probeing/",
+  "minSdkVersion": 26,
+  "orientation": "portrait",
+  "fingerprints": [],
+  "additionalTrustedOrigins": [],
+  "retainedBundles": [],
+  "protocolHandlers": [],
+  "fileHandlers": [],
+  "launchHandlerClientMode": "",
+  "displayOverride": [],
+  "appVersion": "1"
+}

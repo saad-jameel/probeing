@@ -1,0 +1,54 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+    Everything the widget needs, in a file of its own.
+
+    NOT in values/strings.xml or values/colors.xml, and that is the whole reason
+    this file exists: Bubblewrap OVERWRITES both of those on `bubblewrap update`.
+    Anything put there is lost the first time the wrapper is regenerated, and
+    lost quietly — the build still succeeds, with the widget's colours gone.
+-->
+<resources>
+
+    <!-- The static palette, used below Android 12 and wherever dynamic colour
+         is unavailable. These are ProBeing's own: #101828 is the theme colour in
+         manifest.webmanifest, so the widget matches the app rather than the
+         wallpaper. values-v31/glance.xml overrides them where Android can do
+         better. -->
+    <color name="glance_background">#101828</color>
+    <color name="glance_title">#E6EAF2</color>
+    <color name="glance_body">#A9B4C6</color>
+    <color name="glance_foot">#7B8798</color>
+    <color name="glance_accent">#7FB2FF</color>
+
+    <!-- Android 12 rounds widget corners itself and expects the background to
+         match. Below 12 there is no system radius, so this is a fixed value that
+         looks close. values-v31 swaps in the real one. -->
+    <dimen name="glance_corner_radius">16dp</dimen>
+    <dimen name="glance_padding">12dp</dimen>
+
+    <style name="Theme.ProBeing.GlanceWidget" parent="@android:style/Theme.DeviceDefault" />
+
+    <string name="glance_widget_label">ProBeing</string>
+    <string name="glance_widget_description">Working on, and today so far. Look only — tapping it opens ProBeing.</string>
+
+    <!-- Placeholders for the moment before the first reading. No figures: see
+         the comment at the top of layout/glance_widget.xml. -->
+    <string name="glance_title_placeholder">ProBeing</string>
+    <string name="glance_body_placeholder">Reading…</string>
+    <string name="glance_foot_placeholder"></string>
+
+    <!-- The picker preview, where sample figures are honest because no claim is
+         being made about today. -->
+    <string name="glance_preview_title">Working on: NeuraVue</string>
+    <string name="glance_preview_body">Mon 4h 20m · 3 M · 4/5 prayers</string>
+    <string name="glance_preview_foot">as of 5:42 PM</string>
+
+    <string name="glance_reload">↻</string>
+    <string name="glance_reload_description">Read again now</string>
+
+    <string name="glance_pair_title">Pair the ProBeing widget</string>
+    <string name="glance_pair_explainer">Open ProBeing, go to Settings, and copy the widget pairing code shown there. It lets this widget read two lines of text and nothing else — it cannot log anything.</string>
+    <string name="glance_pair_hint">Pairing code</string>
+    <string name="glance_pair_save">Save</string>
+    <string name="glance_pair_remove">Remove pairing</string>
+</resources>

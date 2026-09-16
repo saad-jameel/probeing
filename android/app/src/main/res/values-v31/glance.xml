@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+    Android 12 and up only (v31 = API 31). Two things change here.
+
+    DYNAMIC COLOUR: @android:color/system_* are the palette Android derives from
+    the wallpaper. Using them is what makes a widget look like it belongs on the
+    home screen instead of like a screenshot of another app. The neutral ramp is
+    chosen rather than the accent ramp because ProBeing's own surface is a dark,
+    quiet card and an accent-coloured panel would shout.
+
+    CORNERS: system_app_widget_background_radius is whatever radius the launcher
+    is rounding widgets to on this device. Matching it exactly is the difference
+    between a rounded card and a rounded card with square corners peeking out.
+-->
+<resources>
+    <color name="glance_background">@android:color/system_neutral1_900</color>
+    <color name="glance_title">@android:color/system_neutral1_50</color>
+    <color name="glance_body">@android:color/system_neutral2_200</color>
+    <color name="glance_foot">@android:color/system_neutral2_400</color>
+    <color name="glance_accent">@android:color/system_accent1_200</color>
+
+    <dimen name="glance_corner_radius">@android:dimen/system_app_widget_background_radius</dimen>
+</resources>

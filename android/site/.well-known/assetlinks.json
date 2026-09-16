@@ -1,0 +1,12 @@
+[
+  {
+    "relation": ["delegate_permission/common.handle_all_urls"],
+    "target": {
+      "namespace": "android_app",
+      "package_name": "io.github.saad_jameel.probeing",
+      "sha256_cert_fingerprints": [
+        "FE:17:87:01:53:35:BF:AD:59:76:82:BD:2C:AF:5A:28:96:AD:34:78:18:A1:3E:00:A0:38:C5:96:43:83:EF:43"
+      ]
+    }
+  }
+]

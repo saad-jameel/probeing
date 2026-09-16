@@ -1,0 +1,86 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+    The widget itself. Two lines and a footer, and nothing you can press that
+    writes anything.
+
+    THE DEFAULT TEXT HERE CARRIES NO FIGURES, deliberately. This layout is what
+    is drawn for the half-second between a widget being dropped on the home
+    screen and its first reading arriving, and a number in that gap would be a
+    number nobody can date. The picker's preview, where sample figures ARE
+    wanted, is a separate file: glance_widget_preview.xml.
+-->
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:id="@+id/glance_root"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:orientation="vertical"
+    android:background="@drawable/glance_background"
+    android:padding="@dimen/glance_padding"
+    android:theme="@style/Theme.ProBeing.GlanceWidget">
+
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="horizontal"
+        android:baselineAligned="false">
+
+        <!-- One tap target for both lines: the whole card opens ProBeing. -->
+        <LinearLayout
+            android:id="@+id/glance_lines"
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_weight="1"
+            android:orientation="vertical">
+
+            <TextView
+                android:id="@+id/glance_title"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:text="@string/glance_title_placeholder"
+                android:textColor="@color/glance_title"
+                android:textSize="15sp"
+                android:textStyle="bold"
+                android:maxLines="1"
+                android:ellipsize="end" />
+
+            <TextView
+                android:id="@+id/glance_body"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="2dp"
+                android:text="@string/glance_body_placeholder"
+                android:textColor="@color/glance_body"
+                android:textSize="13sp"
+                android:maxLines="2"
+                android:ellipsize="end" />
+        </LinearLayout>
+
+        <!-- Read again, now. The only control that does anything at all. -->
+        <TextView
+            android:id="@+id/glance_reload"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginStart="8dp"
+            android:paddingStart="10dp"
+            android:paddingEnd="10dp"
+            android:paddingTop="4dp"
+            android:paddingBottom="4dp"
+            android:text="@string/glance_reload"
+            android:contentDescription="@string/glance_reload_description"
+            android:textColor="@color/glance_accent"
+            android:textSize="16sp" />
+    </LinearLayout>
+
+    <!-- When the figures were true. Tapping it opens the pairing screen, which
+         is how a code gets replaced once one is already stored. -->
+    <TextView
+        android:id="@+id/glance_foot"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="6dp"
+        android:text="@string/glance_foot_placeholder"
+        android:textColor="@color/glance_foot"
+        android:textSize="11sp"
+        android:maxLines="1"
+        android:ellipsize="end" />
+</LinearLayout>

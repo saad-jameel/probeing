@@ -108,14 +108,19 @@ else
 fi
 
 # --- 5. the Supabase key that ships must be the ANON one ---------------------
-# The project URL and anon key are committed DELIBERATELY (app.js), so that
-# reinstalling means signing in with GitHub rather than retyping a 209-character
-# key on a phone. They identify the project; they do not grant access to it —
-# row level security and the sign-in do that. What must never ship is a key
-# claiming any stronger role, so check the shape of what is actually there.
-if [ -n "$(scan -lIE -- 'eyJ[A-Za-z0-9_-]{10,}\.eyJ[A-Za-z0-9_-]{20,}' -- '*.js' '*.html')" ]; then
+# The project URL and anon key are committed DELIBERATELY (app.js, and since
+# Stage 8 the widget's Supabase.java too), so that reinstalling means signing in
+# with GitHub rather than retyping a 209-character key on a phone. They identify
+# the project; they do not grant access to it — row level security and the
+# sign-in do that. What must never ship is a key claiming any stronger role, so
+# check the shape of what is actually there.
+#
+# The .java and .xml paths were added when the Android wrapper landed: the same
+# key now ships in a second language, and a check that only reads *.js would be a
+# check the APK walks straight past.
+if [ -n "$(scan -lIE -- 'eyJ[A-Za-z0-9_-]{10,}\.eyJ[A-Za-z0-9_-]{20,}' -- '*.js' '*.html' '*.java' '*.xml')" ]; then
   BAD=0
-  for TOK in $(scan -hoIE -- 'eyJ[A-Za-z0-9_-]{10,}\.eyJ[A-Za-z0-9_-]{100,}' -- '*.js' '*.html'); do
+  for TOK in $(scan -hoIE -- 'eyJ[A-Za-z0-9_-]{10,}\.eyJ[A-Za-z0-9_-]{100,}' -- '*.js' '*.html' '*.java' '*.xml'); do
     BODY=$(printf '%s' "$TOK" | cut -d. -f2)
     PAD=$(( (4 - ${#BODY} % 4) % 4 ))
     DEC=$(printf '%s%s' "$BODY" "$(printf '=%.0s' $(seq 0 $PAD) 2>/dev/null)" \
@@ -216,6 +221,116 @@ else
   pass "no private key shape in tracked files"
 fi
 
+# --- 9. the Android signing key, and the APK it signs (Stage 8) --------------
+# The APK is signed with a key that lives in ~/.probeing/, exactly like the token
+# and the VAPID private half. Anyone holding it can build a package Android will
+# accept as an UPDATE to ProBeing, and install it over the real one.
+#
+# It is also the one credential here that cannot be rotated quietly. A
+# differently-signed APK is a DIFFERENT APP to Android: recovering from a leak
+# means uninstalling, losing the widget's pairing, and setting it up again.
+#
+# NOT A SECRET, AND NOBODY SHOULD "FIX" IT: the certificate FINGERPRINT in
+# android/assetlinks.json is public BY DESIGN. That file is meant to be served
+# from a public website, because it is how Chrome decides this APK may open that
+# origin without a URL bar. A fingerprint is a hash of the PUBLIC certificate and
+# cannot be turned back into a key. Flagging it would break the app to no gain.
+#
+# Three checks, because each one alone can be walked past: by NAME, which anyone
+# can spot; by MAGIC BYTES, because renaming the file to notes.txt defeats the
+# name check; and by the PASSWORD's own value, which is the likelier accident —
+# a password pasted into a build file to make a build work.
+KS_EXT_RE='\.(jks|keystore|p12|pfx|apk|aab)$'
+KS_TRACKED=$(git ls-files | grep -iE "$KS_EXT_RE" || true)
+if [ -n "$KS_TRACKED" ]; then
+  fail "a keystore or a built app is tracked by git:"
+  printf '        %s\n' $KS_TRACKED
+else
+  pass "no keystore or APK/AAB tracked by extension"
+fi
+
+# Reads a tracked file from disk, or from the index when it is staged but not on
+# disk — the same two places scan() looks, and for the same reason.
+bytes_of() { if [ -f "$1" ]; then cat -- "$1"; else git show ":$1" 2>/dev/null; fi; }
+
+# A Java keystore starts FE ED FE ED; the JCEKS variant starts CE CE CE CE. A
+# PKCS#12 is DER, which starts 30 82 — far too common a shape to flag on its own,
+# since every certificate and every signature block begins that way. So a DER
+# file is only flagged when the pkcs-12 object identifier (1.2.840.113549.1.12)
+# is actually in its bytes.
+#
+# `grep -c`, never `grep -q`: see the note at the top of this file. -c reads to
+# the end, so it cannot close the pipe early and turn a match into a silent pass.
+P12_OID=$(printf '\052\206\110\206\367\015\001\014')
+KS_MAGIC=''
+while IFS= read -r f; do
+  [ -n "$f" ] || continue
+  HEAD4=$(bytes_of "$f" | head -c 4 | od -An -tx1 | tr -d ' \n')
+  case "$HEAD4" in
+    feedfeed|cececece) KS_MAGIC="$KS_MAGIC $f" ;;
+    3082*)
+      OIDHIT=$(bytes_of "$f" | LC_ALL=C grep -acF -- "$P12_OID" 2>/dev/null || true)
+      [ "${OIDHIT:-0}" != "0" ] && KS_MAGIC="$KS_MAGIC $f"
+      ;;
+  esac
+done <<< "$(git ls-files)"
+if [ -n "$KS_MAGIC" ]; then
+  fail "a file with keystore magic bytes is tracked (whatever it is named):"
+  printf '        %s\n' $KS_MAGIC
+else
+  pass "no keystore magic bytes (FE ED FE ED / PKCS#12) in tracked files"
+fi
+
+# By value. The passwords live in ~/.probeing/keystore.properties, mode 0600, and
+# must appear in nothing tracked — not in app/build.gradle, not in a README.
+KS_PROPS="$HOME/.probeing/keystore.properties"
+if [ -r "$KS_PROPS" ]; then
+  # ONE PASSWORD PER LINE, and the reason is a bug this check shipped with.
+  #
+  # It used to end `| cut -d= -f2- | tr -d '[:space:]' | sort -u`, and
+  # [:space:] INCLUDES THE NEWLINE. With both storePassword and keyPassword in
+  # the file, tr joined the two values into a single 64-character string — so
+  # the scan searched for the password written TWICE, end to end, which appears
+  # nowhere on earth. It reported "absent" every time, and planting the real
+  # password in a tracked file did not trip it. A gate that cannot fail is not
+  # a gate; this one could only fail on a string that cannot exist.
+  #
+  # sed keeps the line structure and strips only blanks around the value. The
+  # earlier single-value checks (token, VAPID, cron secret) read a whole file
+  # with one value in it, so `tr -d '[:space:]'` is correct there and is left
+  # alone.
+  KS_PWS=$(sed -nE 's/^[[:space:]]*(storePassword|keyPassword)[[:space:]]*=[[:space:]]*(.*)$/\2/p' \
+             "$KS_PROPS" | tr -d '\r' | sed -E 's/[[:space:]]+$//' | sort -u)
+  # The length floor exists because a short password is mostly common words and
+  # would match half the repo. But SKIPPING a password and then printing "ok"
+  # is the gate lying: it reports the thing it did not look for as absent. So
+  # count what was actually checked, and fail loudly if that count is zero —
+  # an unscannable password is a blind spot over the one credential here that
+  # cannot be rotated without breaking the published assetlinks.json.
+  KS_PW_BAD=0
+  KS_PW_CHECKED=0
+  while IFS= read -r KPW; do
+    if [ ${#KPW} -lt 12 ]; then
+      continue
+    fi
+    KS_PW_CHECKED=$((KS_PW_CHECKED + 1))
+    KPW_HITS=$(scan -lI --fixed-strings -- "$KPW")
+    if [ -n "$KPW_HITS" ]; then
+      fail "the keystore password is in a tracked file:"
+      printf '        %s\n' $KPW_HITS
+      KS_PW_BAD=1
+    fi
+  done <<< "$KS_PWS"
+  if [ "$KS_PW_CHECKED" -eq 0 ]; then
+    fail "the keystore password is too short (< 12 chars) to scan for — this check did NOT run"
+    printf '        %s\n' "lengthen it: keytool -storepasswd -keystore <ks>, then update keystore.properties"
+  elif [ "$KS_PW_BAD" -eq 0 ]; then
+    pass "keystore password absent from tracked files ($KS_PW_CHECKED checked)"
+  fi
+else
+  pass "no local keystore.properties to compare against (skipped)"
+fi
+
 # --- 8. history, not just the working tree ----------------------------------
 # A secret removed in a later commit is still public in an earlier one.
 if [ "$QUICK" -eq 0 ] && git rev-parse HEAD >/dev/null 2>&1; then
@@ -264,6 +379,31 @@ if [ "$QUICK" -eq 0 ] && git rev-parse HEAD >/dev/null 2>&1; then
     printf '        %s\n' "$HIST_PRIV" | head -3
     printf '        %s\n' "regenerate the VAPID pair and re-subscribe both devices; removing the commit is not enough"
     HIST_BAD=1
+  fi
+
+  # Stage 8's keystore, in history. A keystore deleted in a later commit is
+  # still a usable signing key in an earlier one, and --diff-filter=A is how a
+  # file that was ADDED and then removed is still found by name.
+  HIST_KS=$(git log --all --diff-filter=A --pretty=format:'' --name-only \
+              -- '*.jks' '*.keystore' '*.p12' '*.pfx' '*.apk' '*.aab' 2>/dev/null \
+            | sort -u | grep -v '^$' || true)
+  if [ -n "$HIST_KS" ]; then
+    fail "a keystore or built app was added somewhere in committed history:"
+    printf '        %s\n' $HIST_KS
+    printf '        %s\n' "a signing key in history is a leaked key: generate a new one, and note that"
+    printf '        %s\n' "the phone must uninstall before it will accept an APK signed by the new key"
+    HIST_BAD=1
+  fi
+  if [ -r "$KS_PROPS" ]; then
+    while IFS= read -r KPW; do
+      [ ${#KPW} -ge 12 ] || continue
+      HIST_KPW=$(git log -S"$KPW" --oneline --all 2>/dev/null)
+      if [ -n "$HIST_KPW" ]; then
+        fail "the keystore password appears in committed history"
+        printf '        %s\n' "$HIST_KPW" | head -3
+        HIST_BAD=1
+      fi
+    done <<< "$KS_PWS"
   fi
 
   HIST_URL=$(git log -S'macros/s/' --oneline --all -- . 2>/dev/null | head -3)
