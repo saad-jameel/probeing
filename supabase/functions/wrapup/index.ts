@@ -571,7 +571,7 @@ Deno.serve(async (req: Request): Promise<Response> => {
    * bytes that went out inside an encrypted payload, addressed to one device,
    * good for marking exactly one check answered and nothing else. */
   if (sent && sent.answer) {
-    const ans = sent.answer as { id?: string; nonce?: string };
+    const ans = sent.answer as { id?: string; nonce?: string; from?: string };
     const id = String(ans.id || '');
     const nonce = String(ans.nonce || '');
 
@@ -607,7 +607,27 @@ Deno.serve(async (req: Request): Promise<Response> => {
     const upd = await sb.from('awake_checks')
       .update({ answered_at: new Date().toISOString() }).eq('id', row.id).select('id');
     if (upd.error) return reply(500, { ok: false, error: upd.error.message });
-    return reply(200, { ok: true, answered: true });
+
+    /* The question went to every device, so the answer has to retire it on every
+     * device. A silent push is not an option — Chrome granted the subscription on
+     * the promise that each one shows something — so this REPLACES the question
+     * under the same tag instead of removing it. The device that answered is
+     * skipped; it closed its own notification already.
+     *
+     * After the update and never allowed to fail the call: a push service that is
+     * slow or down must not turn a recorded answer into a 500, which is exactly
+     * what sw.js reports to him as "could not record your answer". */
+    let retired = 0;
+    try {
+      const out = await pushAll(owner, JSON.stringify({
+        kind: 'answered',
+        title: 'ProBeing',
+        body: 'Answered on another device — your day is still running.'
+      }), 3600, String(ans.from || ''));
+      retired = Number(out.sent) || 0;
+    } catch (_e) { /* the answer is recorded; the tidying up is not worth a 500 */ }
+
+    return reply(200, { ok: true, answered: true, retired: retired });
   }
 
   /* ─── 2. the test push ───────────────────────────────────────────────────
@@ -804,8 +824,11 @@ function functionUrl(): string {
 }
 
 /** Push to every device this account has registered, and clear out the dead
- *  ones. Returns `{sent, failed, dropped}` for the reply. */
-async function pushAll(owner: string, payload: string, ttl: number) {
+ *  ones. Returns `{sent, failed, dropped}` for the reply.
+ *
+ *  `skipEndpoint` leaves one device out — the one that just answered, which has
+ *  no need to be told what it did. */
+async function pushAll(owner: string, payload: string, ttl: number, skipEndpoint = '') {
   const sb = admin();
   const subs = await sb.from('push_subscriptions')
     .select('id, endpoint, p256dh, auth').eq('user_id', owner);
@@ -815,6 +838,7 @@ async function pushAll(owner: string, payload: string, ttl: number) {
   let bad = 0;
   let gone = 0;
   for (const sub of (subs.data || []) as Sub[]) {
+    if (skipEndpoint && sub.endpoint === skipEndpoint) continue;
     const status = await sendPush(sub, payload, ttl);
     if (status >= 200 && status < 300) { ok += 1; continue; }
     if (status === 404 || status === 410) {

@@ -103,6 +103,13 @@ self.addEventListener('push', function (event) {
   var title = String(data.title || 'ProBeing');
   var body = String(data.body || 'Are you still awake?');
 
+  /* An answer given on one device has to retire the question on the others.
+   * It arrives as an ordinary push under the SAME tag, so it replaces the
+   * question rather than stacking under it — replaced, not removed, because of
+   * the userVisibleOnly promise above. Quiet, too: answering on the phone must
+   * not buzz the laptop a second time to tell it the matter is settled. */
+  var answered = data.kind === 'answered';
+
   var options = {
     body: body,
     icon: 'icons/icon-192.png',
@@ -110,14 +117,16 @@ self.addEventListener('push', function (event) {
     // One question at a time: a second check REPLACES the first in the shade
     // rather than stacking two identical rows nobody reads.
     tag: 'probeing-awake',
-    renotify: true,
+    renotify: !answered,
     // It has to survive being ignored for an hour — that hour is the whole
     // mechanism. On a desktop Chrome this is what stops the toast fading out
     // on its own after a few seconds. It does NOTHING on Chrome for Android,
     // which ignores the flag; there the notification sits in the shade until
     // it is dealt with anyway, so the behaviour is the same for a different
     // reason. Do not delete it because "the phone works without it".
-    requireInteraction: true,
+    // The exception is the "answered" replacement, which is news rather than a
+    // question: it has nothing to wait for, so it is allowed to fade.
+    requireInteraction: !answered,
     data: {
       checkId: data.checkId || '',
       nonce: data.nonce || '',
@@ -139,23 +148,33 @@ self.addEventListener('push', function (event) {
 function answerCheck(data) {
   if (!data || !data.url || !data.checkId || !data.nonce) return Promise.resolve(null);
 
-  return fetch(data.url, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      /* The public anon key, as it arrived in the payload. Supabase's platform
-       * gate wants a project token on every function call; it is not what
-       * protects this one — the nonce in the body is. */
-      'Authorization': 'Bearer ' + data.key,
-      'apikey': data.key
-    },
-    body: JSON.stringify({ answer: { id: data.checkId, nonce: data.nonce } })
-  }).then(function (res) {
-    if (!res.ok) return null;
-    return res.json().catch(function () { return null; });
-  }).catch(function () {
-    return null;                     // no signal, or the function is down
-  });
+  /* This device's own endpoint rides along with the answer, so the server can
+   * skip it when it retires the question on the others — this one closed its
+   * notification in notificationclick and does not need telling. Best effort: a
+   * subscription that cannot be read costs a redundant notification here, which
+   * is a far smaller failure than an answer that never gets sent. */
+  return self.registration.pushManager.getSubscription()
+    .catch(function () { return null; })
+    .then(function (sub) {
+      return fetch(data.url, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          /* The public anon key, as it arrived in the payload. Supabase's platform
+           * gate wants a project token on every function call; it is not what
+           * protects this one — the nonce in the body is. */
+          'Authorization': 'Bearer ' + data.key,
+          'apikey': data.key
+        },
+        body: JSON.stringify({ answer: { id: data.checkId, nonce: data.nonce,
+                                         from: (sub && sub.endpoint) || '' } })
+      });
+    }).then(function (res) {
+      if (!res.ok) return null;
+      return res.json().catch(function () { return null; });
+    }).catch(function () {
+      return null;                   // no signal, or the function is down
+    });
 }
 
 // ------------------------------------------------------------- the glance
