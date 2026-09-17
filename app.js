@@ -300,10 +300,33 @@ async function callSupabase(action, payload) {
       }
     });
 
+    /* The newest state row from BEFORE today, so the pills survive an overnight
+     * close. The 11:30 PM auto-close is stamped yesterday, so it is never in the
+     * rows above and no device ever adopted it — the pill read "Working" all day
+     * while the server correctly held the day closed, and the nightly check
+     * stayed silent. Deliberately kept out of `log`: it may move the toggles,
+     * never the figures. A failure here is ignored rather than thrown — a missing
+     * carry row is a stale pill, but a thrown one is no refresh at all.
+     *
+     * Several rows, not one. The auto-close writes `off` AND `sleep` at the same
+     * instant, and they move different pills, so fetching a single newest row
+     * returns an arbitrary one of the pair and leaves the other pill stale. These
+     * go through the same reconcile as today's rows, which already keeps the
+     * newest per pill; the limit is a cap on the read, not an assumption about
+     * how many are needed. */
+    var carry = [];
+    var prior = await sb.from('events').select('at, type')
+      .lt('at', localDayStartIso())
+      .in('type', Object.keys(STATE_ROWS))
+      .order('at', { ascending: false })
+      .limit(12);
+    if (!prior.error) carry = prior.data || [];
+
     return {
       ok: true,
       date: localDayStartIso().slice(0, 10),
       log: log,
+      carry: carry,
       prayers: prayers,
       m_count: log.filter(function (x) { return x.type === 'M'; }).length,
       now: { text: '', updated: '' }
@@ -984,8 +1007,9 @@ function renderToday(data) {
   lastLog = data.log || [];
 
   // Today's rows are the shared truth between devices: they correct the toggles
-  // and they teach the chip order.
-  reconcileToggles(lastLog);
+  // and they teach the chip order. `carry` adds the last state row from before
+  // today, so a day closed overnight is not missed.
+  reconcileToggles(lastLog, data.carry);
   absorbChipStats(lastLog);
   renderProject();
 
@@ -1250,6 +1274,7 @@ function replayDay(log, endMs) {
     project: current,                       // the most recent one, for a one-line readout
     ms: byProject[current] || 0,
     running: clock,
+    dayClosed: dayClosed,                   // ended for the night — not merely paused
     activeProjects: activeProjects,
     byProject: byProject,
     worked: worked,
@@ -1287,6 +1312,7 @@ function dayFigures(log, prayers, endMs) {
     worked: day.worked,
     project: day.project,                   // '' when nothing is open
     running: day.running,
+    dayClosed: day.dayClosed,               // the day is over, which is not "paused"
     // A prayer logged twice is still one prayer out of five.
     prayersDone: PRAYER_NAMES.filter(function (n) {
       return prayers.some(function (p) { return p.prayer === n; });
@@ -1683,10 +1709,16 @@ function paintToggles() {
   document.body.classList.toggle('state-off', !asleep && work === 'off');
 }
 
-/** The Sheet wins: adopt any state row from today that is newer than what this
- *  device remembers. Rows can arrive in any order, so scan them all. */
-function reconcileToggles(log) {
-  (log || []).forEach(function (row) {
+/** The store wins: adopt any state row newer than what this device remembers.
+ *  Rows can arrive in any order, so scan them all.
+ *
+ *  `carry` is state rows from before today (see callSupabase), absent on the Apps
+ *  Script fallback. They are scanned the same way and held to the same "newer
+ *  than local" rule, so they can only fill a gap — never undo something done on
+ *  this device today. */
+function reconcileToggles(log, carry) {
+  var rows = (log || []).slice().concat(carry || []);
+  rows.forEach(function (row) {
     var move = STATE_ROWS[row.type];
     if (!move) return;
     var t = instantOf(row.at);
@@ -7410,9 +7442,18 @@ function glanceClock(ms) {
  * and is fixed English for the same reason that time is a fixed shape.
  */
 function glanceText(figures, asOfMs) {
-  var title = figures.project
-    ? 'Working on: ' + figures.project + (figures.running ? '' : ' · paused')
-    : 'Working on: nothing open';
+  /* Three states, the same three the Home pill has: working, paused, day done.
+   * "Paused" for a day that is over reads as "back shortly", the opposite of
+   * what it means. GlanceWords.staleTitle leaves a title it does not recognise
+   * alone, so the widget passes this shape through untouched — no new APK. */
+  var title;
+  if (figures.dayClosed) {
+    title = figures.project ? 'Day done · ' + figures.project : 'Day done';
+  } else {
+    title = figures.project
+      ? 'Working on: ' + figures.project + (figures.running ? '' : ' · paused')
+      : 'Working on: nothing open';
+  }
 
   var day = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'][new Date(asOfMs).getDay()];
   var body = day + ' ' + humanDuration(figures.worked) +
