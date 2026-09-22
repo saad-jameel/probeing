@@ -253,7 +253,7 @@ async function callSupabase(action, payload) {
      * go through the same reconcile as today's rows, which already keeps the
      * newest per pill; the limit is a cap on the read, not an assumption about
      * how many are needed. */
-    var carry = [];
+    var carry = null;                  // null = unknown, never "none": see dayFigures
     var prior = await sb.from('events').select('at, type')
       .lt('at', localDayStartIso())
       .in('type', Object.keys(STATE_ROWS))
@@ -6838,7 +6838,7 @@ function armGlance(data, readAt) {
   glanceSnap = {
     log: (data.log || []).slice(),
     prayers: (data.prayers || []).slice(),
-    carry: (data.carry || []).slice(),
+    carry: Array.isArray(data.carry) ? data.carry.slice() : null,
     at: readAt
   };
   paintGlance();
