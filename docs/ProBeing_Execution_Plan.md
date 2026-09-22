@@ -23,7 +23,7 @@ shipped in `f733804`; `CLAUDE.md` carries the full reasoning.
 
 ---
 
-> ## Where things stand — 8 Sep 2026
+> ## Where things stand — 22 Sep 2026
 >
 > | | Stage | |
 > |---|---|---|
@@ -35,10 +35,10 @@ shipped in `f733804`; `CLAUDE.md` carries the full reasoning.
 > | ✅ | 4 Tracker + Voice | signed off 2 Sep — two fallback checks left untested on purpose, see the stage |
 > | ✅ | **5 Review Button** | **signed off 8 Sep** on both devices, against real rows and real Gemini calls. One change came out of the first read — see the stage |
 > | ✅ | **6 Weekly & Monthly Reports** | **signed off 8 Sep** on both devices, including a rewrite leaving one row. M and prayer counting verified the same day through Review's own "This week" |
-> | 🟡 | **7a Push + the nightly wrapup** | **built and shipped 8 Sep, not signed off.** Needs the dashboard steps run and a real push received on both devices. No Gemini in it |
-> | ⬜ | 7b The home-screen glance | not started, and **not blocked on 7a** — a page can post its own notification. See the stage |
+> | ✅ | **7a Push + the nightly wrapup** | **signed off 22 Sep** — the push arrived on both devices, and every branch was watched against the live database: ignored → closed at 23:30 (15 Sep); answered → follow-up at 01:00 on the dot (17→18 Sep); a missing or wrong cron secret refused (run 22 Sep). One close writing one row is verified by reading the rid, not by running it |
+> | 🟡 | 7b The home-screen glance | **built 14 Sep and live** on both devices. Sign-off waits on the one thing its checklist asks to *record*: does Windows pop a new toast at each 5-minute refresh, or replace it silently? |
 > | ⬜ | 7c Offline logging | not started; touches the write path only, overlaps nothing |
-> | 🟡 | **8 Home-screen widget** | **web + database half built 16 Sep**; the Android wrapper is in progress. A TWA, not Capacitor, and the widget is look-only |
+> | ✅ | **8 Home-screen widget** | **signed off 22 Sep.** Refreshes itself unattended — reads 25, 36 and 29 minutes apart on 18 Sep, no hand on the phone. A made-up pairing code returns nothing (run 22 Sep). Its "within a minute" check was impossible on Android and now says 30 minutes. A TWA, not Capacitor, and look-only |
 >
 > **A great deal was built with no stage number.** Read *Built, but never planned*
 > at the end before assuming a gap is a gap.
@@ -478,12 +478,13 @@ app, and its M count and prayer breakdown exactly match a manual count of the ra
 
 ---
 
-## 🟡 Stage 7 — Notifications, the daily wrapup, and offline — SPLIT; 7a BUILT
+## 🟡 Stage 7 — Notifications, the daily wrapup, and offline — 7a SIGNED OFF, 7b BUILT, 7c NOT STARTED
 
 **Split into three on 8 Sep 2026**, because they turned out to share almost nothing.
-7a (the 11:30 PM wrapup) is **built and not yet verified** — no stage is done until it
-passes on both phone and laptop, and this one also needs a night nobody can simulate.
-7b and 7c are not started, and neither of them waits on 7a; see each.
+**7a** (the 11:30 PM wrapup) is **signed off 22 Sep** — it needed nights nobody could
+simulate, and got them; the status table says which night proved which branch.
+**7b** (the shade glance) is built and live; its sign-off waits on one Windows
+observation. **7c** (offline logging) is not started, and waits on nothing.
 
 Rewritten 27 Aug from three requirements Saad gave verbatim and asked to have
 recorded, because he expected to forget them. They are reproduced here in full;
@@ -690,7 +691,7 @@ resolves", "a day ended at 6 PM produces no report until 11:30 PM", "a day ended
 10 PM produces its report immediately". 7a produces no report — see "7a needs no
 Gemini" above for why, and for the one word that would add one later.
 
-## 🟡 Stage 8 — A real home-screen widget — WEB + DATABASE HALF BUILT (16 Sep 2026)
+## ✅ Stage 8 — A real home-screen widget — SIGNED OFF (22 Sep 2026)
 
 Asked for on 16 Sep, after living with 7b: a box on the home screen, like the Pixel's
 "Screen time" card. **7b's notification glance stays** — this is an addition to it.
@@ -721,8 +722,10 @@ one module that both `app.js` and an Edge Function import. Worth doing once; not
 as a second copy in Deno, which is the `goals`-action drift story over again.
 
 **End goal (validation)**
-- Within a minute of a log on either device, the widget and the shade read the same two
-  lines. **Except across midnight:** the shade takes itself down when the day turns and the
+- After a log on either device, the widget reads the same two lines as the shade by its
+  next refresh — **at most 30 minutes while the phone is awake.** This said "within a
+  minute" until 22 Sep, which no Android widget can do: 30 minutes is the platform's floor,
+  and a sleeping phone catches up when it next wakes. **Except across midnight:** the shade takes itself down when the day turns and the
   widget does not, so until the app is next opened it still shows the previous day's line,
   named by its own weekday.
 - Its "as of" never runs ahead of the last read; in airplane mode both freeze together.
