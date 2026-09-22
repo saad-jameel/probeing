@@ -1,8 +1,15 @@
 /* ProBeing service worker — app shell only.
  *
  * Deliberately does NOT cache API traffic: the database is the source of truth
- * and a cached "today" would silently show you stale logs. Offline *logging* is
- * Stage 7c and will use a localStorage queue, not this cache.
+ * and a cached "today" would silently show you stale logs.
+ *
+ * Offline *logging* (Stage 7c) is a localStorage queue in app.js, NOT this file,
+ * and nothing here changed for it. Two reasons it cannot live here: a service
+ * worker cannot see the sign-in, so it could not send a row as the user; and a
+ * queue that lived in the cache would be one short step from caching the read,
+ * which is the rule above. Background Sync was rejected for the first reason.
+ * The cost is that the queue only drains while the app is open — said plainly on
+ * the Today screen rather than hidden.
  *
  * SAVED REPORTS ARE API TRAFFIC TOO, and the same rule covers them: they are
  * read from Supabase on every visit to the Review tab. Nothing below has to be
