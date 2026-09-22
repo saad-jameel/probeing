@@ -34,7 +34,7 @@ var CHIP_STATS_KEY = 'probeing.chipstats';  // how often each status gets logged
 var PROJECT_NAMES_KEY = 'probeing.projects'; // project names seen lately, reused for free
 var GEMINI_DAY_KEY = 'probeing.geminiday';   // today's Gemini call count, against the free tier
 
-// Kept in step with the same two lists in Code.gs, which validates them server-side.
+// callSupabase('prayer') refuses anything outside these two lists.
 var PRAYER_NAMES = ['Fajr', 'Dhuhr', 'Asr', 'Maghrib', 'Isha'];
 var PRAYER_MODES = ['Takbeer-e-oola', 'Partial Jamat', 'Individual'];
 
@@ -111,8 +111,8 @@ var NIGHT_STARTS_HOUR = 21;
 var DAY_STARTS_HOUR = 5;
 
 // ------------------------------------------------------------------- config
-// The API URL and token live ONLY in this device's localStorage. They are never
-// committed, because GitHub Pages requires a public repo.
+// Saved per device in localStorage. The anon key is publishable; RLS and the
+// signed-in session do the protecting.
 
 function loadConfig() {
   var saved = {};
@@ -120,9 +120,13 @@ function loadConfig() {
     saved = JSON.parse(localStorage.getItem(CFG_KEY)) || {};
   } catch (e) { /* corrupt storage must not wedge the app */ }
 
-  // Supabase is the backend now, not merely an option — and it comes ready to
-  // sign in to. Anything saved on this device still wins.
-  if (!saved.backend) saved.backend = 'supabase';
+  if (!saved || typeof saved !== 'object' || Array.isArray(saved)) saved = {};
+  // Left over from the Apps Script backend; dropped so they are not re-saved.
+  delete saved.backend;
+  delete saved.apiUrl;
+  delete saved.token;
+
+  // Comes ready to sign in to. Anything saved on this device still wins.
   if (!saved.supaUrl) saved.supaUrl = DEFAULT_SUPABASE_URL;
   if (!saved.supaKey) saved.supaKey = DEFAULT_SUPABASE_ANON;
   return saved;
@@ -134,18 +138,12 @@ function saveConfig(cfg) {
 
 var cfg = loadConfig();
 var isConfigured = function () {
-  if (cfg.backend === 'supabase') return Boolean(cfg.supaUrl && cfg.supaKey && sbUser);
-  return Boolean(cfg.apiUrl && cfg.token);
+  return Boolean(cfg.supaUrl && cfg.supaKey && sbUser);
 };
 
 // ----------------------------------------------------------------- supabase
-/* The second backend, and the one that fixes what Apps Script could not: taps
- * in ~0.35s instead of 2-30s, and a live feed so the two devices correct each
- * other without anyone pressing refresh.
- *
- * It answers the SAME action names and the same response shapes, so everything
- * downstream — the serialised queue, the retry rules, the shape guard, the
- * optimistic rows, the day replay — is untouched by the move.
+/* The backend: taps in ~0.35s, and a live feed so the two devices correct
+ * each other without anyone pressing refresh.
  *
  * The rows keep their meanings from the Sheet. Prayers are not a separate
  * table: they are events of type 'prayer' carrying the name in `project` and
@@ -153,10 +151,6 @@ var isConfigured = function () {
 
 var sb = null;                 // the Supabase client, once configured
 var sbUser = null;             // the signed-in user, or null
-
-function usingSupabase() {
-  return cfg.backend === 'supabase';
-}
 
 function supabaseReady() {
   return Boolean(sb && sbUser);
@@ -188,7 +182,6 @@ function adoptSession(session) {
   sbUser = session ? session.user : null;
   paintAccount();
 
-  if (!usingSupabase()) return;
   if (sbUser && sbUser.id !== before) {
     signInDlg.close();
     watchLive();
@@ -391,8 +384,7 @@ async function callSupabase(action, payload) {
    * "what am I doing right now", written by a model after every log. The two
    * state pills under the logo replaced it: they say the same thing, they are
    * computed from the rows rather than asserted by an LLM, and they cannot go
-   * stale. Nothing in the app calls these two; they answer only because the
-   * Apps Script fallback still has the tab. Deleting them is a separate job. */
+   * stale. Nothing in the app calls these two. Deleting them is a separate job. */
   if (action === 'now_get' || action === 'now_set') return { ok: true, now: { text: '', updated: '' } };
 
   var unknown = new Error('unknown_action');
@@ -404,12 +396,8 @@ async function callSupabase(action, payload) {
  * Every row between two instants, oldest first — the `today` read widened to a
  * date range, and the only new read Stage 5 needs.
  *
- * NOT AN ACTION, and not through api(). It sits outside the ACTIONS map for the
- * same reason earliestEventAt() does: reviews run on Supabase only, so there is
- * no Apps Script half to keep in step, and inventing one would mean an
- * ANSWER_FIELD entry and a Code.gs branch for a backend that will never serve
- * this screen. Rule 0's serialised queue is about Apps Script under a burst;
- * this is one Postgres select that nobody is mid-tap behind.
+ * NOT AN ACTION, and not through api(): this is one Postgres select that
+ * nobody is mid-tap behind, so it has no need of the serialised queue.
  *
  * PRAYERS ARE KEPT. The `today` branch splits them into their own list because
  * the Today tab draws them separately; the review counts them out of the same
@@ -451,143 +439,17 @@ function deviceTz() {
   }
 }
 
-/**
- * Call the backend.
- *
- * The Content-Type MUST stay text/plain. Sending application/json makes the
- * browser fire a preflight OPTIONS request, which Apps Script web apps cannot
- * answer — the call would fail with an opaque CORS error before reaching us.
- * Apps Script also 302-redirects to googleusercontent.com, hence redirect:follow.
- */
-/* A field only that action's own reply carries. Apps Script's redirect hop
- * intermittently serves the doGet body instead — {ok:true, service:'probeing'}
- * — which passes an `ok` check and then blanks the screen, because data.log is
- * undefined and the whole day renders empty behind a green dot. An `ok` alone
- * is not proof the answer belongs to the question. */
-var ANSWER_FIELD = {
-  ping: 'pong',
-  today: 'log',
-  m: 'm_count',
-  log: 'type',
-  prayer: 'prayer',
-  now_get: 'now',
-  now_set: 'now',
-  review: 'text',         // unused until Stage 5, but it is already in IDEMPOTENT
-  // Supabase only. The Apps Script fallback has no `label` action, and nothing
-  // asks it for one: extraction is switched off entirely on that backend.
-  label: 'labelled'
-};
-
-/* Measured against the live backend: a HEALTHY call answers in 1.7s. The bad
- * ones do not answer slowly — they hang for 30-40 seconds and then return an
- * HTML error page, the wrong body, or nothing at all. So a call that has not
- * answered in this long is not slow, it is already lost; abandoning it and
- * trying again is far quicker than waiting for it to fail.
- *
- * Set below some genuine successes, which would once have been a bad trade. The
- * rid changed that: abandoning a call that actually landed now costs nothing,
- * because the retry replays the stored answer instead of appending a second row.
- *
- * Raised from 5s: the backend has since degraded to 4-7s on a GOOD run, so 5s
- * had drifted inside the normal range and the app was retrying healthy calls,
- * doubling traffic against something already struggling. This number tracks the
- * platform, and the platform is being replaced. */
-var REQUEST_TIMEOUT_MS = 9000;
-
-async function callBackend(action, payload) {
-  if (usingSupabase()) return callSupabase(action, payload);
-  return callAppsScript(action, payload);
-}
-
-async function callAppsScript(action, payload) {
-  var ctrl = typeof AbortController === 'function' ? new AbortController() : null;
-  var timer = ctrl ? setTimeout(function () { ctrl.abort(); }, REQUEST_TIMEOUT_MS) : 0;
-
-  var res;
-  try {
-    res = await fetch(cfg.apiUrl, {
-      method: 'POST',
-      redirect: 'follow',
-      signal: ctrl ? ctrl.signal : undefined,
-      headers: { 'Content-Type': 'text/plain;charset=utf-8' },
-      body: JSON.stringify(Object.assign({
-        action: action,
-        token: cfg.token,
-        tz: deviceTz()
-      }, payload || {}))
-    });
-  } catch (netErr) {
-    clearTimeout(timer);
-    if (netErr && netErr.name === 'AbortError') {
-      // Retryable: the next attempt usually lands in under two seconds.
-      throw new Error('The Sheet took too long to answer.');
-    }
-    throw netErr;
-  }
-  clearTimeout(timer);
-
-  if (!res.ok) throw new Error('HTTP ' + res.status);
-
-  var data;
-  try {
-    data = await res.json();
-  } catch (parseErr) {
-    // Apps Script hands back its own HTML shell under load. Saying so beats
-    // showing the user `Unexpected token '<', "<!DOCTYPE "...`.
-    throw new Error('The Sheet did not answer properly.');
-  }
-
-  if (!data.ok) {
-    // The backend answered and said no. Repeating it will not change its mind.
-    var refusal = new Error(data.error || 'request failed');
-    refusal.fatal = true;
-    throw refusal;
-  }
-
-  var field = ANSWER_FIELD[action];
-  if (field && data[field] === undefined) {
-    throw new Error('The Sheet answered a different question.');
-  }
-
-  // Learn once, from any reply, whether this deployment deduplicates by rid.
-  if (data.rid_ok) backendDedupes = true;
-  return data;
-}
-
-/* Apps Script under a burst is genuinely flaky. Fire a few requests back to
- * back and some come back HTTP 404 — not from doPost, but from the
- * googleusercontent.com host it 302-redirects to. Measured: 4 of 12 parallel
- * pings 404'd, and calls took up to 58s, because doPost takes a script lock on
- * EVERY action, so a read queues behind a write. Sequentially, 12 of 12 were
- * clean. So: one request at a time, through a promise chain — this device never
- * competes with itself for that lock.
- *
- * WHY WRITES MAY NOW BE RETRIED:
- *
- * A lost reply usually means the request DID reach doPost and the row WAS
- * written. Retrying blind would append it twice, and the Sheet is append-only —
- * a doubled M cannot be undone. So every write carries a `rid`, generated once
- * here and reused across all attempts; `Code.gs` replays the original answer
- * rather than doing the work again. That is what makes giving up after 7
- * seconds safe, and it is why the rid is added in api() and not in
- * attemptCall() — a retry with a fresh rid would defeat the whole thing. */
-
-/* Retrying a write is only safe against a backend that deduplicates by rid, and
- * the two halves deploy separately — a git push for the app, a manual
- * re-version for Apps Script. So this is not assumed, it is observed: every
- * reply from the new Code.gs carries `rid_ok`, and until one has been seen a
- * write gets a single attempt. That way the app is correct whichever order the
- * two deployments happen in, instead of depending on the user doing them in
- * the right order. */
-var backendDedupes = false;
+/* One request at a time, through a promise chain, and only reads are retried.
+ * Every write still carries a `rid`, fixed in api() so any retry reuses it: the
+ * unique index on (user_id, rid) makes a repeat a no-op, and `label` uses the
+ * rid to find its row. */
 
 var IDEMPOTENT = { ping: 1, today: 1, now_get: 1, review: 1 };
 var MAX_TRIES = 3;
 var RETRY_DELAY_MS = 500;
 var apiChain = Promise.resolve();
 
-/** Enough entropy that two devices cannot collide within the backend's memory
- *  of the last 20 requests. */
+/** Enough entropy that two devices cannot collide on the (user_id, rid) index. */
 function newRid() {
   return Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 10);
 }
@@ -596,12 +458,12 @@ function wait(ms) { return new Promise(function (r) { setTimeout(r, ms); }); }
 
 async function attemptCall(action, payload, opts) {
   var last;
-  var tries = (IDEMPOTENT[action] || backendDedupes) ? MAX_TRIES : 1;
+  var tries = IDEMPOTENT[action] ? MAX_TRIES : 1;
   if (opts && opts.tries) tries = Math.min(tries, opts.tries);
 
   for (var i = 0; i < tries; i++) {
     try {
-      return await callBackend(action, payload);
+      return await callSupabase(action, payload);
     } catch (err) {
       last = err;
       if (err && err.fatal) throw err;          // a real refusal, not a hiccup
@@ -688,14 +550,14 @@ function stopLive() {
 var $ = function (id) { return document.getElementById(id); };
 var bannerTimer;
 
-/* The dot beside the cog. Green = the last call to the Sheet worked, red = it
+/* The dot beside the cog. Green = the last call to the server worked, red = it
  * did not, amber = one is in flight. Small on purpose: a status light, not an
  * alarm. It is the honest answer to "is it just slow, or is it broken?" */
 var connState = '';
 var CONN_TITLES = {
-  ok: 'Connected — the Sheet answered',
-  bad: 'Not reaching the Sheet. Tap the cog to check Settings.',
-  busy: 'Talking to the Sheet…'
+  ok: 'Connected — saved to the server',
+  bad: 'Not reaching the server. Tap the cog to check Settings.',
+  busy: 'Talking to the server…'
 };
 
 function setConn(state) {
@@ -872,9 +734,9 @@ var FAILED_WRITE_REFRESH_MS = 4000;
 
 /* POLLING, and why it is only half an answer.
  *
- * The two devices cannot tell each other anything: Apps Script only speaks when
- * spoken to. So the app asks, on a timer, whenever it is on screen. That closes
- * the "nothing changes until I refresh" gap to about a minute.
+ * Under the old backend the two devices could not tell each other anything:
+ * it only spoke when spoken to. So the app asks, on a timer, whenever it is on
+ * screen. That closes the "nothing changes until I refresh" gap to about a minute.
  *
  * It does NOT close the race underneath it. A break row carries the whole
  * current set, so a device working from a stale view overwrites what the other
@@ -906,11 +768,11 @@ function pollInterval() {
  * A write failed. Say so — and reconcile shortly after, because this is the
  * other half of the no-retry decision above.
  *
- * An Apps Script 404 usually means the row DID land and only the answer was
- * lost. Reporting the failure and then leaving the screen alone is the worst of
- * both worlds: it shows a number the Sheet contradicts, and the natural
+ * A lost reply can mean the row DID land and only the answer was lost.
+ * Reporting the failure and then leaving the screen alone is the worst of
+ * both worlds: it shows a number the server contradicts, and the natural
  * response is to tap again — creating by hand exactly the duplicate that not
- * retrying was meant to prevent. So the Sheet gets the last word, quickly.
+ * retrying was meant to prevent. So the server gets the last word, quickly.
  */
 function writeFailed(err) {
   flash(String(err.message || err), 'err');
@@ -3089,8 +2951,8 @@ var EXTRACT_BATCH_MAX = 20;
  * which is the one thing rule 4 forbids. This is a plain fetch, off the chain,
  * and nothing else in the app waits on it.
  *
- * It never rejects. Offline, signed out, out of budget, timed out, running on
- * the Apps Script fallback, or handed something that is not JSON — every one of
+ * It never rejects. Offline, signed out, out of budget, timed out, or handed
+ * something that is not JSON — every one of
  * those resolves to {project:'', detail:''}, which is exactly what the tracker
  * wrote before any of this existed.
  */
@@ -3124,7 +2986,7 @@ function extractProject(text, known) {
    * set this, and it is no longer reached when the budget is gone — so without
    * this line the day's ceiling became silent again, and "the tasks stopped
    * appearing" would once more be indistinguishable from a broken feature. */
-  if (cfg.backend === 'supabase' && sb && sbUser && geminiCallsLeft() <= 0) {
+  if (sb && sbUser && geminiCallsLeft() <= 0) {
     lastExtractError = GEMINI_BUDGET_SPENT;
   }
 
@@ -3139,8 +3001,7 @@ function extractProject(text, known) {
 /** Is asking Gemini possible at all right now? Not "is it wise" — the pacer
  *  handles waiting — but whether a call could be made today. */
 function canAskGemini() {
-  return cfg.backend === 'supabase' && Boolean(sb) && Boolean(sbUser) &&
-         geminiCallsLeft() > 0;
+  return Boolean(sb) && Boolean(sbUser) && geminiCallsLeft() > 0;
 }
 
 /* Set while the queue is waiting out a full minute, so that the twenty entries
@@ -3271,7 +3132,7 @@ var lastGeminiModel = '';
  * The one place this app talks to Gemini on the logging path: post `body` to
  * the Edge Function and hand back the model's text, or null.
  *
- * null covers every way there is nothing to read — wrong backend, signed out,
+ * null covers every way there is nothing to read — signed out,
  * the day's budget spent, an HTTP error, an unreadable reply — and the reason
  * is left in `lastExtractError` rather than shown, because a row that stays
  * unnamed is correct behaviour and must not interrupt anybody.
@@ -3301,9 +3162,8 @@ function spendRestOfDay() {
 
 async function geminiCall(body, ctrl) {
   /* Gemini has one home and it is the Supabase Edge Function — the key is a
-   * secret of that function and must never be anywhere else. On the Apps Script
-   * fallback there is simply nothing to ask, and the row goes in unlabelled. */
-  if (cfg.backend !== 'supabase' || !sb || !sbUser) return null;
+   * secret of that function and must never be anywhere else. */
+  if (!sb || !sbUser) return null;
 
   var got = await sb.auth.getSession();
   var session = got && got.data ? got.data.session : null;
@@ -3324,9 +3184,7 @@ async function geminiCall(body, ctrl) {
     method: 'POST',
     signal: ctrl ? ctrl.signal : undefined,
     headers: {
-      /* JSON, not the text/plain that rule 1 demands of Apps Script. That rule
-       * exists because Apps Script cannot answer the CORS preflight an
-       * application/json POST triggers. This function answers OPTIONS itself. */
+      // JSON is fine: this function answers the CORS preflight itself.
       'Content-Type': 'application/json',
       // The user's own token, not the anon key: the function refuses anything
       // whose role is not `authenticated`.
@@ -3468,7 +3326,7 @@ async function askGeminiMany(items, ctrl) {
  * model rambles), or a model that answered something genuinely unparseable.
  * Never called on the logging path — it costs a second round trip. */
 async function askGeminiRaw(text) {
-  if (cfg.backend !== 'supabase' || !sb || !sbUser) return '(not on Supabase)';
+  if (!sb || !sbUser) return '(not signed in)';
   try {
     var got = await sb.auth.getSession();
     var session = got && got.data ? got.data.session : null;
@@ -3544,8 +3402,8 @@ $('trackerForm').addEventListener('submit', function (e) {
   steps.push({
     type: type,
     raw_text: text,                        // VERBATIM. The model never edits the
-                                           // human record, and Code.gs rejects
-                                           // an empty one.
+                                           // human record, and the log action
+                                           // rejects an empty one.
     project: '',                           // filled in later, or never
     detail: '',
     rid: rid
@@ -3633,10 +3491,6 @@ function isOpenProject(name) {
  * long note at the top of the tracker for why the row is written first.
  */
 function applyLabel(rid, key, row, got, done) {
-  /* Supabase only. The Apps Script fallback cannot change a row it has already
-   * appended, and extractProject() never returns a project there anyway. */
-  if (!usingSupabase()) { done(); return; }
-
   /* Done already pressed — including on the other device, since these rows are
    * the shared truth. Labelling now would rename the tile back into existence
    * under a name that no `done` row has ever used, and the real one could then
@@ -4983,7 +4837,7 @@ var REVIEW_CACHE_MAX = 8;
  * The stamp is taken from the SOURCE of the two functions that build the prompt,
  * not from a version number somebody has to remember to raise. A number would
  * have been forgotten the first time it mattered — which is the same argument
- * this repo already made about `rid_ok` and about the secret scan: a check that
+ * this repo already made about the secret scan: a check that
  * depends on remembering is not a check. There is no build step here (CLAUDE.md),
  * so the source text is stable between deploys unless it genuinely changed.
  *
@@ -5290,8 +5144,8 @@ function renderReviewPicks() {
  *
  * THE ORDER IS THE FEATURE. Floor check, then read, then compute, then RENDER,
  * and only then ask Gemini. Everything the report is actually about is on the
- * screen before a single call is spent, so a spent budget, a refusal, an
- * offline phone or the Apps Script fallback each cost one paragraph and leave
+ * screen before a single call is spent, so a spent budget, a refusal or an
+ * offline phone each cost one paragraph and leave
  * the numbers standing. A review that goes blank because a quota ran out would
  * be worse than no review at all.
  *
@@ -5311,15 +5165,6 @@ async function runReview(force) {
   clearReview();
   paintReviewUsage();
 
-  /* Reviews read a date range straight out of Postgres. The Apps Script
-   * fallback has no such action and is not getting one — it is kept for the
-   * day the primary backend misbehaves, not as a second full app. Saying so
-   * beats an error, and beats an empty screen. */
-  if (!usingSupabase()) {
-    $('reviewNote').textContent = 'Reviews need the Supabase backend. Settings is ' +
-      'currently set to Apps Script, which cannot read a date range.';
-    return;
-  }
   if (!supabaseReady()) {
     $('reviewNote').textContent = 'Sign in to read your entries.';
     return;
@@ -5465,7 +5310,7 @@ async function addReviewProse(win, prompt, force, mine) {
      * ceiling, in one voice.
      *
      * The second branch looks unreachable, because runReview() has already
-     * turned away the Apps Script backend and a signed-out session. It is here
+     * turned away a signed-out session. It is here
      * for the case those checks cannot cover: a token that expired during the
      * two reads above. */
     note.textContent = geminiCallsLeft() <= 0
@@ -5951,9 +5796,9 @@ async function refreshReports() {
     btn.hidden = true;
     reportWanted = null;
 
-    if (!usingSupabase() || !supabaseReady()) {
+    if (!supabaseReady()) {
       $('reportList').textContent = '';
-      note.textContent = 'Saved reports need the Supabase backend and a signed-in account.';
+      note.textContent = 'Saved reports need a signed-in account.';
       return;
     }
 
@@ -6253,13 +6098,9 @@ $('boardTab').addEventListener('click', function () {
 // ------------------------------------------------------------- signing in
 
 var signInDlg = $('signInDlg');
-var BACKENDS = [
-  { id: 'supabase', label: 'Supabase' },
-  { id: 'apps', label: 'Apps Script' }
-];
 
 function askSignIn() {
-  if (!usingSupabase() || signInDlg.open || dlg.open) return;
+  if (signInDlg.open || dlg.open) return;
   if (!cfg.supaUrl || !cfg.supaKey) return;      // nothing to sign in to yet
   $('signInMsg').textContent = '';
   signInDlg.showModal();
@@ -6308,166 +6149,16 @@ $('signOutBtn').addEventListener('click', async function () {
   flash('Signed out', 'ok');
 });
 
-// ------------------------------------------------- bringing the Sheet across
-
-/* A one-time import, done from inside the app because that is where the
- * signed-in session already is — a standalone script would have to reproduce
- * the whole OAuth dance to write rows that belong to you.
- *
- * Every row gets a `rid` derived from its own contents, so the unique index
- * does the deduplicating: import the same file twice, or overlapping exports,
- * and the second attempt is refused rather than doubling your history. */
-
-function splitCsv(text) {
-  var rows = [];
-  var row = [];
-  var field = '';
-  var quoted = false;
-
-  for (var i = 0; i < text.length; i++) {
-    var c = text.charAt(i);
-
-    if (quoted) {
-      if (c === '"') {
-        if (text.charAt(i + 1) === '"') { field += '"'; i++; }   // an escaped quote
-        else quoted = false;
-      } else field += c;
-      continue;
-    }
-
-    if (c === '"') quoted = true;
-    else if (c === ',') { row.push(field); field = ''; }
-    else if (c === '\n' || c === '\r') {
-      if (c === '\r' && text.charAt(i + 1) === '\n') i++;
-      row.push(field); field = '';
-      if (row.length > 1 || row[0] !== '') rows.push(row);
-      row = [];
-    } else field += c;
-  }
-  row.push(field);
-  if (row.length > 1 || row[0] !== '') rows.push(row);
-  return rows;
-}
-
-/** A stable id for a row, so re-importing cannot double it. */
-function importRid(parts) {
-  var key = 'imp|' + parts.join('|');
-  var h = 5381;
-  for (var i = 0; i < key.length; i++) h = ((h * 33) ^ key.charCodeAt(i)) >>> 0;
-  return 'imp-' + h.toString(36) + '-' + key.length.toString(36);
-}
-
-/** One CSV row -> one events row, or null if it is a header or unreadable. */
-function rowFromCsv(cells) {
-  var at = String(cells[0] || '').trim();
-  if (!at || at.toLowerCase() === 'timestamp') return null;     // header
-  var when = new Date(at);
-  if (isNaN(when.getTime())) return null;
-
-  // The Prayers tab is: timestamp, local_time, date, prayer, mode
-  // The Log tab is:     timestamp, local_time, type, raw_text, project, detail
-  var third = String(cells[2] || '').trim();
-  var isPrayer = /^\d{4}-\d{2}-\d{2}$/.test(third) &&
-                 PRAYER_NAMES.indexOf(String(cells[3] || '').trim()) !== -1;
-
-  if (isPrayer) {
-    var name = String(cells[3] || '').trim();
-    var mode = String(cells[4] || '').trim();
-    return { at: when.toISOString(), local_time: String(cells[1] || ''), tz: '',
-             type: 'prayer', raw_text: name + ' · ' + mode,
-             project: name, detail: mode,
-             rid: importRid([at, 'prayer', name, mode]) };
-  }
-
-  var type = third;
-  if (!type) return null;
-  return { at: when.toISOString(), local_time: String(cells[1] || ''), tz: '',
-           type: type, raw_text: String(cells[3] || ''),
-           project: String(cells[4] || ''), detail: String(cells[5] || ''),
-           rid: importRid([at, type, String(cells[3] || '')]) };
-}
-
-$('importFile').addEventListener('change', async function () {
-  var files = Array.prototype.slice.call(this.files || []);
-  var msg = $('importMsg');
-  this.value = '';                       // so picking the same file again re-runs
-
-  if (!files.length) return;
-  if (!sb || !sbUser) { msg.textContent = 'Sign in first.'; return; }
-
-  var rows = [];
-  for (var i = 0; i < files.length; i++) {
-    var text = await files[i].text();
-    splitCsv(text).forEach(function (cells) {
-      var r = rowFromCsv(cells);
-      if (r) rows.push(r);
-    });
-  }
-
-  if (!rows.length) { msg.textContent = 'Nothing readable in those files.'; return; }
-
-  msg.textContent = 'Importing ' + rows.length + ' rows…';
-  var added = 0;
-  var skipped = 0;
-
-  // In batches, so one bad row cannot lose the whole import, and so a big
-  // history does not arrive as one enormous request.
-  for (var j = 0; j < rows.length; j += 100) {
-    var batch = rows.slice(j, j + 100);
-    var res = await sb.from('events').insert(batch);
-    if (!res.error) { added += batch.length; continue; }
-
-    // A clash means some of this batch is already here; retry one at a time so
-    // the new rows still land.
-    for (var k = 0; k < batch.length; k++) {
-      var one = await sb.from('events').insert(batch[k]);
-      if (!one.error) added += 1;
-      else if (one.error.code === '23505') skipped += 1;
-      else { msg.textContent = 'Stopped: ' + one.error.message; return; }
-    }
-  }
-
-  msg.textContent = 'Imported ' + added + ' rows' +
-    (skipped ? ', skipped ' + skipped + ' already here' : '') + '.';
-  flash('Imported ' + added + ' rows', 'ok');
-  refresh();
-});
-
 // ----------------------------------------------------------------- settings
 
 var dlg = $('settingsDlg');
 
-function renderBackendPick() {
-  var box = $('backendPick');
-  box.textContent = '';
-  BACKENDS.forEach(function (b) {
-    box.appendChild(pickButton(b.label, cfg.backend === b.id, false, function () {
-      cfg.backend = b.id;
-      renderBackendPick();
-      paintBackendFields();
-    }));
-  });
-}
-
-function paintBackendFields() {
-  var supa = cfg.backend === 'supabase';
-  $('supaFields').hidden = !supa;
-  $('appsFields').hidden = supa;
-  // The Edge Function lives in the Supabase project; on Apps Script there is
-  // nothing for this button to call.
-  $('testGeminiBtn').hidden = !supa;
-  paintAccount();
-}
-
 $('settingsBtn').addEventListener('click', function () {
-  renderBackendPick();
-  paintBackendFields();
+  paintAccount();
   $('supaUrl').value = cfg.supaUrl || '';
   $('supaKey').value = cfg.supaKey || '';
   $('geminiDaily').value = cfg.geminiDaily || '';
   $('geminiRpm').value = cfg.geminiRpm || '';
-  $('apiUrl').value = cfg.apiUrl || '';
-  $('token').value = cfg.token || '';
   $('boardUrl').value = cfg.boardUrl || '';
   $('chipsInput').value = chipLabels().join(', ');
   $('projectNames').value = pinnedNames.join('\n');
@@ -6486,34 +6177,13 @@ $('settingsBtn').addEventListener('click', function () {
 $('cancelBtn').addEventListener('click', function () { dlg.close(); });
 
 $('testBtn').addEventListener('click', async function () {
-  if (cfg.backend === 'supabase') {
-    if (!sbUser) { $('testResult').textContent = 'Sign in first.'; return; }
-    $('testResult').textContent = 'Testing…';
-    try {
-      await api('ping');
-      $('testResult').textContent = '✅ Connected.';
-    } catch (err) {
-      $('testResult').textContent = '❌ ' + (err.message || err);
-    }
-    return;
-  }
-
-  var probe = { apiUrl: $('apiUrl').value.trim(), token: $('token').value.trim() };
-  if (!probe.apiUrl || !probe.token) {
-    $('testResult').textContent = 'Fill both fields first.';
-    return;
-  }
-
+  if (!sbUser) { $('testResult').textContent = 'Sign in first.'; return; }
   $('testResult').textContent = 'Testing…';
-  var saved = cfg;
-  cfg = probe;                                // test with the typed values...
   try {
     await api('ping');
     $('testResult').textContent = '✅ Connected.';
   } catch (err) {
     $('testResult').textContent = '❌ ' + (err.message || err);
-  } finally {
-    cfg = saved;                              // ...without committing them yet
   }
 });
 
@@ -6522,10 +6192,7 @@ $('testBtn').addEventListener('click', async function () {
  * Gemini without ever holding the Gemini key. The key sits in the Edge Function's
  * own secrets; all that leaves this device is the prompt and the signed-in
  * session's token, which is what the function checks before it spends the key.
- *
- * JSON here, not the text/plain that rule 1 demands of Apps Script: the rule
- * exists because Apps Script cannot answer a CORS preflight. The Edge Function
- * answers OPTIONS itself, so the preflight is fine and JSON is the honest type. */
+ * JSON is fine: the Edge Function answers the CORS preflight itself. */
 var GEMINI_TEST_PROMPT = 'Reply with exactly this sentence and nothing else: ' +
   'ProBeing can reach Gemini.';
 var GEMINI_TIMEOUT_MS = 30000;   // a cold function plus a model call is not quick
@@ -6718,7 +6385,6 @@ function quotaWait(msg) {
 
 $('testGeminiBtn').addEventListener('click', async function () {
   var out = $('testResult');
-  if (cfg.backend !== 'supabase') { out.textContent = 'Gemini runs on Supabase only.'; return; }
   if (!sb || !sbUser) { out.textContent = 'Sign in first.'; return; }
 
   /* Every answer carries the day's count, because this is the only place it can
@@ -6805,13 +6471,10 @@ $('saveBtn').addEventListener('click', function () {
   }
 
   var next = {
-    backend: cfg.backend,
     supaUrl: $('supaUrl').value.trim(),
     supaKey: $('supaKey').value.trim(),
     geminiDaily: $('geminiDaily').value.trim(),
     geminiRpm: $('geminiRpm').value.trim(),
-    apiUrl: $('apiUrl').value.trim(),
-    token: $('token').value.trim(),
     boardUrl: safeBoardUrl(typedBoard),
     // Device-local on purpose: the chip list does not sync between phone and laptop.
     chips: (parseChips($('chipsInput').value).join(', ')) || DEFAULT_CHIPS.join(', '),
@@ -6821,22 +6484,16 @@ $('saveBtn').addEventListener('click', function () {
     // may not want a toast every minute.
     glance: $('glanceOn').checked
   };
-  if (next.backend === 'supabase') {
-    if (!next.supaUrl || !next.supaKey) {
-      $('testResult').textContent = 'Fill in the Supabase URL and key first.';
-      return;
-    }
-  } else if (!next.apiUrl || !next.token) {
-    $('testResult').textContent = 'Fill both fields first.';
+  if (!next.supaUrl || !next.supaKey) {
+    $('testResult').textContent = 'Fill in the Supabase URL and key first.';
     return;
   }
 
-  var switched = next.backend !== cfg.backend ||
-                 next.supaUrl !== cfg.supaUrl || next.supaKey !== cfg.supaKey;
+  var switched = next.supaUrl !== cfg.supaUrl || next.supaKey !== cfg.supaKey;
   cfg = next;
   saveConfig(cfg);
-  /* Kept out of `cfg` on purpose: that object is credentials plus backend
-   * choice, rewritten wholesale when the backend is switched. The vocabulary
+  /* Kept out of `cfg` on purpose: that object is credentials and device
+   * settings, rewritten wholesale on every save. The vocabulary
    * has no business riding along with it, and neither has the grouping — a
    * project is office work whichever database its rows are in. */
   savePinnedNames(parsePinned($('projectNames').value));
@@ -6856,7 +6513,7 @@ $('saveBtn').addEventListener('click', function () {
   }
   // Applied here and not on the tick, so Cancel leaves the shade as it found it.
   applyGlanceSetting();
-  if (usingSupabase() && !sbUser) askSignIn(); else refresh();
+  if (!sbUser) askSignIn(); else refresh();
 });
 
 // ------------------------------------------------- bedtime notifications
@@ -6974,7 +6631,7 @@ async function savePushSubscription(sub) {
  *  button's job, and a permission prompt on startup is how a person clicks
  *  Block once and never sees a notification again. */
 async function syncPushSubscription() {
-  if (!pushSupported() || !usingSupabase() || !supabaseReady()) return;
+  if (!pushSupported() || !supabaseReady()) return;
   if (Notification.permission !== 'granted') return;
   try {
     await savePushSubscription(await pushSubscription());
@@ -7033,7 +6690,6 @@ function paintPushState() {
 $('pushOnBtn').addEventListener('click', async function () {
   var out = $('pushResult');
   if (!pushSupported()) { out.textContent = 'This browser cannot do notifications.'; return; }
-  if (cfg.backend !== 'supabase') { out.textContent = 'Notifications run on Supabase only.'; return; }
   if (!sb || !sbUser) { out.textContent = 'Sign in first.'; return; }
 
   out.textContent = 'Asking the browser…';
@@ -7061,7 +6717,6 @@ $('pushOnBtn').addEventListener('click', async function () {
 
 $('pushTestBtn').addEventListener('click', async function () {
   var out = $('pushResult');
-  if (cfg.backend !== 'supabase') { out.textContent = 'Notifications run on Supabase only.'; return; }
   if (!sb || !sbUser) { out.textContent = 'Sign in first.'; return; }
 
   out.textContent = 'Sending…';
@@ -7253,7 +6908,7 @@ function renderDeviceKeys(rows) {
  * is what keeps the real defences honest.
  */
 async function loadDeviceKeys() {
-  if (cfg.backend !== 'supabase' || !sb || !sbUser) { renderDeviceKeys([]); return; }
+  if (!sb || !sbUser) { renderDeviceKeys([]); return; }
   try {
     var res = await sb.from('device_keys')
       .select('id,label,created_at,last_seen_at')
@@ -7299,10 +6954,6 @@ $('pairBtn').addEventListener('click', async function () {
   var out = $('pairResult');
   hidePairCode();
 
-  if (cfg.backend !== 'supabase') {
-    out.textContent = 'The widget reads from Supabase only.';
-    return;
-  }
   if (!sb || !sbUser) { out.textContent = 'Sign in first.'; return; }
   if (!pairingSupported()) {
     out.textContent = 'This browser cannot make a code here. Open ProBeing over https ' +
@@ -7548,7 +7199,7 @@ function saveGlanceRow() {
   try {
     var words = glanceWords();
     if (!words) return;
-    if (!usingSupabase() || !sb || !sbUser) return;
+    if (!sb || !sbUser) return;
 
     var written = words.title + '\n' + words.body;
     if (written === glanceSaved) return;
@@ -7776,9 +7427,7 @@ setInterval(function () {
   // case the socket has quietly died.
   var every = liveChannel ? LIVE_HEARTBEAT_MS : pollInterval();
   if (Date.now() - lastReconcileAt < every) return;
-  // One attempt only. A poll that retried three times against a 9s timeout was
-  // the other half of the amplification — the client gives up, but Apps Script
-  // still runs every one of them to completion, holding its lock.
+  // One attempt only; the next tick is the retry.
   refresh({ tries: 1 });
 }, 5000);
 
@@ -7796,8 +7445,4 @@ renderProject();
 renderDaySummary();
 lastVisibleRefresh = Date.now();     // the boot reconcile counts as the first one
 refresh();
-if (usingSupabase()) {
-  if (!cfg.supaUrl || !cfg.supaKey) dlg.showModal();
-} else if (!isConfigured()) {
-  dlg.showModal();
-}
+if (!cfg.supaUrl || !cfg.supaKey) dlg.showModal();
