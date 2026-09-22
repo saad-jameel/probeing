@@ -11,7 +11,7 @@
   "navigationDividerColor": "#000000",
   "navigationDividerColorDark": "#000000",
   "backgroundColor": "#101828",
-  "enableNotifications": false,
+  "enableNotifications": true,
   "startUrl": "/probeing/",
   "iconUrl": "https://saad-jameel.github.io/probeing/icons/icon-512.png",
   "maskableIconUrl": "https://saad-jameel.github.io/probeing/icons/icon-maskable-512.png",
@@ -20,8 +20,8 @@
     "path": "/home/saad-wsl/.probeing/probeing-upload.jks",
     "alias": "probeing"
   },
-  "appVersionName": "1",
-  "appVersionCode": 1,
+  "appVersionName": "2",
+  "appVersionCode": 2,
   "shortcuts": [
     {
       "name": "Open ProBeing",
@@ -50,5 +50,5 @@
   "fileHandlers": [],
   "launchHandlerClientMode": "",
   "displayOverride": [],
-  "appVersion": "1"
+  "appVersion": "2"
 }

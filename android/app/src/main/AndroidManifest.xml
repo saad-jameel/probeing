@@ -27,6 +27,9 @@
          `bubblewrap update` REGENERATES THIS FILE and will drop everything
          marked "ADDED BY HAND" below. See android/README.md. -->
     <uses-permission android:name="android.permission.INTERNET" />
+    <!-- Android 13+ refuses to show a notification without it, which is why the
+         app looked like it "does not send notifications". -->
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
 
     
 
