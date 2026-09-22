@@ -135,6 +135,17 @@ function adoptSession(session) {
   sbUser = session ? session.user : null;
   paintAccount();
 
+  if (sbUser) {
+    /* Whose device this is, remembered for the next launch that cannot reach
+     * the network: an offline press is filed under this id and sent only when
+     * this same account is signed in again. */
+    rememberUser(sbUser.id);
+    signedOutByHand = false;
+    // Every session event, not only a change of user: a token refresh is the
+    // first sign that the network is back.
+    drainOutbox('session');
+  }
+
   if (sbUser && sbUser.id !== before) {
     signInDlg.close();
     watchLive();
@@ -154,9 +165,21 @@ function adoptSession(session) {
      * true figures for nothing. */
     forgetGlance();
     if (before) closeGlance();
-    askSignIn();
+    /* A SIGN-IN BOX THAT CANNOT REACH GITHUB IS A DEAD END. An app opened with
+     * no signal lands here — the token expired and could not be refreshed — and
+     * the box would sit over the buttons refusing to do anything. Presses are
+     * queued under the last account instead, and the box appears when there is
+     * a network to sign in over. A sign-out the user actually pressed always
+     * asks, whatever the network is doing. */
+    if (signedOutByHand || navigator.onLine !== false || !currentUserId()) askSignIn();
+    paintConn();
+    paintOutboxNote();
   }
 }
+
+/* Sign out is a decision; a launch that could not restore the session is not.
+ * They arrive at the same place and mean opposite things. */
+var signedOutByHand = false;
 
 /** Midnight this morning, where the device is, as an instant the database can
  *  compare against. "Today" has to roll over where the user actually is. */
@@ -167,8 +190,8 @@ function localDayStartIso() {
 }
 
 /* `rid` comes along for one reason: it is how a row the table already has is
- * told apart from a copy this device is still holding. Nothing else reads it
- * off a row. */
+ * told apart from the copy this device is still holding in the outbox. Nothing
+ * else reads it off a row. */
 function sbRow(r) {
   return {
     at: r.at, local: r.local_time || '', type: r.type,
@@ -179,10 +202,10 @@ function sbRow(r) {
 
 async function sbInsert(payload) {
   /* THE PRESS TIME, NOT THE SEND TIME. api() stamps `at` and `local_time` once,
-   * beside the rid, and every attempt carries that same instant. Stamping here
-   * instead is why a write that had to be retried landed at the time of the
-   * retry. The fallback is for a caller that never went through api(), and
-   * keeps the old behaviour for it. */
+   * beside the rid, and every attempt — including one replayed off the outbox an
+   * hour later — carries that same instant. Stamping here instead is what made a
+   * queued row land at the reconnect time. The fallback is for a caller that
+   * never went through api(), and keeps the old behaviour for it. */
   var stamped = typeof payload.at === 'string' && !isNaN(Date.parse(payload.at));
   var row = {
     at: stamped ? payload.at : new Date().toISOString(),
@@ -323,7 +346,7 @@ async function callSupabase(action, payload) {
 
   if (action === 'm') {
     // at/local_time forwarded, not rebuilt: this row must carry the instant the
-    // tile was tapped, however long the write took to get through.
+    // tile was tapped even when it is sent off the outbox hours later.
     await sbInsert({ type: 'M', raw_text: '', rid: payload.rid,
                      at: payload.at, local_time: payload.local_time });
     var c = await sb.from('events').select('id', { count: 'exact', head: true })
@@ -465,24 +488,360 @@ async function trackedCall(action, payload, opts) {
 
 /** Call the backend. Serialised — see the note above. */
 function api(action, payload, opts) {
-  if (!isConfigured()) return Promise.reject(new Error('Not configured — open Settings.'));
+  var write = !IDEMPOTENT[action];
 
   /* One rid per logical write, fixed before the first attempt so every retry
    * carries the same one — and ONE INSTANT with it. `at` is when the button was
-   * pressed, not when the row reaches the table, so a write that is sent late
-   * still lands at the time it happened. Reads need neither. */
-  if (!IDEMPOTENT[action]) {
+   * pressed; a write sent an hour later off the outbox still lands at the time
+   * it happened, which is the whole of Stage 7c. Reads need neither. */
+  if (write) {
     payload = Object.assign({
       rid: newRid(), at: new Date().toISOString(), local_time: humanLocal()
     }, payload || {});
   }
 
-  var run = apiChain.then(
-    function () { return trackedCall(action, payload, opts); },
-    function () { return trackedCall(action, payload, opts); }  // a failure must not wedge the queue
-  );
+  var canQueue = write && canOutbox(action);
+
+  if (!isConfigured()) {
+    /* WHERE EVERY OFFLINE PRESS USED TO DIE. An app opened with no signal cannot
+     * refresh an expired token, so there is no user, so this rejected before a
+     * rid existed and no queue could ever have seen the press. Now it is kept,
+     * filed under the last account that was signed in here. */
+    if (canQueue) {
+      var held = queueWrite(action, payload);
+      if (held) return Promise.resolve(held);
+    }
+    return Promise.reject(new Error(
+      cfg.supaUrl && cfg.supaKey ? 'Sign in to keep logging.' : 'Not configured — open Settings.'));
+  }
+
+  function attempt() {
+    return trackedCall(action, payload, opts).catch(function (err) {
+      // A refusal from the database will refuse again — report it, roll back.
+      // Anything else is the network, and the press is kept rather than lost.
+      if (canQueue && !(err && err.fatal)) {
+        var q = queueWrite(action, payload);
+        if (q) return q;
+      }
+      throw err;
+    });
+  }
+
+  var run = apiChain.then(attempt, attempt);   // a failure must not wedge the queue
   apiChain = run.then(function () {}, function () {});
   return run;
+}
+
+// ------------------------------------------------------------------- outbox
+
+/* Stage 7c. Press M with no signal and the press is KEPT ON THIS DEVICE, then
+ * sent when the signal comes back — carrying the time it was pressed, never the
+ * time it was finally sent.
+ *
+ * WHY RETRYING IS SAFE HERE when rule 0 says never retry a write: every write
+ * already carries a `rid`, and a unique index on (user_id, rid) turns a repeat
+ * into a no-op. The database says 23505 and sbInsert reads that as success. Two
+ * tabs draining the same queue therefore write one row each, not two.
+ *
+ * localStorage, not Background Sync: a service worker cannot see the sign-in, so
+ * it could not send anything as this user. The cost is that the queue only
+ * drains while the app is open — the glance and the widget lag until then, and
+ * that is said plainly on screen rather than hidden.
+ *
+ * Nothing here caches a READ. Rule 3 still stands: the outbox holds only presses
+ * this device made and has not managed to send.
+ */
+
+var OUTBOX_KEY = 'probeing.outbox';
+var PARKED_KEY = 'probeing.outbox.parked';
+var LAST_USER_KEY = 'probeing.lastuser';
+var OUTBOX_MAX = 500;
+var PARKED_MAX = 50;
+
+/* The three writes a person makes. `label` is deliberately absent: it only ever
+ * fills in a project name on a row, and a name that never arrives leaves the
+ * entry called by its own sentence — which is what it was called anyway. */
+var QUEUEABLE = { log: 1, m: 1, prayer: 1 };
+
+function trimUrl(u) { return String(u || '').trim().replace(/\/+$/, ''); }
+
+/** The account this device belongs to — the signed-in one, or the last one that
+ *  was, which is all an offline launch has to go on. */
+function currentUserId() {
+  if (sbUser && sbUser.id) return sbUser.id;
+  try { return localStorage.getItem(LAST_USER_KEY) || ''; } catch (e) { return ''; }
+}
+
+function rememberUser(id) {
+  try { localStorage.setItem(LAST_USER_KEY, String(id || '')); } catch (e) { /* full disk */ }
+}
+
+/** Can this write be kept at all? Only if we know whose it is and where it goes. */
+function canOutbox(action) {
+  return QUEUEABLE[action] === 1 && Boolean(currentUserId()) &&
+         Boolean(cfg.supaUrl) && Boolean(cfg.supaKey);
+}
+
+/* Parsed only when the stored text has changed, and read from localStorage every
+ * single time. TWO TABS SHARE ONE QUEUE: a cached array is exactly how the second
+ * tab resurrects an item the first one has already sent. */
+var outboxRaw = null;
+var outboxList = [];
+
+function storedList(raw) {
+  var v;
+  try { v = JSON.parse(raw); } catch (e) { return []; }
+  return Array.isArray(v) ? v : [];
+}
+
+function sensibleItem(it) {
+  return Boolean(it) && typeof it === 'object' && QUEUEABLE[it.action] === 1 &&
+         Boolean(it.payload) && typeof it.payload === 'object' && Boolean(it.rid);
+}
+
+function outboxAll() {
+  var raw = '';
+  try { raw = localStorage.getItem(OUTBOX_KEY) || ''; } catch (e) { raw = ''; }
+  if (raw !== outboxRaw) {
+    outboxRaw = raw;
+    outboxList = storedList(raw).filter(sensibleItem);
+  }
+  return outboxList;
+}
+
+/** Write the queue back. False means it could not be stored, and the caller must
+ *  report a failure rather than claim the press was kept. */
+function saveOutbox(list) {
+  try {
+    localStorage.setItem(OUTBOX_KEY, JSON.stringify(list.slice(-OUTBOX_MAX)));
+  } catch (e) {
+    return false;
+  }
+  outboxRaw = null;                         // force the next read to re-parse
+  return true;
+}
+
+/** Items for this account and this Supabase project. Anything else is HELD:
+ *  another account's entry must never be written into this one, and another
+ *  project's must never be sent to a database it was not made for. */
+function ourItem(it) {
+  return Boolean(it.user) && it.user === currentUserId() &&
+         it.url === trimUrl(cfg.supaUrl);
+}
+
+function outboxOurs() { return outboxAll().filter(ourItem); }
+
+function outboxHeld() {
+  return outboxAll().filter(function (it) { return !ourItem(it); });
+}
+
+function outboxCount() { return outboxOurs().length; }
+
+function queuedReply(action, payload) {
+  return { ok: true, queued: true, rid: payload.rid, type: payload.type || '' };
+}
+
+/* One banner per offline spell, not one per tap. Cleared the moment a call
+ * succeeds again, which is what makes it "per spell". */
+var offlineTold = false;
+
+/**
+ * Keep a write on this device. Returns what api() should resolve with, or null
+ * if it could not be stored at all.
+ */
+function queueWrite(action, payload) {
+  var list = outboxAll().slice();
+
+  // The same logical write can come through twice (a retry, a second drain).
+  // It carries the same rid, so it is the same item, not a second one.
+  var already = list.some(function (it) { return it.rid === payload.rid; });
+  if (!already) {
+    list.push({
+      rid: payload.rid,
+      action: action,
+      payload: payload,
+      user: currentUserId(),
+      url: trimUrl(cfg.supaUrl),
+      queuedAt: Date.now()
+    });
+    if (!saveOutbox(list)) return null;
+  }
+
+  if (!offlineTold) {
+    offlineTold = true;
+    flash('Saved on this device — it will send itself when you are back online.', 'warn');
+  }
+  paintConn();
+  paintOutboxNote();
+  paintTodayNote();
+  paintGlance();                  // the shade counts what this device is holding
+  return queuedReply(action, payload);
+}
+
+function dropItem(rid) {
+  saveOutbox(outboxAll().filter(function (it) { return it.rid !== rid; }));
+}
+
+/* Rows the database itself refused — a bad prayer name, an empty entry. They
+ * will be refused again, so they are parked out of the way rather than retried
+ * for ever, and said out loud in Settings so nothing disappears quietly. */
+function parkedAll() {
+  var raw = '';
+  try { raw = localStorage.getItem(PARKED_KEY) || ''; } catch (e) { raw = ''; }
+  return storedList(raw);
+}
+
+function parkItem(it, err) {
+  var row = queuedRow(it) || {};
+  var list = parkedAll();
+  list.push({
+    rid: it.rid,
+    at: it.payload.at || '',
+    what: String(row.raw_text || row.type || it.action),
+    why: String((err && err.message) || 'refused')
+  });
+  try {
+    localStorage.setItem(PARKED_KEY, JSON.stringify(list.slice(-PARKED_MAX)));
+  } catch (e) { /* nothing more we can do about it */ }
+  dropItem(it.rid);
+}
+
+function forgetParked() {
+  try { localStorage.removeItem(PARKED_KEY); } catch (e) { /* already gone */ }
+}
+
+// ------------------------------------------- what a queued write looks like
+
+/** A queued write as a log row, so the Today screen can count it exactly like a
+ *  row that has landed. Prayers are drawn from their own list, hence the null. */
+function queuedRow(it) {
+  var p = it.payload || {};
+  if (it.action === 'prayer') return null;
+  if (it.action === 'm') {
+    return { at: p.at, local: p.local_time || '', type: 'M',
+             raw_text: '', project: '', detail: '', rid: it.rid };
+  }
+  return { at: p.at, local: p.local_time || '', type: p.type || 'work',
+           raw_text: p.raw_text || '', project: p.project || '',
+           detail: p.detail || '', rid: it.rid };
+}
+
+function queuedPrayer(it) {
+  var p = it.payload || {};
+  return { at: p.at, local: p.local_time || '', rid: it.rid,
+           prayer: p.prayer || '', mode: p.mode || '' };
+}
+
+/** The local date a queued press belongs to — the day it was PRESSED. An M at
+ *  23:58 sent at 00:02 is yesterday's M, and must never be added to today. */
+function queuedDay(it) {
+  var t = instantOf((it.payload || {}).at);
+  return isNaN(t) ? '' : ymdLocal(new Date(t));
+}
+
+function queuedToday() {
+  var today = ymdLocal(new Date());
+  return outboxOurs().filter(function (it) { return queuedDay(it) === today; });
+}
+
+/** `have` is a map of rids the table has already returned, so a row is not
+ *  counted twice in the moment between a drain and the next read. */
+function queuedRowsToday(have) {
+  return queuedToday().map(queuedRow).filter(function (r) {
+    return r && !(have && have[r.rid]);
+  });
+}
+
+function queuedPrayersToday(have) {
+  return queuedToday().filter(function (it) { return it.action === 'prayer'; })
+    .map(queuedPrayer).filter(function (p) { return !(have && have[p.rid]); });
+}
+
+/** Every local date with something still waiting, any day — what the report gate
+ *  asks about. */
+function queuedDates() {
+  var seen = userMap();
+  outboxOurs().forEach(function (it) {
+    var d = queuedDay(it);
+    if (d) seen[d] = 1;
+  });
+  return Object.keys(seen);
+}
+
+// ---------------------------------------------------------------- draining
+
+/* Oldest first, one at a time, through the same serialised chain every other
+ * call uses — so a drain can never race a tap. */
+var draining = false;
+var lastDrainAt = 0;
+var DRAIN_RETRY_MS = 15000;
+
+function sendQueued(it) {
+  function go() { return trackedCall(it.action, it.payload, { tries: 1 }); }
+  var run = apiChain.then(go, go);
+  apiChain = run.then(function () {}, function () {});
+  return run;
+}
+
+/**
+ * Send what is waiting. Never throws; a spell with no signal simply stops and
+ * leaves the rest for the next trigger.
+ *
+ * `why` is only used to tell the browser's own `online` event apart from the
+ * polls: everything else stands down while navigator.onLine says there is no
+ * network, because a failed fetch every few seconds helps nobody.
+ */
+async function drainOutbox(why) {
+  lastDrainAt = Date.now();
+  if (draining || !supabaseReady()) return;
+  if (why !== 'online' && navigator.onLine === false) return;
+
+  var list = outboxOurs();
+  if (!list.length) return;
+
+  draining = true;
+  var sent = 0;
+  var parked = 0;
+  try {
+    for (var i = 0; i < list.length; i++) {
+      var it = list[i];
+      // Signing out (or switching project) mid-drain must stop it there.
+      if (!supabaseReady() || !ourItem(it)) break;
+      try {
+        await sendQueued(it);
+      } catch (err) {
+        if (err && err.fatal) { parkItem(it, err); parked += 1; continue; }
+        break;                              // still no signal: keep the rest
+      }
+      dropItem(it.rid);
+      sent += 1;
+    }
+  } finally {
+    draining = false;
+    lastDrainAt = Date.now();
+  }
+
+  paintConn();
+  paintOutboxNote();
+  paintTodayNote();
+  if (parked) {
+    flash(parked + (parked === 1 ? ' entry could not be saved' : ' entries could not be saved') +
+      ' — see Settings.', 'err');
+  }
+  if (sent) {
+    flash(sent + (sent === 1 ? ' offline entry sent' : ' offline entries sent'), 'ok');
+    refresh();                              // the table has them now; re-read once
+  }
+}
+
+/** Get the session back after a spell offline. getSession() refreshes an expired
+ *  token, which needs the network — so a launch with no signal leaves nobody
+ *  signed in until this runs. */
+function retrySession() {
+  if (!sb || sbUser || navigator.onLine === false) return;
+  sb.auth.getSession().then(function (res) {
+    adoptSession(res && res.data ? res.data.session : null);
+  }, function () { /* still no network */ });
 }
 
 // -------------------------------------------------------------- live updates
@@ -523,7 +882,11 @@ var bannerTimer;
 
 /* The dot beside the cog. Green = the last call to the server worked, red = it
  * did not, amber = one is in flight. Small on purpose: a status light, not an
- * alarm. It is the honest answer to "is it just slow, or is it broken?" */
+ * alarm. It is the honest answer to "is it just slow, or is it broken?"
+ *
+ * A fourth state, and it outranks the other three: anything waiting on this
+ * device shows amber with a count beside it. Red would be a lie there — the
+ * press is not lost, it is held — and green would be a bigger one. */
 var connState = '';
 var CONN_TITLES = {
   ok: 'Connected — saved to the server',
@@ -532,12 +895,28 @@ var CONN_TITLES = {
 };
 
 function setConn(state) {
-  if (state === connState) return;
+  // A call that worked ends the offline spell, so the next one may speak again.
+  if (state === 'ok') offlineTold = false;
   connState = state;
+  paintConn();
+}
+
+/** Repaint the dot. Cheap, and it has to run even when the state has not moved,
+ *  because the count can change without it. */
+function paintConn() {
+  var n = outboxCount();
+  var waiting = n + ' waiting — saved on this device, sends when online';
   var el = $('connDot');
-  if (!el) return;
-  el.className = 'dot ' + state;
-  el.title = CONN_TITLES[state] || 'Not connected';
+  if (el) {
+    el.className = 'dot ' + (n ? 'wait' : connState);
+    el.title = n ? waiting : (CONN_TITLES[connState] || 'Not connected');
+  }
+  var label = $('connWait');
+  if (label) {
+    label.textContent = n ? n + ' waiting' : '';
+    label.title = waiting;
+    label.hidden = !n;
+  }
 }
 
 function flash(message, kind) {
@@ -752,18 +1131,28 @@ function writeFailed(err) {
  * Sequential on purpose: a chain means step 2 does not run if step 1 failed, so
  * a `resume` can never be written without the `wake` that had to precede it.
  *
- * It resolves with true only if every step landed. Nothing has to look — the
+ * It resolves with true only if every step landed, 'queued' if any of them is
+ * waiting on this device, false if one really failed. Nothing has to look — the
  * failure is already reported and reconciled here — but the tracker does, because
  * asking the database to label a row that was never written is a wasted call
  * against a backend this app is careful not to talk to twice.
+ *
+ * A QUEUED WRITE IS NOT A FAILURE. No undo, no red banner, and the screen keeps
+ * what the tap put there: the row is on this device with the time it was
+ * pressed, and will be in the table shortly.
  */
 function runWrites(steps, undo) {
   var chain = Promise.resolve();
+  var queued = false;
   steps.forEach(function (step) {
-    chain = chain.then(function () { return api('log', step); });
+    chain = chain.then(function () {
+      return api('log', step).then(function (res) {
+        if (res && res.queued) queued = true;
+      });
+    });
   });
   return chain.then(function () {
-    return true;
+    return queued ? 'queued' : true;
   }, function (err) {
     if (undo) restoreToggles(undo);
     writeFailed(err);
@@ -821,11 +1210,26 @@ function todayEntries(data) {
 
 var lastLog = [];        // today's rows from the last successful refresh
 var todayPrayers = [];   // today's prayer rows; drives the ticks and the picker
+var lastReadAt = 0;      // when a read of today last landed; 0 = none this visit
+var dayUnread = false;   // could not read today at all — say so, never imply zero
 
 function renderToday(data) {
-  $('mCount').textContent = data.m_count + ' today';
+  lastReadAt = Date.now();
+  dayUnread = false;
 
-  lastLog = data.log || [];
+  /* EVERY RE-READ PUTS THE QUEUE BACK. Without this the read replaces the
+   * screen's rows with the table's, and an offline M vanishes from the count,
+   * the ticks and the list until it is sent — which reads as losing it.
+   * Anything the table has already returned is dropped from the merge by its
+   * rid, for the moment between a drain and the read that follows it. */
+  var have = userMap();
+  (data.log || []).forEach(function (r) { if (r.rid) have[r.rid] = 1; });
+  (data.prayers || []).forEach(function (p) { if (p.rid) have[p.rid] = 1; });
+
+  lastLog = (data.log || []).concat(queuedRowsToday(have));
+  $('mCount').textContent = lastLog.filter(function (r) {
+    return r.type === 'M';
+  }).length + ' today';
 
   // Today's rows are the shared truth between devices: they correct the toggles
   // and they teach the chip order. `carry` adds the last state row from before
@@ -851,7 +1255,10 @@ function renderLogList() {
   list.textContent = '';
 
   if (!entries.length) {
-    showEmpty('No entries yet today.');
+    // Offline this list cannot be the whole day, so it must not claim to be.
+    showEmpty(dayUnread && !lastReadAt
+      ? 'Offline — nothing logged on this device yet today.'
+      : 'No entries yet today.');
     return;
   }
 
@@ -881,6 +1288,29 @@ async function refresh(opts) {
   lastReconcileAt = Date.now();
   lastVisibleRefresh = Date.now();      // one shared clock, so the two paths cannot double up
   if (!isConfigured()) {
+    /* No session — offline, most likely, because a phone opens cold and an
+     * expired token cannot be refreshed without a network. Show what this
+     * device is holding rather than an empty day, and say the rest of today
+     * cannot be read: rule 3 forbids caching the read, so the only alternative
+     * would be a confident low number, which is worse than a missing one. */
+    if (currentUserId() && cfg.supaUrl && cfg.supaKey) {
+      dayUnread = true;
+      // A read that landed earlier in this visit is still the best truth there
+      // is; only a visit with no read at all falls back to the queue alone.
+      if (!lastReadAt) {
+        lastLog = queuedRowsToday();
+        todayPrayers = queuedPrayersToday();
+        $('mCount').textContent = lastLog.filter(function (r) {
+          return r.type === 'M';
+        }).length + ' today';
+        renderPrayerTicks();
+        renderProject();
+        renderLogList();
+      }
+      renderDaySummary();
+      paintConn();
+      return;
+    }
     showEmpty('Open Settings to connect.');
     return;
   }
@@ -893,8 +1323,18 @@ async function refresh(opts) {
     var data = await api('today', null, opts);
     renderToday(data);
     if (epoch === glanceEpoch) armGlance(data, readAt);
+    drainOutbox('read');                  // a read that worked means the way is open
     if (opts && opts.announce) flash('Up to date', 'ok');
   } catch (err) {
+    /* With no network a failed read is expected, not news. The amber dot and the
+     * line under the card already say what is going on, and a red banner after
+     * every tap would contradict "a queued write is not a failure". */
+    if (navigator.onLine === false) {
+      dayUnread = true;
+      renderDaySummary();
+      paintConn();
+      return;
+    }
     flash(String(err.message || err), 'err');
   }
 }
@@ -905,10 +1345,42 @@ async function refresh(opts) {
 
 // replayDay() and dayFigures() live in day.js.
 
+/**
+ * The line under the Today card: what this device is holding, or why the figures
+ * above are only part of the day. Empty and hidden when neither applies.
+ *
+ * It exists because the honest failure offline is a LOW number, not a missing
+ * one — "0m worked" is a confident claim about a day nobody could read.
+ */
+function paintTodayNote() {
+  var el = $('todayNote');
+  if (!el) return;
+  var n = outboxCount();
+  var msg = '';
+
+  if (dayUnread && !lastReadAt) {
+    // Nothing was ever read this visit: the figures above are the queue alone.
+    msg = 'Offline — this is only what you logged on this device. The rest of today, ' +
+          'and anything from your other device, appears when you reconnect.';
+  } else if (dayUnread) {
+    // A read landed earlier, so the figures are real but no longer current.
+    msg = 'Offline — the figures above are from the last time this device could read ' +
+          'your rows' + (n ? ', plus what is waiting here' : '') + '. Anything logged ' +
+          'on your other device since then is missing until you reconnect.';
+  } else if (n) {
+    msg = n + (n === 1 ? ' entry is' : ' entries are') + ' waiting to be sent. ' +
+          'They are saved here with the time you pressed them, and counted above.';
+  }
+
+  el.textContent = msg;
+  el.hidden = !msg;
+}
+
 /* The Today tab's header. Everything here is derived from the same rows the
  * list below shows — one source of truth, nothing stored, and it is right the
  * instant a row is written rather than after a round trip. */
 function renderDaySummary() {
+  paintTodayNote();
   var figures = dayFigures(lastLog, todayPrayers);
   var day = figures.day;
 
@@ -1107,9 +1579,12 @@ mBtn.addEventListener('click', function () {
 
   pendingWrites += 1;
   api('m').then(function (res) {
-    // The Sheet's number wins — but only once nothing else is still in flight,
+    // The store's number wins — but only once nothing else is still in flight,
     // or a reply computed three taps ago would undo the two taps after it.
-    if (pendingWrites === 1) $('mCount').textContent = res.m_count + ' today';
+    // A queued press has no number to give back; the tap's own count stands.
+    if (pendingWrites === 1 && res && typeof res.m_count === 'number') {
+      $('mCount').textContent = res.m_count + ' today';
+    }
   }).catch(function (err) {
     writeFailed(err);                // reconciles, which puts the real count back
   }).then(function () {
@@ -2721,9 +3196,14 @@ function extractProject(text, known) {
 }
 
 /** Is asking Gemini possible at all right now? Not "is it wise" — the pacer
- *  handles waiting — but whether a call could be made today. */
+ *  handles waiting — but whether a call could be made today.
+ *
+ *  With no network the call cannot land, and it would still be counted against
+ *  the day's budget on the way out. The free local match is the right answer
+ *  offline, and the comment above has said so since before it was true. */
 function canAskGemini() {
-  return Boolean(sb) && Boolean(sbUser) && geminiCallsLeft() > 0;
+  return Boolean(sb) && Boolean(sbUser) && navigator.onLine !== false &&
+         geminiCallsLeft() > 0;
 }
 
 /* Set while the queue is waiting out a full minute, so that the twenty entries
@@ -3174,8 +3654,11 @@ $('trackerForm').addEventListener('submit', function (e) {
     }
     wrote.then(function (ok) {
       // A row that never landed has nothing to label, and the failed write has
-      // already scheduled its own reconcile against the store.
-      if (!ok) { forget(); return; }
+      // already scheduled its own reconcile against the store. A QUEUED row has
+      // nothing to label either — `label` finds its row by rid, and the row is
+      // not in the table yet. The entry keeps its own sentence as its name,
+      // which is exactly what an unlabelled entry has always done.
+      if (ok !== true) { forget(); return; }
       applyLabel(rid, text, row, got, forget);
     });
   }
@@ -5455,8 +5938,13 @@ var reportsBusy = false;
  * @param earliestAt the account's min(at) as an ISO instant, or '' when there
  *        are no rows at all — which makes every span unreportable, and for an
  *        empty account that is the right answer rather than an edge case.
+ * @param pending local dates ('YYYY-MM-DD') that still have an entry waiting on
+ *        this device. A SPAN WITH ONE IS NOT WRITTEN AT ALL. A report is written
+ *        once, when Review opens, so a Sunday 23:58 entry sent on Monday would
+ *        otherwise be missing from last week's report for good. Waiting costs a
+ *        visit; writing early costs the record.
  */
-function missingReport(saved, now, earliestAt) {
+function missingReport(saved, now, earliestAt, pending) {
   var have = userMap();                    // keyed by period|date, so no prototype
   (saved || []).forEach(function (r) {
     have[String(r.period) + '|' + String(r.start_date).slice(0, 10)] = 1;
@@ -5467,9 +5955,18 @@ function missingReport(saved, now, earliestAt) {
     if (want) return;
     var win = reportRangeOf(period, now);
     if (!rangeFloor(win.start, earliestAt).ok) return;   // unreportable, so skip it
+    if (spanHasPending(win, pending)) return;            // incomplete, so not yet
     if (have[win.period + '|' + ymdLocal(win.start)] !== 1) want = win;
   });
   return want;
+}
+
+/** Does `win` contain a day with something still unsent on this device? */
+function spanHasPending(win, pending) {
+  if (!pending || !pending.length) return false;
+  var from = ymdLocal(win.start);
+  var to = ymdLocal(win.end);
+  return pending.some(function (d) { return d >= from && d <= to; });
 }
 
 /** Write `win`'s report and put the refreshed list on screen. Returns a sentence
@@ -5557,7 +6054,8 @@ async function refreshReports() {
       return;
     }
 
-    var want = missingReport(saved, now, earliest);
+    var pending = queuedDates();
+    var want = missingReport(saved, now, earliest, pending);
 
     /* With nothing missing the button still points at the last complete week,
      * so a report can be rewritten deliberately — a week whose projects have
@@ -5569,13 +6067,18 @@ async function refreshReports() {
      * button. */
     var week = reportRangeOf('week', now);
     var weekFloor = rangeFloor(week.start, earliest);
-    reportWanted = want || (weekFloor.ok ? week : null);
+    var weekPending = spanHasPending(week, pending);
+    reportWanted = want || (weekFloor.ok && !weekPending ? week : null);
 
     if (!reportWanted) {
       /* Nothing here can be written yet — not even a rewrite. Name the span and
-       * give rangeFloor()'s own reason, rather than leaving a card with no
-       * button and no explanation for why. */
-      note.textContent = spanText(week) + ': ' + weekFloor.message;
+       * give the reason, rather than leaving a card with no button and no
+       * explanation for why. */
+      note.textContent = weekPending
+        ? spanText(week) + ' still has an entry waiting to be sent from this ' +
+          'device, so its report is held back — it would be written without that ' +
+          'entry, and a report is only written once.'
+        : spanText(week) + ': ' + weekFloor.message;
       return;
     }
 
@@ -5857,10 +6360,74 @@ function paintAccount() {
     who.textContent = 'Not signed in.';
   }
   $('signOutBtn').hidden = !sbUser;
+  paintOutboxNote();
 }
+
+/**
+ * What Settings says about the outbox: what is waiting, what is being held for
+ * another account or another project, and what the database refused outright.
+ *
+ * Plain sentences rather than a list of rows — the point is a count you can
+ * trust, not a second copy of the log. Every string is user text, so textContent
+ * only (rule 5).
+ */
+function paintOutboxNote() {
+  var el = $('outboxNote');
+  if (!el) return;
+
+  var ours = outboxCount();
+  var held = outboxHeld().length;
+  var parked = parkedAll();
+  var lines = [];
+
+  if (ours) {
+    lines.push(ours + (ours === 1 ? ' entry is' : ' entries are') +
+      ' waiting to be sent, saved on this device with the time you pressed ' +
+      (ours === 1 ? 'it' : 'them') + '.');
+  }
+  if (held) {
+    lines.push(held + (held === 1 ? ' entry belongs' : ' entries belong') +
+      ' to a different account or a different Supabase project, so ' +
+      (held === 1 ? 'it is' : 'they are') + ' being held here rather than sent. ' +
+      'Sign in to that account, or put that project back in Developer settings, ' +
+      'and ' + (held === 1 ? 'it goes' : 'they go') + ' up.');
+  }
+  if (parked.length) {
+    lines.push(parked.length + (parked.length === 1 ? ' entry was' : ' entries were') +
+      ' refused by the database and will not be retried: ' +
+      parked.map(function (p) {
+        return (p.what || 'entry') + ' (' + p.why + ')';
+      }).join('; ') + '.');
+  }
+
+  el.textContent = lines.join(' ');
+  el.hidden = !lines.length;
+  var btn = $('outboxForgetBtn');
+  if (btn) btn.hidden = !parked.length;
+}
+
+$('outboxForgetBtn').addEventListener('click', function () {
+  if (!window.confirm('Forget the entries the database refused? They are not in ' +
+    'your log and cannot be recovered afterwards.')) return;
+  forgetParked();
+  paintOutboxNote();
+});
 
 $('signOutBtn').addEventListener('click', async function () {
   if (!sb) return;
+
+  /* Never dropped silently, and never sent to whoever signs in next. They wait
+   * on this device for THIS account, and go up when it signs back in. Saad's
+   * decision, and the warning is here because "signed out" is the one moment a
+   * person would reasonably expect a queue to be thrown away. */
+  var waiting = outboxCount();
+  if (waiting && !window.confirm(
+    waiting + (waiting === 1 ? ' entry has' : ' entries have') + ' not been sent yet. ' +
+    (waiting === 1 ? 'It stays' : 'They stay') + ' on this device and ' +
+    (waiting === 1 ? 'is' : 'are') + ' sent when you sign back in with the same account. ' +
+    'Sign out anyway?')) return;
+
+  signedOutByHand = true;
   stopLive();
   /* The shade must not keep this account's day — nor get it back from a read
    * that was already on its way when this was pressed. */
@@ -6842,8 +7409,26 @@ function glanceBlockedNote() {
 function glanceWords() {
   if (!glanceSnap) return null;
   var snap = glanceSnap;
-  var text = glanceText(dayFigures(snap.log, snap.prayers, snap.at, snap.carry), snap.at);
-  return { title: text.title, body: text.body, at: snap.at };
+
+  /* Queued presses count here too, for the same reason they count on the Today
+   * card: they happened, and this device is the only thing that knows. The "as
+   * of" moves with them — a press IS an observation this device made — but never
+   * for anything else, so an idle phone cannot go on stamping the current time
+   * over figures hours old. That was the first build's bug; this is the one
+   * narrow case where new information really did arrive offline.
+   *
+   * The widget's copy cannot show these: it is written by the server, which has
+   * not been told yet. A queued entry reaches the widget when it saves. */
+  var log = snap.log.concat(queuedRowsToday());
+  var prayers = snap.prayers.concat(queuedPrayersToday());
+  var at = snap.at;
+  queuedToday().forEach(function (it) {
+    var t = instantOf((it.payload || {}).at);
+    if (!isNaN(t) && t > at) at = t;
+  });
+
+  var text = glanceText(dayFigures(log, prayers, at, snap.carry), at);
+  return { title: text.title, body: text.body, at: at };
 }
 
 /**
@@ -6886,20 +7471,19 @@ function forgetGlance() {
 function paintGlance() {
   try {
     if (!glanceSnap || !glanceWanted()) return;
-    var snap = glanceSnap;
-    if (ymdLocal(new Date(snap.at)) !== ymdLocal(new Date(Date.now()))) {
+    var text = glanceWords();
+    if (ymdLocal(new Date(text.at)) !== ymdLocal(new Date(Date.now()))) {
       glanceSnap = null;
       closeGlance();
       return;
     }
 
-    var text = glanceWords();
     var shown = text.title + '\n' + text.body;
     if (shown === glanceShown) return;
     glanceShown = shown;
 
     glanceShowing = navigator.serviceWorker.ready.then(function (reg) {
-      return reg.showNotification(text.title, glanceOptions(text.body, snap.at));
+      return reg.showNotification(text.title, glanceOptions(text.body, text.at));
     }).catch(function () {
       // It never appeared, so the next paint must not skip it.
       if (glanceShown === shown) glanceShown = '';
@@ -7042,6 +7626,17 @@ var lastVisibleRefresh = 0;
  * most, and never one the user is waiting behind. */
 setInterval(function () {
   if (document.visibilityState !== 'visible') return;
+
+  /* The backstop trigger for the outbox. `online` fires when the radio comes
+   * back, but not when a flaky connection starts working again, and not at all
+   * on some desktop setups — so anything waiting is retried on a slow timer as
+   * well. retrySession() first, because a launch with no signal has no session
+   * and nothing can be sent without one. */
+  if (outboxCount() && Date.now() - lastDrainAt > DRAIN_RETRY_MS) {
+    retrySession();
+    drainOutbox('poll');
+  }
+
   if (inFlight > 0 || !isConfigured()) return;
   // A live subscription makes polling redundant; keep a slow heartbeat only, in
   // case the socket has quietly died.
@@ -7053,13 +7648,30 @@ setInterval(function () {
 
 document.addEventListener('visibilitychange', function () {
   if (document.visibilityState !== 'visible') return;
+  // Coming back to the app is the commonest moment for the network to be back.
+  retrySession();
+  drainOutbox('visible');
   var now = Date.now();
   if (now - lastVisibleRefresh < VISIBILITY_THROTTLE_MS) return;
   lastVisibleRefresh = now;
   refresh();
 });
 
+/* The browser saying the radio is back. It is the fastest trigger there is, and
+ * the only one that is allowed to try while navigator.onLine was false a moment
+ * ago. A session that expired while offline is recovered first. */
+window.addEventListener('online', function () {
+  retrySession();
+  drainOutbox('online');
+  refresh();
+});
+
+window.addEventListener('offline', function () {
+  paintConn();
+});
+
 initSupabase();
+paintConn();                         // anything left over from the last visit
 renderPrayerTicks();
 renderProject();
 renderDaySummary();

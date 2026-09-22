@@ -68,9 +68,12 @@ body {
 
 .top-right { display: flex; align-items: center; gap: 4px; }
 
-/* (6) Connection at a glance. Green means the last call to the Sheet worked,
+/* (6) Connection at a glance. Green means the last call to the server worked,
    red means it did not, amber means one is in flight right now. It is small on
-   purpose — a status light, not an alarm. */
+   purpose — a status light, not an alarm.
+   A fourth state, `wait`, means entries are saved on this device and not sent
+   yet; it comes with a count beside it, because a silent dot is not enough to
+   say "your presses are here, not up there". */
 .dot {
   width: 9px; height: 9px; border-radius: 50%;
   background: var(--muted);
@@ -80,6 +83,13 @@ body {
 .dot.ok { background: #35c07a; }
 .dot.bad { background: var(--danger); }
 .dot.busy { background: #e8a33d; }
+.dot.wait { background: #e8a33d; box-shadow: 0 0 0 3px rgba(232, 163, 61, 0.2); }
+
+.conn-wait {
+  font-size: 12px; font-weight: 600; color: #e8a33d;
+  margin-left: 2px; white-space: nowrap;
+}
+.conn-wait[hidden] { display: none; }
 
 .icon-btn {
   background: none; border: 0; color: var(--muted);

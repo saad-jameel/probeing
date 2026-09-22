@@ -39,6 +39,9 @@
   </div>
   <div class="top-right">
     <span id="connDot" class="dot" role="status" aria-live="polite" title="Not connected"></span>
+    <!-- How many presses this device is still holding. Hidden when there are
+         none, which is nearly always. -->
+    <span id="connWait" class="conn-wait" role="status" aria-live="polite" hidden></span>
     <button id="settingsBtn" class="icon-btn" aria-label="Settings">&#9881;</button>
   </div>
 </header>
@@ -139,6 +142,9 @@
       <div class="sum"><span id="sumBreak" class="sum-n">0m</span><span class="sum-l">on break</span></div>
     </div>
     <ul id="sumProjects" class="sum-projects"></ul>
+    <!-- Offline, the figures above are a PART of the day, not the day. Saying so
+         is the alternative to a confident low number. -->
+    <p id="todayNote" class="hint" hidden></p>
   </section>
 
   <div class="log-head">
@@ -361,8 +367,12 @@
     <p class="hint">Stored on this device only, so each device has its own list. The comma is the separator, so a name cannot contain one. This list decides which reasons exist; the order re-sorts itself so the ones you use most sit first. The + on Home adds to it.</p>
 
     <p id="supaWho" class="hint"></p>
+    <!-- Entries this device is holding: waiting, held for another account or
+         project, or refused outright. -->
+    <p id="outboxNote" class="hint" hidden></p>
     <div class="dlg-actions" style="justify-content: flex-start">
       <button type="button" id="signOutBtn" class="link-btn">Sign out</button>
+      <button type="button" id="outboxForgetBtn" class="link-btn" hidden>Forget the refused entries</button>
     </div>
 
     <details id="devSettings" class="dev-settings">
