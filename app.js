@@ -166,17 +166,27 @@ function localDayStartIso() {
   return d.toISOString();
 }
 
+/* `rid` comes along for one reason: it is how a row the table already has is
+ * told apart from a copy this device is still holding. Nothing else reads it
+ * off a row. */
 function sbRow(r) {
   return {
     at: r.at, local: r.local_time || '', type: r.type,
-    raw_text: r.raw_text || '', project: r.project || '', detail: r.detail || ''
+    raw_text: r.raw_text || '', project: r.project || '', detail: r.detail || '',
+    rid: r.rid || ''
   };
 }
 
 async function sbInsert(payload) {
+  /* THE PRESS TIME, NOT THE SEND TIME. api() stamps `at` and `local_time` once,
+   * beside the rid, and every attempt carries that same instant. Stamping here
+   * instead is why a write that had to be retried landed at the time of the
+   * retry. The fallback is for a caller that never went through api(), and
+   * keeps the old behaviour for it. */
+  var stamped = typeof payload.at === 'string' && !isNaN(Date.parse(payload.at));
   var row = {
-    at: new Date().toISOString(),
-    local_time: humanLocal(),
+    at: stamped ? payload.at : new Date().toISOString(),
+    local_time: stamped ? (payload.local_time || '') : humanLocal(),
     tz: deviceTz(),
     type: payload.type || 'work',
     raw_text: String(payload.raw_text || ''),
@@ -239,7 +249,7 @@ async function callSupabase(action, payload) {
 
     rows.forEach(function (r) {
       if (r.type === 'prayer') {
-        prayers.push({ at: r.at, local: r.local_time || '',
+        prayers.push({ at: r.at, local: r.local_time || '', rid: r.rid || '',
                        prayer: r.project || '', mode: r.detail || '' });
       } else {
         log.push(sbRow(r));
@@ -312,7 +322,10 @@ async function callSupabase(action, payload) {
   }
 
   if (action === 'm') {
-    await sbInsert({ type: 'M', raw_text: '', rid: payload.rid });
+    // at/local_time forwarded, not rebuilt: this row must carry the instant the
+    // tile was tapped, however long the write took to get through.
+    await sbInsert({ type: 'M', raw_text: '', rid: payload.rid,
+                     at: payload.at, local_time: payload.local_time });
     var c = await sb.from('events').select('id', { count: 'exact', head: true })
       .eq('type', 'M').gte('at', localDayStartIso());
     if (c.error) throw errorFrom(c.error);
@@ -328,7 +341,8 @@ async function callSupabase(action, payload) {
       throw bad;
     }
     await sbInsert({ type: 'prayer', raw_text: name + ' · ' + mode,
-                     project: name, detail: mode, rid: payload.rid });
+                     project: name, detail: mode, rid: payload.rid,
+                     at: payload.at, local_time: payload.local_time });
     return { ok: true, prayer: name, mode: mode };
   }
 
@@ -453,10 +467,14 @@ async function trackedCall(action, payload, opts) {
 function api(action, payload, opts) {
   if (!isConfigured()) return Promise.reject(new Error('Not configured — open Settings.'));
 
-  // One rid per logical write, fixed before the first attempt so every retry
-  // carries the same one. Reads need none.
+  /* One rid per logical write, fixed before the first attempt so every retry
+   * carries the same one — and ONE INSTANT with it. `at` is when the button was
+   * pressed, not when the row reaches the table, so a write that is sent late
+   * still lands at the time it happened. Reads need neither. */
   if (!IDEMPOTENT[action]) {
-    payload = Object.assign({ rid: newRid() }, payload || {});
+    payload = Object.assign({
+      rid: newRid(), at: new Date().toISOString(), local_time: humanLocal()
+    }, payload || {});
   }
 
   var run = apiChain.then(
