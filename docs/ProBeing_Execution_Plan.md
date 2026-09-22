@@ -11,7 +11,8 @@ A basic, free activity-keeper app for **mobile + laptop, always in sync**.
 - *(Stage 8)* **Bubblewrap / Trusted Web Activity** — free native Android wrapper, so a real
   home-screen widget can exist. Not Capacitor: a plain WebView has no Web Push and its own
   separate storage, so it would lose the sign-in and Stages 7a and 7b with it
-- *(Fallback, still selectable)* **Apps Script + Google Sheet** — the original backend, frozen
+- ~~Apps Script + Google Sheet~~ — the original backend, **removed 22 Sep 2026**; the last
+  version with it is the git tag `apps-script-last`
 
 **This is not the stack this plan was written against**, and the difference is why
 several stage descriptions below carry a "superseded" note. It said Apps Script and a
@@ -36,7 +37,7 @@ shipped in `f733804`; `CLAUDE.md` carries the full reasoning.
 > | ✅ | **5 Review Button** | **signed off 8 Sep** on both devices, against real rows and real Gemini calls. One change came out of the first read — see the stage |
 > | ✅ | **6 Weekly & Monthly Reports** | **signed off 8 Sep** on both devices, including a rewrite leaving one row. M and prayer counting verified the same day through Review's own "This week" |
 > | ✅ | **7a Push + the nightly wrapup** | **signed off 22 Sep** — the push arrived on both devices, and every branch was watched against the live database: ignored → closed at 23:30 (15 Sep); answered → follow-up at 01:00 on the dot (17→18 Sep); a missing or wrong cron secret refused (run 22 Sep). One close writing one row is verified by reading the rid, not by running it |
-> | 🟡 | 7b The home-screen glance | **built 14 Sep and live** on both devices. Sign-off waits on the one thing its checklist asks to *record*: does Windows pop a new toast at each 5-minute refresh, or replace it silently? |
+> | ✅ | 7b The home-screen glance | **signed off 22 Sep.** Built 14 Sep, live on both devices. The one line its checklist asked to *record* — does Windows pop a toast at each refresh — is answered by how Saad uses it: laptop notifications stay quiet by choice, and the glance is a phone feature |
 > | ⬜ | 7c Offline logging | not started; touches the write path only, overlaps nothing |
 > | ✅ | **8 Home-screen widget** | **signed off 22 Sep.** Refreshes itself unattended — reads 25, 36 and 29 minutes apart on 18 Sep, no hand on the phone. A made-up pairing code returns nothing (run 22 Sep). Its "within a minute" check was impossible on Android and now says 30 minutes. A TWA, not Capacitor, and look-only |
 >
@@ -478,13 +479,13 @@ app, and its M count and prayer breakdown exactly match a manual count of the ra
 
 ---
 
-## 🟡 Stage 7 — Notifications, the daily wrapup, and offline — 7a SIGNED OFF, 7b BUILT, 7c NOT STARTED
+## 🟡 Stage 7 — Notifications, the daily wrapup, and offline — 7a AND 7b SIGNED OFF, 7c NOT STARTED
 
 **Split into three on 8 Sep 2026**, because they turned out to share almost nothing.
 **7a** (the 11:30 PM wrapup) is **signed off 22 Sep** — it needed nights nobody could
 simulate, and got them; the status table says which night proved which branch.
-**7b** (the shade glance) is built and live; its sign-off waits on one Windows
-observation. **7c** (offline logging) is not started, and waits on nothing.
+**7b** (the shade glance) is signed off 22 Sep — a phone feature in practice.
+**7c** (offline logging) is not started, and waits on nothing.
 
 Rewritten 27 Aug from three requirements Saad gave verbatim and asked to have
 recorded, because he expected to forget them. They are reproduced here in full;
@@ -655,7 +656,9 @@ than this section implies. What it does inherit from 7a is a live example of
 - Readable on the lock screen — if a Pixel hides it, flip `silent` and record it here.
 - Tap → opens ProBeing, stays in the shade. Swiped (it cannot be pinned) → back on reopen.
 - Laptop idle on screen 10 minutes → at most 2 silent replacements, as each 5-minute read
-  moves "as of"; record whether Windows shows a toast for them.
+  moves "as of"; record whether Windows shows a toast for them. **Recorded 22 Sep: not
+  observed, and not needed — Saad keeps laptop notifications quiet; he uses the glance on
+  the phone.**
 - A test push is its own entry; its **Yes** works and the glance survives it.
 - Blocked in the padlock menu → Settings says why nothing shows.
 - Rule 4: the M tile still counts up the instant it is tapped.
