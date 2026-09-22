@@ -326,8 +326,10 @@ function dayFigures(log, prayers, endMs, carry) {
       return prayers.some(function (p) { return p.prayer === n; });
     }).length,
     mCount: log.filter(function (r) { return r.type === 'M'; }).length,
-    // Nothing logged today and nothing left open from yesterday.
-    notStarted: Array.isArray(carry) && !log.length && !prayers.length &&
+    // No work-clock row today and nothing left open from yesterday. An M, a
+    // prayer or a wake at 5 AM does not start the work day.
+    notStarted: Array.isArray(carry) &&
+                !log.some(function (r) { return movesWorkClock(r.type); }) &&
                 !openBeforeToday(carry)
   };
 }
@@ -336,6 +338,11 @@ function dayFigures(log, prayers, endMs, carry) {
  * out on purpose: like replayDay(), it does not move the work clock. */
 var OPEN_TYPES = { work: 1, voice: 1, resume: 1, 'break': 1 };
 var CLOSED_TYPES = { off: 1, sleep: 1 };
+
+/** True for a row type that starts, pauses or ends the work day. */
+function movesWorkClock(type) {
+  return Boolean(OPEN_TYPES[type] || CLOSED_TYPES[type]);
+}
 
 /**
  * Was the work day still open at midnight? Reads the rows from before today.
@@ -347,7 +354,7 @@ function openBeforeToday(carry) {
   var newest = NaN;
   var open = false;
   (carry || []).forEach(function (r) {
-    if (!OPEN_TYPES[r.type] && !CLOSED_TYPES[r.type]) return;
+    if (!movesWorkClock(r.type)) return;
     var t = instantOf(r.at);
     if (isNaN(t)) return;
     if (isNaN(newest) || t > newest) {

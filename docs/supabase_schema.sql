@@ -331,34 +331,36 @@ exception when duplicate_object then null; end $$;
 -- way the app is. It is PAIRED instead: Settings makes a short code, shows it
 -- once, and stores only its fingerprint; the widget shows that code at the door.
 --
---   glance        the two lines, written by the app whenever it works them out
+--   glance        the two lines, written by the glance-refresh Edge Function
 --   device_keys   which widgets may read them
 --   glance_for()  the door, and the only thing a signed-out caller may knock on
 
 -- ----------------------------------------------------------------- glance
--- One row per person: exactly what the notification shade is showing, in exactly
--- the same words. The app computes those words once and sends them both places,
--- so the widget and the shade cannot drift into disagreeing.
+-- One row per person, in the same words as the notification shade. The
+-- glance-refresh Edge Function writes it every 10 minutes and after each insert
+-- into `events` (docs/glance_refresh.sql), using the same counting file the app
+-- uses (supabase/functions/_shared/day.js), so the two cannot count differently.
+-- The app no longer writes this row.
 --
 -- DERIVED STATE, AND FREELY REWRITTEN — the same kind of row as
 -- push_subscriptions above, and the opposite of `events`. Nothing here is a fact
 -- about a day; it is a copy of a sentence worked out from rows that are. Delete
--- the whole table and the cost is that the widget is blank until the app is next
--- opened. That is why it is rewritten in place rather than appended to.
+-- the whole table and the cost is that the widget is blank until the next
+-- refresh. That is why it is rewritten in place rather than appended to.
 --
--- `as_of` IS THE HONEST PART, AND IT IS NOT "now". It is when the app last READ
--- the rows these lines were computed from. A widget that cannot say how old it
--- is will show yesterday's hours as though they were this morning's, which is
--- the exact bug Stage 7b found in the shade and fixed there the same way.
+-- `as_of` IS THE HONEST PART. It is when the server computed these lines, just
+-- before reading the rows. A widget that cannot say how old it is will show
+-- yesterday's hours as though they were this morning's, which is the exact bug
+-- Stage 7b found in the shade and fixed there the same way.
 create table if not exists public.glance (
-  -- Primary key, which is unique and not-null in one word, and gives the app's
-  -- upsert something to conflict on. One row per person, replaced for ever.
+  -- Primary key, which is unique and not-null in one word, and gives the
+  -- server's upsert something to conflict on. One row per person, replaced for ever.
   user_id    uuid        primary key default auth.uid() references auth.users on delete cascade,
 
   title      text        not null default '',   -- "Working on: NeuraVue"
   body       text        not null default '',   -- "Wed 4h 20m · 3 M · 4/5 prayers · as of 5:42 PM"
 
-  as_of      timestamptz not null default now(),   -- when those figures were read
+  as_of      timestamptz not null default now(),   -- when the server computed them
   updated_at timestamptz not null default now()    -- when this row was last written
 );
 
@@ -369,8 +371,9 @@ do $$ begin
     for select using (auth.uid() = user_id);
 exception when duplicate_object then null; end $$;
 
--- An upsert is an insert that may turn into an update, so it needs BOTH of the
--- next two policies. With only the insert, the first write of the day succeeds
+-- The server writes with the service role, which bypasses these; they remain
+-- for a signed-in writer. An upsert is an insert that may turn into an update,
+-- so it needs BOTH of the next two policies. With only the insert, the first write of the day succeeds
 -- and every one after it fails — and it fails quietly, which would look exactly
 -- like "the widget froze at breakfast time".
 do $$ begin
