@@ -263,7 +263,7 @@ function humanLocal() {
 }
 
 async function callSupabase(action, payload) {
-  if (!sb) throw new Error('Add your Supabase details in Settings.');
+  if (!sb) throw new Error('Add your Supabase details in Settings → Developer settings.');
   if (!sbUser) throw new Error('Sign in to keep logging.');
   payload = payload || {};
 
@@ -2864,7 +2864,7 @@ function geminiUsageLine() {
   return used + ' of ' + geminiDailyBudget() + ' used today' +
     (used >= geminiDailyBudget()
       ? ' — entries keep their own text as the name until tomorrow.'
-      : ' (this app\'s own limit, set in Settings — leave room under your model\'s).');
+      : ' (this app\'s own limit, set in Developer settings — leave room under your model\'s).');
 }
 
 /* The batch shape: one object per line, in the order the lines were given. The
@@ -6088,7 +6088,7 @@ function safeBoardUrl(raw) {
 $('boardTab').addEventListener('click', function () {
   var url = safeBoardUrl(cfg.boardUrl);
   if (!url) {
-    flash('Add a taskboard link starting with https:// in Settings.');
+    flash('Add a taskboard link starting with https:// in Settings → Developer settings.');
     dlg.showModal();
     return;
   }
@@ -6107,7 +6107,7 @@ function askSignIn() {
 }
 
 $('githubBtn').addEventListener('click', async function () {
-  if (!sb) { $('signInMsg').textContent = 'Add your Supabase details in Settings first.'; return; }
+  if (!sb) { $('signInMsg').textContent = 'Add your Supabase details in Settings → Developer settings first.'; return; }
   $('signInMsg').textContent = 'Opening GitHub…';
   try {
     // Come back to this exact page, so an installed app returns where it left.
@@ -6466,6 +6466,7 @@ $('saveBtn').addEventListener('click', function () {
   // safeBoardUrl() would quietly store nothing. Say so instead.
   var typedBoard = $('boardUrl').value.trim();
   if (typedBoard && !safeBoardUrl(typedBoard)) {
+    $('devSettings').open = true;           // the field is folded away; show it
     $('testResult').textContent = 'The taskboard link must start with https:// — nothing else was saved.';
     return;
   }
@@ -6485,6 +6486,7 @@ $('saveBtn').addEventListener('click', function () {
     glance: $('glanceOn').checked
   };
   if (!next.supaUrl || !next.supaKey) {
+    $('devSettings').open = true;
     $('testResult').textContent = 'Fill in the Supabase URL and key first.';
     return;
   }

@@ -510,6 +510,10 @@ body {
 }
 .dlg-block h3 { margin: 0; font-size: 14px; }
 
+/* Set-once settings, folded away so the everyday ones stay short. */
+.dev-settings { margin-top: 18px; padding-top: 12px; border-top: 1px solid var(--line); }
+.dev-settings > summary { cursor: pointer; font-weight: 600; font-size: 14px; }
+
 /* One row per project: its name, and the kind of work it is. Drawn identically
    in the Review's dialog and in Settings, because they are one store. */
 .cat-list { display: grid; gap: 10px; margin-top: 10px; }
