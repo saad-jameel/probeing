@@ -19,6 +19,8 @@
 !/.gitignore
 !/.nvmrc
 !/.env.example
+# Empty. Without it Pages' Jekyll drops `_`-prefixed folders, and day.js 404s.
+!/.nojekyll
 !/README.md
 !/package.json
 !/package-lock.json
@@ -60,6 +62,9 @@
 !/supabase/functions/
 !/supabase/functions/*/
 !/supabase/functions/**/*.ts
+# The shared counting code, which the PWA also loads. Named, not `**/*.js`,
+# for the same reason the line above is narrow.
+!/supabase/functions/_shared/day.js
 
 # --- Tooling and docs --------------------------------------------------------
 !/scripts/

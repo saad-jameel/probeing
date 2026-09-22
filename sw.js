@@ -1,7 +1,7 @@
 /* ProBeing service worker — app shell only.
  *
- * Deliberately does NOT cache API traffic: the Sheet is the source of truth and
- * a cached "today" would silently show you stale logs. Offline *logging* is
+ * Deliberately does NOT cache API traffic: the database is the source of truth
+ * and a cached "today" would silently show you stale logs. Offline *logging* is
  * Stage 7c and will use a localStorage queue, not this cache.
  *
  * SAVED REPORTS ARE API TRAFFIC TOO, and the same rule covers them: they are
@@ -17,11 +17,12 @@
  * off. Neither of them touches the cache above.
  */
 
-var CACHE = 'probeing-shell-v3';
+var CACHE = 'probeing-shell-v4';
 var SHELL = [
   './',
   'index.html',
   'styles.css',
+  'supabase/functions/_shared/day.js',
   'app.js',
   'vendor/supabase.js',
   'manifest.webmanifest',
@@ -45,8 +46,8 @@ self.addEventListener('activate', function (e) {
 self.addEventListener('fetch', function (e) {
   var req = e.request;
 
-  // Only ever serve our own same-origin GETs from cache. Backend POSTs to
-  // script.google.com must always hit the network.
+  // Only ever serve our own same-origin GETs from cache. Supabase is another
+  // origin, so its traffic always hits the network.
   if (req.method !== 'GET' || new URL(req.url).origin !== self.location.origin) return;
 
   // Network-first so a deploy shows up immediately; cache is the offline net.
