@@ -701,6 +701,20 @@ told. And a queued entry gets no Gemini project name: `label` finds its row by r
 and the row is not in the table yet, so the entry keeps its own sentence as its name,
 exactly as an unlabelled entry always has.
 
+**Two known limits, found by the validator on 23 Sep and left in by decision.**
+Neither loses an entry; both are worth fixing if they are ever felt.
+
+- **There is no timeout on a write.** A radio that is technically connected but
+  answering nothing holds the one-at-a-time chain until the operating system gives
+  up, so the amber "waiting" mark appears late. Nothing is lost — the press is on
+  screen the whole time — but it reads as a slow app rather than an offline one.
+- **An entry the server never gives a reason for is never parked.** A refusal with a
+  database code is parked and named in Settings; a long outage or an HTML error page
+  from a proxy carries no code, so the entry waits for ever by design. The cost is
+  narrow but real: `spanHasPending()` then holds that week's saved report back
+  indefinitely, and there is nothing in the app that lets a person clear a still-
+  waiting entry by hand.
+
 **End goal (validation), 7c only**
 - Airplane mode → press M and log a status → reconnect → both rows appear, with the
   timestamps from when they were pressed.

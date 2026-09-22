@@ -140,7 +140,7 @@ function adoptSession(session) {
      * the network: an offline press is filed under this id and sent only when
      * this same account is signed in again. */
     rememberUser(sbUser.id);
-    signedOutByHand = false;
+    setSignedOut(false);
     // Every session event, not only a change of user: a token refresh is the
     // first sign that the network is back.
     drainOutbox('session');
@@ -171,15 +171,28 @@ function adoptSession(session) {
      * queued under the last account instead, and the box appears when there is
      * a network to sign in over. A sign-out the user actually pressed always
      * asks, whatever the network is doing. */
-    if (signedOutByHand || navigator.onLine !== false || !currentUserId()) askSignIn();
+    if (signedOutByHand() || navigator.onLine !== false || !currentUserId()) askSignIn();
     paintConn();
     paintOutboxNote();
   }
 }
 
 /* Sign out is a decision; a launch that could not restore the session is not.
- * They arrive at the same place and mean opposite things. */
-var signedOutByHand = false;
+ * They arrive at the same place and mean opposite things — and the decision has
+ * to outlive the page, or signing out and reopening the app with no signal looks
+ * to the code exactly like a session it failed to restore: no sign-in box, and
+ * presses filed under the account just left. Hence localStorage, beside the last
+ * user id. Cleared the moment somebody signs in. */
+function signedOutByHand() {
+  try { return localStorage.getItem(SIGNED_OUT_KEY) === '1'; } catch (e) { return false; }
+}
+
+function setSignedOut(on) {
+  try {
+    if (on) localStorage.setItem(SIGNED_OUT_KEY, '1');
+    else localStorage.removeItem(SIGNED_OUT_KEY);
+  } catch (e) { /* full disk: the box simply appears as it used to */ }
+}
 
 /** Midnight this morning, where the device is, as an instant the database can
  *  compare against. "Today" has to roll over where the user actually is. */
@@ -555,6 +568,7 @@ function api(action, payload, opts) {
 var OUTBOX_KEY = 'probeing.outbox';
 var PARKED_KEY = 'probeing.outbox.parked';
 var LAST_USER_KEY = 'probeing.lastuser';
+var SIGNED_OUT_KEY = 'probeing.signedout';
 var OUTBOX_MAX = 500;
 var PARKED_MAX = 50;
 
@@ -609,11 +623,29 @@ function outboxAll() {
   return outboxList;
 }
 
-/** Write the queue back. False means it could not be stored, and the caller must
- *  report a failure rather than claim the press was kept. */
+/**
+ * Write the queue back. False means it could not be stored, and the caller must
+ * report a failure rather than claim the press was kept.
+ *
+ * NOTHING IS EVER DROPPED QUIETLY. The cap used to be a `slice`, which reported
+ * the 501st press as saved and made the first one vanish — silent data loss, in
+ * the one part of the app built to prevent exactly that. An overflowing item is
+ * moved into the same "could not save" list a refusal goes to, where it is named
+ * in Settings and can be cleared on purpose. It takes about two weeks with no
+ * signal to reach, so the cost of saying so is nothing.
+ */
 function saveOutbox(list) {
+  if (list.length > OUTBOX_MAX) {
+    var spill = list.slice(0, list.length - OUTBOX_MAX);
+    list = list.slice(list.length - OUTBOX_MAX);
+    spill.forEach(function (it) {
+      addParked(it, 'this device can only hold ' + OUTBOX_MAX + ' unsent entries');
+    });
+    flash(spill.length + (spill.length === 1 ? ' old unsent entry' : ' old unsent entries') +
+      ' could not be kept — see Settings.', 'err');
+  }
   try {
-    localStorage.setItem(OUTBOX_KEY, JSON.stringify(list.slice(-OUTBOX_MAX)));
+    localStorage.setItem(OUTBOX_KEY, JSON.stringify(list));
   } catch (e) {
     return false;
   }
@@ -691,18 +723,24 @@ function parkedAll() {
   return storedList(raw);
 }
 
-function parkItem(it, err) {
+/** Move an item onto the parked list. Touches the outbox not at all — saveOutbox
+ *  calls this while it is mid-write, and the two must not chase each other. */
+function addParked(it, why) {
   var row = queuedRow(it) || {};
   var list = parkedAll();
   list.push({
     rid: it.rid,
-    at: it.payload.at || '',
+    at: (it.payload || {}).at || '',
     what: String(row.raw_text || row.type || it.action),
-    why: String((err && err.message) || 'refused')
+    why: String(why || 'refused')
   });
   try {
     localStorage.setItem(PARKED_KEY, JSON.stringify(list.slice(-PARKED_MAX)));
   } catch (e) { /* nothing more we can do about it */ }
+}
+
+function parkItem(it, err) {
+  addParked(it, (err && err.message) || 'refused');
   dropItem(it.rid);
 }
 
@@ -1238,8 +1276,14 @@ function renderToday(data) {
   absorbChipStats(lastLog);
   renderProject();
 
-  // The picker's checkmarks and the Home ticks are both driven by this.
-  todayPrayers = data.prayers || [];
+  /* The picker's checkmarks and the Home ticks are both driven by this, and the
+   * queue goes back into it for the same reason it goes back into the rows
+   * above — with one extra consequence that makes this the worse half to get
+   * wrong. `loggedToday()` reads this list, so a queued prayer missing from it
+   * turns off the "already logged today" warning, and the next tap writes a
+   * SECOND real row under a different rid. The unique index cannot catch that
+   * one: it is a genuinely new write, and the store is append-only. */
+  todayPrayers = (data.prayers || []).concat(queuedPrayersToday(have));
   renderPrayerTicks();
   if (prayerDlg.open) renderPrayerPicks();
 
@@ -6427,7 +6471,7 @@ $('signOutBtn').addEventListener('click', async function () {
     (waiting === 1 ? 'is' : 'are') + ' sent when you sign back in with the same account. ' +
     'Sign out anyway?')) return;
 
-  signedOutByHand = true;
+  setSignedOut(true);
   stopLive();
   /* The shade must not keep this account's day — nor get it back from a read
    * that was already on its way when this was pressed. */
@@ -7418,11 +7462,20 @@ function glanceWords() {
    * narrow case where new information really did arrive offline.
    *
    * The widget's copy cannot show these: it is written by the server, which has
-   * not been told yet. A queued entry reaches the widget when it saves. */
-  var log = snap.log.concat(queuedRowsToday());
-  var prayers = snap.prayers.concat(queuedPrayersToday());
+   * not been told yet. A queued entry reaches the widget when it saves.
+   *
+   * Filtered by rid, exactly as renderToday does it. A write whose row landed
+   * and whose REPLY was lost is in the read AND still in the outbox, and
+   * without this the shade would say "2 M" over a Today card saying "1 M". */
+  var have = userMap();
+  snap.log.forEach(function (r) { if (r.rid) have[r.rid] = 1; });
+  snap.prayers.forEach(function (p) { if (p.rid) have[p.rid] = 1; });
+
+  var log = snap.log.concat(queuedRowsToday(have));
+  var prayers = snap.prayers.concat(queuedPrayersToday(have));
   var at = snap.at;
   queuedToday().forEach(function (it) {
+    if (have[it.rid]) return;              // already in the read: it is not news
     var t = instantOf((it.payload || {}).at);
     if (!isNaN(t) && t > at) at = t;
   });
