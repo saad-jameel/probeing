@@ -29,6 +29,13 @@ var DEFAULT_SUPABASE_URL = 'https://whxgzdrowvkpzpgfilof.supabase.co';
 var DEFAULT_SUPABASE_ANON = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6IndoeGd6ZHJvd3ZrcHpwZ2ZpbG9mIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODc4NDEzNDQsImV4cCI6MjEwMzQxNzM0NH0.qJyTdirLFpOu5uBsLwOWAnwWUp4lU1Ka0ZwM6Vsz3mE';
 
 var CFG_KEY = 'probeing.config';
+/* How to unblock notifications. The installed app has no address bar, so the
+ * padlock menu everyone gets pointed at is not there; Android's own app
+ * settings are the switch that works. Both routes, the app's one first. */
+var UNBLOCK_HELP = 'In the installed app: Android Settings → Apps → ProBeing → ' +
+  'Notifications. In a browser tab: the padlock menu beside the address bar ' +
+  '(Site settings → Notifications).';
+
 var TOGGLE_KEY = 'probeing.toggles';        // current sleep/work state, per device
 var CHIP_STATS_KEY = 'probeing.chipstats';  // how often each status gets logged
 var PROJECT_NAMES_KEY = 'probeing.projects'; // project names seen lately, reused for free
@@ -6374,9 +6381,8 @@ function paintPushState() {
     return;
   }
   if (Notification.permission === 'denied') {
-    out.textContent = 'Notifications are blocked for this site. Chrome will not ask ' +
-      'again — turn them back on in the padlock menu next to the address bar ' +
-      '(Site settings → Notifications), then press the button.';
+    out.textContent = 'Notifications are blocked for this site, and Chrome will not ask ' +
+      'again. ' + UNBLOCK_HELP + ' Then press the button.';
     return;
   }
   if (Notification.permission !== 'granted') {
@@ -6801,7 +6807,7 @@ function glanceBlockedNote() {
   }
   if (Notification.permission === 'denied') {
     return 'Ticked, but notifications are now blocked for this site, so nothing appears. ' +
-      'Allow them in the padlock menu next to the address bar (Site settings → Notifications).';
+      UNBLOCK_HELP;
   }
   if (Notification.permission !== 'granted') {
     return 'Ticked, but this site is no longer allowed to show notifications, so nothing ' +
@@ -6960,8 +6966,8 @@ $('glanceOn').addEventListener('change', async function () {
   if (Notification.permission === 'granted') return;
   if (Notification.permission === 'denied') {
     box.checked = false;
-    out.textContent = 'Notifications are blocked for this site. Chrome will not ask again — ' +
-      'allow them in the padlock menu next to the address bar, then tick this again.';
+    out.textContent = 'Notifications are blocked for this site, and Chrome will not ask ' +
+      'again. ' + UNBLOCK_HELP + ' Then tick this again.';
     return;
   }
 
