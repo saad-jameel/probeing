@@ -701,13 +701,36 @@ told. And a queued entry gets no Gemini project name: `label` finds its row by r
 and the row is not in the table yet, so the entry keeps its own sentence as its name,
 exactly as an unlabelled entry always has.
 
-**Two known limits, found by the validator on 23 Sep and left in by decision.**
-Neither loses an entry; both are worth fixing if they are ever felt.
+**A press was being lost, and the reason was this list.** On 23 Sep the limit
+below was written down as "the amber mark appears late, nothing is lost". That
+was wrong, and Saad found it the same day on the phone: type an entry, press M,
+reload, and the M was gone — not in the table, not on the device, nothing said.
+Measured with the radio off and a session still valid, one `today` read takes
+**7 seconds** to fail (supabase-js retries six times inside itself) and this app
+retries a read three times, so the one-at-a-time chain is busy for twenty seconds
+or more. Every press made in that window was sitting in a promise that had not
+been called yet, so the code that puts a press on the device had not run. A
+reload threw it away. Which press was lost was a race, which is why the order of
+his two taps seemed to matter.
 
-- **There is no timeout on a write.** A radio that is technically connected but
-  answering nothing holds the one-at-a-time chain until the operating system gives
-  up, so the amber "waiting" mark appears late. Nothing is lost — the press is on
-  screen the whole time — but it reads as a slow app rather than an offline one.
+**The fix is an ordering, not a timeout:** a write is written to the device
+*first*, marked as being sent, and dropped again the moment the table takes it —
+so it is safe from the instant of the tap, whatever the network is doing. The
+rid and the unique index make a resend a no-op, which is what allows it.
+
+**The lesson, because this file keeps repeating it:** "nothing is lost" was an
+inference from reading the code, recorded as a fact in the same breath as a
+decision not to look further. It joins the two entries above it in the ledger of
+things this project assumed rather than ran.
+
+**Two known limits, left in by decision.** Neither loses an entry — and that
+sentence is now checked by `scratchpad/test_press_order.js` rather than reasoned
+about.
+
+- **There is still no timeout on a write.** A radio that is connected but
+  answering nothing holds the chain until the operating system gives up, so the
+  amber "waiting" mark appears late and the queue does not drain while it is
+  stuck. The press itself is safe on the device from the tap.
 - **An entry the server never gives a reason for is never parked.** A refusal with a
   database code is parked and named in Settings; a long outage or an HTML error page
   from a proxy carries no code, so the entry waits for ever by design. The cost is

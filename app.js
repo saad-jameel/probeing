@@ -362,9 +362,15 @@ async function callSupabase(action, payload) {
     // tile was tapped even when it is sent off the outbox hours later.
     await sbInsert({ type: 'M', raw_text: '', rid: payload.rid,
                      at: payload.at, local_time: payload.local_time });
+    /* THE ROW IS IN. Past this line the write has succeeded, so a failure of the
+     * count below must not be reported as a failure of the write: that would put
+     * a press that actually landed back on the queue as "waiting", and the only
+     * reason it costs nothing today is that the rid makes the resend a no-op.
+     * M is the one logging action that makes a second call, and this is the
+     * whole of what that second call is for — a nicer number on the tile. */
     var c = await sb.from('events').select('id', { count: 'exact', head: true })
       .eq('type', 'M').gte('at', localDayStartIso());
-    if (c.error) throw errorFrom(c.error);
+    if (c.error) return { ok: true };            // saved; the tile keeps its own count
     return { ok: true, m_count: c.count || 0 };
   }
 
@@ -528,10 +534,41 @@ function api(action, payload, opts) {
       cfg.supaUrl && cfg.supaKey ? 'Sign in to keep logging.' : 'Not configured — open Settings.'));
   }
 
+  /* THE PRESS IS SECURED BEFORE IT GOES ANYWHERE NEAR THE NETWORK.
+   *
+   * This used to queue the write from the FAILURE, inside attempt() — which
+   * looks equivalent and is not, because attempt() only runs once the serialised
+   * chain reaches it. Measured, with a real session and the radio off: one
+   * `today` read takes 7 seconds to fail, because supabase-js retries six times
+   * inside itself before admitting it, and this file then retries a read three
+   * times. So the chain is busy for twenty seconds or more, every press made in
+   * that window is still sitting in a promise that has not been called, and a
+   * reload throws it away. Not in the table, not in the outbox, nothing said.
+   * That is the bug Saad hit on 23 Sep: press an entry, then M, reload, and the
+   * M is simply gone. Which press is lost is a race, which is why the order
+   * seemed to matter.
+   *
+   * So the write goes on the device first, marked as being sent — stored, so a
+   * reload cannot lose it, but not counted as "waiting" and saying nothing,
+   * because nothing is wrong yet. Then it is dropped again the moment the table
+   * takes it. A duplicate is impossible either way: the rid is fixed above and
+   * the unique index makes a repeat a no-op. */
+  var secured = canQueue && holdWrite(action, payload);
+
   function attempt() {
-    return trackedCall(action, payload, opts).catch(function (err) {
-      // A refusal from the database will refuse again — report it, roll back.
-      // Anything else is the network, and the press is kept rather than lost.
+    return trackedCall(action, payload, opts).then(function (res) {
+      if (secured) dropItem(payload.rid);      // the table has it; nothing to keep
+      return res;
+    }, function (err) {
+      if (secured) {
+        /* A refusal the database really made will be refused again: report it
+         * and take the copy back off the device, which is the roll-back the
+         * screen already expects. Anything else is the network. */
+        if (err && err.fatal) { dropItem(payload.rid); throw err; }
+        return nowWaiting(action, payload);
+      }
+      // The hold could not be stored at all (a full disk). Try once more here,
+      // which is where this used to live.
       if (canQueue && !(err && err.fatal)) {
         var q = queueWrite(action, payload);
         if (q) return q;
@@ -667,7 +704,15 @@ function outboxHeld() {
   return outboxAll().filter(function (it) { return !ourItem(it); });
 }
 
-function outboxCount() { return outboxOurs().length; }
+/* `sending` marks a write this page is attempting right now. It is on the device
+ * so a reload cannot lose it, but it is NOT waiting: nothing has gone wrong yet,
+ * and an amber count flickering on every ordinary tap would be noise. It is also
+ * not something to drain — this page is already on it. */
+function outboxWaiting() {
+  return outboxOurs().filter(function (it) { return !it.sending; });
+}
+
+function outboxCount() { return outboxWaiting().length; }
 
 function queuedReply(action, payload) {
   return { ok: true, queued: true, rid: payload.rid, type: payload.type || '' };
@@ -677,28 +722,30 @@ function queuedReply(action, payload) {
  * succeeds again, which is what makes it "per spell". */
 var offlineTold = false;
 
-/**
- * Keep a write on this device. Returns what api() should resolve with, or null
- * if it could not be stored at all.
- */
-function queueWrite(action, payload) {
+/** Put a write on the device. `sending` is true while this page is attempting
+ *  it — see outboxWaiting(). False means it could not be stored at all. */
+function putOutbox(action, payload, sending) {
   var list = outboxAll().slice();
 
   // The same logical write can come through twice (a retry, a second drain).
   // It carries the same rid, so it is the same item, not a second one.
-  var already = list.some(function (it) { return it.rid === payload.rid; });
-  if (!already) {
-    list.push({
-      rid: payload.rid,
-      action: action,
-      payload: payload,
-      user: currentUserId(),
-      url: trimUrl(cfg.supaUrl),
-      queuedAt: Date.now()
-    });
-    if (!saveOutbox(list)) return null;
-  }
+  if (list.some(function (it) { return it.rid === payload.rid; })) return true;
 
+  var item = {
+    rid: payload.rid,
+    action: action,
+    payload: payload,
+    user: currentUserId(),
+    url: trimUrl(cfg.supaUrl),
+    queuedAt: Date.now()
+  };
+  if (sending) item.sending = true;
+  list.push(item);
+  return saveOutbox(list);
+}
+
+/** Say it once per offline spell, and repaint everything that shows a count. */
+function tellWaiting() {
   if (!offlineTold) {
     offlineTold = true;
     flash('Saved on this device — it will send itself when you are back online.', 'warn');
@@ -707,7 +754,52 @@ function queueWrite(action, payload) {
   paintOutboxNote();
   paintTodayNote();
   paintGlance();                  // the shade counts what this device is holding
+}
+
+/** Hold a write on the device for the length of the attempt. Silent: nothing has
+ *  gone wrong yet, and this runs on every press, online or not. */
+function holdWrite(action, payload) {
+  return putOutbox(action, payload, true);
+}
+
+/**
+ * Keep a write on this device, and say so. Returns what api() should resolve
+ * with, or null if it could not be stored at all.
+ */
+function queueWrite(action, payload) {
+  if (!putOutbox(action, payload, false)) return null;
+  tellWaiting();
   return queuedReply(action, payload);
+}
+
+/** The attempt failed for the network: it is not in flight any more, it is
+ *  waiting — and that is the moment to say so. */
+function nowWaiting(action, payload) {
+  var changed = false;
+  var list = outboxAll().map(function (it) {
+    if (it.rid !== payload.rid || !it.sending) return it;
+    changed = true;
+    var copy = {};
+    Object.keys(it).forEach(function (k) { if (k !== 'sending') copy[k] = it[k]; });
+    return copy;
+  });
+  if (changed) saveOutbox(list);
+  tellWaiting();
+  return queuedReply(action, payload);
+}
+
+/** `sending` belongs to the page that set it. A reload means nobody is sending
+ *  anything, so whatever is still marked is simply waiting — and must be, or it
+ *  would sit in the outbox for ever, counted by nothing and drained by nothing. */
+function clearStaleSending() {
+  var list = outboxAll();
+  if (!list.some(function (it) { return it.sending; })) return;
+  saveOutbox(list.map(function (it) {
+    if (!it.sending) return it;
+    var copy = {};
+    Object.keys(it).forEach(function (k) { if (k !== 'sending') copy[k] = it[k]; });
+    return copy;
+  }));
 }
 
 function dropItem(rid) {
@@ -834,7 +926,7 @@ async function drainOutbox(why) {
   if (draining || !supabaseReady()) return;
   if (why !== 'online' && navigator.onLine === false) return;
 
-  var list = outboxOurs();
+  var list = outboxWaiting();              // never a write this page is mid-way through
   if (!list.length) return;
 
   draining = true;
@@ -7723,6 +7815,7 @@ window.addEventListener('offline', function () {
   paintConn();
 });
 
+clearStaleSending();                 // a write the last page was mid-way through
 initSupabase();
 paintConn();                         // anything left over from the last visit
 renderPrayerTicks();
