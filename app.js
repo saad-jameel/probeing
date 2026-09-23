@@ -932,6 +932,7 @@ async function drainOutbox(why) {
   draining = true;
   var sent = 0;
   var parked = 0;
+  var landed = [];                         // entries that still have no name
   try {
     for (var i = 0; i < list.length; i++) {
       var it = list[i];
@@ -945,6 +946,7 @@ async function drainOutbox(why) {
       }
       dropItem(it.rid);
       sent += 1;
+      if (labellable(it)) landed.push(it);
     }
   } finally {
     draining = false;
@@ -962,6 +964,75 @@ async function drainOutbox(why) {
     flash(sent + (sent === 1 ? ' offline entry sent' : ' offline entries sent'), 'ok');
     refresh();                              // the table has them now; re-read once
   }
+  // Deliberately not awaited: the rows are safe in the table and only the name
+  // is outstanding, so nothing above waits on a language model.
+  if (landed.length) labelLanded(landed);
+}
+
+/* NAMING WHAT ARRIVES LATE.
+ *
+ * An entry typed with no signal never got a project name, and nothing ever went
+ * back for it: offline there is no row to label — `label` finds its row by rid,
+ * and the row is not in the table yet — so the whole sentence stood as the tile
+ * heading for ever, sub-tasks and all. Measured 23 Sep: two entries the same
+ * afternoon, the online one named "tail skill", the offline one still carrying
+ * its first sentence. The fix is to do it when the queued write lands, through
+ * the same extractProject()/applyLabel() pair the tracker uses.
+ */
+
+/** A landed write that would have been named had there been a signal: a typed
+ *  entry, with words in it, not yet carrying a project. Never an M, a prayer or
+ *  a state row — none of those has anything to name. */
+function labellable(it) {
+  var p = it.payload || {};
+  return it.action === 'log' && (p.type === 'work' || p.type === 'voice') &&
+         !String(p.project || '').trim() && Boolean(String(p.raw_text || '').trim());
+}
+
+/** Name them oldest first, one at a time, so each entry's prompt can see the
+ *  names the ones before it earned. Never rejects: one entry that cannot be
+ *  named must not stop the entry behind it, and nothing awaits this. */
+function labelLanded(items) {
+  return items.reduce(function (chain, it) {
+    function go() { return nameLanded(it); }
+    return chain.then(go, go);
+  }, Promise.resolve()).catch(function () { /* a name is decoration */ });
+}
+
+function nameLanded(it) {
+  var p = it.payload || {};
+  var text = String(p.raw_text || '');
+
+  /* Both checks BEFORE the call rather than after it. Gemini's day is 18 calls
+   * and one must not be spent on a name that cannot be used: applyLabel refuses
+   * a tile that is not open — a project already finished, or an entry from a day
+   * that is over — and out of budget the entry simply keeps its own sentence,
+   * which is exactly how an unlabelled entry has always looked. */
+  if (!canAskGemini() || !isOpenProject(text)) return Promise.resolve();
+
+  /* Held BEFORE the prompt is built, and that order is the whole point here: this
+   * row IS in today's rows now, keyed on its own sentence because it has no
+   * project yet, so an unheld sentence would be handed to the model as a project
+   * name it is welcome to reuse. */
+  holdName(text);
+  var known = promptNames(openProjects());
+
+  return new Promise(function (resolve) {
+    function done() { releaseName(text); resolve(); }
+    extractProject(text, known).then(function (got) {
+      // Nothing understood, and nothing to say about it: the row is saved and
+      // unnamed, which is a state the screen already draws.
+      if (!got || !got.project) { done(); return; }
+      applyLabel(p.rid, text, rowByRid(p.rid) || {}, got, done);
+    }, function () { done(); });
+  });
+}
+
+/** The row on screen with this rid, so a name that lands can show at once
+ *  instead of waiting for the next read. */
+function rowByRid(rid) {
+  var hit = lastLog.filter(function (r) { return r.rid && r.rid === rid; });
+  return hit.length ? hit[0] : null;
 }
 
 /** Get the session back after a spell offline. getSession() refreshes an expired
@@ -3750,16 +3821,9 @@ $('trackerForm').addEventListener('submit', function (e) {
   // On the tap. Everything below only decides what this row is CALLED.
   var wrote = runWrites(steps, undo);
 
-  /* Hide this sentence from the next entry's prompt while its own label is in
-   * flight. Only while: once the label has settled, an entry that stayed
-   * unlabelled is an ordinary sentence-named tile, and the model should be told
-   * about it so a follow-up line lands on the same tile rather than a new one. */
-  awaitingLabel[text] = (awaitingLabel[text] || 0) + 1;
+  holdName(text);
 
-  function forget() {
-    awaitingLabel[text] -= 1;
-    if (awaitingLabel[text] <= 0) delete awaitingLabel[text];
-  }
+  function forget() { releaseName(text); }
 
   function settle(got) {
     if (!got.project) {
@@ -3806,6 +3870,21 @@ $('trackerForm').addEventListener('submit', function (e) {
  * prompt. Counted rather than flagged, because the same sentence can be logged
  * twice before either one is answered. */
 var awaitingLabel = {};
+
+/* Hide a sentence from the next entry's prompt while its own label is in
+ * flight, and show it again once that settles: an entry that stayed unlabelled
+ * is an ordinary sentence-named tile, and the model should be told about it so
+ * a follow-up line lands on the same tile rather than a new one. Two callers —
+ * the tracker, and an entry named on arrival off the outbox. */
+function holdName(text) {
+  awaitingLabel[text] = (awaitingLabel[text] || 0) + 1;
+}
+
+function releaseName(text) {
+  awaitingLabel[text] -= 1;
+  if (awaitingLabel[text] <= 0) delete awaitingLabel[text];
+}
+
 /* Which ceiling has already been mentioned: '' , 'rate' or 'budget'. A name
  * rather than a flag, because there are two causes now — Google's per-minute
  * refusal and our own daily budget — and being told about the second only
