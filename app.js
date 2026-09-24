@@ -1738,8 +1738,9 @@ setInterval(function () {
 
 var mBtn = $('mBtn');
 
-/* Disabled for the whole round trip: on a phone a double tap is a slip, not two
- * Ms, and the backend is append-only so a stray second row cannot be undone. */
+/* Each tap writes its own M; coolDown() only swallows a second tap inside
+ * 400 ms, which on a phone is a slip. Counts M writes still in flight, so a
+ * late reply's count cannot undo the taps made after it. */
 var pendingWrites = 0;
 
 mBtn.addEventListener('click', function () {
@@ -3786,6 +3787,21 @@ $('trackerForm').addEventListener('submit', function (e) {
 
   function forget() { releaseName(text); }
 
+  /* Read in the same tick as extractProject() reads it, so it says whether this
+   * entry was put to Gemini at the tap. */
+  var askedAtTap = canAskGemini();
+
+  /* NOT ASKED AT THE TAP, AND LANDED BY ITS OWN SEND rather than the outbox
+   * drain: offline, the fetch can hang until the signal is back and then go
+   * through, so the drain never sees this write and never names it. Name it
+   * here instead, through the drain's own labelLanded(). One call either way:
+   * a write the drain delivers resolves 'queued' here, never true. */
+  function landedUnasked(ok) {
+    if (ok !== true || askedAtTap || !canAskGemini()) return false;
+    labelLanded([{ action: 'log', payload: { type: type, raw_text: text, project: '', rid: rid } }]);
+    return true;
+  }
+
   function settle(got) {
     if (!got.project) {
       /* Saved either way — only the NAME is missing. Worth one quiet line when
@@ -3811,15 +3827,18 @@ $('trackerForm').addEventListener('submit', function (e) {
           ? 'Saved. Gemini\'s daily limit is used up — no project names until tomorrow.'
           : 'Saved. Gemini is rate-limited, so no project name — it clears in a minute.', 'warn');
       }
-      forget(); return;                     // understood nothing: the old behaviour
+      forget();                             // understood nothing: the old behaviour
+      if (!askedAtTap) wrote.then(landedUnasked);
+      return;
     }
     wrote.then(function (ok) {
       // A row that never landed has nothing to label, and the failed write has
       // already scheduled its own reconcile against the store. A QUEUED row has
-      // nothing to label either — `label` finds its row by rid, and the row is
-      // not in the table yet. The entry keeps its own sentence as its name,
-      // which is exactly what an unlabelled entry has always done.
+      // nothing to label yet — `label` finds its row by rid, and the row is
+      // not in the table. The drain names it when it lands (labelLanded).
       if (ok !== true) { forget(); return; }
+      // A name matched on the device, offline: Gemini can read the tasks as well.
+      if (landedUnasked(ok)) { forget(); return; }
       applyLabel(rid, text, row, got, forget);
     });
   }
