@@ -37,7 +37,7 @@ prompt and no backup.
 ```
 
 `app/` is in that list. **Every one of the widget's files lives under `app/`** —
-the six `glance/` sources, the three layouts, `glance_widget_info.xml`,
+the six `glance/` sources, the four layouts, `glance_widget_info.xml`,
 `glance_background.xml`, `values/glance.xml`, `values-v31/glance.xml`, and the
 hand-edited `AndroidManifest.xml`. They all go. The regenerated project then
 builds perfectly, without a widget in it.
@@ -80,6 +80,23 @@ single build. The only durable place to change them is the `shortcuts` array in
   Mon 4h 20m · 3 M · 4/5 prayers
   as of 5:42 PM
 ```
+
+**Made taller, it lists every open project with its sub-tasks** (version 3), in
+place of the "Working on" line:
+
+```
+  Working on:                              ↻
+  - tail skill
+      - write the parser
+  - OneNet
+  Mon 4h 20m · 3 M · 4/5 prayers
+  as of 5:42 PM
+```
+
+The server writes the list (`glanceList()` in `_shared/day.js`, capped at 4
+projects and 3 sub-tasks each). `GlanceWidget` picks `glance_widget_list.xml`
+when at least three list lines fit the widget's height, and the two-line layout
+otherwise or when nothing is open. The notification shade keeps its two lines.
 
 **Look-only, by decision.** No M button, no Prayer button, no voice. Tapping it
 opens ProBeing. The device secret it stores can do exactly one thing: call

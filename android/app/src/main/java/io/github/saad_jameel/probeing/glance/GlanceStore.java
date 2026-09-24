@@ -25,6 +25,7 @@ final class GlanceStore {
     private static final String KEY_SECRET = "device_secret";
     private static final String KEY_TITLE = "last_title";
     private static final String KEY_BODY = "last_body";
+    private static final String KEY_LINES = "last_lines";
     private static final String KEY_AS_OF = "last_as_of_ms";
     private static final String KEY_SAW_ROW = "last_call_had_row";
 
@@ -52,6 +53,7 @@ final class GlanceStore {
                 .putBoolean(KEY_SAW_ROW, true)
                 .remove(KEY_TITLE)
                 .remove(KEY_BODY)
+                .remove(KEY_LINES)
                 .remove(KEY_AS_OF)
                 .apply();
     }
@@ -61,10 +63,11 @@ final class GlanceStore {
     }
 
     /** The server answered with a row. */
-    void saveReading(String title, String body, long asOfMs) {
+    void saveReading(String title, String body, String lines, long asOfMs) {
         prefs.edit()
                 .putString(KEY_TITLE, title)
                 .putString(KEY_BODY, body)
+                .putString(KEY_LINES, lines)
                 .putLong(KEY_AS_OF, asOfMs)
                 .putBoolean(KEY_SAW_ROW, true)
                 .apply();
@@ -95,6 +98,11 @@ final class GlanceStore {
 
     String body() {
         return prefs.getString(KEY_BODY, "");
+    }
+
+    /** The list of open projects, or "" — then the widget shows title and body. */
+    String lines() {
+        return prefs.getString(KEY_LINES, "");
     }
 
     /** Milliseconds, or 0 when nothing has ever been read. */

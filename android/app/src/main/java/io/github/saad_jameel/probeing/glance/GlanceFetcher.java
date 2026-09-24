@@ -65,17 +65,20 @@ final class GlanceFetcher {
         final Outcome outcome;
         final String title;
         final String body;
+        /** The list of open projects; "" from a server that does not send one. */
+        final String lines;
         final long asOfMs;
 
-        private Result(Outcome outcome, String title, String body, long asOfMs) {
+        private Result(Outcome outcome, String title, String body, String lines, long asOfMs) {
             this.outcome = outcome;
             this.title = title;
             this.body = body;
+            this.lines = lines;
             this.asOfMs = asOfMs;
         }
 
         static Result of(Outcome outcome) {
-            return new Result(outcome, "", "", 0L);
+            return new Result(outcome, "", "", "", 0L);
         }
     }
 
@@ -163,6 +166,9 @@ final class GlanceFetcher {
 
             String title = row.optString("title", "");
             String body = row.optString("body", "");
+            // isNull covers a missing field (an older glance_for) and a JSON null,
+            // which optString would otherwise turn into the word "null".
+            String lines = row.isNull("lines") ? "" : row.optString("lines", "");
             long asOf = GlanceWords.parseAsOf(row.optString("as_of", ""));
 
             // A row we cannot date is a row we will not show: an undateable
@@ -171,7 +177,7 @@ final class GlanceFetcher {
             if (asOf == 0L) {
                 return Result.of(Outcome.UNDATED);
             }
-            return new Result(Outcome.OK, title, body, asOf);
+            return new Result(Outcome.OK, title, body, lines, asOf);
         } catch (Exception e) {
             return Result.of(Outcome.FAILED);
         }

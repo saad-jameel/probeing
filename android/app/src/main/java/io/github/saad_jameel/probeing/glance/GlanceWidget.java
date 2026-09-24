@@ -8,7 +8,12 @@ import android.content.ComponentName;
 import android.content.Context;
 import android.content.Intent;
 import android.content.IntentFilter;
+import android.graphics.Typeface;
 import android.os.Build;
+import android.os.Bundle;
+import android.text.SpannableString;
+import android.text.Spanned;
+import android.text.style.StyleSpan;
 import android.widget.RemoteViews;
 
 import java.util.concurrent.ExecutorService;
@@ -75,6 +80,13 @@ public class GlanceWidget extends AppWidgetProvider {
         paint(context, manager, widgetIds, GlanceWords.Problem.NONE);
     }
 
+    /** Resized: repaint that widget, since its height picks list or two lines. */
+    @Override
+    public void onAppWidgetOptionsChanged(Context context, AppWidgetManager manager,
+                                          int widgetId, Bundle newOptions) {
+        paint(context, manager, new int[] {widgetId}, GlanceWords.Problem.NONE);
+    }
+
     @Override
     public void onEnabled(Context context) {
         registerUnlock(context);
@@ -106,7 +118,8 @@ public class GlanceWidget extends AppWidgetProvider {
                         GlanceFetcher.Result result = GlanceFetcher.fetch(store.secret());
                         switch (result.outcome) {
                             case OK:
-                                store.saveReading(result.title, result.body, result.asOfMs);
+                                store.saveReading(result.title, result.body,
+                                        result.lines, result.asOfMs);
                                 break;
                             case NO_ROW:
                                 // Recorded as "no row came back", NOT as "wrong
@@ -154,7 +167,8 @@ public class GlanceWidget extends AppWidgetProvider {
         }
 
         GlanceWords.Lines lines = GlanceWords.lines(state, problem, store.title(),
-                store.body(), store.asOfMs(), System.currentTimeMillis());
+                store.body(), store.lines(), store.asOfMs(), System.currentTimeMillis());
+        float fontScale = context.getResources().getConfiguration().fontScale;
 
         /* Only a never-paired widget sends the main tap to the pairing screen.
          * When a code IS stored and nothing came back, the first remedy is to
@@ -163,12 +177,23 @@ public class GlanceWidget extends AppWidgetProvider {
         boolean neverPaired = state == GlanceWords.State.UNPAIRED;
 
         for (int id : widgetIds) {
-            RemoteViews views = new RemoteViews(context.getPackageName(), R.layout.glance_widget);
+            // A tall widget shows the list in place of the title; a short one, or
+            // a day with nothing open, shows the title and body as before.
+            int fit = GlanceWords.listLinesThatFit(heightDp(manager, id), fontScale);
+            boolean showList = lines.list.length() > 0 && fit >= GlanceWords.LIST_MIN_LINES;
+
+            RemoteViews views = new RemoteViews(context.getPackageName(),
+                    showList ? R.layout.glance_widget_list : R.layout.glance_widget);
 
             // setTextViewText only ever sets plain text. This is the Android
             // side of rule 5: the project name is something the user typed, and
             // it is never handed to anything that would interpret markup.
-            views.setTextViewText(R.id.glance_title, lines.title);
+            if (showList) {
+                views.setTextViewText(R.id.glance_list,
+                        boldHeading(GlanceWords.fitList(lines.list, fit)));
+            } else {
+                views.setTextViewText(R.id.glance_title, lines.title);
+            }
             views.setTextViewText(R.id.glance_body, lines.body);
             views.setTextViewText(R.id.glance_foot, lines.foot);
 
@@ -179,6 +204,29 @@ public class GlanceWidget extends AppWidgetProvider {
 
             manager.updateAppWidget(id, views);
         }
+    }
+
+    /** The widget's height in dp. MAX is the portrait height, which is how a
+     *  phone home screen is held; 0 when the launcher has not said. */
+    private static int heightDp(AppWidgetManager manager, int widgetId) {
+        Bundle options = manager.getAppWidgetOptions(widgetId);
+        if (options == null) {
+            return 0;
+        }
+        int tall = options.getInt(AppWidgetManager.OPTION_APPWIDGET_MAX_HEIGHT, 0);
+        return tall > 0 ? tall : options.getInt(AppWidgetManager.OPTION_APPWIDGET_MIN_HEIGHT, 0);
+    }
+
+    /** The list's first line in bold, as the title is. A span only styles the
+     *  text; nothing in it is read as markup. */
+    private static CharSequence boldHeading(String list) {
+        SpannableString text = new SpannableString(list);
+        int end = list.indexOf('\n');
+        if (end < 0) {
+            end = list.length();
+        }
+        text.setSpan(new StyleSpan(Typeface.BOLD), 0, end, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
+        return text;
     }
 
     private static PendingIntent openAppIntent(Context context) {

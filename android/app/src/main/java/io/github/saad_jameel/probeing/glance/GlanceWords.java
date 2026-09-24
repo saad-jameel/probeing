@@ -36,6 +36,18 @@ final class GlanceWords {
     /** Two hours. Past this, figures become words. */
     static final long STALE_AFTER_MS = 2L * 60L * 60L * 1000L;
 
+    /* Sizes from glance_widget_list.xml, used to estimate how many list lines
+     * fit. Deliberately generous per line, so the estimate errs towards fewer. */
+    static final float LIST_TEXT_SP = 13f;
+    static final float BODY_TEXT_SP = 13f;
+    static final float FOOT_TEXT_SP = 11f;
+    static final float LINE_HEIGHT_EM = 1.3f;
+    /** Padding top and bottom, plus the margins above the body and the foot. */
+    static final float FIXED_DP = 12f * 2f + 4f + 6f;
+
+    /** Fewer list lines than this and the widget shows title and body instead. */
+    static final int LIST_MIN_LINES = 3;
+
     /** What the widget is currently able to say. */
     enum State {
         /** No secret has ever been typed in. */
@@ -75,11 +87,18 @@ final class GlanceWords {
         final String title;
         final String body;
         final String foot;
+        /** The list of open projects, or "" when there is none to show. */
+        final String list;
 
         Lines(String title, String body, String foot) {
+            this(title, body, foot, "");
+        }
+
+        Lines(String title, String body, String foot, String list) {
             this.title = title;
             this.body = body;
             this.foot = foot;
+            this.list = list;
         }
     }
 
@@ -87,7 +106,10 @@ final class GlanceWords {
     }
 
     static Lines lines(State state, Problem problem, String title, String body,
-                       long asOfMs, long nowMs) {
+                       String list, long asOfMs, long nowMs) {
+        if (list == null) {
+            list = "";
+        }
         switch (state) {
             case UNPAIRED:
                 return new Lines("ProBeing",
@@ -123,11 +145,12 @@ final class GlanceWords {
         }
 
         if (age < STALE_AFTER_MS) {
-            return new Lines(title, withoutTrailingAsOf(body), foot);
+            return new Lines(title, withoutTrailingAsOf(body), foot, list);
         }
         return new Lines(staleTitle(title),
                 figuresAreOld(age) + " — open ProBeing to refresh.",
-                foot + " · " + ago(age));
+                foot + " · " + ago(age),
+                staleList(list));
     }
 
     private static String waitingBody(Problem problem) {
@@ -163,6 +186,51 @@ final class GlanceWords {
             return "Was w" + title.substring(1);
         }
         return title;
+    }
+
+    /** The list's heading gets the title's treatment: "Working on:" becomes
+     *  "Was working on:" once the reading is old. Its lines are left alone. */
+    static String staleList(String list) {
+        if (list == null || list.length() == 0) {
+            return "";
+        }
+        return staleTitle(list);
+    }
+
+    /**
+     * How many list lines fit in a widget `heightDp` tall, below which sit the
+     * two-line body and the foot. `fontScale` is the phone's text-size setting.
+     */
+    static int listLinesThatFit(int heightDp, float fontScale) {
+        if (heightDp <= 0) {
+            return 0;
+        }
+        float scale = fontScale > 0f ? fontScale : 1f;
+        float listLine = LIST_TEXT_SP * LINE_HEIGHT_EM * scale;
+        float reserved = FIXED_DP
+                + 2f * BODY_TEXT_SP * LINE_HEIGHT_EM * scale
+                + FOOT_TEXT_SP * LINE_HEIGHT_EM * scale;
+        int n = (int) Math.floor((heightDp - reserved) / listLine);
+        return Math.max(n, 0);
+    }
+
+    /**
+     * The list cut to `maxLines` whole lines, never mid-word. When lines are
+     * dropped, the last line shown is "…", so the list does not look complete.
+     */
+    static String fitList(String list, int maxLines) {
+        if (list == null || list.length() == 0 || maxLines <= 0) {
+            return "";
+        }
+        String[] rows = list.split("\n", -1);
+        if (rows.length <= maxLines) {
+            return list;
+        }
+        StringBuilder out = new StringBuilder();
+        for (int i = 0; i < maxLines - 1; i++) {
+            out.append(rows[i]).append('\n');
+        }
+        return out.append('\u2026').toString();
     }
 
     /**
