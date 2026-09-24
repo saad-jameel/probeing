@@ -45,9 +45,13 @@ end;
 $fn$;
 
 -- Per statement, not per row: one insert of several rows is one refresh.
+-- INSERT OR UPDATE: Gemini's name for an entry lands seconds after the entry, as
+-- an UPDATE. Insert-only refreshed in that gap and showed the raw sentence on the
+-- widget until the next 10-minute run (seen 24 Sep, "In ProBeing I will be…").
 drop trigger if exists glance_refresh_after_insert on public.events;
-create trigger glance_refresh_after_insert
-  after insert on public.events
+drop trigger if exists glance_refresh_after_write on public.events;
+create trigger glance_refresh_after_write
+  after insert or update on public.events
   for each statement
   execute function public.glance_refresh_after_insert();
 
