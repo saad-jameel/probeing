@@ -1,6 +1,7 @@
 // ProBeing — the `glance-refresh` Edge Function.
 //
-// Owns the widget's two lines: recounts today and rewrites the `glance` row.
+// Owns the widget's words: recounts today and rewrites the `glance` row.
+// `lines` needs the column docs/glance_list.sql adds — run that SQL before deploying this.
 // pg_cron calls it every 10 minutes and an insert trigger after every new row
 // (docs/glance_refresh.sql), so the widget moves while the app is closed.
 // Devices no longer write that row, so an out-of-date one cannot overwrite it.
@@ -21,6 +22,7 @@ import '../_shared/day.js';
 const Day = (globalThis as unknown as { ProBeingDay: {
   dayFigures: (log: unknown[], prayers: unknown[], endMs?: number, carry?: unknown[]) => unknown;
   glanceText: (figures: unknown, asOfMs: number, offsetMin?: number) => { title: string; body: string };
+  glanceList: (log: unknown[], endMs?: number) => string;
 } }).ProBeingDay;
 
 function reply(status: number, body: unknown): Response {
@@ -125,12 +127,15 @@ Deno.serve(async (req: Request): Promise<Response> => {
   const split = splitToday(todayRes.data || []);
   const figures = Day.dayFigures(split.log, split.prayers, now, carryRes.data || []);
   const text = Day.glanceText(figures, now, TZ_OFFSET_MIN);
+  // The widget's list of open projects; the notification shade keeps title and body.
+  const lines = Day.glanceList(split.log, now);
 
   const stamp = new Date(now).toISOString();
   const up = await sb.from('glance').upsert({
     user_id: owner,
     title: text.title,
     body: text.body,
+    lines: lines,
     as_of: stamp,
     updated_at: stamp
   }, { onConflict: 'user_id' });

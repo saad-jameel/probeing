@@ -359,10 +359,14 @@ create table if not exists public.glance (
 
   title      text        not null default '',   -- "Working on: NeuraVue"
   body       text        not null default '',   -- "Wed 4h 20m · 3 M · 4/5 prayers · as of 5:42 PM"
+  lines      text        not null default '',   -- the widget's list of open projects, '' when none
 
   as_of      timestamptz not null default now(),   -- when the server computed them
   updated_at timestamptz not null default now()    -- when this row was last written
 );
+
+-- For a table made before `lines` existed; `create table if not exists` skips it.
+alter table public.glance add column if not exists lines text not null default '';
 
 alter table public.glance enable row level security;
 
@@ -471,6 +475,7 @@ exception when duplicate_object then null; end $$;
 --
 --   -> [{"title": "Working on: NeuraVue",
 --        "body":  "Wed 4h 20m · 3 M · 4/5 prayers · as of 5:42 PM",
+--        "lines": "Working on:\n- NeuraVue\n    - FPS jitter",
 --        "as_of": "2026-09-16T12:42:00+00:00"}]
 --   -> []   for any code that is not paired, and for a paired account that has
 --           not written a glance line yet
@@ -505,9 +510,10 @@ exception when duplicate_object then null; end $$;
 -- Re-running this file replaces the function in place. If you ever change what
 -- it RETURNS rather than what it does, Postgres will refuse — run
 -- `drop function public.glance_for(text);` once, then this, and the two grants
--- at the bottom put its permissions back.
+-- at the bottom put its permissions back. docs/glance_list.sql did exactly that
+-- to add `lines`, in one transaction.
 create or replace function public.glance_for(secret text)
-returns table (title text, body text, as_of timestamptz)
+returns table (title text, body text, lines text, as_of timestamptz)
 language plpgsql
 security definer
 set search_path = ''
@@ -553,7 +559,7 @@ begin
   end if;
 
   return query
-    select g.title, g.body, g.as_of
+    select g.title, g.body, g.lines, g.as_of
       from public.glance g
      where g.user_id = owner_id;
 end;
