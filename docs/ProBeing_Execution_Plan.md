@@ -724,20 +724,25 @@ inference from reading the code, recorded as a fact in the same breath as a
 decision not to look further. It joins the two entries above it in the ledger of
 things this project assumed rather than ran.
 
-**Two known limits, left in by decision.** Neither loses an entry — and that
-sentence is now checked by `scratchpad/test_press_order.js` rather than reasoned
-about.
+**Four known limits, left in by decision.** None loses an entry — and that
+sentence is now checked by `claudeWorkingDocs/tests/offline_replay.js` and
+`refusals.js` rather than reasoned about.
 
 - **There is still no timeout on a write.** A radio that is connected but
   answering nothing holds the chain until the operating system gives up, so the
   amber "waiting" mark appears late and the queue does not drain while it is
   stuck. The press itself is safe on the device from the tap.
-- **An entry the server never gives a reason for is never parked.** A refusal with a
-  database code is parked and named in Settings; a long outage or an HTML error page
-  from a proxy carries no code, so the entry waits for ever by design. The cost is
+- **An entry the server never really refuses is never parked.** Only bad data (22xxx),
+  a broken constraint (23xxx) or an RLS refusal (42501) is parked and named in Settings;
+  an expired token, an outage, an HTML error page or an unknown code keeps the entry
+  waiting, for ever if need be, by design. The cost is
   narrow but real: `spanHasPending()` then holds that week's saved report back
   indefinitely, and there is nothing in the app that lets a person clear a still-
   waiting entry by hand.
+- **One offline entry can stay unnamed:** typed while "asleep", if the auto wake-up row
+  waits in the outbox but the entry itself lands through its own send, neither path names it.
+- **A press still being sent is counted nowhere as waiting** — only in the day's figures —
+  so one whose send never finishes is invisible until the app is reopened.
 
 **End goal (validation), 7c only**
 - Airplane mode → press M and log a status → reconnect → both rows appear, with the

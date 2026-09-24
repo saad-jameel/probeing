@@ -245,8 +245,21 @@ async function sbInsert(payload) {
 function errorFrom(e) {
   var err = new Error(e.message || 'request failed');
   // A refusal from the database will refuse again; do not spend retries on it.
-  if (e.code && e.code !== 'PGRST301') err.fatal = true;
+  if (isRefusal(e.code)) err.fatal = true;
   return err;
+}
+
+/* THE ONLY CODES THAT MEAN "THIS ROW WILL BE REFUSED HOWEVER OFTEN IT IS SENT":
+ * Postgres bad data (22xxx), a broken constraint (23xxx) and a permission or RLS
+ * refusal (42501). A fatal error deletes a held press on its first send, so the
+ * list is kept narrow on purpose. Everything else is kept and retried: an expired
+ * or rejected token (PGRST301, PGRST303), the server's connection trouble
+ * (PGRST000-003), a 5xx, 408 or 429, and any code not listed here. A press that
+ * waits for ever is visible in Settings; a deleted one is gone. */
+function isRefusal(code) {
+  code = String(code || '');
+  if (code === '23505') return false;            // the row is already in: success, see sbInsert
+  return code === '42501' || /^2[23][0-9A-Z]{3}$/.test(code);
 }
 
 /** "Wed 27 Aug, 04:58 PM" — the same readable stamp the Sheet carried. */
@@ -991,12 +1004,19 @@ function labellable(it) {
 
 /** Name them oldest first, one at a time, so each entry's prompt can see the
  *  names the ones before it earned. Never rejects: one entry that cannot be
- *  named must not stop the entry behind it, and nothing awaits this. */
+ *  named must not stop the entry behind it, and nothing awaits this.
+ *
+ *  Every sentence in the batch is held for the whole run, not only the one being
+ *  named: an unnamed arrival is an open project keyed on its sentence, and the
+ *  prompt would offer it to the model as a name already in use. */
 function labelLanded(items) {
+  var texts = items.map(function (it) { return String((it.payload || {}).raw_text || ''); });
+  texts.forEach(holdName);
   return items.reduce(function (chain, it) {
     function go() { return nameLanded(it); }
     return chain.then(go, go);
-  }, Promise.resolve()).catch(function () { /* a name is decoration */ });
+  }, Promise.resolve()).catch(function () { /* a name is decoration */ })
+    .then(function () { texts.forEach(releaseName); });
 }
 
 function nameLanded(it) {
@@ -3827,8 +3847,10 @@ $('trackerForm').addEventListener('submit', function (e) {
           ? 'Saved. Gemini\'s daily limit is used up — no project names until tomorrow.'
           : 'Saved. Gemini is rate-limited, so no project name — it clears in a minute.', 'warn');
       }
-      forget();                             // understood nothing: the old behaviour
-      if (!askedAtTap) wrote.then(landedUnasked);
+      if (askedAtTap) { forget(); return; } // understood nothing: the old behaviour
+      /* Held until the write lands, so an entry named on arrival before this
+       * one never sees this sentence offered as a name already in use. */
+      wrote.then(function (ok) { landedUnasked(ok); forget(); });
       return;
     }
     wrote.then(function (ok) {
