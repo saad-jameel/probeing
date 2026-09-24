@@ -444,7 +444,7 @@ function glanceText(figures, asOfMs, offsetMin) {
  * Here rather than in app.js so the widget's list and the Today screen share it.
  */
 function projectTasks(rows, name) {
-  var seen = {};
+  var seen = userMap();                     // keyed by task text — see userMap()
   var out = [];
   (rows || []).forEach(function (row) {
     if (row.type !== 'work' && row.type !== 'voice') return;
@@ -476,8 +476,13 @@ var GLANCE_LIST_CHARS = 44;
 /** Shorten to `max` characters, at a word break where there is one, with "…". */
 function clipLine(text, max) {
   var t = String(text || '').replace(/\s+/g, ' ').trim();
-  if (t.length <= max) return t;
-  var cut = t.slice(0, max - 1);
+  /* Counted in whole characters, not UTF-16 units. A cut through an emoji keeps
+   * half of it, Postgres refuses that half as invalid JSON, and the upsert that
+   * carries it fails — freezing the widget's title and figures along with the
+   * list, for the rest of the day. */
+  var chars = Array.from(t);
+  if (chars.length <= max) return t;
+  var cut = chars.slice(0, max - 1).join('');
   var space = cut.lastIndexOf(' ');
   if (space > max / 2) cut = cut.slice(0, space);
   return cut.replace(/[\s,;:·-]+$/, '') + '…';
