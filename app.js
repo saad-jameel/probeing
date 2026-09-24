@@ -1651,41 +1651,7 @@ function renderDaySummary() {
     .forEach(function (why) { line(why, day.byReason[why], true); });
 }
 
-/* The sub-tasks logged against one project today, in the order they were said.
- *
- * The extraction splits a line into a project and what is being done to it, and
- * until now only the project half was ever shown — so "Working on NeuraVue,
- * resolving FPS jitter, model latency and fall modelling" appeared on screen as
- * the single word "NeuraVue", which reads exactly like the rest was thrown away.
- * It never was: raw_text keeps the sentence verbatim and `detail` holds the task.
- * This is what puts the second half back on the screen.
- *
- * Keyed the same way replayDay() keys a project — `project || raw_text` — because
- * two different answers to "which tile is this row on" is how tiles go missing.
- */
-function projectTasks(rows, name) {
-  var seen = {};
-  var out = [];
-  (rows || []).forEach(function (row) {
-    if (row.type !== 'work' && row.type !== 'voice') return;
-    var text = String(row.raw_text || '').trim();
-    if (String(row.project || text).trim() !== name) return;
-
-    /* No detail means the line was never split — either Gemini has not answered
-     * yet, or it had nothing to add. The tile is already named after the whole
-     * sentence in that case, so repeating it underneath says nothing twice. */
-    String(row.detail || '').split(TASK_SEP).forEach(function (part) {
-      var task = part.trim();
-      if (!task || task === name) return;
-
-      var key = task.toLowerCase();
-      if (seen[key]) return;                // the same task logged twice is one line
-      seen[key] = 1;
-      out.push(task);
-    });
-  });
-  return out;
-}
+// projectTasks() and TASK_SEP live in day.js, shared with the widget's list.
 
 function renderProject() {
   var day = replayDay(lastLog);
@@ -2668,11 +2634,6 @@ var EXTRACT_SCHEMA = {
   },
   required: ['n', 'project', 'tasks']
 };
-
-/* Not a comma: commas appear inside a task ("fixing the login bug, which broke
- * yesterday") and splitting on them would cut it in half. This does not occur in
- * ordinary typing. */
-var TASK_SEP = ' \u00b7 ';
 
 /* WHY THE MODEL IS TOLD ABOUT SPEECH. A dictated line arrives already mangled:
  * "NeuraVue" as "my review", "OneNet" as "one night", "NMEA" as "anemia". The

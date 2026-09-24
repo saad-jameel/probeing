@@ -24,6 +24,11 @@ var PLAIN_BREAK = 'Break';
  * they are added, so this can never be ambiguous. */
 var REASON_SEP = ' + ';
 
+/* Joins a row's sub-tasks in its `detail` column. Not a comma: commas appear
+ * inside a task ("fixing the login bug, which broke yesterday") and splitting on
+ * them would cut it in half. This does not occur in ordinary typing. */
+var TASK_SEP = ' · ';
+
 /**
  * What a break row DOES to the current set of reasons.
  *
@@ -424,9 +429,106 @@ function glanceText(figures, asOfMs, offsetMin) {
   return { title: title, body: body };
 }
 
+/* The sub-tasks logged against one project today, in the order they were said.
+ *
+ * The extraction splits a line into a project and what is being done to it, and
+ * until now only the project half was ever shown — so "Working on NeuraVue,
+ * resolving FPS jitter, model latency and fall modelling" appeared on screen as
+ * the single word "NeuraVue", which reads exactly like the rest was thrown away.
+ * It never was: raw_text keeps the sentence verbatim and `detail` holds the task.
+ * This is what puts the second half back on the screen.
+ *
+ * Keyed the same way replayDay() keys a project — `project || raw_text` — because
+ * two different answers to "which tile is this row on" is how tiles go missing.
+ *
+ * Here rather than in app.js so the widget's list and the Today screen share it.
+ */
+function projectTasks(rows, name) {
+  var seen = {};
+  var out = [];
+  (rows || []).forEach(function (row) {
+    if (row.type !== 'work' && row.type !== 'voice') return;
+    var text = String(row.raw_text || '').trim();
+    if (String(row.project || text).trim() !== name) return;
+
+    /* No detail means the line was never split — either Gemini has not answered
+     * yet, or it had nothing to add. The tile is already named after the whole
+     * sentence in that case, so repeating it underneath says nothing twice. */
+    String(row.detail || '').split(TASK_SEP).forEach(function (part) {
+      var task = part.trim();
+      if (!task || task === name) return;
+
+      var key = task.toLowerCase();
+      if (seen[key]) return;                // the same task logged twice is one line
+      seen[key] = 1;
+      out.push(task);
+    });
+  });
+  return out;
+}
+
+/* The widget's list is capped so it cannot outgrow the widget: at most
+ * 1 + 4 x (1 + 3 + 1) + 1 = 22 lines, and each line short enough to stay one line. */
+var GLANCE_LIST_PROJECTS = 4;
+var GLANCE_LIST_TASKS = 3;
+var GLANCE_LIST_CHARS = 44;
+
+/** Shorten to `max` characters, at a word break where there is one, with "…". */
+function clipLine(text, max) {
+  var t = String(text || '').replace(/\s+/g, ' ').trim();
+  if (t.length <= max) return t;
+  var cut = t.slice(0, max - 1);
+  var space = cut.lastIndexOf(' ');
+  if (space > max / 2) cut = cut.slice(0, space);
+  return cut.replace(/[\s,;:·-]+$/, '') + '…';
+}
+
+/**
+ * The widget's list: every open project, most recently started first as the
+ * Today screen draws them, each with its sub-tasks under it.
+ *
+ *   Working on:
+ *   - tail skill
+ *       - write the parser
+ *   - OneNet
+ *
+ * '' when nothing is open, so the widget falls back to its title and body.
+ * The heading follows glanceText's three states; the widget rewrites
+ * "Working on" to "Was working on" once the reading is old, as it does the title.
+ *
+ * @param log    today's rows, newest first, as replayDay() takes them.
+ * @param endMs  where the day stops; omitted, it is now.
+ */
+function glanceList(log, endMs) {
+  var day = replayDay(log, endMs);
+  var open = day.activeProjects.slice().reverse();
+  if (!open.length) return '';
+
+  var heading = day.dayClosed ? 'Day done · still open:'
+              : day.running ? 'Working on:'
+              : 'Working on (paused):';
+  var lines = [heading];
+
+  open.slice(0, GLANCE_LIST_PROJECTS).forEach(function (name) {
+    lines.push('- ' + clipLine(name, GLANCE_LIST_CHARS));
+    var tasks = projectTasks(log, name);
+    tasks.slice(0, GLANCE_LIST_TASKS).forEach(function (task) {
+      lines.push('    - ' + clipLine(task, GLANCE_LIST_CHARS));
+    });
+    if (tasks.length > GLANCE_LIST_TASKS) {
+      lines.push('    +' + (tasks.length - GLANCE_LIST_TASKS) + ' more');
+    }
+  });
+  if (open.length > GLANCE_LIST_PROJECTS) {
+    lines.push('+' + (open.length - GLANCE_LIST_PROJECTS) + ' more');
+  }
+  return lines.join('\n');
+}
+
 // What glance-refresh uses. The browser reads the globals directly.
 globalThis.ProBeingDay = {
   dayFigures: dayFigures,
   openBeforeToday: openBeforeToday,
-  glanceText: glanceText
+  glanceText: glanceText,
+  glanceList: glanceList
 };
