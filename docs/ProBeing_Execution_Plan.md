@@ -24,7 +24,7 @@ shipped in `f733804`; `CLAUDE.md` carries the full reasoning.
 
 ---
 
-> ## Where things stand — 23 Sep 2026
+> ## Where things stand — 24 Sep 2026
 >
 > | | Stage | |
 > |---|---|---|
@@ -38,8 +38,9 @@ shipped in `f733804`; `CLAUDE.md` carries the full reasoning.
 > | ✅ | **6 Weekly & Monthly Reports** | **signed off 8 Sep** on both devices, including a rewrite leaving one row. M and prayer counting verified the same day through Review's own "This week" |
 > | ✅ | **7a Push + the nightly wrapup** | **signed off 22 Sep** — the push arrived on both devices, and every branch was watched against the live database: ignored → closed at 23:30 (15 Sep); answered → follow-up at 01:00 on the dot (17→18 Sep); a missing or wrong cron secret refused (run 22 Sep). One close writing one row is verified by reading the rid, not by running it |
 > | ✅ | 7b The home-screen glance | **signed off 22 Sep.** Built 14 Sep, live on both devices. The one line its checklist asked to *record* — does Windows pop a toast at each refresh — is answered by how Saad uses it: laptop notifications stay quiet by choice, and the glance is a phone feature |
-> | 🟡 | 7c Offline logging | **built 23 Sep**, not yet checked on either device. A localStorage outbox; the press time travels with the row |
-> | ✅ | **8 Home-screen widget** | **signed off 22 Sep.** Refreshes itself unattended — reads 25, 36 and 29 minutes apart on 18 Sep, no hand on the phone. A made-up pairing code returns nothing (run 22 Sep). Its "within a minute" check was impossible on Android and now says 30 minutes. A TWA, not Capacitor, and look-only |
+> | 🟡 | **7c Offline logging** | **verified on the phone 23–24 Sep**: presses made with no signal survive a reload and land with the time they were pressed, in either order (after the fix for a lost-press bug found by Saad testing the order nobody had written down), and an entry typed offline is named by Gemini once it lands. **Still to check: a cold launch with no signal (app closed over an hour), and the laptop.** Known limits, by decision: entries queued overnight stay unnamed; no request timeout, so a dead-but-connected signal feels stuck; a long outage holds that week's saved report back |
+> | ✅ | **8 Home-screen widget** | **signed off 22 Sep.** Refreshes itself unattended — reads 25, 36 and 29 minutes apart on 18 Sep, no hand on the phone. A made-up pairing code returns nothing (run 22 Sep). Its "within a minute" check was impossible on Android and now says 30 minutes. A TWA, not Capacitor, and look-only. **Since then:** server-side refresh (22 Sep — the server writes the widget's lines every 10 minutes and whenever an entry is written or named), and **the widget as a list of open projects with their sub-tasks** (APK v3, proven on the phone 24 Sep) |
+> | ⬜ | **Version 2** | named by Saad on 24 Sep, in his own log entry: "add taskboard and monthly spending calculator … but this will be next part". Not planned yet |
 >
 > **A great deal was built with no stage number.** Read *Built, but never planned*
 > at the end before assuming a gap is a gap.
