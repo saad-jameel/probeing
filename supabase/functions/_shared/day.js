@@ -148,6 +148,14 @@ var LEAD_MAX_MS = 48 * 3600000;
 /** Rows that move the work clock or name a project. No M, prayer or wake. */
 var LEAD_TYPES = ['work', 'voice', 'done', 'break', 'resume', 'off', 'sleep'];
 
+/** An open clock stops counting this long after the last work-session row: the
+ *  night checks span 23:30 to 11:00 (11.5 h), so anything longer was forgotten. */
+var IDLE_MAX_MS = 12 * 3600000;
+
+/** Rows that show the session is still being tended. Not M, prayer or wake: they
+ *  say he is awake, not that the clock left running is still work. */
+var IDLE_RESET_TYPES = ['work', 'voice', 'done', 'break', 'resume'];
+
 /**
  * The lead-in for a day starting at `beforeMs`: rows of LEAD_TYPES earlier than
  * it, no more than LEAD_MAX_MS earlier, and strictly after the newest off/sleep.
@@ -164,16 +172,16 @@ function sessionLead(rows, beforeMs) {
     if ((r.type === 'off' || r.type === 'sleep') && t > closedAt) closedAt = t;
     keep.push({ r: r, t: t, i: i });
   });
-  var rows = keep.filter(function (x) { return x.t > closedAt; })
+  var cut = keep.filter(function (x) { return x.t > closedAt; })
     .sort(function (a, b) { return (b.t - a.t) || (a.i - b.i); })
     .map(function (x) { return x.r; });
 
   /* replayDay() ignores a break after a close until work starts again. The close
    * is cut off above, so drop those breaks here too, or a chip tapped after
    * End day would reopen the session. */
-  if (closedAt === -Infinity) return rows;
+  if (closedAt === -Infinity) return cut;
   var opened = false;
-  return rows.slice().reverse().filter(function (r) {
+  return cut.slice().reverse().filter(function (r) {
     if (r.type === 'work' || r.type === 'voice' || r.type === 'resume') opened = true;
     return opened || r.type !== 'break';
   }).reverse();
@@ -293,12 +301,17 @@ function replayDay(log, endMs, fromMs) {
   var ceiling = (typeof endMs === 'number' && isFinite(endMs)) ? Math.min(endMs, now) : now;
   var floor = (typeof fromMs === 'number' && isFinite(fromMs)) ? fromMs : -Infinity;
 
-  /** Credit everything active up to `t`, then move the cursor there. */
+  var lastTended = 0;                       // newest IDLE_RESET_TYPES row so far
+
+  /** Credit everything active up to `t`, then move the cursor there. An open
+   *  clock or break stops counting IDLE_MAX_MS after the session was last
+   *  tended, so a forgotten one cannot fill whole days. */
   function advance(t) {
     if (t > ceiling) t = ceiling;
     var from = Math.max(lastT, floor);
-    if (lastT && t > from) {
-      var span = t - from;
+    var until = lastTended ? Math.min(t, lastTended + IDLE_MAX_MS) : t;
+    if (lastT && until > from) {
+      var span = until - from;
       if (clock) {
         worked += span;
         var names = Object.keys(active);
@@ -325,6 +338,7 @@ function replayDay(log, endMs, fromMs) {
   rows.forEach(function (row) {
     var t = instantOf(row.at);
     advance(t);
+    if (IDLE_RESET_TYPES.indexOf(row.type) !== -1 && t > lastTended) lastTended = t;
 
     var text = String(row.raw_text || '').trim();
 
