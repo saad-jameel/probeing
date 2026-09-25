@@ -194,12 +194,11 @@ function setSignedOut(on) {
   } catch (e) { /* full disk: the box simply appears as it used to */ }
 }
 
-/** Midnight this morning, where the device is, as an instant the database can
- *  compare against. "Today" has to roll over where the user actually is. */
-function localDayStartIso() {
-  var d = new Date();
-  d.setHours(0, 0, 0, 0);
-  return d.toISOString();
+/** When the current counter day began (day.js decides when that is), as an
+ *  instant the database can compare against. By the device's own clock, so
+ *  "today" rolls over where the user actually is. */
+function counterDayStartIso() {
+  return new Date(counterDayStart(Date.now())).toISOString();
 }
 
 /* `rid` comes along for one reason: it is how a row the table already has is
@@ -286,8 +285,11 @@ async function callSupabase(action, payload) {
   }
 
   if (action === 'today') {
+    // One reading of the rollover for all three reads, so they cannot straddle it.
+    var dayStartMs = counterDayStart(Date.now());
+    var dayStartIso = new Date(dayStartMs).toISOString();
     var res = await sb.from('events').select('*')
-      .gte('at', localDayStartIso())
+      .gte('at', dayStartIso)
       .order('at', { ascending: false })
       .limit(1000);
     if (res.error) throw errorFrom(res.error);
@@ -321,17 +323,31 @@ async function callSupabase(action, payload) {
      * how many are needed. */
     var carry = null;                  // null = unknown, never "none": see dayFigures
     var prior = await sb.from('events').select('at, type')
-      .lt('at', localDayStartIso())
+      .lt('at', dayStartIso)
       .in('type', Object.keys(STATE_ROWS))
       .order('at', { ascending: false })
       .limit(12);
     if (!prior.error) carry = prior.data || [];
 
+    /* The lead-in: the session still running from before the rollover, which
+     * "working on" and the hours replay but no count ever reads. A failure is
+     * thrown, unlike carry's: without it the screen would say, confidently,
+     * that the night's projects and hours never happened. */
+    var leadRes = await sb.from('events').select('*')
+      .lt('at', dayStartIso)
+      .gte('at', new Date(dayStartMs - LEAD_MAX_MS).toISOString())
+      .in('type', LEAD_TYPES)
+      .order('at', { ascending: false })
+      .order('created_at', { ascending: false })
+      .limit(1000);
+    if (leadRes.error) throw errorFrom(leadRes.error);
+
     return {
       ok: true,
-      date: localDayStartIso().slice(0, 10),
+      date: counterDate(dayStartMs),
       log: log,
       carry: carry,
+      lead: sessionLead((leadRes.data || []).map(sbRow), dayStartMs),
       prayers: prayers,
       m_count: log.filter(function (x) { return x.type === 'M'; }).length,
       now: { text: '', updated: '' }
@@ -382,7 +398,7 @@ async function callSupabase(action, payload) {
      * M is the one logging action that makes a second call, and this is the
      * whole of what that second call is for — a nicer number on the tile. */
     var c = await sb.from('events').select('id', { count: 'exact', head: true })
-      .eq('type', 'M').gte('at', localDayStartIso());
+      .eq('type', 'M').gte('at', counterDayStartIso());
     if (c.error) return { ok: true };            // saved; the tile keeps its own count
     return { ok: true, m_count: c.count || 0 };
   }
@@ -442,9 +458,9 @@ async function rangeEvents(startIso, endIso) {
     .limit(5000);
   if (res.error) throw errorFrom(res.error);
 
-  /* `lte` can pick up a row stamped exactly at the closing midnight, which
+  /* `lte` can pick up a row stamped exactly at the closing rollover, which
    * belongs to the next day. Harmless: the day windows below drop it, because
-   * a day is [midnight, next midnight) — closed at the start, open at the end,
+   * a day is [rollover, next rollover) — closed at the start, open at the end,
    * so no instant can land in two days or in none. */
   return (res.data || []).map(sbRow);
 }
@@ -875,16 +891,27 @@ function queuedPrayer(it) {
            prayer: p.prayer || '', mode: p.mode || '' };
 }
 
-/** The local date a queued press belongs to — the day it was PRESSED. An M at
- *  23:58 sent at 00:02 is yesterday's M, and must never be added to today. */
+/** The counter day a queued press belongs to — the day it was PRESSED. An M
+ *  pressed before the rollover and sent after it is yesterday's M, and must
+ *  never be added to today. */
 function queuedDay(it) {
   var t = instantOf((it.payload || {}).at);
-  return isNaN(t) ? '' : ymdLocal(new Date(t));
+  return isNaN(t) ? '' : counterDate(t);
 }
 
 function queuedToday() {
-  var today = ymdLocal(new Date());
+  var today = counterDate(Date.now());
   return outboxOurs().filter(function (it) { return queuedDay(it) === today; });
+}
+
+/** Queued presses from before `beforeMs` (the rollover), as rows, for the
+ *  lead-in: a Work pressed at 04:20 and still waiting at 04:40 is part of the
+ *  session. sessionLead() keeps only the ones that belong to it. */
+function queuedRowsBefore(beforeMs, have) {
+  return outboxOurs().map(queuedRow).filter(function (r) {
+    var t = r ? instantOf(r.at) : NaN;
+    return r && !isNaN(t) && t < beforeMs && !(have && have[r.rid]);
+  });
 }
 
 /** `have` is a map of rids the table has already returned, so a row is not
@@ -1051,7 +1078,7 @@ function nameLanded(it) {
 /** The row on screen with this rid, so a name that lands can show at once
  *  instead of waiting for the next read. */
 function rowByRid(rid) {
-  var hit = lastLog.filter(function (r) { return r.rid && r.rid === rid; });
+  var hit = sessionLog().filter(function (r) { return r.rid && r.rid === rid; });
   return hit.length ? hit[0] : null;
 }
 
@@ -1430,9 +1457,22 @@ function todayEntries(data) {
 }
 
 var lastLog = [];        // today's rows from the last successful refresh
+var lastLead = [];       // the session's rows from before the rollover: replayed, never counted
 var todayPrayers = [];   // today's prayer rows; drives the ticks and the picker
 var lastReadAt = 0;      // when a read of today last landed; 0 = none this visit
 var dayUnread = false;   // could not read today at all — say so, never imply zero
+
+/** Today's rows plus the lead-in, newest first — what every replay of the work
+ *  session reads. Counts (M, prayers, the list, chip learning) read lastLog. */
+function sessionLog() {
+  return lastLog.concat(lastLead);
+}
+
+/** The lead-in: the read's, plus presses still queued from before the rollover. */
+function leadWithQueue(lead, have) {
+  var start = counterDayStart(Date.now());
+  return sessionLead((lead || []).concat(queuedRowsBefore(start, have)), start);
+}
 
 function renderToday(data) {
   lastReadAt = Date.now();
@@ -1446,8 +1486,10 @@ function renderToday(data) {
   var have = userMap();
   (data.log || []).forEach(function (r) { if (r.rid) have[r.rid] = 1; });
   (data.prayers || []).forEach(function (p) { if (p.rid) have[p.rid] = 1; });
+  (data.lead || []).forEach(function (r) { if (r.rid) have[r.rid] = 1; });
 
   lastLog = (data.log || []).concat(queuedRowsToday(have));
+  lastLead = leadWithQueue(data.lead, have);
   $('mCount').textContent = lastLog.filter(function (r) {
     return r.type === 'M';
   }).length + ' today';
@@ -1526,6 +1568,7 @@ async function refresh(opts) {
       // is; only a visit with no read at all falls back to the queue alone.
       if (!lastReadAt) {
         lastLog = queuedRowsToday();
+        lastLead = leadWithQueue([]);
         todayPrayers = queuedPrayersToday();
         $('mCount').textContent = lastLog.filter(function (r) {
           return r.type === 'M';
@@ -1608,7 +1651,8 @@ function paintTodayNote() {
  * instant a row is written rather than after a round trip. */
 function renderDaySummary() {
   paintTodayNote();
-  var figures = dayFigures(lastLog, todayPrayers);
+  // Hours and projects are the session's; M and prayers the counter day's.
+  var figures = dayFigures(lastLog, todayPrayers, undefined, undefined, lastLead);
   var day = figures.day;
 
   $('sumWorked').textContent = humanDuration(figures.worked);
@@ -1674,7 +1718,7 @@ function renderDaySummary() {
 // projectTasks() and TASK_SEP live in day.js, shared with the widget's list.
 
 function renderProject() {
-  var day = replayDay(lastLog);
+  var day = replayDay(sessionLog());
   var list = $('projList');
   var empty = $('projEmpty');
 
@@ -1683,7 +1727,7 @@ function renderProject() {
 
   if (!day.activeProjects.length) {
     empty.textContent = day.worked
-      ? 'Nothing open. ' + humanDuration(day.worked) + ' worked today.'
+      ? 'Nothing open. ' + humanDuration(day.worked) + ' worked this session.'
       : 'Nothing yet — say what you are on below.';
     return;
   }
@@ -1701,14 +1745,14 @@ function renderProject() {
 
     var t = document.createElement('div');
     t.className = 'proj-time' + (day.running ? '' : ' paused');
-    t.textContent = humanDuration(day.byProject[name] || 0) + ' today' +
+    t.textContent = humanDuration(day.byProject[name] || 0) + ' this session' +
                     (day.running ? '' : ' · paused');
 
     main.append(n, t);
 
     /* The sub-tasks, under their heading. Every one is either the user's own
      * words or a model's reading of them, so textContent throughout. */
-    var tasks = projectTasks(lastLog, name);
+    var tasks = projectTasks(sessionLog(), name);
     if (tasks.length) {
       var ul = document.createElement('ul');
       ul.className = 'proj-tasks';
@@ -1913,6 +1957,15 @@ function isNight() {
   return hour >= NIGHT_STARTS_HOUR || hour < DAY_STARTS_HOUR;
 }
 
+/** Was the open session already running at today's rollover, with no close
+ *  since? Then he has been up all night, and Sleep ends the day however light
+ *  it is outside (Saad, 25 Sep). */
+function sessionFromLastNight(log, lead) {
+  var opened = (lead || []).some(function (r) { return OPEN_TYPES[r.type] === 1; });
+  var closedSince = (log || []).some(function (r) { return CLOSED_TYPES[r.type] === 1; });
+  return opened && !closedSince;
+}
+
 /** "since 23:10", or '' if we never saw the change happen. */
 function sinceLabel(at) {
   if (!at) return ' ';
@@ -2058,7 +2111,7 @@ sleepBtn.addEventListener('click', async function () {
   var toSleep = toggles.sleep.state === 'awake';
   // One reading of the clock for both decisions, so they can never straddle
   // 9 PM and disagree about which side of it this press is on.
-  var night = isNight();
+  var night = isNight() || sessionFromLastNight(lastLog, lastLead);
   var closing = toSleep ? sleepClosingRow(toggles.work.state, night) : null;
 
   // Declining must leave the Sheet untouched, so this runs before any write.
@@ -2277,7 +2330,7 @@ function renderChips() {
 
   var labels = orderedChipLabels();
   var lit = {};
-  replayDay(lastLog).activeReasons.forEach(function (r) { lit[r] = 1; });
+  replayDay(sessionLog()).activeReasons.forEach(function (r) { lit[r] = 1; });
   var active = Object.keys(lit).sort().join('\u0001');
   // The active reason is part of what is drawn, so it has to be part of the key
   // — otherwise tapping the chip that is already first never lights it up.
@@ -2369,7 +2422,7 @@ function logChip(btn, label) {
    * This used to toggle off, which meant a second press wrote a second row —
    * the exact "I keep pressing it and it keeps logging" complaint. A break ends
    * when you go back to Work, not when you tap its reason again. */
-  if (replayDay(lastLog).activeReasons.indexOf(label) !== -1) {
+  if (replayDay(sessionLog()).activeReasons.indexOf(label) !== -1) {
     confirmPulse(btn);
     flash('Already on ' + label);
     return;
@@ -2522,7 +2575,7 @@ var projectDlg = $('projectDlg');
 
 function maybeAskProject() {
   if (projectDlg.open) return;
-  if (replayDay(lastLog).activeProjects.length) return;   // already on something
+  if (replayDay(sessionLog()).activeProjects.length) return;   // already on something
   $('projectName').value = '';
   projectDlg.showModal();
 }
@@ -3895,14 +3948,14 @@ var quotaTold = '';
 
 /** What the model may be told is already open. */
 function openProjects() {
-  return replayDay(lastLog).activeProjects.filter(function (name) {
+  return replayDay(sessionLog()).activeProjects.filter(function (name) {
     return !awaitingLabel[name];
   });
 }
 
 /** Is `name` still an open project, as far as this device knows right now? */
 function isOpenProject(name) {
-  return replayDay(lastLog).activeProjects.indexOf(name) !== -1;
+  return replayDay(sessionLog()).activeProjects.indexOf(name) !== -1;
 }
 
 /**
@@ -4229,9 +4282,9 @@ async function earliestEventAt() {
   return (res.data && res.data[0] && res.data[0].at) || '';
 }
 
-/* Deliberately takes the floor as an argument and uses no other helper: it is a
- * pure function of two strings, so it can be tested without a database, a clock,
- * or a browser. */
+/* Deliberately takes the floor as an argument: it is a pure function of two
+ * strings, so it can be tested without a database, a clock, or a browser. Its
+ * one helper is day.js's counterDate(). */
 /**
  * @param startDate  the local date a range opens, 'YYYY-MM-DD' (or a Date).
  * @param earliestAt the account's min(at), an ISO instant, or '' for none.
@@ -4259,8 +4312,9 @@ function rangeFloor(startDate, earliestAt) {
     return { ok: false, floor: '', message: 'The first entry has an unreadable date.' };
   }
 
-  // Compared as local dates, because that is the day the user lived through.
-  var floor = ymd(first);
+  // Compared as counter days, because that is the day the user lived through:
+  // a first row at 02:00 belongs to the evening before.
+  var floor = counterDate(first.getTime());
   if (start < floor) {
     return { ok: false, floor: floor,
              message: 'No data before ' + floor + ' — that is the day of the first thing ' +
@@ -4333,6 +4387,20 @@ function ymdLocal(d) {
   return d.getFullYear() + '-' + pad(d.getMonth() + 1) + '-' + pad(d.getDate());
 }
 
+/** The counter day `now` falls in, as that date's local midnight — the
+ *  calendar every range and report is counted in. */
+function counterToday(now) {
+  var p = counterDate(now.getTime()).split('-');
+  return new Date(Number(p[0]), Number(p[1]) - 1, Number(p[2]));
+}
+
+/** When the counter day named by local date `d` begins. Midday is inside
+ *  every counter day, so asking about it names that day without this file
+ *  knowing the hour. */
+function counterStartOf(d) {
+  return counterDayStart(new Date(d.getFullYear(), d.getMonth(), d.getDate(), 12).getTime());
+}
+
 /**
  * Turn a picker id into the two local calendar days it covers, inclusive.
  * Takes `now` rather than reading the clock, so the tests can ask for any day.
@@ -4342,7 +4410,9 @@ function reviewRangeOf(id, now) {
   REVIEW_RANGES.forEach(function (r) { if (r.id === id) spec = r; });
   if (!spec) spec = REVIEW_RANGES[1];
 
-  var today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+  // The counter day: at 02:00 on a Monday it is still Sunday, and this week
+  // has not begun.
+  var today = counterToday(now);
   var start;
   var end = today;
 
@@ -4444,7 +4514,7 @@ function paceOf(workedMs, priorMs, prior, known) {
 }
 
 /**
- * One window per local calendar day, [midnight, next midnight).
+ * One window per counter day, [its rollover, the next day's rollover).
  *
  * Built by adding to the day-of-month rather than adding 24 hours, which is the
  * whole point: on a day the clocks move, 24 hours is the wrong length and the
@@ -4461,7 +4531,7 @@ function dayWindows(startDate, endDate) {
 
   for (var guard = 0; d.getTime() <= last && guard < 400; guard++) {
     var next = new Date(d.getFullYear(), d.getMonth(), d.getDate() + 1);
-    out.push({ ymd: ymdLocal(d), startMs: d.getTime(), endMs: next.getTime() });
+    out.push({ ymd: ymdLocal(d), startMs: counterStartOf(d), endMs: counterStartOf(next) });
     d = next;
   }
   return out;
@@ -4542,8 +4612,10 @@ function sleepInRange(rows) {
  * which is what `unattributed` measures. Neither is ever derived from the
  * other, here or anywhere.
  *
- * @param rows    every row in the range, oldest first.
- * @param windows one per local day, from dayWindows().
+ * @param rows    every row in the range, oldest first. Rows before the first
+ *                window are allowed and only replayed as a session's lead-in;
+ *                nothing outside the windows is counted.
+ * @param windows one per counter day, from dayWindows().
  */
 function summariseRange(rows, windows) {
   var sum = {
@@ -4563,15 +4635,18 @@ function summariseRange(rows, windows) {
   };
 
   var buckets = bucketByWindow(rows, windows);
+  var newestFirst = (rows || []).slice().reverse();     // sessionLead's order
 
   windows.forEach(function (w, i) {
     var dayRows = buckets[i];
     sum.rows += dayRows.length;
     if (dayRows.length) sum.daysWithRows += 1;
 
-    // The day's own end, so an unclosed clock stops at midnight instead of
-    // running to this moment. replayDay() pulls it back to now for today.
-    var day = replayDay(dayRows, w.endMs);
+    /* Replayed from the newest close before the window, credited only from its
+     * start. Alone, a session that crossed the line lost everything after it:
+     * work 21:44 to End day 02:00 reported 2.27h, not 4.27h. The window's own
+     * end stops an unclosed clock; replayDay() pulls it back to now for today. */
+    var day = replayDay(dayRows.concat(sessionLead(newestFirst, w.startMs)), w.endMs, w.startMs);
 
     sum.worked += day.worked;
     sum.paused += day.paused;
@@ -4588,7 +4663,7 @@ function summariseRange(rows, windows) {
      * LOCAL-day counts. Karachi is five hours ahead of UTC, so 27 Aug's seven M
      * rows are stamped the 27th here and mostly the 27th in UTC — but the same
      * rows late on a UTC evening would fall on the next date entirely. The
-     * windows are the device's own midnights, so this counts the days Saad
+     * windows are the device's own counter days, so this counts the days Saad
      * lived through. */
     dayRows.forEach(function (row) {
       if (row.type === 'M') sum.m += 1;
@@ -4608,7 +4683,8 @@ function summariseRange(rows, windows) {
    * the report down by a seventh. */
   sum.avgWorked = sum.daysWithRows ? Math.round(sum.worked / sum.daysWithRows) : 0;
   sum.empty = sum.daysWithRows === 0;
-  sum.sleep = sleepInRange(rows);
+  // The windows' rows only: a lead-in's night belongs to the period before.
+  sum.sleep = sleepInRange(rowsInWindows(rows, windows));
   return sum;
 }
 
@@ -4696,14 +4772,22 @@ function prayerStats(rows, windows) {
   return out;
 }
 
+/** What one range read must cover, first to last counter day inclusive: from a
+ *  lead-in's reach before the first, so a session already running is replayed
+ *  from where it began, to the rollover after the last. */
+function rangeReadBounds(first, last) {
+  var after = new Date(last.getFullYear(), last.getMonth(), last.getDate() + 1);
+  return { startIso: new Date(counterStartOf(first) - LEAD_MAX_MS).toISOString(),
+           endIso: new Date(counterStartOf(after)).toISOString() };
+}
+
 /**
  * Only the rows that fall inside these day windows.
  *
  * Needed because ONE read now covers two ranges — the one being reviewed and
- * the equal-length one before it, for the pace line. summariseRange() cannot
- * simply be handed the wider set: it buckets work by window, but sleepInRange()
- * walks every row it is given, so last week's nights would be added to this
- * week's total without a single figure looking wrong.
+ * the equal-length one before it, for the pace line. sleepInRange() walks every
+ * row it is given, so it is handed only these — otherwise last week's nights
+ * would be added to this week's total without a single figure looking wrong.
  */
 function rowsInWindows(rows, windows) {
   if (!windows || !windows.length) return [];
@@ -5191,12 +5275,11 @@ function splitProse(text) {
  * @param cats       the stored category assignments, passed in rather than read.
  */
 function spanFigures(rows, win, prior, priorKnown, cats) {
-  /* Narrowed before summarising, never after: summariseRange() buckets work by
-   * window, but the sleep walk inside it reads every row it is handed, so the
-   * earlier period's nights would land in this one's figure. */
+  /* The whole read goes to summariseRange(), which counts inside the windows
+   * only but needs the rows before them as a lead-in. Tasks are this span's. */
   var windows = dayWindows(win.start, win.end);
   var inRange = rowsInWindows(rows, windows);
-  var sum = summariseRange(inRange, windows);
+  var sum = summariseRange(rows, windows);
 
   /* The earlier period gets EVERYTHING this one gets — its own project totals
    * and its own sub-tasks — because the comparison Saad reads is per project,
@@ -5206,7 +5289,7 @@ function spanFigures(rows, win, prior, priorKnown, cats) {
   if (priorKnown) {
     var priorWindows = dayWindows(prior.start, prior.end);
     var priorRows = rowsInWindows(rows, priorWindows);
-    earlier = { sum: summariseRange(priorRows, priorWindows),
+    earlier = { sum: summariseRange(rows, priorWindows),
                 tasks: rangeTasks(priorRows), days: prior.days };
   }
 
@@ -5625,9 +5708,8 @@ async function runReview(force) {
   try {
     // One read covering both periods. Two reads would be two round trips for
     // one screen, and the second would be entirely for a sentence.
-    rows = await rangeEvents(new Date(priorKnown ? prior.start : win.start).toISOString(),
-                             new Date(win.end.getFullYear(), win.end.getMonth(),
-                                      win.end.getDate() + 1).toISOString());
+    var bounds = rangeReadBounds(priorKnown ? prior.start : win.start, win.end);
+    rows = await rangeEvents(bounds.startIso, bounds.endIso);
   } catch (err) {
     if (!mine()) return;
     $('reviewNote').textContent = 'Could not read your entries: ' + String(err.message || err);
@@ -5862,11 +5944,13 @@ var REPORT_LIST_MAX = 24;
  */
 function reportRangeOf(period, now) {
   if (period === 'month') {
-    var start = new Date(now.getFullYear(), now.getMonth() - 1, 1);
+    // The counter day: before the rollover on the 1st, last month is not over.
+    var today = counterToday(now);
+    var start = new Date(today.getFullYear(), today.getMonth() - 1, 1);
     /* Day 0 of this month is the last day of the previous one, and Date rolls
      * January back into December by itself — so no month-length table, and no
      * February special case. */
-    var end = new Date(now.getFullYear(), now.getMonth(), 0);
+    var end = new Date(today.getFullYear(), today.getMonth(), 0);
     return { period: 'month', label: monthLabel(start), start: start, end: end };
   }
 
@@ -6059,9 +6143,8 @@ async function generateReport(win) {
   var priorKnown = rangeFloor(prior.start, floor.earliest).ok;
 
   // One read covering both spans, exactly as runReview() does it.
-  var rows = await rangeEvents(
-    new Date(priorKnown ? prior.start : win.start).toISOString(),
-    new Date(win.end.getFullYear(), win.end.getMonth(), win.end.getDate() + 1).toISOString());
+  var bounds = rangeReadBounds(priorKnown ? prior.start : win.start, win.end);
+  var rows = await rangeEvents(bounds.startIso, bounds.endIso);
 
   /* THE SAME ARITHMETIC THE REVIEW SCREEN DRAWS, out of the same function. Not
    * a copy of it: a second copy would be a second answer to "how many hours was
@@ -7014,6 +7097,7 @@ $('saveBtn').addEventListener('click', function () {
   if (switched) {
     stopLive();
     lastLog = [];
+    lastLead = [];
     todayPrayers = [];
     forgetGlance();                  // another database's day is not this one's
     closeGlance();
@@ -7643,8 +7727,10 @@ function glanceWords() {
   var have = userMap();
   snap.log.forEach(function (r) { if (r.rid) have[r.rid] = 1; });
   snap.prayers.forEach(function (p) { if (p.rid) have[p.rid] = 1; });
+  snap.lead.forEach(function (r) { if (r.rid) have[r.rid] = 1; });
 
   var log = snap.log.concat(queuedRowsToday(have));
+  var lead = leadWithQueue(snap.lead, have);
   var prayers = snap.prayers.concat(queuedPrayersToday(have));
   var at = snap.at;
   queuedToday().forEach(function (it) {
@@ -7653,7 +7739,7 @@ function glanceWords() {
     if (!isNaN(t) && t > at) at = t;
   });
 
-  var text = glanceText(dayFigures(log, prayers, at, snap.carry), at);
+  var text = glanceText(dayFigures(log, prayers, at, snap.carry, lead), at);
   return { title: text.title, body: text.body, at: at };
 }
 
@@ -7674,6 +7760,7 @@ function armGlance(data, readAt) {
     log: (data.log || []).slice(),
     prayers: (data.prayers || []).slice(),
     carry: Array.isArray(data.carry) ? data.carry.slice() : null,
+    lead: (data.lead || []).slice(),
     at: readAt
   };
   paintGlance();
@@ -7698,7 +7785,7 @@ function paintGlance() {
   try {
     if (!glanceSnap || !glanceWanted()) return;
     var text = glanceWords();
-    if (ymdLocal(new Date(text.at)) !== ymdLocal(new Date(Date.now()))) {
+    if (counterDate(text.at) !== counterDate(Date.now())) {
       glanceSnap = null;
       closeGlance();
       return;
@@ -7750,10 +7837,10 @@ function tidyGlance() {
       if (!reg) return;
       var looked = glanceShown;
       return reg.getNotifications({ tag: GLANCE_OPTIONS.tag }).then(function (list) {
-        var today = ymdLocal(new Date(Date.now()));
+        var today = counterDate(Date.now());
         var left = list.filter(function (n) {
           var old = typeof n.timestamp === 'number' && n.timestamp > 0 &&
-                    ymdLocal(new Date(n.timestamp)) !== today;
+                    counterDate(n.timestamp) !== today;
           if (old) n.close();
           return !old;
         });
