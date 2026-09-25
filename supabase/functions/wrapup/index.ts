@@ -1,10 +1,11 @@
 // ProBeing — the `wrapup` Edge Function. Stage 7a.
 //
-// One job, at 11:30 PM: if the day was never closed, ask "are you awake?" as a
+// One job, from 11:30 PM: if the day was never closed, ask "are you awake?" as a
 // real push notification, wait an hour, and if nothing comes back, close the day
 // AS OF THE MOMENT THE QUESTION WENT OUT. Not as of when the hour ran out — if
 // he did not answer at 11:30 he was asleep at 11:30, and closing at 00:30 would
-// add an hour of phantom wakefulness to every unanswered night.
+// add an hour of phantom wakefulness to every unanswered night. Answered, it
+// asks again every 90 minutes until 11 AM.
 //
 // It is also the only thing in ProBeing a service worker can talk to, which is
 // why the answer path below takes a NONCE rather than a login: the Supabase
@@ -33,6 +34,14 @@
 //   VAPID_SUBJECT      optional; a contact URL the push service can complain to
 
 import { createClient } from 'jsr:@supabase/supabase-js@2';
+import '../_shared/day.js';
+
+// day.js is a classic script, so it hands its functions over on globalThis.
+// Only the rollover is read from it: the night's own times are this file's.
+const Day = (globalThis as unknown as { ProBeingDay: {
+  counterDayStart: (t: number, offsetMin?: number) => number;
+  openBeforeToday: (carry: unknown[]) => boolean;
+} }).ProBeingDay;
 
 const CORS: Record<string, string> = {
   'Access-Control-Allow-Origin': '*',
@@ -72,10 +81,13 @@ var TZ_OFFSET_MIN = 300;
 /** 11:30 PM, as minutes past local midnight. The hour the whole stage is about. */
 var WRAP_AT_MIN = 23 * 60 + 30;
 
-/** 5 AM — where the night stops. Past this, a day still left open is left open:
- *  a "are you awake?" at 7 in the morning answers a question nobody asked. The
- *  same boundary app.js calls DAY_STARTS_HOUR. */
-var NIGHT_ENDS_MIN = 5 * 60;
+/** 10:30 AM — the last a FIRST check of the night may go out (Saad, 25 Sep). */
+var FIRST_CHECK_ENDS_MIN = 10 * 60 + 30;
+
+/** 11 AM — nothing is sent after this. Wrapup's own clock: it must not move when
+ *  the counter day's rollover does. Only closing an unanswered 10:00 check runs
+ *  later. */
+var CHECKS_END_MIN = 11 * 60;
 
 /** How long a question waits for its answer before silence counts as "asleep". */
 var ANSWER_WINDOW_MS = 60 * 60000;
@@ -87,6 +99,15 @@ var ANSWER_WINDOW_MS = 60 * 60000;
  * question should not move an hour because his thumb was slow. */
 var NEXT_CHECK_MS = 90 * 60000;
 
+/* A check counts as due this much early. Cron fires a second or so late, by a
+ * different amount each run (live: 23:30:00.906, then 01:00:00.665), so without
+ * it a check due at 01:00:00.9 waits for the 01:10 run and the chain slips ten
+ * minutes a step. */
+var CHECK_GRACE_MS = 60000;
+
+/** Decision (a): a row of these, newer than an unanswered check, counts as Yes. */
+var ANSWERS_A_CHECK = { work: 1, voice: 1, resume: 1, 'break': 1 };
+
 /** The two row types that mean the day is over. Anything else — work, voice,
  *  resume, break, wake — means it is still running. */
 var DAY_IS_CLOSED_BY = { off: 1, sleep: 1 };
@@ -97,12 +118,33 @@ function localMinuteOfDay(ms) {
   return ((mins % 1440) + 1440) % 1440;
 }
 
-/** Is this instant inside the window where a check may be SENT? Closing a day
- *  is not gated on it — a question asked at 4:30 AM still deserves its answer
- *  at 5:30. */
+/** Is this instant inside the window where a FOLLOW-UP check may be sent?
+ *  Closing a day is not gated on it — a question asked at 10:00 still deserves
+ *  its answer at 11:00. */
 function inCheckWindow(ms) {
   var m = localMinuteOfDay(ms);
-  return m >= WRAP_AT_MIN || m < NIGHT_ENDS_MIN;
+  return m >= WRAP_AT_MIN || m < CHECKS_END_MIN;
+}
+
+/** The same for the FIRST check of a night, which stops half an hour earlier. */
+function inFirstCheckWindow(ms) {
+  var m = localMinuteOfDay(ms);
+  return m >= WRAP_AT_MIN || m < FIRST_CHECK_ENDS_MIN;
+}
+
+/** When the night holding `ms` began: the latest 11:30 PM at or before it. */
+function nightStartMs(ms) {
+  var back = (localMinuteOfDay(ms) - WRAP_AT_MIN + 1440) % 1440;
+  return (Math.floor(ms / 60000) - back) * 60000;
+}
+
+/* SAAD'S GUARD ON DECISION (b), 25 Sep. Once the morning rollover has passed, a
+ * FIRST check goes only to a session that was already open at it — he has been
+ * up all night. A session begun fresh that morning is never asked, or an 08:00
+ * start is asked "still awake?" at 08:10 and, unanswered, closed at 08:10.
+ * To check fresh mornings too, make this return false. */
+function freshMorningSession(now, rollover) {
+  return Boolean(rollover) && rollover.at > nightStartMs(now) && !rollover.open;
 }
 
 /**
@@ -116,6 +158,9 @@ function inCheckWindow(ms) {
  *              milliseconds (`answeredAt` 0 or null when it is still waiting),
  *              or null when there is none.
  * @param now   the instant to decide at, in milliseconds.
+ * @param rollover  `{at, open}`: the most recent counter-day rollover, in ms,
+ *              and whether the work day was open at it. Omitted, the morning
+ *              guard (freshMorningSession) cannot apply.
  *
  * @returns `{act, at, resolve, why}` where `act` is one of:
  *            'nothing' — leave it alone
@@ -125,7 +170,7 @@ function inCheckWindow(ms) {
  *          sentence for the reply, because a scheduled job nobody watches has
  *          to be able to explain itself after the fact.
  */
-function shouldWrapUp(last, open, now) {
+function shouldWrapUp(last, open, now, rollover) {
   var dayOpen = Boolean(last && !DAY_IS_CLOSED_BY[last.type]);
 
   if (open) {
@@ -137,13 +182,16 @@ function shouldWrapUp(last, open, now) {
                why: 'the day was closed another way while the check was open' };
     }
 
-    if (open.answeredAt) {
-      if (now >= open.sentAt + NEXT_CHECK_MS && inCheckWindow(now)) {
+    // Decision (a): logging something after the question is as good as Yes.
+    var workedSince = Boolean(ANSWERS_A_CHECK[last.type] === 1 && last.at > open.sentAt);
+    if (open.answeredAt || workedSince) {
+      if (now >= open.sentAt + NEXT_CHECK_MS - CHECK_GRACE_MS && inCheckWindow(now)) {
         return { act: 'check', at: now, resolve: true,
                  why: 'the last check was answered and the next one is due' };
       }
       return { act: 'nothing', at: 0, resolve: false,
-               why: 'answered; the next check is not due yet' };
+               why: open.answeredAt ? 'answered; the next check is not due yet'
+                                    : 'something was logged after the check, which counts as Yes' };
     }
 
     if (now >= open.sentAt + ANSWER_WINDOW_MS) {
@@ -166,7 +214,7 @@ function shouldWrapUp(last, open, now) {
        * clamp protects is the timestamp, not the identity of the write. */
       var ridAt = at;
       if (at > now) at = now;
-      return { act: 'close', at: at, ridAt: ridAt, resolve: true,
+      return { act: 'close', at: at, ridAt: ridAt, askedAt: open.sentAt, resolve: true,
                why: 'no answer within the hour, so the day ended when the check was sent' };
     }
 
@@ -177,8 +225,12 @@ function shouldWrapUp(last, open, now) {
   if (!dayOpen) {
     return { act: 'nothing', at: 0, resolve: false, why: 'the day is already closed' };
   }
-  if (!inCheckWindow(now)) {
+  if (!inFirstCheckWindow(now)) {
     return { act: 'nothing', at: 0, resolve: false, why: 'not the time of night for it' };
+  }
+  if (freshMorningSession(now, rollover)) {
+    return { act: 'nothing', at: 0, resolve: false,
+             why: 'this session began after the morning rollover, so it is not asked' };
   }
   return { act: 'check', at: now, resolve: false,
            why: 'the day is still open at bedtime' };
@@ -196,6 +248,14 @@ function localStamp(ms) {
   var hh = Math.floor(m / 60);
   var mm = m % 60;
   return localYmd(ms) + 'T' + (hh < 10 ? '0' : '') + hh + ':' + (mm < 10 ? '0' : '') + mm;
+}
+
+/** "1:00 am", in Karachi — which check a closing row is answering for. */
+function checkClock(ms) {
+  var m = localMinuteOfDay(ms);
+  var h = Math.floor(m / 60);
+  var mm = m % 60;
+  return ((h % 12) || 12) + ':' + (mm < 10 ? '0' : '') + mm + (h < 12 ? ' am' : ' pm');
 }
 
 /**
@@ -226,8 +286,9 @@ function localStamp(ms) {
  * clamp in shouldWrapUp() — the only part of `at` that comes from the caller's
  * own clock — still lands on the same value twice.
  */
-function closingRows(at) {
+function closingRows(at, askedAt) {
   var stamp = localStamp(at);
+  var asked = checkClock(typeof askedAt === 'number' ? askedAt : at);
   /* SLEEP FIRST, AND THE ORDER IS LOAD-BEARING. `off` is what makes the day
    * read as closed, so it must never be the row that survives alone: if `off`
    * landed and `sleep` then failed, the next run would see a closed day, resolve
@@ -238,10 +299,10 @@ function closingRows(at) {
    * is a harmless duplicate. */
   return [
     { type: 'sleep',
-      text: 'Sleep (auto — no answer to the 11:30 pm check)',
+      text: 'Sleep (auto — no answer to the ' + asked + ' check)',
       rid: 'wrapup-' + stamp + '-sleep' },
     { type: 'off',
-      text: 'Day over (auto — no answer to the 11:30 pm check)',
+      text: 'Day over (auto — no answer to the ' + asked + ' check)',
       rid: 'wrapup-' + stamp + '-off' }
   ];
 }
@@ -714,7 +775,16 @@ Deno.serve(async (req: Request): Promise<Response> => {
         answeredAt: openRow.answered_at ? Date.parse(String(openRow.answered_at)) : 0 }
     : null;
 
-  const decided = shouldWrapUp(last, open, now);
+  // Was the work day already open at this morning's rollover? Decision (b)'s guard.
+  const rolloverMs = Day.counterDayStart(now, TZ_OFFSET_MIN);
+  const beforeRes = await sb.from('events')
+    .select('at, type').eq('user_id', owner).in('type', STATE_TYPES)
+    .lt('at', new Date(rolloverMs).toISOString())
+    .order('at', { ascending: false }).limit(12);
+  if (beforeRes.error) return reply(500, { ok: false, error: beforeRes.error.message });
+  const rollover = { at: rolloverMs, open: Day.openBeforeToday(beforeRes.data || []) };
+
+  const decided = shouldWrapUp(last, open, now, rollover);
 
   /* Typed, rather than the Record<string, unknown> the push half uses, because
    * `why` below reads two of these fields back out. */
@@ -728,7 +798,7 @@ Deno.serve(async (req: Request): Promise<Response> => {
      * their order between themselves is immaterial, since they are simultaneous
      * edges of two different state machines and no time passes between them.
      * closingRows() owns their rids, and its comment owns the reasoning. */
-    const rows = closingRows(decided.ridAt || decided.at);
+    const rows = closingRows(decided.ridAt || decided.at, decided.askedAt);
     const results: boolean[] = [];
     const failed: string[] = [];
     for (const row of rows) {

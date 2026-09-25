@@ -586,16 +586,17 @@ grant execute on function public.glance_for(text) to anon, authenticated;
 --
 -- THE TIMES ARE IN UTC, WHICH IS NOT THE TIME THIS APP THINKS IN. The database
 -- runs in UTC and Pakistan is UTC+5, so 11:30 PM in Karachi is 18:30 here. The
--- schedule below runs every ten minutes across UTC 18:00–00:59, which is
--- 11:00 PM to 6:00 AM in Karachi: early enough to catch the 11:30 check, and
--- late enough that a check sent at 4:50 AM still gets its answer an hour later.
+-- schedule below runs every ten minutes across UTC 18:00–06:59, which is
+-- 11:00 PM to 11:59 AM in Karachi: early enough to catch the 11:30 check, and
+-- late enough that the last check (10:00, answered checks repeat every 90
+-- minutes until 11 AM) still gets its answer an hour later.
 -- Check what the database believes with:  select now();
 --
 -- Every ten minutes rather than once at 18:30, because the function decides for
 -- itself what the time means (see shouldWrapUp) and a single fire has no second
 -- chance if it lands while the push service is unreachable.
 --
---   select cron.schedule('probeing-wrapup', '*/10 18-23,0 * * *', $job$
+--   select cron.schedule('probeing-wrapup', '*/10 18-23,0-6 * * *', $job$
 --     select net.http_post(
 --       url := 'https://<YOUR-PROJECT-REF>.supabase.co/functions/v1/wrapup',
 --       headers := jsonb_build_object(
