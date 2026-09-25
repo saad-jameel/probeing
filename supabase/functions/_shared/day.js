@@ -82,6 +82,103 @@ function instantOf(at) {
   return Date.parse(String(at));
 }
 
+/* ── The counter day ───────────────────────────────────────────────────────
+ * M, prayers and the review's days turn at a rollover early in the morning
+ * (dayStartFor), not at midnight, so a night that runs past 12 still counts
+ * towards the evening it began in.
+ * `offsetMin` is minutes east of UTC (the server passes Karachi's 300);
+ * omitted, it is the device's own clock. */
+
+/* THE ONLY PLACE THAT KNOWS WHEN THE DAY TURNS: 04:30 on `date` ({y, m, d}).
+ * Revision 2 replaces this body with that date's Fajr time, so every caller
+ * goes through counterDayStart() / counterDate() and none knows the hour. */
+function dayStartFor(date, offsetMin) {
+  if (typeof offsetMin === 'number') {
+    return Date.UTC(date.y, date.m - 1, date.d, 4, 30) - offsetMin * 60000;
+  }
+  return new Date(date.y, date.m - 1, date.d, 4, 30).getTime();
+}
+
+/** The local calendar date of instant `t`, as {y, m, d}. */
+function calendarDateOf(t, offsetMin) {
+  if (typeof offsetMin === 'number') {
+    var s = shiftedDate(t, offsetMin);
+    return { y: s.getUTCFullYear(), m: s.getUTCMonth() + 1, d: s.getUTCDate() };
+  }
+  var d = new Date(t);
+  return { y: d.getFullYear(), m: d.getMonth() + 1, d: d.getDate() };
+}
+
+function dayBefore(date) {
+  var p = new Date(Date.UTC(date.y, date.m - 1, date.d - 1));
+  return { y: p.getUTCFullYear(), m: p.getUTCMonth() + 1, d: p.getUTCDate() };
+}
+
+/** The counter day holding `t`: its own date, or the one before when `t` is
+ *  earlier than that date's rollover. */
+function counterDayOf(t, offsetMin) {
+  var date = calendarDateOf(t, offsetMin);
+  var start = dayStartFor(date, offsetMin);
+  if (t < start) {
+    date = dayBefore(date);
+    start = dayStartFor(date, offsetMin);
+  }
+  return { date: date, start: start };
+}
+
+/** The instant (ms) the counter day holding `t` began. */
+function counterDayStart(t, offsetMin) {
+  return counterDayOf(t, offsetMin).start;
+}
+
+/** 'YYYY-MM-DD' of the counter day holding `t` — at 02:00 that is yesterday. */
+function counterDate(t, offsetMin) {
+  var d = counterDayOf(t, offsetMin).date;
+  return d.y + '-' + (d.m < 10 ? '0' : '') + d.m + '-' + (d.d < 10 ? '0' : '') + d.d;
+}
+
+/* ── The lead-in ───────────────────────────────────────────────────────────
+ * The work session does not reset at the rollover. The counter day's rows are
+ * replayed together with this lead-in: the work-clock rows since the last
+ * off/sleep before the rollover. Never counted — only replayed. */
+
+/** How far back a lead-in may reach, so a clock left open for days stays bounded. */
+var LEAD_MAX_MS = 48 * 3600000;
+
+/** Rows that move the work clock or name a project. No M, prayer or wake. */
+var LEAD_TYPES = ['work', 'voice', 'done', 'break', 'resume', 'off', 'sleep'];
+
+/**
+ * The lead-in for a day starting at `beforeMs`: rows of LEAD_TYPES earlier than
+ * it, no more than LEAD_MAX_MS earlier, and strictly after the newest off/sleep.
+ * Newest first, as replayDay() takes them. A row sharing the close's instant is
+ * dropped with it: Sleep writes `break` and `sleep` together, and the close wins.
+ */
+function sessionLead(rows, beforeMs) {
+  var from = beforeMs - LEAD_MAX_MS;
+  var keep = [];
+  var closedAt = -Infinity;
+  (rows || []).forEach(function (r, i) {
+    var t = instantOf(r.at);
+    if (isNaN(t) || t >= beforeMs || t < from || LEAD_TYPES.indexOf(r.type) === -1) return;
+    if ((r.type === 'off' || r.type === 'sleep') && t > closedAt) closedAt = t;
+    keep.push({ r: r, t: t, i: i });
+  });
+  var rows = keep.filter(function (x) { return x.t > closedAt; })
+    .sort(function (a, b) { return (b.t - a.t) || (a.i - b.i); })
+    .map(function (x) { return x.r; });
+
+  /* replayDay() ignores a break after a close until work starts again. The close
+   * is cut off above, so drop those breaks here too, or a chip tapped after
+   * End day would reopen the session. */
+  if (closedAt === -Infinity) return rows;
+  var opened = false;
+  return rows.slice().reverse().filter(function (r) {
+    if (r.type === 'work' || r.type === 'voice' || r.type === 'resume') opened = true;
+    return opened || r.type !== 'break';
+  }).reverse();
+}
+
 /** 8_100_000 -> "2h 15m". Minutes only under an hour; never "0h". */
 function humanDuration(ms) {
   var mins = Math.max(0, Math.round(ms / 60000));
@@ -128,8 +225,13 @@ function userMap() {
  * so replaying that day with today's ceiling reports about 2.9 DAYS worked
  * instead of seven hours. The review passes the end of each day; nothing else
  * passes anything, so today is unchanged.
+ *
+ * @param fromMs where crediting starts. Rows before it only set the state —
+ *               the open projects, the clock, the break — so a session that
+ *               crossed into this window from the one before is counted from
+ *               the line, not dropped. Omit it to credit every row given.
  */
-function replayDay(log, endMs) {
+function replayDay(log, endMs, fromMs) {
   /* Sheet timestamps are second-precision, so two rows written inside the same
    * second tie. A stable sort would then keep the input order — and today()
    * hands rows back NEWEST FIRST, which replays a same-second pair backwards
@@ -189,12 +291,14 @@ function replayDay(log, endMs) {
    * function — rather than making every caller remember it. */
   var now = Date.now();
   var ceiling = (typeof endMs === 'number' && isFinite(endMs)) ? Math.min(endMs, now) : now;
+  var floor = (typeof fromMs === 'number' && isFinite(fromMs)) ? fromMs : -Infinity;
 
   /** Credit everything active up to `t`, then move the cursor there. */
   function advance(t) {
     if (t > ceiling) t = ceiling;
-    if (lastT && t > lastT) {
-      var span = t - lastT;
+    var from = Math.max(lastT, floor);
+    if (lastT && t > from) {
+      var span = t - from;
       if (clock) {
         worked += span;
         var names = Object.keys(active);
@@ -314,11 +418,13 @@ function replayDay(log, endMs) {
  *
  * @param endMs  where the work clock stops. Omit it for now, as the card does.
  * @param carry  state rows from before today, newest first. Only the glance
- *               passes it; without it `notStarted` stays false. */
-function dayFigures(log, prayers, endMs, carry) {
+ *               passes it; without it `notStarted` stays false.
+ * @param lead   the session's rows from before the rollover (sessionLead()).
+ *               Replayed for hours and "working on"; never counted. */
+function dayFigures(log, prayers, endMs, carry, lead) {
   log = log || [];
   prayers = prayers || [];
-  var day = replayDay(log, endMs);
+  var day = replayDay(log.concat(lead || []), endMs);
 
   return {
     day: day,                               // the whole replay, for the card's list
@@ -326,6 +432,7 @@ function dayFigures(log, prayers, endMs, carry) {
     project: day.project,                   // '' when nothing is open
     running: day.running,
     dayClosed: day.dayClosed,               // the day is over, which is not "paused"
+    // Counts read the counter day's rows only, never the lead-in.
     // A prayer logged twice is still one prayer out of five.
     prayersDone: PRAYER_NAMES.filter(function (n) {
       return prayers.some(function (p) { return p.prayer === n; });
@@ -350,7 +457,7 @@ function movesWorkClock(type) {
 }
 
 /**
- * Was the work day still open at midnight? Reads the rows from before today.
+ * Was the work day still open at the rollover? Reads the rows from before today.
  *
  * On a tie a closing row wins: Sleep writes `break` then `sleep` in the same
  * instant, and replayDay() reads that pair as a closed day.
@@ -396,9 +503,9 @@ function glanceClock(ms, offsetMin) {
  *
  * It opens with the weekday, not "Today" (Saad, 15 Sep). Nothing runs while the
  * app is closed, so a read made at 11:58 PM is still on the lock screen at 7 AM,
- * where "Today" would be false. The day is taken from the same instant, on the
- * same clock, as the time after "as of" — so the two cannot disagree — and is
- * fixed English for the same reason that time is a fixed shape.
+ * where "Today" would be false. The day is the counter day of the same instant,
+ * on the same clock, as the time after "as of", and is fixed English for the
+ * same reason that time is a fixed shape.
  *
  * `offsetMin` as for glanceClock(). Omitted, it is the device's own clock.
  */
@@ -418,8 +525,10 @@ function glanceText(figures, asOfMs, offsetMin) {
       : 'Working on: nothing open';
   }
 
-  var zoned = typeof offsetMin === 'number';
-  var weekday = zoned ? shiftedDate(asOfMs, offsetMin).getUTCDay() : new Date(asOfMs).getDay();
+  /* The counter day's weekday, not the calendar's: at 02:00 the M and prayer
+   * figures are still yesterday's, so the line is headed with yesterday. */
+  var ymd = counterDate(asOfMs, offsetMin).split('-');
+  var weekday = new Date(Date.UTC(Number(ymd[0]), Number(ymd[1]) - 1, Number(ymd[2]))).getUTCDay();
   var day = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'][weekday];
   var body = day + ' ' + humanDuration(figures.worked) +
              ' · ' + figures.mCount + ' M' +
@@ -503,8 +612,10 @@ function clipLine(text, max) {
  *
  * @param log    today's rows, newest first, as replayDay() takes them.
  * @param endMs  where the day stops; omitted, it is now.
+ * @param lead   the session's rows from before the rollover, as for dayFigures.
  */
-function glanceList(log, endMs) {
+function glanceList(log, endMs, lead) {
+  log = (log || []).concat(lead || []);
   var day = replayDay(log, endMs);
   var open = day.activeProjects.slice().reverse();
   if (!open.length) return '';
@@ -532,6 +643,11 @@ function glanceList(log, endMs) {
 
 // What glance-refresh uses. The browser reads the globals directly.
 globalThis.ProBeingDay = {
+  counterDayStart: counterDayStart,
+  counterDate: counterDate,
+  sessionLead: sessionLead,
+  LEAD_MAX_MS: LEAD_MAX_MS,
+  LEAD_TYPES: LEAD_TYPES,
   dayFigures: dayFigures,
   openBeforeToday: openBeforeToday,
   glanceText: glanceText,
