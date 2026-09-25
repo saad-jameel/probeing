@@ -139,12 +139,14 @@ function nightStartMs(ms) {
 }
 
 /* SAAD'S GUARD ON DECISION (b), 25 Sep. Once the morning rollover has passed, a
- * FIRST check goes only to a session that was already open at it — he has been
- * up all night. A session begun fresh that morning is never asked, or an 08:00
- * start is asked "still awake?" at 08:10 and, unanswered, closed at 08:10.
- * To check fresh mornings too, make this return false. */
+ * FIRST check goes only to a session that was open at it and not closed since —
+ * he has been up all night. A session begun fresh that morning, including after
+ * sleeping off an all-nighter, is never asked, or an 08:00 start is asked
+ * "still awake?" at 08:10 and, unanswered, closed at 08:10. The same rule as
+ * sessionFromLastNight() in app.js. To check fresh mornings too, return false. */
 function freshMorningSession(now, rollover) {
-  return Boolean(rollover) && rollover.at > nightStartMs(now) && !rollover.open;
+  return Boolean(rollover) && rollover.at > nightStartMs(now) &&
+         (!rollover.open || Boolean(rollover.closedSince));
 }
 
 /**
@@ -158,9 +160,10 @@ function freshMorningSession(now, rollover) {
  *              milliseconds (`answeredAt` 0 or null when it is still waiting),
  *              or null when there is none.
  * @param now   the instant to decide at, in milliseconds.
- * @param rollover  `{at, open}`: the most recent counter-day rollover, in ms,
- *              and whether the work day was open at it. Omitted, the morning
- *              guard (freshMorningSession) cannot apply.
+ * @param rollover  `{at, open, closedSince}`: the most recent counter-day
+ *              rollover in ms, whether the work day was open at it, and whether
+ *              an off/sleep has been written since. Omitted, the morning guard
+ *              (freshMorningSession) cannot apply.
  *
  * @returns `{act, at, resolve, why}` where `act` is one of:
  *            'nothing' — leave it alone
@@ -726,7 +729,7 @@ Deno.serve(async (req: Request): Promise<Response> => {
     const out = await pushAll(owner, JSON.stringify({
       kind: 'test',
       title: 'ProBeing',
-      body: 'Test push. The 11:30 pm check will look like this, Yes button and all.',
+      body: 'Test push. The night check will look like this, Yes button and all.',
       checkId: 'test',
       nonce: 'test',
       url: functionUrl(),
@@ -782,7 +785,12 @@ Deno.serve(async (req: Request): Promise<Response> => {
     .lt('at', new Date(rolloverMs).toISOString())
     .order('at', { ascending: false }).limit(12);
   if (beforeRes.error) return reply(500, { ok: false, error: beforeRes.error.message });
-  const rollover = { at: rolloverMs, open: Day.openBeforeToday(beforeRes.data || []) };
+  const sinceRes = await sb.from('events')
+    .select('at').eq('user_id', owner).in('type', ['off', 'sleep'])
+    .gte('at', new Date(rolloverMs).toISOString()).limit(1);
+  if (sinceRes.error) return reply(500, { ok: false, error: sinceRes.error.message });
+  const rollover = { at: rolloverMs, open: Day.openBeforeToday(beforeRes.data || []),
+                     closedSince: (sinceRes.data || []).length > 0 };
 
   const decided = shouldWrapUp(last, open, now, rollover);
 
