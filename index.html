@@ -136,10 +136,10 @@
   <section class="card">
     <h2 class="card-head"><svg class="card-ico" aria-hidden="true"><use href="#i-chart"></use></svg> Today so far</h2>
     <div class="sum-row">
-      <div class="sum"><span id="sumWorked" class="sum-n">0m</span><span class="sum-l">worked</span></div>
+      <div class="sum"><span id="sumWorked" class="sum-n">0m</span><span class="sum-l">worked this session</span></div>
       <div class="sum"><span id="sumPrayers" class="sum-n">0/5</span><span class="sum-l">prayers</span></div>
       <div class="sum"><span id="sumM" class="sum-n">0</span><span class="sum-l">M</span></div>
-      <div class="sum"><span id="sumBreak" class="sum-n">0m</span><span class="sum-l">on break</span></div>
+      <div class="sum"><span id="sumBreak" class="sum-n">0m</span><span class="sum-l">break this session</span></div>
     </div>
     <ul id="sumProjects" class="sum-projects"></ul>
     <!-- Offline, the figures above are a PART of the day, not the day. Saying so
@@ -310,9 +310,9 @@
         <h3>Bedtime notifications</h3>
         <p class="hint">If your day is still open at <strong>11:30 pm</strong>, ProBeing
           asks &ldquo;still awake?&rdquo; as a real notification &mdash; on the lock screen,
-          with the app closed. Tap <strong>Yes</strong> and it asks again at 1 am. Ignore it
-          and your day is recorded as having ended <strong>at 11:30</strong>, not at half past
-          midnight when it gave up waiting.</p>
+          with the app closed. Tap <strong>Yes</strong> and it asks again every 90 minutes,
+          until 11 am. Miss one and your day is recorded as having ended <strong>at the time
+          that check was sent</strong>, not an hour later when it gave up waiting.</p>
         <p class="hint">Turn this on once per device. Android may also need ProBeing&rsquo;s
           battery setting to be <strong>Unrestricted</strong>, or Chrome sleeps and the
           notification arrives in the morning.</p>
@@ -404,7 +404,8 @@
       <div class="dlg-block">
         <h3>Home-screen widget</h3>
         <p class="hint">The Android widget shows the same two lines as the notification
-          shade &mdash; what you are working on, and today so far &mdash; on your home
+          shade &mdash; what you are working on, this session&rsquo;s hours, and today&rsquo;s
+          M and prayers &mdash; on your home
           screen. It is <strong>look-only</strong>: tapping it opens ProBeing, and there is
           nothing on it to press. The server keeps its lines current &mdash; every
           10 minutes and after each entry, even with the app closed. The widget checks
