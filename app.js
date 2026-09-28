@@ -2997,6 +2997,38 @@ function savePinnedNames(list) {
   try {
     localStorage.setItem(PINNED_NAMES_KEY, JSON.stringify(pinnedNames));
   } catch (e) { /* a full store costs the list, never a row */ }
+  // Typing a name in the box is the opposite of forgetting it.
+  list.forEach(function (n) { unforget(n); });
+}
+
+/* Names forgotten in Settings, lower-cased. Kept so a forgotten name that is
+ * still on today's rows stays out of the prompt too. Read from storage every
+ * time, so every open tab obeys a Forget made in another. */
+var FORGOTTEN_KEY = 'probeing.forgotten';
+var FORGOTTEN_MAX = 200;
+
+function loadForgotten() {
+  var saved = null;
+  try { saved = JSON.parse(localStorage.getItem(FORGOTTEN_KEY)); } catch (e) { /* none */ }
+  return Array.isArray(saved) ? saved.filter(function (n) { return typeof n === 'string'; }) : [];
+}
+
+function forgottenMap() {
+  var out = userMap();
+  loadForgotten().forEach(function (n) { out[n] = 1; });
+  return out;
+}
+
+function saveForgotten(list) {
+  try {
+    localStorage.setItem(FORGOTTEN_KEY, JSON.stringify(list.slice(-FORGOTTEN_MAX)));
+  } catch (e) { /* a full store: the name may be offered again */ }
+}
+
+function unforget(name) {
+  var key = String(name || '').replace(/\s+/g, ' ').trim().toLowerCase();
+  var list = loadForgotten();
+  if (list.indexOf(key) !== -1) saveForgotten(list.filter(function (n) { return n !== key; }));
 }
 
 /* WHICH KIND OF WORK A PROJECT IS. The review groups its hours under these, and
@@ -3097,6 +3129,7 @@ function rememberProject(name) {
 
   // Re-read first: another tab may have forgotten a name this one still holds.
   recentProjects = loadProjectNames();
+  unforget(clean);                         // named again, so it is learned again
   var keep = [clean];
   recentProjects.forEach(function (n) {
     if (n.toLowerCase() === clean.toLowerCase()) return;   // moved, not duplicated
@@ -3112,28 +3145,41 @@ function rememberProject(name) {
 /** Drop a learned name, so no prompt offers it again. It comes back only if an
  *  entry is named that again. */
 function forgetProject(name) {
-  var key = String(name || '').toLowerCase();
+  var key = String(name || '').replace(/\s+/g, ' ').trim().toLowerCase();
   recentProjects = loadProjectNames().filter(function (n) { return n.toLowerCase() !== key; });
   try {
     localStorage.setItem(PROJECT_NAMES_KEY, JSON.stringify(recentProjects));
   } catch (e) { /* a full store: the name stays until it falls off the end */ }
+  var gone = loadForgotten().filter(function (n) { return n !== key; });
+  gone.push(key);
+  saveForgotten(gone);
 }
 
 /** Drop the kind of work a project was filed as. */
 function forgetCategory(name) {
   var next = userMap();
   var key = catKey(name);
+  projectCategories = loadProjectCategories();   // storage wins over this tab's copy
   Object.keys(projectCategories).forEach(function (k) {
     if (k !== key) next[k] = projectCategories[k];
   });
   saveProjectCategories(next);
 }
 
+// Another tab changed a store: pick it up now rather than at the next read.
+window.addEventListener('storage', function (e) {
+  if (!e.key || e.key === PROJECT_NAMES_KEY) recentProjects = loadProjectNames();
+  if (!e.key || e.key === PROJECT_CATEGORY_KEY) projectCategories = loadProjectCategories();
+});
+
 /** Every project name this device could recognise: the ones on today's rows
  *  that already carry one, then the remembered set. */
 function knownNames() {
   var seen = {};
   var out = [];
+  // Storage, not this tab's copy: another tab may have forgotten a name.
+  recentProjects = loadProjectNames();
+  var gone = forgottenMap();
 
   function add(name) {
     var clean = String(name || '').replace(/\s+/g, ' ').trim();
@@ -3141,7 +3187,7 @@ function knownNames() {
     /* `=== 1`, not truthiness: a plain object inherits `constructor` and
      * `toString` from its prototype, and a project may fairly be called either
      * of those. */
-    if (!clean || seen[key] === 1) return;
+    if (!clean || seen[key] === 1 || gone[key] === 1) return;
     seen[key] = 1;
     out.push(clean);
   }
@@ -3165,9 +3211,10 @@ function knownNames() {
 function promptNames(open) {
   var seen = {};
   var out = [];
+  var gone = forgottenMap();
   (open || []).concat(knownNames()).forEach(function (name) {
     var clean = String(name || '').replace(/\s+/g, ' ').trim();
-    if (!clean || seen[clean.toLowerCase()] === 1) return;
+    if (!clean || seen[clean.toLowerCase()] === 1 || gone[clean.toLowerCase()] === 1) return;
     seen[clean.toLowerCase()] = 1;
     out.push(clean);
   });
@@ -6622,6 +6669,18 @@ var catDlg = $('catDlg');
 var catDlgRead = null;
 var catDlgSaved = null;
 var catSettingsRead = null;
+var catSettingsShown = null;   // each Settings row's stored kind as drawn; Save writes only changes
+
+/** The Settings kinds the user actually changed since the list was drawn, so an
+ *  untouched Save cannot write back a kind another tab has since forgotten. */
+function settingsCategoryEdits() {
+  var picks = catSettingsRead ? catSettingsRead() : {};
+  var out = userMap();
+  Object.keys(picks).forEach(function (k) {
+    if (!catSettingsShown || picks[k] !== (catSettingsShown[k] || '')) out[k] = picks[k];
+  });
+  return out;
+}
 
 /**
  * One row per project: its name, and a menu of the four kinds plus "not one of
@@ -6684,6 +6743,7 @@ function renderCategoryRows(box, names, chosen) {
  *  of the projects — the dialog shows one range's unfiled ones — and the rest
  *  have to survive being off screen. */
 function mergedCategories(chosen) {
+  projectCategories = loadProjectCategories();   // storage wins over this tab's copy
   var next = userMap();                     // keyed by project name — see userMap()
   Object.keys(projectCategories).forEach(function (k) { next[k] = projectCategories[k]; });
   Object.keys(chosen || {}).forEach(function (k) {
@@ -6746,8 +6806,11 @@ function categorySettingsNames() {
 
 /** `chosen` defaults to the stored kinds; a redraw passes the unsaved picks. */
 function renderCategorySettings(chosen) {
+  projectCategories = loadProjectCategories();   // storage wins over this tab's copy
   var names = categorySettingsNames();
   catSettingsRead = renderCategoryRows($('catSettings'), names, chosen || projectCategories);
+  catSettingsShown = userMap();
+  names.forEach(function (n) { catSettingsShown[catKey(n)] = projectCategories[catKey(n)] || ''; });
   $('catSettingsNote').textContent = names.length ? '' :
     'No projects yet — log some work and they will appear here.';
 }
@@ -6757,6 +6820,7 @@ function renderCategorySettings(chosen) {
 function renderLearnedNames() {
   var box = $('learnedNames');
   box.textContent = '';
+  recentProjects = loadProjectNames();
 
   var pinned = userMap();
   pinnedNames.forEach(function (n) { pinned[n.toLowerCase()] = 1; });
@@ -6811,7 +6875,7 @@ function renderLearnedNames() {
 /** Redraw both Settings lists after a Forget, keeping unsaved picks in the
  *  kinds list — but not for `droppedKey`, or Save would write it straight back. */
 function redrawForgotten(droppedKey) {
-  var shown = mergedCategories(catSettingsRead ? catSettingsRead() : {});
+  var shown = mergedCategories(settingsCategoryEdits());
   if (droppedKey) delete shown[droppedKey];
   renderCategorySettings(shown);
   renderLearnedNames();
@@ -7310,7 +7374,7 @@ $('saveBtn').addEventListener('click', function () {
    * has no business riding along with it, and neither has the grouping — a
    * project is office work whichever database its rows are in. */
   savePinnedNames(parsePinned($('projectNames').value));
-  if (catSettingsRead) saveProjectCategories(mergedCategories(catSettingsRead()));
+  if (catSettingsRead) saveProjectCategories(mergedCategories(settingsCategoryEdits()));
   paintMic();
   renderChips();
   dlg.close();
