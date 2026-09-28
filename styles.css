@@ -546,6 +546,8 @@ body {
 .cat-row { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
 .cat-row[hidden] { display: none; }
 .cat-name { min-width: 0; overflow-wrap: anywhere; font-size: 14.5px; }
+/* Forget / Forget kind beside a learned name. No `display`, so no Rule 6 pair. */
+.learned-acts { white-space: nowrap; }
 .cat-pick {
   flex: 0 0 auto; max-width: 55%;
   padding: 9px 10px;

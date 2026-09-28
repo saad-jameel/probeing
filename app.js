@@ -3095,6 +3095,8 @@ function rememberProject(name) {
   var clean = String(name || '').replace(/\s+/g, ' ').trim();
   if (!clean) return;
 
+  // Re-read first: another tab may have forgotten a name this one still holds.
+  recentProjects = loadProjectNames();
   var keep = [clean];
   recentProjects.forEach(function (n) {
     if (n.toLowerCase() === clean.toLowerCase()) return;   // moved, not duplicated
@@ -3105,6 +3107,26 @@ function rememberProject(name) {
   try {
     localStorage.setItem(PROJECT_NAMES_KEY, JSON.stringify(recentProjects));
   } catch (e) { /* a full store costs a remembered name, never a row */ }
+}
+
+/** Drop a learned name, so no prompt offers it again. It comes back only if an
+ *  entry is named that again. */
+function forgetProject(name) {
+  var key = String(name || '').toLowerCase();
+  recentProjects = loadProjectNames().filter(function (n) { return n.toLowerCase() !== key; });
+  try {
+    localStorage.setItem(PROJECT_NAMES_KEY, JSON.stringify(recentProjects));
+  } catch (e) { /* a full store: the name stays until it falls off the end */ }
+}
+
+/** Drop the kind of work a project was filed as. */
+function forgetCategory(name) {
+  var next = userMap();
+  var key = catKey(name);
+  Object.keys(projectCategories).forEach(function (k) {
+    if (k !== key) next[k] = projectCategories[k];
+  });
+  saveProjectCategories(next);
 }
 
 /** Every project name this device could recognise: the ones on today's rows
@@ -6722,11 +6744,77 @@ function categorySettingsNames() {
   return out;
 }
 
-function renderCategorySettings() {
+/** `chosen` defaults to the stored kinds; a redraw passes the unsaved picks. */
+function renderCategorySettings(chosen) {
   var names = categorySettingsNames();
-  catSettingsRead = renderCategoryRows($('catSettings'), names, projectCategories);
+  catSettingsRead = renderCategoryRows($('catSettings'), names, chosen || projectCategories);
   $('catSettingsNote').textContent = names.length ? '' :
     'No projects yet — log some work and they will appear here.';
+}
+
+/** The learned names, each with Forget (and Forget kind when it has one).
+ *  Pinned names are left out: their box above is where they are edited. */
+function renderLearnedNames() {
+  var box = $('learnedNames');
+  box.textContent = '';
+
+  var pinned = userMap();
+  pinnedNames.forEach(function (n) { pinned[n.toLowerCase()] = 1; });
+  var names = recentProjects.filter(function (n) { return pinned[n.toLowerCase()] !== 1; });
+
+  if (!names.length) {
+    var none = document.createElement('p');
+    none.className = 'hint';
+    none.textContent = 'Nothing learned yet.';
+    box.appendChild(none);
+    return;
+  }
+
+  names.forEach(function (name) {
+    var kind = projectCategories[catKey(name)] || '';
+    var row = document.createElement('div');
+    row.className = 'cat-row';
+
+    var label = document.createElement('span');
+    label.className = 'cat-name';
+    label.textContent = name + (kind ? ' · ' +
+      (kind === CATEGORY_SKIP ? 'not one of the four' : categoryLabel(kind)) : '');
+    row.appendChild(label);
+
+    var acts = document.createElement('span');
+    acts.className = 'learned-acts';
+    var button = function (text, fn) {
+      var b = document.createElement('button');
+      b.type = 'button';
+      b.className = 'link-btn';
+      b.textContent = text;
+      b.addEventListener('click', fn);
+      acts.appendChild(b);
+    };
+    if (kind) {
+      button('Forget kind', function () {
+        forgetCategory(name);
+        redrawForgotten(catKey(name));
+        flash('Forgot the kind of work for “' + name + '”', 'ok');
+      });
+    }
+    button('Forget', function () {
+      forgetProject(name);
+      redrawForgotten('');
+      flash('Forgot “' + name + '”', 'ok');
+    });
+    row.appendChild(acts);
+    box.appendChild(row);
+  });
+}
+
+/** Redraw both Settings lists after a Forget, keeping unsaved picks in the
+ *  kinds list — but not for `droppedKey`, or Save would write it straight back. */
+function redrawForgotten(droppedKey) {
+  var shown = mergedCategories(catSettingsRead ? catSettingsRead() : {});
+  if (droppedKey) delete shown[droppedKey];
+  renderCategorySettings(shown);
+  renderLearnedNames();
 }
 
 // ------------------------------------------------------------------ taskboard
@@ -6885,6 +6973,7 @@ $('settingsBtn').addEventListener('click', function () {
   $('chipsInput').value = chipLabels().join(', ');
   $('projectNames').value = pinnedNames.join('\n');
   renderCategorySettings();
+  renderLearnedNames();
   $('micHide').checked = Boolean(cfg.hideMic);
   $('glanceOn').checked = Boolean(cfg.glance);
   $('glanceResult').textContent = glanceBlockedNote();
