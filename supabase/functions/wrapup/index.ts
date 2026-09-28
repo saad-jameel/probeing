@@ -344,6 +344,17 @@ function closeOutcome(rows, wrote) {
            wrote: went, refused: refused };
 }
 
+/**
+ * The `awake` row a Yes writes. Tapping Yes used to leave no event, so a night
+ * answered to the end still hit replayDay's 12-hour idle cap; this row is the
+ * evidence it counts instead. It moves nothing else. Keyed on the check, so a
+ * second tap is a no-op against the unique index.
+ */
+function awakeRow(checkId, sentAt) {
+  return { type: 'awake', text: 'Awake — answered the ' + checkClock(sentAt) + ' check',
+           rid: 'check-' + checkId + '-yes' };
+}
+
 /* ──────────────────────────────────────────────────────── end of the pure part */
 
 const TZ = 'Asia/Karachi';
@@ -611,6 +622,18 @@ async function writeEvent(sb: ReturnType<typeof admin>, owner: string,
   return !res.error;
 }
 
+/** Write the `awake` row for an answered check. True when it is in the table. */
+async function writeAwake(sb: ReturnType<typeof admin>, owner: string,
+                          row: { id: unknown; sent_at: unknown }, answeredMs: number) {
+  const a = awakeRow(String(row.id), Date.parse(String(row.sent_at)));
+  try {
+    await writeEvent(sb, owner, answeredMs, a.type, a.text, a.rid);
+    return true;
+  } catch (_e) {
+    return false;
+  }
+}
+
 // -------------------------------------------------------------------- serve
 
 Deno.serve(async (req: Request): Promise<Response> => {
@@ -652,7 +675,7 @@ Deno.serve(async (req: Request): Promise<Response> => {
 
     const sb = admin();
     const found = await sb.from('awake_checks')
-      .select('id, answered_at, resolved').eq('id', id).eq('nonce', nonce).limit(1);
+      .select('id, sent_at, answered_at, resolved').eq('id', id).eq('nonce', nonce).limit(1);
     if (found.error) return reply(500, { ok: false, error: found.error.message });
 
     const row = (found.data || [])[0];
@@ -664,13 +687,22 @@ Deno.serve(async (req: Request): Promise<Response> => {
      * turns a failure into an alarming notification about the day being closed.
      * Being asked twice is not the same as not being answered. */
     if (row.answered_at || row.resolved) {
+      // Written again, at the first answer's instant, in case that write failed;
+      // the rid makes it a no-op when it did not.
+      const healed = row.answered_at
+        ? await writeAwake(sb, owner, row, Date.parse(String(row.answered_at))) : false;
       return reply(200, { ok: true, answered: Boolean(row.answered_at), already: true,
-                          late: Boolean(row.resolved && !row.answered_at) });
+                          late: Boolean(row.resolved && !row.answered_at), awake: healed });
     }
 
+    const answeredMs = Date.now();
     const upd = await sb.from('awake_checks')
-      .update({ answered_at: new Date().toISOString() }).eq('id', row.id).select('id');
+      .update({ answered_at: new Date(answeredMs).toISOString() }).eq('id', row.id).select('id');
     if (upd.error) return reply(500, { ok: false, error: upd.error.message });
+
+    // After the answer is recorded, and never allowed to fail it: without the row
+    // the night's last hours may be capped, but the day is not closed.
+    const awake = await writeAwake(sb, owner, row, answeredMs);
 
     /* The question went to every device, so the answer has to retire it on every
      * device. A silent push is not an option — Chrome granted the subscription on
@@ -691,7 +723,7 @@ Deno.serve(async (req: Request): Promise<Response> => {
       retired = Number(out.sent) || 0;
     } catch (_e) { /* the answer is recorded; the tidying up is not worth a 500 */ }
 
-    return reply(200, { ok: true, answered: true, retired: retired });
+    return reply(200, { ok: true, answered: true, retired: retired, awake: awake });
   }
 
   /* ─── 2. the test push ───────────────────────────────────────────────────

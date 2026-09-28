@@ -145,16 +145,18 @@ function counterDate(t, offsetMin) {
 /** How far back a lead-in may reach, so a clock left open for days stays bounded. */
 var LEAD_MAX_MS = 48 * 3600000;
 
-/** Rows that move the work clock or name a project. No M, prayer or wake. */
-var LEAD_TYPES = ['work', 'voice', 'done', 'break', 'resume', 'off', 'sleep'];
+/** Rows that move the work clock or name a project, plus `awake` for the idle
+ *  cap. No M, prayer or wake. */
+var LEAD_TYPES = ['work', 'voice', 'done', 'break', 'resume', 'off', 'sleep', 'awake'];
 
 /** An open clock stops counting this long after the last work-session row: the
  *  night checks span 23:30 to 11:00 (11.5 h), so anything longer was forgotten. */
 var IDLE_MAX_MS = 12 * 3600000;
 
-/** Rows that show the session is still being tended. Not M, prayer or wake: they
- *  say he is awake, not that the clock left running is still work. */
-var IDLE_RESET_TYPES = ['work', 'voice', 'done', 'break', 'resume'];
+/** Rows that show the session is still being tended. `awake` is a Yes to the
+ *  night check (wrapup writes it). Not M, prayer or wake: they say he is up, not
+ *  that the clock left running is still work. */
+var IDLE_RESET_TYPES = ['work', 'voice', 'done', 'break', 'resume', 'awake'];
 
 /**
  * The lead-in for a day starting at `beforeMs`: rows of LEAD_TYPES earlier than
@@ -391,7 +393,7 @@ function replayDay(log, endMs, fromMs) {
       underWay = false;
       dayClosed = true;
     }
-    // wake / M / prayer do not move the work clock
+    // wake / awake / M / prayer do not move the work clock
   });
 
   advance(ceiling);                         // bring everything up to now
