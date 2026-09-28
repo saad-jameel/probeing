@@ -114,6 +114,7 @@ function supabaseReady() {
 var REQUEST_TIMEOUT_MS = 12000;
 var netStalled = false;        // a request timed out and nothing has answered since
 var stalledAt = 0;             // when the last one timed out
+var NULL_BODY_STATUS = { 101: 1, 103: 1, 204: 1, 205: 1, 304: 1 };   // a Response may not carry a body
 
 /** fetch, given up after REQUEST_TIMEOUT_MS. Named AbortError because postgrest-js
  *  treats that as final; any other name and it retries a read three more times. */
@@ -135,7 +136,15 @@ function timedFetch(url, init) {
       if (ctrl) { try { ctrl.abort(); } catch (e) { /* already finished */ } }
     }, REQUEST_TIMEOUT_MS);
   });
-  var sent = fetch(url, ctrl ? Object.assign({}, init, { signal: ctrl.signal }) : init);
+  // The body is read inside the deadline too: headers alone are not an answer,
+  // and a line that dies mid-body would otherwise hold the queue for ever.
+  var sent = fetch(url, ctrl ? Object.assign({}, init, { signal: ctrl.signal }) : init)
+    .then(function (res) {
+      return res.arrayBuffer().then(function (buf) {
+        return new Response(NULL_BODY_STATUS[res.status] ? null : buf,
+          { status: res.status, statusText: res.statusText, headers: res.headers });
+      });
+    });
   // Any answer, even one too late to use, means the network is back.
   sent.then(function () { netStalled = false; }, function () {});
   return Promise.race([sent, late]).then(function (res) {
