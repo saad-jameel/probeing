@@ -109,6 +109,44 @@ function supabaseReady() {
   return Boolean(sb && sbUser);
 }
 
+/* A signal with no data (one bar, a captive portal) hangs a fetch for minutes,
+ * and every press queued behind it waits too. So each request gets this long. */
+var REQUEST_TIMEOUT_MS = 12000;
+var netStalled = false;        // a request timed out and nothing has answered since
+var stalledAt = 0;             // when the last one timed out
+
+/** fetch, given up after REQUEST_TIMEOUT_MS. Named AbortError because postgrest-js
+ *  treats that as final; any other name and it retries a read three more times. */
+function timedFetch(url, init) {
+  init = init || {};
+  var ctrl = typeof AbortController === 'function' ? new AbortController() : null;
+  if (ctrl && init.signal) {
+    if (init.signal.aborted) ctrl.abort();
+    else init.signal.addEventListener('abort', function () { ctrl.abort(); });
+  }
+  var timer;
+  var late = new Promise(function (_, reject) {
+    timer = setTimeout(function () {
+      netStalled = true;
+      stalledAt = Date.now();
+      var err = new Error('no answer within ' + (REQUEST_TIMEOUT_MS / 1000) + ' seconds');
+      err.name = 'AbortError';
+      reject(err);                         // before abort(), so this is the error the caller sees
+      if (ctrl) { try { ctrl.abort(); } catch (e) { /* already finished */ } }
+    }, REQUEST_TIMEOUT_MS);
+  });
+  var sent = fetch(url, ctrl ? Object.assign({}, init, { signal: ctrl.signal }) : init);
+  // Any answer, even one too late to use, means the network is back.
+  sent.then(function () { netStalled = false; }, function () {});
+  return Promise.race([sent, late]).then(function (res) {
+    clearTimeout(timer);
+    return res;
+  }, function (err) {
+    clearTimeout(timer);
+    throw err;
+  });
+}
+
 /** Build (or rebuild) the client from whatever is in Settings. */
 function initSupabase() {
   sb = null;
@@ -117,7 +155,8 @@ function initSupabase() {
   if (typeof supabase === 'undefined' || !supabase.createClient) return;
 
   sb = supabase.createClient(cfg.supaUrl.trim().replace(/\/+$/, ''), cfg.supaKey.trim(), {
-    auth: { persistSession: true, autoRefreshToken: true, detectSessionInUrl: true }
+    auth: { persistSession: true, autoRefreshToken: true, detectSessionInUrl: true },
+    global: { fetch: timedFetch }
   });
 
   sb.auth.getSession().then(function (res) {
@@ -485,6 +524,7 @@ function deviceTz() {
 var IDEMPOTENT = { ping: 1, today: 1, now_get: 1, review: 1 };
 var MAX_TRIES = 3;
 var RETRY_DELAY_MS = 500;
+var STALL_RETRY_MS = 15000;
 var apiChain = Promise.resolve();
 
 /** Enough entropy that two devices cannot collide on the (user_id, rid) index. */
@@ -500,6 +540,12 @@ async function attemptCall(action, payload, opts) {
   if (opts && opts.tries) tries = Math.min(tries, opts.tries);
 
   for (var i = 0; i < tries; i++) {
+    /* A stalled network is treated like an offline one: fail at once, except one
+     * real try every STALL_RETRY_MS to see if answers are back. Otherwise each
+     * queued call spends 12 s and a press behind them waits for all of them. */
+    if (netStalled && Date.now() - stalledAt < STALL_RETRY_MS) {
+      throw new Error('No answer from the server — trying again shortly.');
+    }
     try {
       return await callSupabase(action, payload);
     } catch (err) {
