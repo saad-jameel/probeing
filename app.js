@@ -4838,21 +4838,27 @@ function summariseRange(rows, windows) {
  * `logged` is every prayer row seen, and it is deliberately the same figure
  * summariseRange() reports as `prayers`: the two are counted from the same
  * buckets in the same order, so a report whose breakdown disagrees with its own
- * total is a bug in one of them rather than a difference of opinion.
+ * total is a bug in one of them rather than a difference of opinion. Per prayer,
+ * a day counts once (`total`), so sum(total) + other + repeats = logged.
  *
  * @param rows    every row in the range. Only `type:'prayer'` rows are counted,
  *                but the rest decide which days count as measured at all.
  * @param windows one per local day, from dayWindows().
+ * @param nowMs   defaults to now; a day ending after it is not judged for Missed.
  */
-function prayerStats(rows, windows) {
+function prayerStats(rows, windows, nowMs) {
   var wins = windows || [];
+  var now = typeof nowMs === 'number' ? nowMs : Date.now();
   var out = {
     byPrayer: [],
     modes: PRAYER_MODES.slice(),
     logged: 0,
     other: 0,
+    repeats: 0,              // a prayer's second row on one day: in `logged`, not in `total`
     days: wins.length,
-    daysWithRows: 0
+    daysWithRows: 0,
+    daysFinished: 0,         // days already over; only these can hold a miss
+    daysJudged: 0            // finished days with rows: the base Missed is counted on
   };
 
   // Keyed by prayer name, so it carries no prototype — see userMap(). Without
@@ -4870,11 +4876,17 @@ function prayerStats(rows, windows) {
   var buckets = bucketByWindow(rows, wins);
 
   wins.forEach(function (w, i) {
+    // Today is not over, so its later prayers may not be due yet. Stage 10's
+    // real prayer times can judge today; until then only finished days count.
+    var finished = w.endMs <= now;
+    if (finished) out.daysFinished += 1;
     var dayRows = buckets[i];
     if (!dayRows.length) return;           // unmeasured: not five misses
     out.daysWithRows += 1;
+    if (finished) out.daysJudged += 1;
 
     var seen = userMap();                  // the prayer names logged this day
+    // Newest first (bucketByWindow), so a name's first row is that day's latest.
     dayRows.forEach(function (row) {
       if (row.type !== 'prayer') return;
       out.logged += 1;
@@ -4886,6 +4898,8 @@ function prayerStats(rows, windows) {
       var one = index[String(row.project || row.raw_text || '').trim()];
       if (!one) { out.other += 1; return; }
 
+      // One per prayer per day, as on the Today card; the latest row's mode wins.
+      if (seen[one.name] === 1) { out.repeats += 1; return; }
       one.total += 1;
       seen[one.name] = 1;
 
@@ -4897,6 +4911,7 @@ function prayerStats(rows, windows) {
       else one.byMode[mode] += 1;
     });
 
+    if (!finished) return;
     out.byPrayer.forEach(function (one) {
       if (seen[one.name] !== 1) one.missed += 1;
     });
@@ -6257,11 +6272,16 @@ function prayerTable(stats) {
   });
   table.append(head, body);
 
-  // Missed only counts days with something logged; say how many that was.
+  // Missed only counts finished days with something logged; say how many.
+  // Reports saved before these fields existed only cover finished days.
   var note = document.createElement('p');
   note.className = 'prayer-note';
+  var judged = stats.daysJudged === undefined ? stats.daysWithRows : stats.daysJudged;
+  var finished = stats.daysFinished === undefined ? stats.days : stats.daysFinished;
   var text = 'Missed counts days with entries but no such prayer (' +
-    (Number(stats.daysWithRows) || 0) + ' of ' + (Number(stats.days) || 0) + ' days had entries).';
+    (Number(judged) || 0) + ' of ' + (Number(finished) || 0) + ' finished days had entries).';
+  if (Number(stats.days) > Number(finished)) text += ' Today is left out of Missed until it ends.';
+  if (Number(stats.repeats) > 0) text += ' A prayer logged twice in a day counts once, with its latest mode.';
   var other = Number(stats.other) || 0;
   if (other) text += other === 1 ? ' 1 prayer row had another name and is not in the table.'
                                   : ' ' + other + ' prayer rows had another name and are not in the table.';
