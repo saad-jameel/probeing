@@ -392,6 +392,13 @@ function replayDay(log, endMs, fromMs) {
       reasons = userMap();
       underWay = false;
       dayClosed = true;
+      /* `off` ends the session, so its projects close with it and the next one
+       * starts empty. Every Sleep that ends the day writes `off` too; a lone
+       * `sleep` is a nap on a break, which keeps them (Saad, 29 Sep). */
+      if (row.type === 'off') {
+        active = userMap();
+        order = [];
+      }
     }
     // wake / awake / M / prayer do not move the work clock
   });

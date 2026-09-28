@@ -1693,17 +1693,17 @@ function renderDaySummary() {
     return function (a, b) { return map[b] - map[a]; };
   };
 
-  /* A project leaves `activeProjects` only by being pressed Done — `off` and
-   * `sleep` stop the clock without closing anything — so "not active" is
-   * exactly "finished", and earns the tick. */
+  /* The tick means Done was pressed. End day closes every project too (since
+   * 29 Sep), so "not open" is no longer the test. */
   var open = userMap();                     // project names again — see userMap()
   day.activeProjects.forEach(function (p) { open[p] = 1; });
+  var pressed = donePressed(sessionLog());
 
   Object.keys(day.byProject)
     .filter(function (name) { return name && day.byProject[name] > 0; })
     .sort(byTime(day.byProject))
     .forEach(function (name) {
-      line(name, day.byProject[name], false, !open[name]);
+      line(name, day.byProject[name], false, !open[name] && pressed[name] === 1);
     });
 
   // Where the break time actually went — Lunch 45m, Prayer-break 20m.
@@ -1713,6 +1713,21 @@ function renderDaySummary() {
     .filter(function (why) { return why && day.byReason[why] > 0; })
     .sort(byTime(day.byReason))
     .forEach(function (why) { line(why, day.byReason[why], true); });
+}
+
+/** Projects whose newest work/voice/done row is a Done press, keyed as
+ *  replayDay() keys them. `rows` newest first. */
+function donePressed(rows) {
+  var out = userMap();
+  var seen = userMap();
+  (rows || []).forEach(function (row) {
+    if (row.type !== 'work' && row.type !== 'voice' && row.type !== 'done') return;
+    var name = String(row.project || row.raw_text || '').trim();
+    if (!name || seen[name] === 1) return;
+    seen[name] = 1;
+    if (row.type === 'done') out[name] = 1;
+  });
+  return out;
 }
 
 // projectTasks() and TASK_SEP live in day.js, shared with the widget's list.
@@ -3978,11 +3993,14 @@ function applyLabel(rid, key, row, got, done) {
     // keeps the sentence as its name, which is where this stage started.
     if (!res || !res.labelled) return;
 
-    /* The tile was closed while the update was in flight, so the `done` row
-     * names the sentence and the store now names the project. Close it again
-     * under the new name: an append-only store takes something back by
-     * appending, and a `done` for a project that is not open costs nothing. */
-    if (!isOpenProject(key)) { closeProject(got.project); return; }
+    /* The tile was closed while the update was in flight. If Done closed it, the
+     * `done` row names the sentence and the store now names the project, so it
+     * is closed again under the new name. If End day or Sleep closed it, the new
+     * name is not open either, and a `done` would only fake a Done tick. */
+    if (!isOpenProject(key)) {
+      if (donePressed(sessionLog())[key] === 1) closeProject(got.project);
+      return;
+    }
 
     row.project = got.project;
     row.detail = got.detail;
