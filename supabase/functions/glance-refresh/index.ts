@@ -21,6 +21,8 @@ import '../_shared/day.js';
 
 // day.js is a classic script, so it hands its functions over on globalThis.
 const Day = (globalThis as unknown as { ProBeingDay: {
+  setPrayerPlace: (p: unknown) => { zone: string };
+  zoneOffsetMin: (zone: string, ms: number, fallback: number) => number;
   counterDayStart: (t: number, offsetMin?: number) => number;
   sessionLead: (rows: unknown[], beforeMs: number) => unknown[];
   LEAD_MAX_MS: number;
@@ -41,7 +43,8 @@ function reply(status: number, body: unknown): Response {
 /* ── Pure helpers. Plain JS with `var`, as in wrapup, so a node test can lift
  *    them out of this file without a TypeScript parser. ─────────────────── */
 
-/* Karachi is UTC+5 with no daylight saving; wrapup uses the same constant. */
+/* Karachi's UTC+5: the offset used when user_settings has no readable zone.
+ * wrapup falls back to the same. */
 var TZ_OFFSET_MIN = 300;
 
 /* The rows that move the work or sleep state — what the browser's `carry` reads. */
@@ -77,6 +80,20 @@ function sameSecret(a: string, b: string): boolean {
   return diff === 0 && x.length > 0;
 }
 
+/** The place and zone saved in user_settings, adopted by day.js, and the offset
+ *  at `now`. No row, or a failed read, is Karachi — as before Stage 10. */
+async function useSavedPlace(sb: ReturnType<typeof admin>, owner: string, now: number) {
+  let row: Record<string, unknown> | null = null;
+  try {
+    const got = await sb.from('user_settings')
+      .select('lat, lng, time_zone, method, asr_school').eq('user_id', owner).limit(1);
+    if (!got.error) row = (got.data || [])[0] || null;
+  } catch (_e) { /* the default */ }
+  const place = Day.setPrayerPlace(row ? { lat: row.lat, lng: row.lng, zone: row.time_zone,
+                                           method: row.method, asr: row.asr_school } : null);
+  return { zone: place.zone, offset: Day.zoneOffsetMin(place.zone, now, TZ_OFFSET_MIN) };
+}
+
 /** The service client. It bypasses row level security, so writes name user_id. */
 function admin() {
   return createClient(
@@ -103,10 +120,12 @@ Deno.serve(async (req: Request): Promise<Response> => {
 
   // Taken before the reads, so "as of" can only be earlier than what they cover.
   const now = Date.now();
-  // The counter day, as the browser reads it — day.js decides when it turns.
-  const dayStartMs = Day.counterDayStart(now, TZ_OFFSET_MIN);
-  const dayStart = new Date(dayStartMs).toISOString();
   const sb = admin();
+  // The same place and clock as his device, so both count the same day.
+  const place = await useSavedPlace(sb, owner, now);
+  // The counter day, as the browser reads it — day.js decides when it turns.
+  const dayStartMs = Day.counterDayStart(now, place.offset);
+  const dayStart = new Date(dayStartMs).toISOString();
 
   // created_at breaks ties on `at`, so newest-first really is append order.
   const todayRes = await sb.from('events')
@@ -138,7 +157,7 @@ Deno.serve(async (req: Request): Promise<Response> => {
 
   const split = splitToday(todayRes.data || []);
   const figures = Day.dayFigures(split.log, split.prayers, now, carryRes.data || [], lead);
-  const text = Day.glanceText(figures, now, TZ_OFFSET_MIN);
+  const text = Day.glanceText(figures, now, place.offset);
   // The widget's list of open projects; the notification shade keeps title and body.
   const lines = Day.glanceList(split.log, now, lead);
 
@@ -153,5 +172,6 @@ Deno.serve(async (req: Request): Promise<Response> => {
   }, { onConflict: 'user_id' });
   if (up.error) return reply(500, { ok: false, error: up.error.message });
 
-  return reply(200, { ok: true, title: text.title, body: text.body });
+  return reply(200, { ok: true, title: text.title, body: text.body,
+                      zone: place.zone, offset: place.offset });
 });

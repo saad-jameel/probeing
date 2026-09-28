@@ -576,6 +576,47 @@ grant execute on function public.glance_for(text) to anon, authenticated;
 -- signed-out role anything — it cannot read an event, cannot write one, cannot
 -- learn that an account exists. One function, one argument, two lines of text.
 
+-- ---------------------------------------------------------- user_settings
+-- Stage 10. Where his prayer times are worked out, and his time zone, so the
+-- Edge Functions (glance-refresh, wrapup) count the same day as his device: the
+-- day turns 10 minutes before Fajr at this place. One row per person, written by
+-- the app from Settings; the functions read it with the service role and fall
+-- back to Karachi (24.8607, 67.0011, Asia/Karachi) when there is no row.
+--
+-- lat/lng are null until "Use my location" is pressed; the zone is filled in
+-- regardless, from the device's own clock. `method` and `asr_school` are the keys
+-- of PRAYER_METHODS / ASR_SCHOOLS in supabase/functions/_shared/day.js; an
+-- unknown one reads as the default there, so no check constraint is needed.
+create table if not exists public.user_settings (
+  user_id    uuid        primary key default auth.uid() references auth.users on delete cascade,
+  lat        double precision check (lat between -90 and 90),
+  lng        double precision check (lng between -180 and 180),
+  time_zone  text        not null default 'Asia/Karachi',   -- IANA, e.g. Europe/London
+  method     text        not null default 'karachi',
+  asr_school text        not null default 'hanafi',
+  updated_at timestamptz not null default now()
+);
+
+alter table public.user_settings enable row level security;
+
+do $$ begin
+  create policy "read own settings" on public.user_settings
+    for select using (auth.uid() = user_id);
+exception when duplicate_object then null; end $$;
+
+-- The app writes with an upsert, which needs both of the next two.
+do $$ begin
+  create policy "insert own settings" on public.user_settings
+    for insert with check (auth.uid() = user_id);
+exception when duplicate_object then null; end $$;
+
+do $$ begin
+  create policy "update own settings" on public.user_settings
+    for update using (auth.uid() = user_id) with check (auth.uid() = user_id);
+exception when duplicate_object then null; end $$;
+
+-- No delete policy: nothing deletes it, and an empty table means Karachi.
+
 -- ================================================== the schedule (pg_cron)
 -- NOT RUN BY THIS FILE. It is commented out on purpose, because it carries two
 -- values that must never be committed — paste it into the SQL editor with your
@@ -596,7 +637,13 @@ grant execute on function public.glance_for(text) to anon, authenticated;
 -- itself what the time means (see shouldWrapUp) and a single fire has no second
 -- chance if it lands while the push service is unreachable.
 --
---   select cron.schedule('probeing-wrapup', '*/10 18-23,0-6 * * *', $job$
+-- STAGE 10: ALL DAY, '*/10 * * * *'. The function now reads the night's times
+-- on the clock of the zone in user_settings, so in any zone but Karachi's the
+-- UTC 18:00-06:59 window above misses part of the night (UTC+8's 23:30 is 15:30
+-- UTC). Outside the night every run decides 'nothing'. Karachi alone needs only
+-- the old window, which is still what is live until this is re-run.
+--
+--   select cron.schedule('probeing-wrapup', '*/10 * * * *', $job$
 --     select net.http_post(
 --       url := 'https://<YOUR-PROJECT-REF>.supabase.co/functions/v1/wrapup',
 --       headers := jsonb_build_object(

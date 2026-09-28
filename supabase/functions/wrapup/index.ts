@@ -37,8 +37,10 @@ import { createClient } from 'jsr:@supabase/supabase-js@2';
 import '../_shared/day.js';
 
 // day.js is a classic script, so it hands its functions over on globalThis.
-// Only the rollover is read from it: the night's own times are this file's.
+// Only the rollover and the place are read from it: the night's own times are this file's.
 const Day = (globalThis as unknown as { ProBeingDay: {
+  setPrayerPlace: (p: unknown) => { zone: string };
+  zoneOffsetMin: (zone: string, ms: number, fallback: number) => number;
   counterDayStart: (t: number, offsetMin?: number) => number;
   openBeforeToday: (carry: unknown[]) => boolean;
 } }).ProBeingDay;
@@ -72,10 +74,9 @@ function reply(status: number, body: unknown): Response {
  * lifting it passes forever while the code changes underneath it.
  * ──────────────────────────────────────────────────────────────────────────── */
 
-/* Pakistan is UTC+5 and has had no daylight saving since 2009, so a fixed
- * offset is not the usual lie it would be anywhere else — and it is what keeps
- * the block above pure, since asking Intl for a zone is a lookup, not
- * arithmetic. `backend/appsscript.json` names the same zone. */
+/* The user's offset from UTC, in minutes. 300 (Karachi) is the default; each
+ * request replaces it from user_settings (useSavedPlace), so the night's times
+ * follow him when he travels. A number rather than a zone keeps this block pure. */
 var TZ_OFFSET_MIN = 300;
 
 /** 11:30 PM, as minutes past local midnight. The hour the whole stage is about. */
@@ -113,8 +114,8 @@ var ANSWERS_A_CHECK = { work: 1, voice: 1, resume: 1, 'break': 1 };
 var DAY_IS_CLOSED_BY = { off: 1, sleep: 1 };
 
 /** Minutes past local midnight, for an instant given in milliseconds. */
-function localMinuteOfDay(ms) {
-  var mins = Math.floor(ms / 60000) + TZ_OFFSET_MIN;
+function localMinuteOfDay(ms, offsetMin) {
+  var mins = Math.floor(ms / 60000) + (typeof offsetMin === 'number' ? offsetMin : TZ_OFFSET_MIN);
   return ((mins % 1440) + 1440) % 1440;
 }
 
@@ -239,21 +240,22 @@ function shouldWrapUp(last, open, now, rollover) {
            why: 'the day is still open at bedtime' };
 }
 
-/** 'YYYY-MM-DD' for an instant, in Karachi. */
-function localYmd(ms) {
-  return new Date(ms + TZ_OFFSET_MIN * 60000).toISOString().slice(0, 10);
+/** 'YYYY-MM-DD' for an instant, in the user's zone or at `offsetMin`. */
+function localYmd(ms, offsetMin) {
+  var off = typeof offsetMin === 'number' ? offsetMin : TZ_OFFSET_MIN;
+  return new Date(ms + off * 60000).toISOString().slice(0, 10);
 }
 
-/** 'YYYY-MM-DDTHH:MM' for an instant, in Karachi — the date above plus the
- *  clock, built from the same two helpers so it cannot disagree with either. */
-function localStamp(ms) {
-  var m = localMinuteOfDay(ms);
+/** 'YYYY-MM-DDTHH:MM' for an instant — the date above plus the clock, built
+ *  from the same two helpers so it cannot disagree with either. */
+function localStamp(ms, offsetMin) {
+  var m = localMinuteOfDay(ms, offsetMin);
   var hh = Math.floor(m / 60);
   var mm = m % 60;
-  return localYmd(ms) + 'T' + (hh < 10 ? '0' : '') + hh + ':' + (mm < 10 ? '0' : '') + mm;
+  return localYmd(ms, offsetMin) + 'T' + (hh < 10 ? '0' : '') + hh + ':' + (mm < 10 ? '0' : '') + mm;
 }
 
-/** "1:00 am", in Karachi — which check a closing row is answering for. */
+/** "1:00 am", in the user's zone — which check a closing row is answering for. */
 function checkClock(ms) {
   var m = localMinuteOfDay(ms);
   var h = Math.floor(m / 60);
@@ -290,7 +292,9 @@ function checkClock(ms) {
  * own clock — still lands on the same value twice.
  */
 function closingRows(at, askedAt) {
-  var stamp = localStamp(at);
+  /* On a fixed +05:00 whatever zone he is in: a zone change between two runs
+   * must not give one close two rids. +05:00 keeps every earlier rid the same. */
+  var stamp = localStamp(at, 300);
   var asked = checkClock(typeof askedAt === 'number' ? askedAt : at);
   /* SLEEP FIRST, AND THE ORDER IS LOAD-BEARING. `off` is what makes the day
    * read as closed, so it must never be the row that survives alone: if `off`
@@ -359,6 +363,35 @@ function awakeRow(checkId, sentAt) {
 
 const TZ = 'Asia/Karachi';
 
+/* The zone the readable stamps and the notification's words use: the user's,
+ * set with TZ_OFFSET_MIN per request. Module state, but one account, so two
+ * overlapping requests set the same values. */
+let userZone = TZ;
+
+/**
+ * Adopt the place and zone saved in user_settings for this request, at `now`.
+ *
+ * TIME-ZONE CHANGE MID-NIGHT: the app rewrites the zone at its next launch in
+ * the new one, and the next run here reads it. An open check keeps its schedule
+ * — the hour's wait and the 90-minute chain are instants — and only the window
+ * edges (23:30, 10:30, 11:00) are read on the new clock. A failed read, or no
+ * row, is Karachi, which is what this function did before Stage 10.
+ */
+async function useSavedPlace(sb: ReturnType<typeof admin>, owner: string, now: number) {
+  let row: Record<string, unknown> | null = null;
+  try {
+    const got = await sb.from('user_settings')
+      .select('lat, lng, time_zone, method, asr_school').eq('user_id', owner).limit(1);
+    if (!got.error) row = (got.data || [])[0] || null;
+  } catch (_e) { /* the default */ }
+  const place = Day.setPrayerPlace(row ? { lat: row.lat, lng: row.lng, zone: row.time_zone,
+                                           method: row.method, asr: row.asr_school } : null);
+  const off = Day.zoneOffsetMin(place.zone, now, NaN);
+  userZone = isNaN(off) ? TZ : place.zone;
+  TZ_OFFSET_MIN = isNaN(off) ? 300 : off;
+  return { zone: userZone, offset: TZ_OFFSET_MIN, saved: Boolean(row) };
+}
+
 /** The same readable stamp every other row carries — "Tue 08 Sept, 11:30 pm".
  *  Stamped from the ROW'S OWN instant, never from the clock: a row backdated to
  *  11:30 PM whose human column says 00:31 is a column that lies. */
@@ -366,7 +399,7 @@ function humanLocal(ms: number): string {
   try {
     return new Date(ms).toLocaleString('en-GB', {
       weekday: 'short', day: '2-digit', month: 'short',
-      hour: '2-digit', minute: '2-digit', hour12: true, timeZone: TZ
+      hour: '2-digit', minute: '2-digit', hour12: true, timeZone: userZone
     });
   } catch (_e) {
     return new Date(ms).toISOString();
@@ -377,7 +410,7 @@ function humanLocal(ms: number): string {
 function clockLocal(ms: number): string {
   try {
     return new Date(ms).toLocaleString('en-GB', {
-      hour: '2-digit', minute: '2-digit', hour12: true, timeZone: TZ
+      hour: '2-digit', minute: '2-digit', hour12: true, timeZone: userZone
     });
   } catch (_e) {
     return '';
@@ -611,7 +644,7 @@ async function writeEvent(sb: ReturnType<typeof admin>, owner: string,
     user_id: owner,
     at: new Date(at).toISOString(),
     local_time: humanLocal(at),
-    tz: TZ,
+    tz: userZone,
     type: type,
     raw_text: text,
     project: '',
@@ -674,6 +707,7 @@ Deno.serve(async (req: Request): Promise<Response> => {
     if (!UUID.test(id) || !nonce) return reply(401, { ok: false, error: 'not a check of yours' });
 
     const sb = admin();
+    await useSavedPlace(sb, owner, Date.now());      // the awake row's words name his clock
     const found = await sb.from('awake_checks')
       .select('id, sent_at, answered_at, resolved').eq('id', id).eq('nonce', nonce).limit(1);
     if (found.error) return reply(500, { ok: false, error: found.error.message });
@@ -792,6 +826,7 @@ Deno.serve(async (req: Request): Promise<Response> => {
   }
 
   const sb = admin();
+  const place = await useSavedPlace(sb, owner, now);
 
   const lastRes = await sb.from('events')
     .select('at, type').eq('user_id', owner).in('type', STATE_TYPES)
@@ -918,7 +953,7 @@ Deno.serve(async (req: Request): Promise<Response> => {
   }
 
   return reply(200, {
-    ok: true, act: decided.act, why: why,
+    ok: true, act: decided.act, why: why, zone: place.zone, offset: place.offset,
     at: decided.at ? new Date(decided.at).toISOString() : null,
     local_time: decided.at ? humanLocal(decided.at) : null,
     check_id: checkId || null,
