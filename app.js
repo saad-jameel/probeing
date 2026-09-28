@@ -116,6 +116,12 @@ var netStalled = false;        // a request timed out and nothing has answered s
 var stalledAt = 0;             // when the last one timed out
 var NULL_BODY_STATUS = { 101: 1, 103: 1, 204: 1, 205: 1, 304: 1 };   // a Response may not carry a body
 
+/** A clock for durations. The wall clock can step (a time sync, a manual change),
+ *  and a step backwards would stretch the stall window. */
+function monoNow() {
+  return (typeof performance !== 'undefined' && performance.now) ? performance.now() : Date.now();
+}
+
 /** fetch, given up after REQUEST_TIMEOUT_MS. Named AbortError because postgrest-js
  *  treats that as final; any other name and it retries a read three more times. */
 function timedFetch(url, init) {
@@ -129,7 +135,7 @@ function timedFetch(url, init) {
   var late = new Promise(function (_, reject) {
     timer = setTimeout(function () {
       netStalled = true;
-      stalledAt = Date.now();
+      stalledAt = monoNow();
       var err = new Error('no answer within ' + (REQUEST_TIMEOUT_MS / 1000) + ' seconds');
       err.name = 'AbortError';
       reject(err);                         // before abort(), so this is the error the caller sees
@@ -552,7 +558,7 @@ async function attemptCall(action, payload, opts) {
     /* A stalled network is treated like an offline one: fail at once, except one
      * real try every STALL_RETRY_MS to see if answers are back. Otherwise each
      * queued call spends 12 s and a press behind them waits for all of them. */
-    if (netStalled && Date.now() - stalledAt < STALL_RETRY_MS) {
+    if (netStalled && monoNow() - stalledAt < STALL_RETRY_MS) {
       throw new Error('No answer from the server — trying again shortly.');
     }
     try {
@@ -998,7 +1004,7 @@ function queuedDates() {
 /* Oldest first, one at a time, through the same serialised chain every other
  * call uses — so a drain can never race a tap. */
 var draining = false;
-var lastDrainAt = 0;
+var lastDrainAt = -Infinity;      // monoNow(), so a wall-clock step cannot pause the drain
 var DRAIN_RETRY_MS = 15000;
 
 function sendQueued(it) {
@@ -1017,7 +1023,7 @@ function sendQueued(it) {
  * network, because a failed fetch every few seconds helps nobody.
  */
 async function drainOutbox(why) {
-  lastDrainAt = Date.now();
+  lastDrainAt = monoNow();
   if (draining || !supabaseReady()) return;
   if (why !== 'online' && navigator.onLine === false) return;
 
@@ -1045,7 +1051,7 @@ async function drainOutbox(why) {
     }
   } finally {
     draining = false;
-    lastDrainAt = Date.now();
+    lastDrainAt = monoNow();
   }
 
   paintConn();
@@ -8260,7 +8266,7 @@ setInterval(function () {
    * on some desktop setups — so anything waiting is retried on a slow timer as
    * well. retrySession() first, because a launch with no signal has no session
    * and nothing can be sent without one. */
-  if (outboxCount() && Date.now() - lastDrainAt > DRAIN_RETRY_MS) {
+  if (outboxCount() && monoNow() - lastDrainAt > DRAIN_RETRY_MS) {
     retrySession();
     drainOutbox('poll');
   }
