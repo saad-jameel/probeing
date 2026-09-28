@@ -384,6 +384,19 @@ body {
    separate lines, and textContent is the only way this app renders its words. */
 .report-text { font-size: 14px; line-height: 1.5; margin: 4px 0 0; white-space: pre-line; }
 
+/* Prayer x mode, plus missed: on the Review card and under each saved report.
+   None of these set `display`, so Rule 6 has nothing to pair. */
+.prayer-box { margin-top: 12px; }
+.prayer-table { width: 100%; border-collapse: collapse; font-size: 13px;
+  font-variant-numeric: tabular-nums; }
+.prayer-table th, .prayer-table td { padding: 4px 6px; border-bottom: 1px solid var(--line);
+  text-align: right; white-space: nowrap; }
+.prayer-table th:first-child { text-align: left; }
+.prayer-table thead th { font-size: 11.5px; font-weight: 600; color: var(--muted); }
+.prayer-table tbody th { font-weight: 600; }
+.prayer-table .prayer-missed { color: var(--muted); }
+.prayer-note { font-size: 12px; color: var(--muted); margin: 6px 0 0; }
+
 /* An empty paragraph still takes its top margin, which leaves a gap under the
    figures where a message used to be. These are the ones that get cleared and
    refilled as a review runs. */

@@ -5585,6 +5585,7 @@ function clearReview() {
   $('reviewFigures').hidden = true;
   $('reviewFigures').textContent = '';
   $('reviewSleep').textContent = '';
+  showPrayerTable($('reviewPrayers'), null);
   $('reviewProse').textContent = '';
   $('reviewNote').textContent = '';
   $('reviewProjects').textContent = '';
@@ -5801,6 +5802,7 @@ async function runReview(force) {
   }
 
   renderReviewFigures(sum);
+  showPrayerTable($('reviewPrayers'), prayerStats(got.inRange, got.windows));
   /* Published for the dialog's Save to find later — see reviewRegroup. Called
    * immediately, because this IS the first draw. */
   reviewRegroup = function () { renderReviewProjects(sum, projectCategories, tasks); };
@@ -6146,6 +6148,70 @@ function reportFigureLine(stats) {
   return bits.join(' · ');
 }
 
+/** The prayer x mode table from prayerStats() or a saved report's copy of it;
+ *  null when `stats` has no breakdown. Text only (rule 5). */
+function prayerTable(stats) {
+  if (!stats || !Array.isArray(stats.byPrayer) || !stats.byPrayer.length) return null;
+  var modes = Array.isArray(stats.modes) && stats.modes.length ? stats.modes : PRAYER_MODES;
+  // A column for prayers logged with no mode, only when there are any.
+  var noMode = stats.byPrayer.some(function (p) { return Number(p && p.noMode) > 0; });
+
+  function cell(row, tag, text, title) {
+    var c = document.createElement(tag);
+    c.textContent = text;
+    if (title) c.setAttribute('title', title);
+    row.appendChild(c);
+    return c;
+  }
+
+  var table = document.createElement('table');
+  table.className = 'prayer-table';
+  var head = document.createElement('thead');
+  var hr = document.createElement('tr');
+  cell(hr, 'th', '');
+  // "Takbeer", "Partial", "Individual": the first word, with the full name on hover.
+  modes.forEach(function (m) { cell(hr, 'th', String(m).split(/[\s-]/)[0], String(m)); });
+  if (noMode) cell(hr, 'th', 'No mode');
+  cell(hr, 'th', 'Missed');
+  head.appendChild(hr);
+
+  var body = document.createElement('tbody');
+  stats.byPrayer.forEach(function (p) {
+    p = p || {};
+    var tr = document.createElement('tr');
+    cell(tr, 'th', String(p.name || '')).setAttribute('scope', 'row');
+    var by = (p.byMode && typeof p.byMode === 'object') ? p.byMode : {};
+    modes.forEach(function (m) { cell(tr, 'td', String(Number(by[m]) || 0)); });
+    if (noMode) cell(tr, 'td', String(Number(p.noMode) || 0));
+    cell(tr, 'td', String(Number(p.missed) || 0)).className = 'prayer-missed';
+    body.appendChild(tr);
+  });
+  table.append(head, body);
+
+  // Missed only counts days with something logged; say how many that was.
+  var note = document.createElement('p');
+  note.className = 'prayer-note';
+  var text = 'Missed counts days with entries but no such prayer (' +
+    (Number(stats.daysWithRows) || 0) + ' of ' + (Number(stats.days) || 0) + ' days had entries).';
+  var other = Number(stats.other) || 0;
+  if (other) text += other === 1 ? ' 1 prayer row had another name and is not in the table.'
+                                  : ' ' + other + ' prayer rows had another name and are not in the table.';
+  note.textContent = text;
+
+  var box = document.createElement('div');
+  box.className = 'prayer-box';
+  box.append(table, note);
+  return box;
+}
+
+/** Draw the table into `box`, or empty and hide it. */
+function showPrayerTable(box, stats) {
+  box.textContent = '';
+  var table = prayerTable(stats);
+  if (table) box.appendChild(table);
+  box.hidden = !table;
+}
+
 /**
  * The saved reports, newest first.
  *
@@ -6175,7 +6241,10 @@ function renderReports(rows) {
     body.className = 'report-text';
     body.textContent = String(r.text || '');
 
-    li.append(head, figs, body);
+    li.append(head, figs);
+    var prayers = prayerTable(stats.prayerBreakdown);
+    if (prayers) li.appendChild(prayers);
+    li.appendChild(body);
     box.appendChild(li);
   });
 }
