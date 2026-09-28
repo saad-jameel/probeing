@@ -24,7 +24,7 @@
  * off. Neither of them touches the cache above.
  */
 
-var CACHE = 'probeing-shell-v6';
+var CACHE = 'probeing-shell-v7';
 var SHELL = [
   './',
   'index.html',

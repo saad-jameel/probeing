@@ -414,6 +414,8 @@ body {
 }
 .tick.done { color: var(--accent); border-color: var(--accent); }
 .tick .mark { font-size: 13px; }
+/* Stage 10: a prayer whose time has not come, labelled with when it begins. */
+.tick.waiting { opacity: .6; }
 
 /* --------------------------------------------------------- prayer picker */
 
@@ -435,6 +437,12 @@ body {
 .pick[aria-pressed="true"] { background: var(--accent); color: var(--accent-ink); border-color: transparent; font-weight: 600; }
 .pick .done { color: var(--accent); margin-left: 6px; }
 .pick[aria-pressed="true"] .done { color: var(--accent-ink); }
+/* Not yet its time: dimmed, and held rather than tapped, so no text selection
+   or callout gets in the way of the hold. */
+.pick.waiting {
+  opacity: .55;
+  -webkit-user-select: none; user-select: none; -webkit-touch-callout: none;
+}
 
 /* --------------------------------------------------------------- tracker */
 
@@ -558,6 +566,11 @@ body {
   border: 1px solid var(--line); border-radius: 8px;
   font-size: 14px; font-family: inherit;
 }
+/* The prayer-time selects run the full width: their labels are long. */
+.place-pick { display: block; width: 100%; max-width: none; margin-top: 4px; }
+/* Rule 6: sets `display`, so it declares its [hidden] pair. */
+.place-pick[hidden] { display: none; }
+
 /* The pairing code for the home-screen widget (Stage 8), shown once and never
    again. Large and spaced out because it is read off this screen and typed into
    another one, and monospace so the groups line up while that is happening.

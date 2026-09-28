@@ -226,7 +226,8 @@
 <dialog id="prayerDlg" class="dlg">
   <form method="dialog">
     <h2>Log a prayer</h2>
-    <p class="hint">Already logged today is ticked. Logging again adds a second row; nothing is overwritten.</p>
+    <p class="hint">Already logged today is ticked. Logging again adds a second row; nothing is overwritten.
+      A prayer whose time has not come shows when it begins &mdash; press and hold it to log it anyway.</p>
 
     <div id="prayerList" class="pick-grid"></div>
 
@@ -323,6 +324,24 @@
           <button type="button" id="pushTestBtn" class="btn">Send me a test push now</button>
         </div>
         <p id="pushResult" class="hint"></p>
+      </div>
+
+      <div class="dlg-block">
+        <h3>Prayer times</h3>
+        <p class="hint">Worked out on this device from the sun&rsquo;s position where you are. Each
+          prayer button waits for its time (press and hold to log it early anyway), and the day
+          &mdash; your M count and prayer ticks &mdash; turns <strong>10 minutes before
+          Fajr</strong>. The server uses the same place and time zone for the widget and the
+          bedtime check.</p>
+        <p id="placeNow" class="hint"></p>
+        <div class="dlg-actions" style="justify-content: flex-start">
+          <button type="button" id="placeBtn" class="btn">Use my location</button>
+        </div>
+        <label class="hint" for="prayerMethod">Calculation method</label>
+        <select id="prayerMethod" class="cat-pick place-pick"></select>
+        <label class="hint" for="asrSchool">Asr</label>
+        <select id="asrSchool" class="cat-pick place-pick"></select>
+        <p id="placeResult" class="hint"></p>
       </div>
 
     <label class="check">

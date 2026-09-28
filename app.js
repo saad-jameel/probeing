@@ -94,6 +94,27 @@ var isConfigured = function () {
   return Boolean(cfg.supaUrl && cfg.supaKey && sbUser);
 };
 
+// ------------------------------------------------------------- prayer place
+/* Where prayer times, and so the day's rollover, are worked out (Stage 10).
+ * Its own key rather than cfg, which Save rewrites wholesale. `synced` false
+ * means user_settings does not have this copy yet, so the server may still be
+ * counting a different day; it is retried at the next sign-in. */
+var PLACE_KEY = 'probeing.place';
+
+function loadPlace() {
+  var saved = null;
+  try { saved = JSON.parse(localStorage.getItem(PLACE_KEY)); } catch (e) { /* the default */ }
+  return (saved && typeof saved === 'object' && !Array.isArray(saved)) ? saved : {};
+}
+
+function savePlace(p) {
+  try { localStorage.setItem(PLACE_KEY, JSON.stringify(p)); } catch (e) { /* kept for this visit */ }
+}
+
+// Before anything renders: every counter-day read below depends on it.
+var placeSaved = loadPlace();
+setPrayerPlace(placeSaved);
+
 // ----------------------------------------------------------------- supabase
 /* The backend: taps in ~0.35s, and a live feed so the two devices correct
  * each other without anyone pressing refresh.
@@ -210,6 +231,7 @@ function adoptSession(session) {
      * writing it down again each time the app opens. Nothing is asked of the
      * user here; it does nothing at all unless permission was already given. */
     syncPushSubscription();
+    syncPlace();
   } else if (!sbUser) {
     stopLive();
     /* Nothing repaints the glance until a signed-in read lands again, and a real
@@ -1879,6 +1901,11 @@ function finishProject(btn, name) {
 setInterval(function () {
   if (currentScreen === 'home') renderProject();
   if (currentScreen === 'today') renderDaySummary();
+  // A prayer's time arriving, or the day turning, opens or closes its button.
+  if (prayerGateKey(Date.now()) !== prayerGates) {
+    renderPrayerTicks();
+    if (prayerDlg.open) renderPrayerPicks();
+  }
 }, 30000);
 
 // ----------------------------------------------------------------- M button
@@ -2536,32 +2563,80 @@ function loggedToday(name) {
   return todayPrayers.some(function (p) { return p.prayer === name; });
 }
 
+/** When `name` begins in the counter day holding `now`. The day turns before
+ *  Fajr, so all five are that date's — Isha at 1 AM is still open. */
+function prayerOpensAt(name, now) {
+  var ymd = counterDate(now).split('-');
+  return prayerTimes({ y: Number(ymd[0]), m: Number(ymd[1]), d: Number(ymd[2]) })[name];
+}
+
+/** Not yet time for `name`. A time that cannot be worked out never blocks. */
+function prayerWaiting(name, now) {
+  var t = prayerOpensAt(name, now);
+  return isFinite(t) && now < t;
+}
+
+/** "Asr · 4:52 PM", for a prayer whose time has not come. */
+function prayerWaitLabel(name, now) {
+  return name + ' · ' + glanceClock(prayerOpensAt(name, now));
+}
+
+var PRAYER_HOLD_MS = 600;      // press and hold this long to log a prayer before its time
+
+/** Call `onHold` once the button is pressed and held for PRAYER_HOLD_MS. */
+function holdToOpen(btn, onHold) {
+  var timer = null;
+  function stop() {
+    if (timer) { clearTimeout(timer); timer = null; }
+  }
+  btn.addEventListener('pointerdown', function () {
+    stop();
+    timer = setTimeout(function () { timer = null; onHold(); }, PRAYER_HOLD_MS);
+  });
+  ['pointerup', 'pointerleave', 'pointercancel'].forEach(function (type) {
+    btn.addEventListener(type, stop);
+  });
+  // Android otherwise answers a long press with its own menu.
+  btn.addEventListener('contextmenu', function (e) { e.preventDefault(); });
+}
+
 /** Point 6: Home shows the five prayers as ticks, not as log lines. Read-only —
- *  logging still goes through the picker, so a tick cannot be set by a mis-tap. */
+ *  logging still goes through the picker, so a tick cannot be set by a mis-tap.
+ *  One whose time has not come shows when it does. */
 function renderPrayerTicks() {
   var box = $('prayerTicks');
   box.textContent = '';
   var done = 0;
+  var now = Date.now();
 
   PRAYER_NAMES.forEach(function (name) {
     var isDone = loggedToday(name);
     if (isDone) done += 1;
+    var waiting = !isDone && prayerWaiting(name, now);
 
     var el = document.createElement('span');
-    el.className = 'tick' + (isDone ? ' done' : '');
+    el.className = 'tick' + (isDone ? ' done' : '') + (waiting ? ' waiting' : '');
 
     var mark = document.createElement('span');
     mark.className = 'mark';
     mark.textContent = isDone ? '✓' : '○';
 
     var label = document.createElement('span');
-    label.textContent = name;
+    label.textContent = waiting ? prayerWaitLabel(name, now) : name;
 
     el.append(mark, label);
     box.appendChild(el);
   });
 
   $('prayerSub').textContent = done + ' of 5';
+  prayerGates = prayerGateKey(now);
+}
+
+/** Which prayers are waiting right now, so the 30 s tick repaints only on a change. */
+var prayerGates = '';
+function prayerGateKey(now) {
+  return PRAYER_NAMES.map(function (name) { return prayerWaiting(name, now) ? 1 : 0; }).join('') +
+         counterDate(now);
 }
 
 /** One picker button. `done` adds the "already logged today" tick. */
@@ -2583,19 +2658,45 @@ function pickButton(label, isPicked, done, onPick) {
   return b;
 }
 
+// Prayers opened early by a long press, for as long as the picker stays open.
+var prayerUnlocked = userMap();
+
+/* A prayer whose time has not come is aria-disabled rather than `disabled`:
+ * a disabled button receives no pointer events in Chrome, so it could never be
+ * held down to log it anyway. The tap is refused here instead. */
 function renderPrayerPicks() {
   var box = $('prayerList');
   box.textContent = '';
+  var now = Date.now();
 
   PRAYER_NAMES.forEach(function (name) {
-    box.appendChild(pickButton(name, pickedPrayer === name, loggedToday(name), function () {
+    var done = loggedToday(name);
+    var waiting = !done && !prayerUnlocked[name] && prayerWaiting(name, now);
+    var label = waiting ? prayerWaitLabel(name, now) : name;
+
+    function pick() {
       pickedPrayer = name;
       pickedMode = null;
       $('modeWrap').hidden = false;
       $('prayerSaveBtn').disabled = true;
       renderPrayerPicks();
       renderModePicks();
-    }));
+    }
+
+    var b = pickButton(label, pickedPrayer === name, done, function () {
+      if (!waiting) { pick(); return; }
+      flash(name + ' begins at ' + glanceClock(prayerOpensAt(name, now)) +
+            '. Press and hold to log it anyway.', 'warn');
+    });
+    if (waiting) {
+      b.setAttribute('aria-disabled', 'true');
+      b.classList.add('waiting');
+      holdToOpen(b, function () {
+        prayerUnlocked[name] = 1;
+        pick();
+      });
+    }
+    box.appendChild(b);
   });
 }
 
@@ -2615,6 +2716,7 @@ function renderModePicks() {
 $('prayerBtn').addEventListener('click', function () {
   pickedPrayer = null;
   pickedMode = null;
+  prayerUnlocked = userMap();
   $('modeWrap').hidden = true;
   $('prayerSaveBtn').disabled = true;
   renderPrayerPicks();
@@ -4898,8 +5000,7 @@ function prayerStats(rows, windows, nowMs) {
   var buckets = bucketByWindow(rows, wins);
 
   wins.forEach(function (w, i) {
-    // Today is not over, so its later prayers may not be due yet. Stage 10's
-    // real prayer times can judge today; until then only finished days count.
+    // A day not yet over judges a prayer only once the next one has begun.
     var finished = w.endMs <= now;
     if (finished) out.daysFinished += 1;
     var dayRows = buckets[i];
@@ -4933,13 +5034,26 @@ function prayerStats(rows, windows, nowMs) {
       else one.byMode[mode] += 1;
     });
 
-    if (!finished) return;
-    out.byPrayer.forEach(function (one) {
-      if (seen[one.name] !== 1) one.missed += 1;
+    var due = finished ? null : missedDueTimes(w);
+    out.byPrayer.forEach(function (one, k) {
+      if (seen[one.name] === 1) return;
+      if (finished || (due && due[k] <= now)) one.missed += 1;
     });
   });
 
   return out;
+}
+
+/* Stage 10. When each prayer of an unfinished day counts as missed: once the
+ * NEXT prayer has begun, and Isha once the day turns. Chosen over "once its own
+ * time has passed", which would call Asr missed a minute after it began. */
+function missedDueTimes(w) {
+  var ymd = String(w.ymd || '').split('-');
+  var t = prayerTimes({ y: Number(ymd[0]), m: Number(ymd[1]), d: Number(ymd[2]) });
+  return PRAYER_NAMES.map(function (name, k) {
+    var next = k + 1 < PRAYER_NAMES.length ? t[PRAYER_NAMES[k + 1]] : w.endMs;
+    return isFinite(next) ? next : w.endMs;
+  });
 }
 
 /** What one range read must cover, first to last counter day inclusive: from a
@@ -6302,7 +6416,9 @@ function prayerTable(stats) {
   var finished = stats.daysFinished === undefined ? stats.days : stats.daysFinished;
   var text = 'Missed counts days with entries but no such prayer (' +
     (Number(judged) || 0) + ' of ' + (Number(finished) || 0) + ' finished days had entries).';
-  if (Number(stats.days) > Number(finished)) text += ' Today is left out of Missed until it ends.';
+  if (Number(stats.days) > Number(finished)) {
+    text += ' Today counts a prayer as missed once the next one has begun, and Isha once the day turns.';
+  }
   if (Number(stats.repeats) > 0) text += ' A prayer logged twice in a day counts once, with its latest mode.';
   var other = Number(stats.other) || 0;
   if (other) text += other === 1 ? ' 1 prayer row had another name and is not in the table.'
@@ -7080,6 +7196,9 @@ $('settingsBtn').addEventListener('click', function () {
   $('projectNames').value = pinnedNames.join('\n');
   renderCategorySettings();
   renderLearnedNames();
+  fillPlaceSelects();
+  paintPlace();
+  $('placeResult').textContent = '';
   $('micHide').checked = Boolean(cfg.hideMic);
   $('glanceOn').checked = Boolean(cfg.glance);
   $('glanceResult').textContent = glanceBlockedNote();
@@ -7434,6 +7553,168 @@ $('saveBtn').addEventListener('click', function () {
   // Applied here and not on the tick, so Cancel leaves the shade as it found it.
   applyGlanceSetting();
   if (!sbUser) askSignIn(); else refresh();
+});
+
+// ------------------------------------------------------------ prayer times
+
+/** Write the place where the Edge Functions read it. Direct, like the push
+ *  subscription: a setting, not a press, so the outbox does not hold it. */
+async function pushPlace() {
+  if (!supabaseReady()) throw new Error('Sign in first.');
+  var p = currentPlace();
+  var stamp = new Date().toISOString();
+  var res = await sb.from('user_settings').upsert({
+    // Named: a column default only fires on an insert, and this may be an update.
+    user_id: sbUser.id,
+    lat: p.known ? p.lat : null,
+    lng: p.known ? p.lng : null,
+    time_zone: p.zone,
+    method: p.method,
+    asr_school: p.asr,
+    updated_at: stamp
+  }, { onConflict: 'user_id' });
+  if (res.error) throw errorFrom(res.error);
+  placeSaved.at = stamp;                    // so the next pull does not read our own write as newer
+  placeSaved.synced = true;
+  savePlace(placeSaved);
+}
+
+/** Take the place from user_settings when it was set later than this device's
+ *  own (on the other device, say), so phone and laptop count the same day. */
+async function pullPlace() {
+  var got = await sb.from('user_settings')
+    .select('lat, lng, time_zone, method, asr_school, updated_at').eq('user_id', sbUser.id).limit(1);
+  if (got.error) throw errorFrom(got.error);
+  var row = (got.data || [])[0] || null;
+  if (!row || !(Date.parse(row.updated_at) > (Date.parse(placeSaved.at || '') || 0))) return row;
+
+  placeSaved.lat = row.lat;
+  placeSaved.lng = row.lng;
+  placeSaved.method = row.method;
+  placeSaved.asr = row.asr_school;
+  placeSaved.at = row.updated_at;
+  placeSaved.synced = true;
+  savePlace(placeSaved);
+  setPrayerPlace(placeSaved);
+  renderPrayerTicks();
+  refresh();                                // the day may now turn at another time
+  return row;
+}
+
+/* At every sign-in. A change this device made that the server never got goes
+ * first; otherwise the server's copy is read. Then the zone: free to read, no
+ * permission, so the server's clock follows a trip. Only that column is sent,
+ * so a device that never used its location cannot wipe the other one's. */
+async function syncPlace() {
+  if (!supabaseReady()) return;
+  try {
+    var serverZone;
+    if (placeSaved.synced === false) {
+      await pushPlace();
+      serverZone = currentPlace().zone;
+    } else {
+      var row = await pullPlace();
+      serverZone = row ? row.time_zone : PRAYER_DEFAULT_PLACE.zone;   // no row reads as Karachi
+    }
+
+    var tz = deviceTz();
+    if (tz && tz !== currentPlace().zone) {
+      placeSaved.zone = tz;
+      savePlace(placeSaved);
+      setPrayerPlace(placeSaved);
+    }
+    if (tz && tz !== serverZone) {
+      var res = await sb.from('user_settings').upsert({ user_id: sbUser.id, time_zone: tz },
+                                                      { onConflict: 'user_id' });
+      if (res.error) throw errorFrom(res.error);
+    }
+  } catch (e) { /* tried again at the next sign-in; this device's own day is unaffected */ }
+}
+
+/** Adopt changed place fields: this device at once, the server when it answers. */
+function changePlace(fields, said) {
+  Object.keys(fields).forEach(function (k) { placeSaved[k] = fields[k]; });
+  placeSaved.at = new Date().toISOString();
+  placeSaved.synced = false;
+  savePlace(placeSaved);
+  setPrayerPlace(placeSaved);
+  paintPlace();
+  renderPrayerTicks();
+  refresh();                                // the day may now turn at another time
+
+  var out = $('placeResult');
+  if (!supabaseReady()) {
+    out.textContent = said + ' Saved on this device; the server gets it once you sign in.';
+    return;
+  }
+  out.textContent = said + ' Telling the server…';
+  pushPlace().then(function () {
+    out.textContent = said + ' The server uses it too.';
+  }, function (err) {
+    out.textContent = said + ' Saved on this device, but the server copy failed (' +
+      String((err && err.message) || err) + '). It is sent again next time the app opens.';
+  });
+}
+
+/** Where the times are for, today's five, and when the next day starts. */
+function paintPlace() {
+  var p = currentPlace();
+  var now = Date.now();
+  var where = p.known ? 'Your location: ' + p.lat.toFixed(3) + ', ' + p.lng.toFixed(3)
+                      : 'Karachi — the default until you use your location';
+  var times = PRAYER_NAMES.map(function (n) {
+    return n + ' ' + glanceClock(prayerOpensAt(n, now));
+  }).join(' · ');
+  var next = counterDayStart(counterDayStart(now) + 30 * 3600000);
+  $('placeNow').textContent = where + ' (time zone ' + p.zone + '). Today: ' + times +
+    '. The next day starts at ' + glanceClock(next) + '.';
+}
+
+function fillPlaceSelects() {
+  var p = currentPlace();
+  [['prayerMethod', PRAYER_METHODS, p.method], ['asrSchool', ASR_SCHOOLS, p.asr]].forEach(function (s) {
+    var sel = $(s[0]);
+    sel.textContent = '';
+    Object.keys(s[1]).forEach(function (key) {
+      var o = document.createElement('option');
+      o.value = key;
+      o.textContent = s[1][key].label;
+      sel.appendChild(o);
+    });
+    sel.value = s[2];
+  });
+}
+
+/* Refused or unavailable. Nothing saved means Karachi, which is already the
+ * default; a location saved earlier is kept, since a timeout indoors says
+ * nothing about where he is. */
+function placeRefused(why) {
+  $('placeResult').textContent = why + (currentPlace().known
+    ? ' Your saved location is still used.' : ' Using Karachi’s times.');
+  paintPlace();
+}
+
+$('placeBtn').addEventListener('click', function () {
+  if (!navigator.geolocation) { placeRefused('This browser cannot share a location.'); return; }
+  $('placeResult').textContent = 'Asking the browser for your location…';
+  navigator.geolocation.getCurrentPosition(function (pos) {
+    // Three decimals is about 100 m, far finer than prayer times need.
+    changePlace({
+      lat: Math.round(pos.coords.latitude * 1000) / 1000,
+      lng: Math.round(pos.coords.longitude * 1000) / 1000,
+      zone: deviceTz() || currentPlace().zone
+    }, 'Location saved.');
+  }, function (err) {
+    placeRefused(err && err.code === 1 ? 'Location was refused.' : 'Your location could not be found.');
+  }, { enableHighAccuracy: false, timeout: 20000, maximumAge: 600000 });
+});
+
+$('prayerMethod').addEventListener('change', function () {
+  changePlace({ method: $('prayerMethod').value }, 'Method changed.');
+});
+
+$('asrSchool').addEventListener('change', function () {
+  changePlace({ asr: $('asrSchool').value }, 'Asr changed.');
 });
 
 // ------------------------------------------------- bedtime notifications
