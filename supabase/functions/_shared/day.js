@@ -89,14 +89,253 @@ function instantOf(at) {
  * `offsetMin` is minutes east of UTC (the server passes Karachi's 300);
  * omitted, it is the device's own clock. */
 
-/* THE ONLY PLACE THAT KNOWS WHEN THE DAY TURNS: 04:30 on `date` ({y, m, d}).
- * Revision 2 replaces this body with that date's Fajr time, so every caller
- * goes through counterDayStart() / counterDate() and none knows the hour. */
+/* THE ONLY PLACE THAT KNOWS WHEN THE DAY TURNS: FAJR_MARGIN_MIN before that
+ * date's Fajr, at the saved place (Stage 10). Every caller goes through
+ * counterDayStart() / counterDate() and none knows the hour.
+ *
+ * Fajr is a UTC instant, so the browser (device clock) and the server (an
+ * offset) get the same answer for the same date. Clamped against solar noon so
+ * a far-north summer cannot push it to midnight, then into [00:00, 11:00]
+ * local so it stays on its own date and before midday — counterDayOf() and
+ * counterStartOf() rely on both. */
 function dayStartFor(date, offsetMin) {
+  var times = prayerTimes(date, offsetMin);
+  var start = times.Fajr - FAJR_MARGIN_MIN * 60000;
+  var noon = times.Dhuhr;
+  if (!isFinite(start) || !isFinite(noon)) return localClockMs(date, 4, 30, offsetMin);
+  start = Math.min(start, noon - ROLLOVER_LATEST_H * 3600000);
+  start = Math.max(start, noon - ROLLOVER_EARLIEST_H * 3600000);
+  start = Math.min(start, localClockMs(date, 11, 0, offsetMin));
+  return Math.max(start, localClockMs(date, 0, 0, offsetMin));
+}
+
+/** `date` at hh:mm local — the device's clock, or `offsetMin` east of UTC. */
+function localClockMs(date, hh, mm, offsetMin) {
   if (typeof offsetMin === 'number') {
-    return Date.UTC(date.y, date.m - 1, date.d, 4, 30) - offsetMin * 60000;
+    return Date.UTC(date.y, date.m - 1, date.d, hh, mm) - offsetMin * 60000;
   }
-  return new Date(date.y, date.m - 1, date.d, 4, 30).getTime();
+  return new Date(date.y, date.m - 1, date.d, hh, mm).getTime();
+}
+
+/* ── Prayer times (Stage 10) ───────────────────────────────────────────────
+ * Computed here from the sun's position — no service at runtime. The method
+ * is PrayTimes.js's (praytimes.org), which is also what Aladhan runs: Julian
+ * day, then the sun's declination and equation of time, then solar noon and
+ * the hour angle at which the sun reaches each prayer's angle. */
+
+/** The day turns this long before Fajr, so a Fajr logged on time counts for the new day. */
+var FAJR_MARGIN_MIN = 10;
+
+/* Fajr and Isha angles below the horizon. Isha may be minutes after Maghrib
+ * instead (Umm al-Qura). Karachi is the default: the usual choice in Pakistan. */
+var PRAYER_METHODS = {
+  karachi: { label: 'University of Islamic Sciences, Karachi (18° / 18°)', fajr: 18, isha: 18 },
+  mwl: { label: 'Muslim World League (18° / 17°)', fajr: 18, isha: 17 },
+  isna: { label: 'ISNA, North America (15° / 15°)', fajr: 15, isha: 15 },
+  egypt: { label: 'Egyptian General Authority (19.5° / 17.5°)', fajr: 19.5, isha: 17.5 },
+  makkah: { label: 'Umm al-Qura, Makkah (18.5° / 90 min)', fajr: 18.5, ishaMin: 90 }
+};
+
+/** Asr begins when an object's shadow is `factor` times its length plus its noon shadow. */
+var ASR_SCHOOLS = {
+  hanafi: { label: 'Hanafi (shadow twice the length)', factor: 2 },
+  standard: { label: 'Shafi‘i, Maliki, Hanbali (shadow equal to the length)', factor: 1 }
+};
+
+/** Where the times are for when nothing better is known. */
+var PRAYER_DEFAULT_PLACE = { lat: 24.8607, lng: 67.0011, zone: 'Asia/Karachi',
+                             method: 'karachi', asr: 'hanafi' };
+
+/** Sunrise and sunset: the sun's upper edge on the horizon, refraction included. */
+var SUNRISE_ANGLE = 0.833;
+
+/* Where the sun never gets 18° below the horizon (London in June), Fajr is
+ * at most a share of the night before sunrise and Isha after sunset:
+ * 'angle' = angle/60 of the night (Aladhan's default), 'seventh' = 1/7. */
+var HIGH_LAT_RULE = 'angle';
+
+/** Beyond this the sun may not rise or set at all; the times of this latitude are used instead. */
+var POLAR_LAT_LIMIT = 65;
+
+/* The rollover stays between these many hours before solar noon. Karachi's
+ * own sits 7-8.5 h before; London's June angle-based one about 10.5 h. */
+var ROLLOVER_EARLIEST_H = 11;
+var ROLLOVER_LATEST_H = 4;
+
+/** Last resort, in hours from solar noon, for a time that still cannot be computed. */
+var PRAYER_FALLBACK_H = { Fajr: -7, Sunrise: -6, Dhuhr: 0, Asr: 3.5, Maghrib: 6, Isha: 7.5 };
+
+var DEG = Math.PI / 180;
+
+/** The place in use. Set by the app from localStorage and by the server from
+ *  user_settings; null means the default. */
+var prayerPlace = null;
+
+/** Adopt a place ({lat, lng, zone, method, asr}); anything missing or invalid
+ *  takes the default. Returns what is now in use. */
+function setPrayerPlace(p) {
+  prayerPlace = normalisePlace(p);
+  return prayerPlace;
+}
+
+function currentPlace() {
+  return prayerPlace || normalisePlace(null);
+}
+
+/** A number, or NaN for null, '' and anything non-finite (Number(null) is 0). */
+function finiteNum(x) {
+  if (x === null || x === undefined || x === '') return NaN;
+  var n = Number(x);
+  return isFinite(n) ? n : NaN;
+}
+
+/** A complete place. Coordinates that cannot be read fall back to Karachi's;
+ *  the zone is kept whatever the coordinates, because it is the device's clock
+ *  that the server has to match. */
+function normalisePlace(p) {
+  p = p || {};
+  var d = PRAYER_DEFAULT_PLACE;
+  var lat = finiteNum(p.lat);
+  var lng = finiteNum(p.lng);
+  var known = !isNaN(lat) && !isNaN(lng) && Math.abs(lat) <= 90 && Math.abs(lng) <= 180;
+  var zone = typeof p.zone === 'string' && p.zone ? p.zone : d.zone;
+  var method = Object.prototype.hasOwnProperty.call(PRAYER_METHODS, p.method) ? p.method : d.method;
+  var asr = Object.prototype.hasOwnProperty.call(ASR_SCHOOLS, p.asr) ? p.asr : d.asr;
+  return { lat: known ? lat : d.lat, lng: known ? lng : d.lng, zone: zone,
+           method: method, asr: asr, known: known };
+}
+
+/** Julian day at 0h UT of a calendar date. */
+function julianDay(y, m, d) {
+  if (m <= 2) { y -= 1; m += 12; }
+  var a = Math.floor(y / 100);
+  var b = 2 - a + Math.floor(a / 4);
+  return Math.floor(365.25 * (y + 4716)) + Math.floor(30.6001 * (m + 1)) + d + b - 1524.5;
+}
+
+/** The sun's declination (degrees) and the equation of time (hours) at Julian day `jd`. */
+function sunAt(jd) {
+  var n = jd - 2451545.0;
+  var g = (357.529 + 0.98560028 * n) * DEG;
+  var q = 280.459 + 0.98564736 * n;
+  var l = (q + 1.915 * Math.sin(g) + 0.020 * Math.sin(2 * g)) * DEG;
+  var e = (23.439 - 0.00000036 * n) * DEG;
+  var ra = Math.atan2(Math.cos(e) * Math.sin(l), Math.cos(l)) / DEG / 15;
+  var eqt = q / 15 - ra;
+  eqt -= 24 * Math.round(eqt / 24);
+  return { decl: Math.asin(Math.sin(e) * Math.sin(l)) / DEG, eqt: eqt };
+}
+
+/* The hour functions below count hours from local mean midnight at the place's
+ * longitude; `jd0` is the Julian day of that midnight and `t` a first guess of
+ * the hour, at which the sun's position is taken. */
+
+function solarNoonHour(jd0, t) {
+  return 12 - sunAt(jd0 + t / 24).eqt;
+}
+
+/** When the sun is `angle` degrees below the horizon, before or after noon.
+ *  NaN if it never gets there that day. */
+function sunAngleHour(jd0, lat, angle, t, before) {
+  var decl = sunAt(jd0 + t / 24).decl * DEG;
+  var c = (-Math.sin(angle * DEG) - Math.sin(decl) * Math.sin(lat * DEG)) /
+          (Math.cos(decl) * Math.cos(lat * DEG));
+  if (!(c >= -1 && c <= 1)) return NaN;
+  var h = Math.acos(c) / DEG / 15;
+  var noon = solarNoonHour(jd0, t);
+  return before ? noon - h : noon + h;
+}
+
+function asrHour(jd0, lat, factor, t) {
+  var decl = sunAt(jd0 + t / 24).decl;
+  var altitude = Math.atan(1 / (factor + Math.tan(Math.abs(lat - decl) * DEG))) / DEG;
+  return sunAngleHour(jd0, lat, -altitude, t, false);
+}
+
+/** One pass at the guessed hours `g`. */
+function prayerPass(jd0, lat, method, factor, g) {
+  return {
+    Fajr: sunAngleHour(jd0, lat, method.fajr, g.Fajr, true),
+    Sunrise: sunAngleHour(jd0, lat, SUNRISE_ANGLE, g.Sunrise, true),
+    Dhuhr: solarNoonHour(jd0, g.Dhuhr),
+    Asr: asrHour(jd0, lat, factor, g.Asr),
+    Maghrib: sunAngleHour(jd0, lat, SUNRISE_ANGLE, g.Maghrib, false),
+    Isha: typeof method.isha === 'number' ? sunAngleHour(jd0, lat, method.isha, g.Isha, false) : NaN
+  };
+}
+
+/** The six hours for one mean day, high-latitude rule applied. Sunrise or
+ *  sunset missing (polar day or night) means the POLAR_LAT_LIMIT latitude's. */
+function prayerHours(jd0, lat, method, factor) {
+  var guess = { Fajr: 5, Sunrise: 6, Dhuhr: 12, Asr: 13, Maghrib: 18, Isha: 18 };
+  var h = prayerPass(jd0, lat, method, factor, guess);
+  // A second pass, with the sun taken at the first pass's times.
+  Object.keys(guess).forEach(function (k) { if (isFinite(h[k])) guess[k] = h[k]; });
+  h = prayerPass(jd0, lat, method, factor, guess);
+
+  if ((!isFinite(h.Sunrise) || !isFinite(h.Maghrib)) && Math.abs(lat) > POLAR_LAT_LIMIT) {
+    return prayerHours(jd0, lat > 0 ? POLAR_LAT_LIMIT : -POLAR_LAT_LIMIT, method, factor);
+  }
+
+  var night = 24 - h.Maghrib + h.Sunrise;
+  function share(angle) { return HIGH_LAT_RULE === 'seventh' ? night / 7 : night * angle / 60; }
+  var early = share(method.fajr);
+  if (!isFinite(h.Fajr) || h.Sunrise - h.Fajr > early) h.Fajr = h.Sunrise - early;
+  if (typeof method.ishaMin === 'number') {
+    h.Isha = h.Maghrib + method.ishaMin / 60;
+  } else {
+    var late = share(method.isha);
+    if (!isFinite(h.Isha) || h.Isha - h.Maghrib > late) h.Isha = h.Maghrib + late;
+  }
+
+  var noon = isFinite(h.Dhuhr) ? h.Dhuhr : 12;
+  Object.keys(PRAYER_FALLBACK_H).forEach(function (k) {
+    if (!isFinite(h[k])) h[k] = noon + PRAYER_FALLBACK_H[k];
+  });
+  return h;
+}
+
+/**
+ * The prayer times of local date `date` ({y, m, d}) at the place in use, as
+ * instants in ms, rounded to the minute as timetables print them:
+ * {Fajr, Sunrise, Dhuhr, Asr, Maghrib, Isha}. Never NaN for a real date.
+ *
+ * `offsetMin` only picks WHICH solar day is meant — the one whose noon is
+ * nearest that date's local noon — so a zone far from its longitude still gets
+ * its own day. The device's clock when omitted. `place` overrides the one in use.
+ */
+function prayerTimes(date, offsetMin, place) {
+  var p = place ? normalisePlace(place) : currentPlace();
+  var mean = new Date(localClockMs(date, 12, 0, offsetMin) + p.lng * 240000);
+  var y = mean.getUTCFullYear();
+  var m = mean.getUTCMonth() + 1;
+  var d = mean.getUTCDate();
+  var jd0 = julianDay(y, m, d) - p.lng / 360;
+  var h = prayerHours(jd0, p.lat, PRAYER_METHODS[p.method], ASR_SCHOOLS[p.asr].factor);
+  var base = Date.UTC(y, m - 1, d);
+  var out = {};
+  Object.keys(PRAYER_FALLBACK_H).forEach(function (k) {
+    out[k] = Math.round((base + (h[k] - p.lng / 15) * 3600000) / 60000) * 60000;
+  });
+  return out;
+}
+
+/** Minutes east of UTC in IANA `zone` at instant `ms`; `fallback` when the zone
+ *  cannot be read. What the server passes as `offsetMin`. */
+function zoneOffsetMin(zone, ms, fallback) {
+  try {
+    var parts = {};
+    new Intl.DateTimeFormat('en-US', {
+      timeZone: zone, hourCycle: 'h23', year: 'numeric', month: 'numeric',
+      day: 'numeric', hour: 'numeric', minute: 'numeric'
+    }).formatToParts(new Date(ms)).forEach(function (x) { parts[x.type] = x.value; });
+    var asUtc = Date.UTC(Number(parts.year), Number(parts.month) - 1, Number(parts.day),
+                         Number(parts.hour) % 24, Number(parts.minute));
+    var off = Math.round((asUtc - Math.floor(ms / 60000) * 60000) / 60000);
+    return isFinite(off) ? off : fallback;
+  } catch (e) {
+    return fallback;
+  }
 }
 
 /** The local calendar date of instant `t`, as {y, m, d}. */
@@ -666,6 +905,10 @@ function glanceList(log, endMs, lead) {
 
 // What glance-refresh uses. The browser reads the globals directly.
 globalThis.ProBeingDay = {
+  setPrayerPlace: setPrayerPlace,
+  currentPlace: currentPlace,
+  prayerTimes: prayerTimes,
+  zoneOffsetMin: zoneOffsetMin,
   counterDayStart: counterDayStart,
   counterDate: counterDate,
   sessionLead: sessionLead,
