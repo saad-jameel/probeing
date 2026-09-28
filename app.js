@@ -1587,7 +1587,8 @@ function renderLogList() {
   if (!entries.length) {
     // Offline this list cannot be the whole day, so it must not claim to be.
     showEmpty(dayUnread && !lastReadAt
-      ? 'Offline — nothing logged on this device yet today.'
+      ? (navigator.onLine === false ? 'Offline' : 'Could not reach the server') +
+        ' — nothing logged on this device yet today.'
       : 'No entries yet today.');
     return;
   }
@@ -1624,22 +1625,7 @@ async function refresh(opts) {
      * cannot be read: rule 3 forbids caching the read, so the only alternative
      * would be a confident low number, which is worse than a missing one. */
     if (currentUserId() && cfg.supaUrl && cfg.supaKey) {
-      dayUnread = true;
-      // A read that landed earlier in this visit is still the best truth there
-      // is; only a visit with no read at all falls back to the queue alone.
-      if (!lastReadAt) {
-        lastLog = queuedRowsToday();
-        lastLead = leadWithQueue([]);
-        todayPrayers = queuedPrayersToday();
-        $('mCount').textContent = lastLog.filter(function (r) {
-          return r.type === 'M';
-        }).length + ' today';
-        renderPrayerTicks();
-        renderProject();
-        renderLogList();
-      }
-      renderDaySummary();
-      paintConn();
+      markDayUnread();
       return;
     }
     showEmpty('Open Settings to connect.');
@@ -1660,14 +1646,32 @@ async function refresh(opts) {
     /* With no network a failed read is expected, not news. The amber dot and the
      * line under the card already say what is going on, and a red banner after
      * every tap would contradict "a queued write is not a failure". */
-    if (navigator.onLine === false) {
-      dayUnread = true;
-      renderDaySummary();
-      paintConn();
-      return;
-    }
+    /* Any failed read: say the figures may be out of date, never a confident
+     * zero (rule 3). A timeout or stall is not news either; the note says it. */
+    markDayUnread();
+    if (navigator.onLine === false || netStalled) return;
     flash(String(err.message || err), 'err');
   }
+}
+
+/** Today could not be read. A read that landed earlier in this visit is still
+ *  the best truth there is; only a visit with no read at all falls back to what
+ *  this device is holding. The note under the card says which. */
+function markDayUnread() {
+  dayUnread = true;
+  if (!lastReadAt) {
+    lastLog = queuedRowsToday();
+    lastLead = leadWithQueue([]);
+    todayPrayers = queuedPrayersToday();
+    $('mCount').textContent = lastLog.filter(function (r) {
+      return r.type === 'M';
+    }).length + ' today';
+    renderPrayerTicks();
+    renderProject();
+    renderLogList();
+  }
+  renderDaySummary();
+  paintConn();
 }
 
 // userMap() lives in day.js.
@@ -1689,13 +1693,16 @@ function paintTodayNote() {
   var n = outboxCount();
   var msg = '';
 
+  // Offline, or online with a server that did not answer (a timeout, a stall).
+  var why = navigator.onLine === false ? 'Offline'
+                                       : 'Could not reach the server, so this may be out of date';
   if (dayUnread && !lastReadAt) {
     // Nothing was ever read this visit: the figures above are the queue alone.
-    msg = 'Offline — this is only what you logged on this device. The rest of today, ' +
+    msg = why + ' — this is only what you logged on this device. The rest of today, ' +
           'and anything from your other device, appears when you reconnect.';
   } else if (dayUnread) {
     // A read landed earlier, so the figures are real but no longer current.
-    msg = 'Offline — the figures above are from the last time this device could read ' +
+    msg = why + ' — the figures above are from the last time this device could read ' +
           'your rows' + (n ? ', plus what is waiting here' : '') + '. Anything logged ' +
           'on your other device since then is missing until you reconnect.';
   } else if (n) {
