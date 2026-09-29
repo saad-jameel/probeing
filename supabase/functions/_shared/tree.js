@@ -170,11 +170,14 @@ function sameRow(old, row) {
 
 /**
  * The Home card: open leaves due on or before `today`, the COUNTER date
- * (day.js's counterDate, so at 02:00 it is still yesterday). A leaf is a
+ * (day.js's counterDate, so at 02:00 it is still yesterday), earliest due
+ * first; then every open leaf with no due date, in Google's order (Saad's list
+ * has no dates at all). A leaf due later than today is left out. A leaf is a
  * sub-task, or a project with no sub-task left; a project with sub-tasks is
- * never listed itself. Pass one list's rows. Earliest due first.
- * Each is {id, title, project, due, overdue}; `project` is null when the task
- * has none: a childless project, or a sub-task whose parent is not here.
+ * never listed itself. Pass one list's rows.
+ * Each is {id, title, project, due, overdue}; `due` is null when undated, and
+ * `project` is null when the task has none: a childless project, or a sub-task
+ * whose parent is not here.
  */
 function todaysPlan(nodes, today) {
   if (!/^\d{4}-\d{2}-\d{2}$/.test(String(today || ''))) return [];
@@ -187,18 +190,20 @@ function todaysPlan(nodes, today) {
   });
   return list.filter(function (n) {
     var due = dueOf(n.due);
-    if (!nodeOpen(n) || !due || due > today) return false;
+    if (!nodeOpen(n) || (due && due > today)) return false;
     if (n.kind === 'project') return !hasKids[n.google_id];
     var up = byGoogle[n.parent_google_id];
     return n.kind === 'subtask' && !(up && up.gone_at);
   }).map(function (n) {
     var up = n.kind === 'subtask' ? byGoogle[n.parent_google_id] : null;
     var due = dueOf(n.due);
+    // Dated first ('0'), then undated ('1'); within each, due then Google's order.
     return { id: n.id, title: String(n.title || ''), project: up ? String(up.title || '') : null,
-             due: due, overdue: due < today,
-             order: [due, String((up || n).position || ''), up ? String(n.position || '') : ''] };
+             due: due, overdue: Boolean(due) && due < today,
+             order: [due ? '0' : '1', due || '', String((up || n).position || ''),
+                     up ? String(n.position || '') : ''] };
   }).sort(function (a, b) {
-    for (var i = 0; i < 3; i++) {
+    for (var i = 0; i < 4; i++) {
       if (a.order[i] !== b.order[i]) return a.order[i] < b.order[i] ? -1 : 1;
     }
     return 0;
