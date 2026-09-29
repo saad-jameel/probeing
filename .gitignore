@@ -69,6 +69,8 @@
 # The shared counting code, which the PWA also loads. Named, not `**/*.js`,
 # for the same reason the line above is narrow.
 !/supabase/functions/_shared/day.js
+# The Google grant helpers google-link and tasks-sync share (server-only, no secrets).
+!/supabase/functions/_shared/google.js
 
 # --- Tooling and docs --------------------------------------------------------
 !/scripts/
