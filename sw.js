@@ -107,8 +107,25 @@ function pushData(event) {
   }
 }
 
+/* Prayer reminders (prayer-remind): one line per prayer, each replacing the last.
+ * 'prayer-logged' is the quiet replacement once that prayer is logged. */
+var PRAYER_TAG = /^probeing-prayer-[A-Za-z]+$/;
+
 self.addEventListener('push', function (event) {
   var data = pushData(event);
+
+  if (data.kind === 'prayer' || data.kind === 'prayer-logged') {
+    var logged = data.kind === 'prayer-logged';
+    event.waitUntil(self.registration.showNotification(String(data.title || 'ProBeing'), {
+      body: String(data.body || ''),
+      icon: 'icons/icon-192.png',
+      badge: 'icons/favicon-32.png',
+      tag: PRAYER_TAG.test(String(data.tag || '')) ? data.tag : 'probeing-prayer-reminder',
+      renotify: !logged,
+      silent: logged
+    }));
+    return;
+  }
 
   /* A notification MUST be shown for every push. Chrome allowed the subscription
    * on the promise that each one is visible (userVisibleOnly), and a push that
@@ -227,6 +244,15 @@ self.addEventListener('notificationclick', function (event) {
    * leave it in the shade for the next look. */
   if (event.notification && event.notification.tag === GLANCE_TAG) {
     event.waitUntil(showApp());
+    return;
+  }
+
+  // A prayer reminder: open ProBeing on Home (app.js listens for the message).
+  if (event.notification && /^probeing-prayer-/.test(String(event.notification.tag))) {
+    event.notification.close();
+    event.waitUntil(showApp().then(function (client) {
+      if (client && typeof client.postMessage === 'function') client.postMessage({ goto: 'home' });
+    }));
     return;
   }
 

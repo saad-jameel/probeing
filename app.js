@@ -7924,6 +7924,7 @@ $('settingsBtn').addEventListener('click', function () {
   $('pairResult').textContent = '';
   loadDeviceKeys();                  // not awaited: the dialog opens now
   loadGoogle();                      // likewise
+  loadPrayerRemind();                // likewise
   dlg.showModal();
 });
 
@@ -9656,11 +9657,56 @@ document.addEventListener('visibilitychange', function () {
   tasksOnOpen();
 });
 
+// ------------------------------------------------- prayer reminders (29 Sep)
+/* The prayer-remind function's on/off, in user_settings so the server reads it.
+ * Written directly, like pushPlace: a setting, not a press. */
+async function loadPrayerRemind() {
+  var box = $('prayerRemindOn');
+  var out = $('prayerRemindResult');
+  box.disabled = true;
+  out.textContent = '';
+  try {
+    if (!supabaseReady()) { out.textContent = 'Sign in to change this.'; return; }
+    var got = await sb.from('user_settings').select('prayer_reminders')
+      .eq('user_id', sbUser.id).limit(1);
+    if (got.error) throw errorFrom(got.error);
+    var row = (got.data || [])[0];
+    box.checked = !(row && row.prayer_reminders === false);     // no row: on, the default
+    box.disabled = false;
+  } catch (e) {
+    out.textContent = 'Could not read this setting: ' + ((e && e.message) || e);
+  }
+}
+
+$('prayerRemindOn').addEventListener('change', async function () {
+  var box = this;
+  var out = $('prayerRemindResult');
+  var want = box.checked;
+  box.disabled = true;
+  out.textContent = 'Saving…';
+  try {
+    if (!supabaseReady()) throw new Error('Sign in first.');
+    // Only this column, so updated_at (whose prayer place wins) does not move.
+    var res = await sb.from('user_settings').upsert({ user_id: sbUser.id, prayer_reminders: want },
+                                                     { onConflict: 'user_id' });
+    if (res.error) throw errorFrom(res.error);
+    out.textContent = want ? 'On, for every device.' : 'Off, for every device.';
+  } catch (e) {
+    box.checked = !want;
+    out.textContent = 'Not saved: ' + ((e && e.message) || e);
+  }
+  box.disabled = false;
+});
+
 // -------------------------------------------------------------------- boot
 
 if ('serviceWorker' in navigator) {
   window.addEventListener('load', function () {
     navigator.serviceWorker.register('sw.js').catch(function () { /* offline shell is optional */ });
+  });
+  // A tapped prayer reminder (sw.js) brings the app forward on Home.
+  navigator.serviceWorker.addEventListener('message', function (e) {
+    if (e.data && e.data.goto === 'home') showScreen('home');
   });
 }
 
