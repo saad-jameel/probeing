@@ -233,8 +233,9 @@ Deno.serve(async (req: Request): Promise<Response> => {
   let key: CryptoKey;
   try {
     key = await importTokenKey(cfg.tokenKey);
-  } catch (e) {
-    return reply(503, { ok: false, error: (e as Error).message });
+  } catch (_e) {
+    // Named, never quoted, as in google-link: the parser's message could echo part of the key.
+    return reply(503, { ok: false, error: 'Google setup has a problem: the token key is malformed.' });
   }
 
   const d = {
