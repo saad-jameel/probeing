@@ -728,10 +728,10 @@ function api(action, payload, opts) {
       return res;
     }, function (err) {
       if (secured) {
-        /* A refusal the database really made will be refused again: report it
-         * and take the copy back off the device, which is the roll-back the
-         * screen already expects. Anything else is the network. */
-        if (err && err.fatal) { dropItem(payload.rid); throw err; }
+        /* A refusal the database really made will be refused again: park it,
+         * as the drain does, so Settings still names it once the banner is gone.
+         * The screen rolls back as before. Anything else is the network. */
+        if (err && err.fatal) throw parkRefused({ rid: payload.rid, action: action, payload: payload }, err);
         return nowWaiting(action, payload);
       }
       // The hold could not be stored at all (a full disk). Try once more here,
@@ -997,26 +997,40 @@ function parkedAll() {
   return storedList(raw);
 }
 
-/** Move an item onto the parked list. Touches the outbox not at all — saveOutbox
- *  calls this while it is mid-write, and the two must not chase each other. */
+/** Move an item onto the parked list, and return how it is named there. Touches
+ *  the outbox not at all — saveOutbox calls this while it is mid-write, and the
+ *  two must not chase each other. */
 function addParked(it, why) {
   var row = queuedRow(it) || {};
   var list = parkedAll();
+  var what = it.action === 'money' ? moneyWhat(queuedMoney(it))
+                                   : String(row.raw_text || row.type || it.action);
   list.push({
     rid: it.rid,
     at: (it.payload || {}).at || '',
-    what: it.action === 'money' ? moneyWhat(queuedMoney(it))
-                                : String(row.raw_text || row.type || it.action),
+    what: what,
     why: String(why || 'refused')
   });
   try {
     localStorage.setItem(PARKED_KEY, JSON.stringify(list.slice(-PARKED_MAX)));
   } catch (e) { /* nothing more we can do about it */ }
+  return what;
 }
 
 function parkItem(it, err) {
-  addParked(it, (err && err.message) || 'refused');
+  var what = addParked(it, (err && err.message) || 'refused');
   dropItem(it.rid);
+  return what;
+}
+
+/** Park a press refused on its first send; the error to show, in plain words. */
+function parkRefused(it, err) {
+  var what = parkItem(it, err);
+  paintOutboxNote();
+  var told = new Error('Could not save "' + what + '": the database refused it. ' +
+                       'It is listed in Settings with the reason.');
+  told.fatal = true;
+  return told;
 }
 
 function forgetParked() {
