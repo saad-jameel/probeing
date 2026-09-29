@@ -69,7 +69,9 @@
 # The shared counting code, which the PWA also loads. Named, not `**/*.js`,
 # for the same reason the line above is narrow.
 !/supabase/functions/_shared/day.js
-# The Google grant helpers google-link and tasks-sync share (server-only, no secrets).
+# Stage 13: the Tasks mirror's logic (the PWA loads it too), and the Google
+# grant helpers google-link and tasks-sync share (server-only, no secrets).
+!/supabase/functions/_shared/tree.js
 !/supabase/functions/_shared/google.js
 
 # --- Tooling and docs --------------------------------------------------------
