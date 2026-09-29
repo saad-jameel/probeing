@@ -2341,24 +2341,33 @@ sleepBtn.addEventListener('click', async function () {
   if (question && !window.confirm(question)) return;
 
   coolDown(sleepBtn);
-  var undo = beginToggleWrite();       // before the first optimistic change
 
-  var steps = [];
-  if (closing) {
-    steps.push({ type: closing.type, raw_text: closing.text });
-    setToggle('work', closing.state);
-    noteLocalRow(closing.type, closing.text);
+  function go() {
+    // Read again: the prayer prompt may have been open while a re-read landed.
+    closing = toSleep ? sleepClosingRow(toggles.work.state, night) : null;
+    var undo = beginToggleWrite();       // before the first optimistic change
+
+    var steps = [];
+    if (closing) {
+      steps.push({ type: closing.type, raw_text: closing.text });
+      setToggle('work', closing.state);
+      noteLocalRow(closing.type, closing.text);
+    }
+
+    var edge = toSleep ? 'sleep' : 'wake';
+    var text = toSleep ? 'Sleep' : 'Wake up';
+    steps.push({ type: edge, raw_text: text });
+    setToggle('sleep', toSleep ? 'asleep' : 'awake');
+    noteLocalRow(edge, text);
+
+    confirmPulse(sleepBtn);
+    flash(toSleep ? 'Sleep logged' : 'Awake', 'ok');
+    runWrites(steps, undo);
   }
 
-  var edge = toSleep ? 'sleep' : 'wake';
-  var text = toSleep ? 'Sleep' : 'Wake up';
-  steps.push({ type: edge, raw_text: text });
-  setToggle('sleep', toSleep ? 'asleep' : 'awake');
-  noteLocalRow(edge, text);
-
-  confirmPulse(sleepBtn);
-  flash(toSleep ? 'Sleep logged' : 'Awake', 'ok');
-  runWrites(steps, undo);
+  // Only a Sleep that ends the day asks about prayers; a nap does not.
+  if (closing && closing.type === 'off') askDayPrayers(go);
+  else go();
 });
 
 workBtn.addEventListener('click', async function () {
@@ -2404,23 +2413,80 @@ function paintDayBtn() {
 
 dayBtn.addEventListener('click', async function () {
   if (dayBtn.disabled) return;
-  var off = toggles.work.state === 'off';
-
   coolDown(dayBtn);
-  var undo = beginToggleWrite();
 
-  var steps = wakeSteps(off);              // starting the day ends the night
-  var edge = off ? 'resume' : 'off';
-  var text = off ? 'Day started' : 'Day over';
-  steps.push({ type: edge, raw_text: text });
+  function go() {
+    // Read here, not at the tap: the prayer prompt may have been open a while.
+    var off = toggles.work.state === 'off';
+    var undo = beginToggleWrite();
 
-  setToggle('work', off ? 'working' : 'off');
-  noteLocalRow(edge, text);
-  confirmPulse(dayBtn);
-  flash(off ? 'Day started' : 'Day closed', 'ok');
-  runWrites(steps, undo);
-  if (off) maybeAskProject();
+    var steps = wakeSteps(off);              // starting the day ends the night
+    var edge = off ? 'resume' : 'off';
+    var text = off ? 'Day started' : 'Day over';
+    steps.push({ type: edge, raw_text: text });
+
+    setToggle('work', off ? 'working' : 'off');
+    noteLocalRow(edge, text);
+    confirmPulse(dayBtn);
+    flash(off ? 'Day started' : 'Day closed', 'ok');
+    runWrites(steps, undo);
+    if (off) maybeAskProject();
+  }
+
+  if (toggles.work.state === 'off') go();
+  else askDayPrayers(go);
 });
+
+/* Stage 13b (Saad, 29 Sep): before an `off` row, name any prayer whose time has
+ * begun and is not logged, with a button to log each one there. None missing:
+ * no dialog and no extra tap (rule 4). "End day anyway" always goes ahead. */
+var dayPrayersDlg = $('dayPrayersDlg');
+var dayOffPending = null;       // the End day / night Sleep waiting on the prompt
+
+/** Today's prayers whose time has begun and that are not logged (a held press counts). */
+function missingPrayers(now) {
+  return PRAYER_NAMES.filter(function (name) {
+    return !loggedToday(name) && !prayerWaiting(name, now);
+  });
+}
+
+function askDayPrayers(go) {
+  var missing = missingPrayers(Date.now());
+  if (!missing.length) { dayOffPending = null; go(); return; }
+  dayOffPending = go;
+  $('dayPrayersText').textContent = 'Not logged today: ' + missing.join(', ');
+  var box = $('dayPrayersList');
+  box.textContent = '';
+  missing.forEach(function (name) {
+    var b = document.createElement('button');
+    b.type = 'button';
+    b.className = 'pick';
+    b.textContent = name;
+    b.addEventListener('click', function () {
+      dayPrayersDlg.close();                     // the picker comes back here when done
+      openPrayerPicker(name);
+    });
+    box.appendChild(b);
+  });
+  if (!dayPrayersDlg.open) dayPrayersDlg.showModal();
+}
+
+/** Back from the picker: ask again, or end the day if nothing is left. */
+function afterPrayerPicker() {
+  if (!dayOffPending) return;
+  var go = dayOffPending;
+  dayOffPending = null;
+  askDayPrayers(go);
+}
+
+$('dayPrayersAnyway').addEventListener('click', function () {
+  var go = dayOffPending;
+  dayOffPending = null;
+  dayPrayersDlg.close();
+  if (go) go();
+});
+// Escape writes nothing; End day can simply be pressed again.
+dayPrayersDlg.addEventListener('cancel', function () { dayOffPending = null; });
 
 // -------------------------------------------------------------------- chips
 
@@ -2820,18 +2886,28 @@ function renderModePicks() {
   });
 }
 
-$('prayerBtn').addEventListener('click', function () {
-  pickedPrayer = null;
+/** The picker, with `preset` already picked when it may be logged now (the
+ *  end-of-day prompt's buttons). */
+function openPrayerPicker(preset) {
+  var ok = Boolean(preset) && !loggedToday(preset) && !prayerWaiting(preset, Date.now());
+  pickedPrayer = ok ? preset : null;
   pickedMode = null;
-  $('modeWrap').hidden = true;
+  $('modeWrap').hidden = !ok;
   $('prayerSaveBtn').disabled = true;
   renderPrayerPicks();
   renderModePicks();
   prayerDlg.showModal();
   scheduleRefresh(1200);              // opens instantly on cached ticks, then corrects them
-});
+}
 
-$('prayerCancelBtn').addEventListener('click', function () { prayerDlg.close(); });
+$('prayerBtn').addEventListener('click', function () { openPrayerPicker(null); });
+
+$('prayerCancelBtn').addEventListener('click', function () {
+  prayerDlg.close();
+  afterPrayerPicker();
+});
+// Escape, in a browser; Save and Cancel call it themselves.
+prayerDlg.addEventListener('close', afterPrayerPicker);
 
 $('prayerSaveBtn').addEventListener('click', function () {
   if (!pickedPrayer || !pickedMode) return;
@@ -2861,6 +2937,7 @@ $('prayerSaveBtn').addEventListener('click', function () {
   scheduleRefresh();
 
   runWrite('prayer', { prayer: name, mode: mode });
+  afterPrayerPicker();                // queued after the prayer, so the day closes after it
 });
 
 // ------------------------------------------------- what are you working on?

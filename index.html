@@ -284,6 +284,19 @@
   </form>
 </dialog>
 
+<!-- Stage 13b. Asked before End day (or Sleep at night) when a prayer whose time
+     has begun is not logged. Never shown when nothing is missing. -->
+<dialog id="dayPrayersDlg" class="dlg">
+  <form method="dialog">
+    <h2>Before the day ends</h2>
+    <p id="dayPrayersText" class="hint"></p>
+    <div id="dayPrayersList" class="pick-grid" aria-label="Log it now"></div>
+    <div class="dlg-actions">
+      <button type="button" id="dayPrayersAnyway" class="btn">End day anyway</button>
+    </div>
+  </form>
+</dialog>
+
 <dialog id="statusDlg" class="dlg">
   <form method="dialog">
     <h2>Add a break reason</h2>
