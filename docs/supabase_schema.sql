@@ -648,8 +648,10 @@ create table if not exists public.money (
   local_time  text          not null default '',
   tz          text          not null default '',
   dir         text          not null check (dir in ('in', 'out')),
-  -- Two decimals; 0.50 is fine, 0 and negatives are refused.
-  amount      numeric(14,2) not null check (amount > 0),
+  -- Two decimals; 0.50 is fine, 0 and negatives are refused. NaN is refused by
+  -- name, because Postgres ranks NaN above every number, so NaN > 0 is true.
+  amount      numeric(14,2) not null
+              constraint money_amount_positive check (amount > 0 and amount <> 'NaN'),
   currency    text          not null default 'PKR',
   tag         text          not null check (char_length(tag) between 1 and 40),
   note        text          not null default '' check (char_length(note) <= 200),
@@ -658,6 +660,12 @@ create table if not exists public.money (
   -- A resend is a no-op: the repeat fails with 23505, which the app reads as success.
   constraint money_user_rid_key unique (user_id, rid)
 );
+
+-- For a table made before the NaN rule: swap the old unnamed check for the named one.
+alter table public.money drop constraint if exists money_amount_check;
+alter table public.money drop constraint if exists money_amount_positive;
+alter table public.money add constraint money_amount_positive
+  check (amount > 0 and amount <> 'NaN');
 
 create index if not exists money_user_at_idx
   on public.money (user_id, at desc);
