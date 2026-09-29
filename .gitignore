@@ -33,6 +33,8 @@
 !/sw.js
 # Stage 12: where Google sends him back after Connect Google.
 !/google-callback.html
+!/privacy.html
+!/terms.html
 !/icons/
 !/icons/**
 
