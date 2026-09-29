@@ -169,24 +169,34 @@ function sameRow(old, row) {
 }
 
 /**
- * The Home card: open sub-tasks due on or before `today`, the COUNTER date
- * (day.js's counterDate, so at 02:00 it is still yesterday). Earliest due first.
- * Each is {id, title, project, due, overdue}.
+ * The Home card: open leaves due on or before `today`, the COUNTER date
+ * (day.js's counterDate, so at 02:00 it is still yesterday). A leaf is a
+ * sub-task, or a project with no sub-task left; a project with sub-tasks is
+ * never listed itself. Pass one list's rows. Earliest due first.
+ * Each is {id, title, project, due, overdue}; `project` is null when the task
+ * has none: a childless project, or a sub-task whose parent is not here.
  */
 function todaysPlan(nodes, today) {
   if (!/^\d{4}-\d{2}-\d{2}$/.test(String(today || ''))) return [];
+  var list = nodes || [];
   var byGoogle = {};
-  (nodes || []).forEach(function (n) { byGoogle[n.google_id] = n; });
-  return (nodes || []).filter(function (n) {
-    var up = byGoogle[n.parent_google_id];
+  var hasKids = {};
+  list.forEach(function (n) {
+    byGoogle[n.google_id] = n;
+    if (n.kind === 'subtask' && !n.gone_at) hasKids[n.parent_google_id] = true;
+  });
+  return list.filter(function (n) {
     var due = dueOf(n.due);
-    return n.kind === 'subtask' && nodeOpen(n) && due && due <= today && !(up && up.gone_at);
+    if (!nodeOpen(n) || !due || due > today) return false;
+    if (n.kind === 'project') return !hasKids[n.google_id];
+    var up = byGoogle[n.parent_google_id];
+    return n.kind === 'subtask' && !(up && up.gone_at);
   }).map(function (n) {
-    var up = byGoogle[n.parent_google_id];
+    var up = n.kind === 'subtask' ? byGoogle[n.parent_google_id] : null;
     var due = dueOf(n.due);
-    return { id: n.id, title: String(n.title || ''), project: up ? String(up.title || '') : '',
+    return { id: n.id, title: String(n.title || ''), project: up ? String(up.title || '') : null,
              due: due, overdue: due < today,
-             order: [due, up ? String(up.position || '') : '', String(n.position || '')] };
+             order: [due, String((up || n).position || ''), up ? String(n.position || '') : ''] };
   }).sort(function (a, b) {
     for (var i = 0; i < 3; i++) {
       if (a.order[i] !== b.order[i]) return a.order[i] < b.order[i] ? -1 : 1;
@@ -211,18 +221,33 @@ function byStateThenPosition(a, b) {
   return ta === tb ? 0 : ta < tb ? -1 : 1;
 }
 
-/** Projects with their sub-tasks, for the read-only view: [{node, state, children}]. */
+/**
+ * Projects with their sub-tasks, for the read-only view: [{node, state, children}].
+ * Sub-tasks whose project is not here come last, in one group with node null.
+ */
 function mirrorTree(nodes) {
   var list = nodes || [];
-  return list.filter(function (n) { return n.kind === 'project'; })
-    .sort(byStateThenPosition)
-    .map(function (p) {
-      var kids = list.filter(function (n) {
-        return n.kind === 'subtask' && n.parent_google_id === p.google_id;
-      }).sort(byStateThenPosition);
-      return { node: p, state: nodeState(p),
-               children: kids.map(function (k) { return { node: k, state: nodeState(k) }; }) };
-    });
+  var rank = { open: 0, done: 1, gone: 2 };
+  var projects = list.filter(function (n) { return n.kind === 'project'; });
+  var isProject = {};
+  projects.forEach(function (p) { isProject[p.google_id] = true; });
+  function leaves(kids) {
+    return kids.sort(byStateThenPosition).map(function (k) { return { node: k, state: nodeState(k) }; });
+  }
+  var out = projects.sort(byStateThenPosition).map(function (p) {
+    return { node: p, state: nodeState(p), children: leaves(list.filter(function (n) {
+      return n.kind === 'subtask' && n.parent_google_id === p.google_id;
+    })) };
+  });
+  var orphans = leaves(list.filter(function (n) {
+    return n.kind === 'subtask' && !isProject[n.parent_google_id];
+  }));
+  if (orphans.length) {
+    out.push({ node: null, state: orphans.reduce(function (best, c) {
+      return rank[c.state] < rank[best] ? c.state : best;
+    }, 'gone'), children: orphans });
+  }
+  return out;
 }
 
 // What tasks-sync uses. The browser reads the globals directly.

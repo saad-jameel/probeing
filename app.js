@@ -9295,7 +9295,7 @@ async function readGoogleSync() {
   if (!sb) return;
   try {
     var res = await sb.from('sync_state')
-      .select('connected,google_email,list_title,last_error,last_error_at,last_pull_ok_at,deep_ignored')
+      .select('connected,google_email,list_id,list_title,last_error,last_error_at,last_pull_ok_at,deep_ignored')
       .limit(1);
     if (!res.error) googleSync = (res.data || [])[0] || null;
   } catch (e) { /* the status reply stands in */ }
@@ -9479,10 +9479,16 @@ async function readTaskNodes() {
   if (!sb) return;
   try {
     var res = await sb.from('task_nodes')
-      .select('id,google_id,parent_google_id,kind,title,position,due,g_status,gone_at')
+      .select('id,google_id,list_id,parent_google_id,kind,title,position,due,g_status,gone_at')
       .order('gone_at', { ascending: false, nullsFirst: true }).limit(1000);
     if (!res.error) taskNodes = res.data || [];
   } catch (e) { /* the last read stands */ }
+}
+
+/* A list picked before stays in the table; only the list tasks-sync last read is shown. */
+function currentNodes() {
+  var list = googleSync && googleSync.list_id;
+  return list ? taskNodes.filter(function (n) { return n.list_id === list; }) : [];
 }
 
 /**
@@ -9526,17 +9532,23 @@ function paintTasks() {
 function paintPlan() {
   var card = $('planCard');
   if (!tasksConnected() || typeof todaysPlan !== 'function') { card.hidden = true; return; }
-  var plan = todaysPlan(taskNodes, counterDate(Date.now()));
+  var plan = todaysPlan(currentNodes(), counterDate(Date.now()));
   var list = $('planList');
   list.textContent = '';
   plan.forEach(function (p) {
     var li = document.createElement('li');
     var title = document.createElement('div');
     title.textContent = p.title || '(untitled)';
-    var meta = document.createElement('div');
-    meta.className = 'plan-meta' + (p.overdue ? ' overdue' : '');
-    meta.textContent = [p.project, p.overdue ? 'due ' + humanYmd(p.due) : ''].filter(Boolean).join(' · ');
-    li.append(title, meta);
+    li.appendChild(title);
+    // null: no project to name (a childless project, or its parent is not in the list).
+    var project = p.project === null ? '' : p.project || '(untitled)';
+    var line = [project, p.overdue ? 'due ' + humanYmd(p.due) : ''].filter(Boolean).join(' · ');
+    if (line) {
+      var meta = document.createElement('div');
+      meta.className = 'plan-meta' + (p.overdue ? ' overdue' : '');
+      meta.textContent = line;
+      li.appendChild(meta);
+    }
     list.appendChild(li);
   });
   list.hidden = !plan.length;
@@ -9577,12 +9589,13 @@ function paintTasksSettings(v) {
   line.textContent = on ? tasksSyncText(googleSync) : '';
   var tree = $('tasksTree');
   tree.textContent = '';
-  var projects = on ? mirrorTree(taskNodes) : [];
+  var projects = on ? mirrorTree(currentNodes()) : [];
   projects.forEach(function (p) {
     var li = document.createElement('li');
     var name = document.createElement('span');
     name.className = 'task-project task-' + p.state;
-    name.textContent = p.node.title || '(untitled)';
+    // node null: the group of sub-tasks whose project is not in the list.
+    name.textContent = p.node ? p.node.title || '(untitled)' : '(no project)';
     li.appendChild(name);
     if (p.children.length) {
       var sub = document.createElement('ul');
