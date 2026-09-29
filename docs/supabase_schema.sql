@@ -827,6 +827,26 @@ do $$ begin
   alter publication supabase_realtime add table public.task_nodes;
 exception when duplicate_object then null; end $$;
 
+-- ================================================================== loans
+-- Stage 13b. A loan is a money row with kind 'loan' and the person it was with.
+-- dir says which way the cash went: I lent / I paid back are 'out', I borrowed /
+-- they paid me back are 'in'. tag stays required and carries a fixed word
+-- ("Lent", "Borrowed", "Repaid to me", "Repaid by me"), so an app from before
+-- this reads the row as plain cash with a sensible name. Existing rows are cash.
+alter table public.money add column if not exists kind text not null default 'cash';
+alter table public.money add column if not exists person text;
+
+alter table public.money drop constraint if exists money_kind_check;
+alter table public.money add constraint money_kind_check
+  check (kind in ('cash', 'loan'));
+alter table public.money drop constraint if exists money_person_check;
+alter table public.money add constraint money_person_check
+  check (person is null or char_length(person) between 1 and 40);
+-- A balance is per person, so a loan without one could never be settled.
+alter table public.money drop constraint if exists money_loan_person;
+alter table public.money add constraint money_loan_person
+  check (kind <> 'loan' or person is not null);
+
 -- ================================================== the schedule (pg_cron)
 -- NOT RUN BY THIS FILE. It is commented out on purpose, because it carries two
 -- values that must never be committed — paste it into the SQL editor with your

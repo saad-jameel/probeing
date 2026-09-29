@@ -184,11 +184,21 @@
   <section class="card">
     <h2 class="card-head"><svg class="card-ico" aria-hidden="true"><use href="#i-money"></use></svg> Today</h2>
     <div id="moneySums" class="sum-row three"></div>
+    <p id="moneyLoanNote" class="hint" hidden>Loans move cash but aren&rsquo;t spending: they are in the net, not in spent or in.</p>
     <p id="moneyMonth" class="hint"></p>
     <p id="moneyStatus" class="hint" hidden></p>
   </section>
 
   <ul id="moneyList" class="log-list"></ul>
+
+  <!-- Stage 13b. Who owes whom, from every loan row; hidden when all are square. -->
+  <section id="loanCard" class="card" hidden>
+    <h2 class="card-head">People</h2>
+    <ul id="loanList" class="plan-list"></ul>
+    <p id="loanNote" class="hint" hidden></p>
+  </section>
+  <!-- Below everything, so ordinary spending gains no tap (rule 4). -->
+  <button type="button" id="loanBtn" class="btn btn-wide">Lend / Borrow</button>
 </section>
 
 <!-- =========================================================== REVIEW -->
@@ -293,6 +303,27 @@
     <div id="dayPrayersList" class="pick-grid" aria-label="Log it now"></div>
     <div class="dlg-actions">
       <button type="button" id="dayPrayersAnyway" class="btn">End day anyway</button>
+    </div>
+  </form>
+</dialog>
+
+<!-- Stage 13b. One loan row: who, how much, and which of the four it was. -->
+<dialog id="loanDlg" class="dlg">
+  <form method="dialog">
+    <h2>Lend or borrow</h2>
+
+    <div id="loanKinds" class="pick-grid" aria-label="What happened"></div>
+
+    <label for="loanPerson">Person</label>
+    <input id="loanPerson" type="text" maxlength="40" autocomplete="off" placeholder="Ali">
+    <div id="loanPeople" class="chips loan-people" aria-label="People you have used before"></div>
+
+    <label for="loanAmount">Amount in PKR</label>
+    <input id="loanAmount" type="text" inputmode="decimal" autocomplete="off" placeholder="2000">
+
+    <div class="dlg-actions">
+      <button type="button" id="loanCancelBtn" class="link-btn">Cancel</button>
+      <button type="button" id="loanSaveBtn" class="btn btn-accent" disabled>Save</button>
     </div>
   </form>
 </dialog>

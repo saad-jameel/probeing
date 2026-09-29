@@ -501,18 +501,21 @@ async function callSupabase(action, payload) {
     return { ok: true, prayer: name, mode: mode };
   }
 
-  if (action === 'money') {
+  /* Stage 13b: a loan is a money row with kind 'loan' and a person. It has its
+   * own action so an older tab HOLDS it (R8) instead of sending it as spending. */
+  if (action === 'money' || action === 'loan') {
     // Checked again here: a held item is sent exactly as it was stored.
     var amount = parseMoneyAmount(payload.amount);
     var tag = String(payload.tag || '').trim();
+    var person = action === 'loan' ? cleanPerson(payload.person) : '';
     if ((payload.dir !== 'in' && payload.dir !== 'out') || !amount || !tag ||
-        tag.length > MONEY_TAG_MAX) {
+        tag.length > MONEY_TAG_MAX || (action === 'loan' && !person)) {
       var badMoney = new Error('bad_money');
       badMoney.fatal = true;
       throw badMoney;
     }
     var pressed = typeof payload.at === 'string' && !isNaN(Date.parse(payload.at));
-    var ins = await sb.from('money').insert({
+    var moneyRow = {
       rid: payload.rid,
       at: pressed ? payload.at : new Date().toISOString(),
       local_time: pressed ? (payload.local_time || '') : humanLocal(),
@@ -523,7 +526,10 @@ async function callSupabase(action, payload) {
       tag: tag,
       note: String(payload.note || '').trim().slice(0, MONEY_NOTE_MAX),
       voids_rid: payload.voids_rid || null
-    });
+    };
+    // Only a loan names the new columns, so cash still saves before they exist.
+    if (action === 'loan') { moneyRow.kind = 'loan'; moneyRow.person = person; }
+    var ins = await sb.from('money').insert(moneyRow);
     // 23505: this rid, or a void of this row, is already in. Success either way.
     if (ins.error && ins.error.code !== '23505') throw errorFrom(ins.error);
     return { ok: true, duplicate: Boolean(ins.error) };
@@ -582,7 +588,9 @@ async function rangeEvents(startIso, endIso) {
  * rangeEvents, one direct select. Voids pressed after `endIso` are read too:
  * voiding yesterday's mistake today must still take it out of yesterday.
  */
-var MONEY_COLS = 'rid,at,local_time,dir,amount,tag,note,voids_rid';
+// Every column, so kind and person (Stage 13b) are read without the read
+// failing on a database that does not have them yet.
+var MONEY_COLS = '*';
 
 async function rangeMoney(startIso, endIso) {
   if (!sb || !sbUser) throw new Error('Sign in to read your money.');
@@ -783,7 +791,7 @@ var PARKED_MAX = 50;
 /* The writes a person makes. `label` is deliberately absent: it only ever
  * fills in a project name on a row, and a name that never arrives leaves the
  * entry called by its own sentence — which is what it was called anyway. */
-var QUEUEABLE = { log: 1, m: 1, prayer: 1, money: 1 };
+var QUEUEABLE = { log: 1, m: 1, prayer: 1, money: 1, loan: 1 };
 
 function trimUrl(u) { return String(u || '').trim().replace(/\/+$/, ''); }
 
@@ -1007,8 +1015,8 @@ function parkedAll() {
 function addParked(it, why) {
   var row = queuedRow(it) || {};
   var list = parkedAll();
-  var what = it.action === 'money' ? moneyWhat(queuedMoney(it))
-                                   : String(row.raw_text || row.type || it.action);
+  var what = moneyItem(it) ? moneyWhat(queuedMoney(it))
+                           : String(row.raw_text || row.type || it.action);
   list.push({
     rid: it.rid,
     at: (it.payload || {}).at || '',
@@ -1058,12 +1066,17 @@ function queuedRow(it) {
            detail: p.detail || '', rid: it.rid };
 }
 
+/** A money or loan write (Stage 13b), both of which become a `money` row. */
+function moneyItem(it) { return it.action === 'money' || it.action === 'loan'; }
+
 /** A queued money write as a `money` row, for the Money screen and its figures. */
 function queuedMoney(it) {
   var p = it.payload || {};
-  return { rid: it.rid, at: p.at, local_time: p.local_time || '', dir: p.dir,
-           amount: p.amount, tag: p.tag || '', note: p.note || '',
-           voids_rid: p.voids_rid || null, queued: true };
+  var row = { rid: it.rid, at: p.at, local_time: p.local_time || '', dir: p.dir,
+              amount: p.amount, tag: p.tag || '', note: p.note || '',
+              voids_rid: p.voids_rid || null, queued: true };
+  if (it.action === 'loan') { row.kind = 'loan'; row.person = cleanPerson(p.person); }
+  return row;
 }
 
 function queuedPrayer(it) {
@@ -1117,7 +1130,7 @@ function queuedDates() {
     var d = queuedDay(it);
     if (d) seen[d] = 1;
     var voidsAt = instantOf((it.payload || {}).voids_at);
-    if (it.action === 'money' && !isNaN(voidsAt)) seen[counterDate(voidsAt)] = 1;
+    if (moneyItem(it) && !isNaN(voidsAt)) seen[counterDate(voidsAt)] = 1;
   });
   return Object.keys(seen);
 }
@@ -5277,6 +5290,15 @@ function parseMoneyAmount(text) {
   return Math.floor(paisa / 100) + '.' + String(paisa % 100).padStart(2, '0');
 }
 
+var LOAN_PERSON_MAX = 40;       // the check on money.person
+
+/** A loan's person as stored: spaces collapsed, at most LOAN_PERSON_MAX
+ *  characters (counted as Postgres does, so an emoji is not cut in half). */
+function cleanPerson(text) {
+  var s = String(text === null || text === undefined ? '' : text).replace(/\s+/g, ' ').trim();
+  return Array.from(s).slice(0, LOAN_PERSON_MAX).join('').trim();
+}
+
 /** 12450 -> "12,450"; 0.5 -> "0.50". Fixed shape, not the locale's, so a
  *  report reads the same on both devices. */
 function formatPkr(n) {
@@ -5311,15 +5333,19 @@ function moneySinceDay(figs) {
  * mistake can be voided the next day. Tags go through userMap(), so a tag
  * called __proto__ is counted like any other.
  *
- * @returns {{in, out, net, byTagIn, byTagOut, entries, voided}} in rupees.
+ * Loans (Stage 13b) moved cash, so they are in `net`, but they are not spending
+ * or income: they stay out of `in`, `out` and the tags, and go in loanIn/loanOut.
+ *
+ * @returns {{in, out, net, byTagIn, byTagOut, loanIn, loanOut, entries, loans, voided}} in rupees.
  */
 function moneyFigures(rows, windows) {
   var cancelled = userMap();
   (rows || []).forEach(function (r) { if (r && r.voids_rid) cancelled[r.voids_rid] = 1; });
 
   var paisa = { 'in': 0, out: 0 };
+  var loan = { 'in': 0, out: 0 };
   var byTag = { 'in': userMap(), out: userMap() };
-  var out = { entries: 0, voided: 0 };
+  var out = { entries: 0, loans: 0, voided: 0 };
 
   bucketByWindow(rows, windows || []).forEach(function (day) {
     day.forEach(function (r) {
@@ -5327,6 +5353,11 @@ function moneyFigures(rows, windows) {
       if (r.rid && cancelled[r.rid] === 1) { out.voided += 1; return; }
       var p = moneyPaisa(r.amount);
       if (!(p > 0)) return;
+      if (r.kind === 'loan') {
+        loan[r.dir] += p;
+        out.loans += 1;
+        return;
+      }
       var tag = String(r.tag || '').trim() || MONEY_UNTAGGED;
       paisa[r.dir] += p;
       byTag[r.dir][tag] = (byTag[r.dir][tag] || 0) + p;
@@ -5341,10 +5372,51 @@ function moneyFigures(rows, windows) {
   }
   out['in'] = paisa['in'] / 100;
   out.out = paisa.out / 100;
-  out.net = (paisa['in'] - paisa.out) / 100;
+  out.net = (paisa['in'] + loan['in'] - paisa.out - loan.out) / 100;
+  out.loanIn = loan['in'] / 100;
+  out.loanOut = loan.out / 100;
   out.byTagIn = rupees(byTag['in']);
   out.byTagOut = rupees(byTag.out);
   return out;
+}
+
+/**
+ * What each person owes, from every loan row given, whatever its day. Pure.
+ * Positive: they owe you (you lent or paid them more than came back). Voided
+ * rows count for nothing, as in moneyFigures. Names match whatever the case;
+ * the latest spelling is shown. Zero balances are left out.
+ *
+ * @returns {Array<{person, owed}>} owed in rupees, largest first.
+ */
+function loanBalances(rows) {
+  var cancelled = userMap();
+  (rows || []).forEach(function (r) { if (r && r.voids_rid) cancelled[r.voids_rid] = 1; });
+  var paisa = userMap();
+  var shown = userMap();
+  var latest = userMap();
+  (rows || []).forEach(function (r) {
+    if (!r || r.kind !== 'loan' || r.voids_rid) return;
+    if (r.dir !== 'in' && r.dir !== 'out') return;
+    if (r.rid && cancelled[r.rid] === 1) return;
+    var name = cleanPerson(r.person);
+    var p = moneyPaisa(r.amount);
+    if (!name || !(p > 0)) return;
+    var key = name.toLowerCase();
+    var t = instantOf(r.at) || 0;
+    if (shown[key] === undefined || t >= latest[key]) { shown[key] = name; latest[key] = t; }
+    paisa[key] = (paisa[key] || 0) + (r.dir === 'out' ? p : -p);
+  });
+  return Object.keys(paisa).filter(function (k) { return paisa[k] !== 0; })
+    .map(function (k) { return { person: shown[k], owed: paisa[k] / 100 }; })
+    .sort(function (a, b) {
+      return (Math.abs(b.owed) - Math.abs(a.owed)) || (a.person.toLowerCase() < b.person.toLowerCase() ? -1 : 1);
+    });
+}
+
+/** "Ali owes you PKR 2,000" / "You owe Sara PKR 500". */
+function loanBalanceLine(b) {
+  return b.owed > 0 ? b.person + ' owes you PKR ' + formatPkr(b.owed)
+                    : 'You owe ' + b.person + ' PKR ' + formatPkr(-b.owed);
 }
 
 /** What one range read must cover, first to last counter day inclusive: from a
@@ -6676,9 +6748,14 @@ function reportFigureLine(stats) {
                             ' days logged');
   // Reports from before Stage 11 have no money, and a week with none says nothing.
   var money = stats.money;
-  if (money && (Number(money.out) || Number(money['in']))) {
+  var loans = money && (Number(money.loanOut) || Number(money.loanIn));
+  if (money && (Number(money.out) || Number(money['in']) || loans)) {
     bits.push('PKR ' + formatPkr(money.out) + ' out · ' + formatPkr(money['in']) + ' in · net ' +
               signedPkr(money.net) + (money.since ? ' since ' + moneySinceDay(money) : ''));
+  }
+  // Stage 13b: loans are in the net but not in out/in, so say how much.
+  if (loans) {
+    bits.push('loans ' + formatPkr(money.loanOut || 0) + ' out · ' + formatPkr(money.loanIn || 0) + ' in');
   }
   return bits.join(' · ');
 }
@@ -7385,6 +7462,8 @@ var moneyWhy = '';              // why the last read failed, or ''
 var moneyReadSeq = 0;
 var moneyReadTimer;
 var moneyForm = { dir: '', tag: '' };
+var loanRows = [];              // every loan row and every void, from readLoans()
+var loanWhy = '';               // why that read failed, or ''
 
 /** Trimmed, no commas, no repeats whatever the case, at most MONEY_TAGS_MAX. */
 function cleanTags(list) {
@@ -7479,6 +7558,7 @@ function moneyTagOrder(dir, rows, fixed) {
   var since = Date.now() - MONEY_LEARN_DAYS * 86400000;
   rows.forEach(function (r) {
     if (r.dir !== dir || r.voids_rid || (r.rid && cancelled[r.rid] === 1)) return;
+    if (r.kind === 'loan') return;               // "Lent" is not a spending tag
     if (!(instantOf(r.at) >= since)) return;
     var tag = String(r.tag || '').trim();
     if (!tag) return;
@@ -7504,19 +7584,24 @@ function moneyMerged() {
     out.push(r);
   }
   moneyLocal.forEach(add);
-  outboxOurs().filter(function (it) { return it.action === 'money'; }).map(queuedMoney).forEach(add);
+  outboxOurs().filter(moneyItem).map(queuedMoney).forEach(add);
   return out.sort(function (a, b) { return (instantOf(b.at) || 0) - (instantOf(a.at) || 0); });
 }
 
-/** "Spent 450 · Food", for the parked list and the confirm. */
+/** "Spent 450 · Food", or "Lent 2,000 · Ali", for the parked list and the confirm. */
 function moneyWhat(r) {
+  var amount = formatPkr(moneyPaisa(r.amount) / 100);
+  if (r.kind === 'loan') {
+    return (r.voids_rid ? 'Void of ' : '') + String(r.tag || 'Loan') + ' ' + amount + ' · ' +
+      String(r.person || '');
+  }
   return (r.voids_rid ? 'Void of ' : '') + (r.dir === 'in' ? 'Got ' : 'Spent ') +
-    formatPkr(moneyPaisa(r.amount) / 100) + ' · ' + String(r.tag || '');
+    amount + ' · ' + String(r.tag || '');
 }
 
 /** A range's money as a few lines; none when nothing was logged. */
 function moneyLines(figs) {
-  if (!figs || !figs.entries) return [];
+  if (!figs || !(figs.entries || figs.loans)) return [];
   function byAmount(map) {
     return Object.keys(map).sort(function (a, b) { return (map[b] - map[a]) || (a < b ? -1 : 1); })
       .map(function (k) { return k + ' ' + formatPkr(map[k]); }).join(' · ');
@@ -7525,6 +7610,10 @@ function moneyLines(figs) {
                signedPkr(figs.net) + (figs.since ? ' since ' + moneySinceDay(figs) : '')];
   if (Object.keys(figs.byTagOut).length) lines.push('Spent on: ' + byAmount(figs.byTagOut));
   if (Object.keys(figs.byTagIn).length) lines.push('In from: ' + byAmount(figs.byTagIn));
+  if (figs.loans) {
+    lines.push('Loans: ' + formatPkr(figs.loanOut) + ' out · ' + formatPkr(figs.loanIn) +
+               ' in. Loans move cash but aren’t spending: they are in the net only.');
+  }
   if (figs.voided) {
     lines.push(figs.voided + (figs.voided === 1 ? ' voided entry is' : ' voided entries are') +
                ' left out.');
@@ -7631,12 +7720,14 @@ function resetMoneyForm() {
   paintMoneySave();
 }
 
-/** Show it, then send it. api() has it on the device before this returns. */
-function sendMoney(payload) {
-  var row = queuedMoney({ rid: payload.rid, payload: payload });
+/** Show it, then send it. api() has it on the device before this returns.
+ *  `action` is 'money', or 'loan' for a loan row (Stage 13b). */
+function sendMoney(payload, action) {
+  action = action === 'loan' ? 'loan' : 'money';
+  var row = queuedMoney({ rid: payload.rid, action: action, payload: payload });
   row.queued = false;
   moneyLocal.unshift(row);
-  api('money', payload).then(function (res) {
+  api(action, payload).then(function (res) {
     if (!(res && res.queued)) scheduleMoneyRead();
   }, function (err) {
     // Refused outright: take it back off the screen, as a failed prayer is.
@@ -7669,9 +7760,12 @@ function saveMoney() {
 function voidMoney(r) {
   if (!window.confirm('Void ' + moneyWhat(r) + '? It stays in your record, struck through, ' +
                       'and stops counting.')) return;
-  sendMoney({ rid: newRid(), at: new Date().toISOString(), local_time: humanLocal(),
-              dir: r.dir, amount: parseMoneyAmount(r.amount), tag: String(r.tag || ''), note: '',
-              voids_rid: r.rid, voids_at: r.at });
+  var loan = r.kind === 'loan';
+  var payload = { rid: newRid(), at: new Date().toISOString(), local_time: humanLocal(),
+                  dir: r.dir, amount: parseMoneyAmount(r.amount), tag: String(r.tag || ''), note: '',
+                  voids_rid: r.rid, voids_at: r.at };
+  if (loan) payload.person = cleanPerson(r.person);          // a void copies the row it cancels
+  sendMoney(payload, loan ? 'loan' : 'money');
   flash('Voided: ' + moneyWhat(r), 'ok');
 }
 
@@ -7699,6 +7793,7 @@ function renderMoney() {
   reviewFigure(sums, formatPkr(figs.out), 'spent today');
   reviewFigure(sums, formatPkr(figs['in']), 'in today');
   reviewFigure(sums, signedPkr(figs.net), 'net today');
+  $('moneyLoanNote').hidden = !figs.loans;              // else net != in - spent looks wrong
   var monthDays = dayWindows(new Date(today.getFullYear(), today.getMonth(), 1), today);
   var month = moneySince(moneyFigures(rows, monthDays), monthDays);
   $('moneyMonth').textContent = (month.since ? 'Since ' + moneySinceDay(month) : 'This month so far') +
@@ -7732,18 +7827,21 @@ function renderMoney() {
     if (!g.rows.length) emptyLine();
     g.rows.forEach(function (r) {
       var off = Boolean(r.rid) && cancelled[r.rid] === 1;
+      var loan = r.kind === 'loan';
       var li = document.createElement('li');
-      if (off) li.className = 'voided';
+      li.className = (off ? 'voided' : '') + (loan ? ' loan' : '');
       var when = document.createElement('span');
       when.className = 'when';
       when.textContent = glanceClock(instantOf(r.at));
       var what = document.createElement('span');
       what.className = 'what';
       what.textContent = (r.dir === 'in' ? '+' : '−') + formatPkr(moneyPaisa(r.amount) / 100) +
-        ' · ' + String(r.tag || '') + (r.note ? ' — ' + r.note : '');
+        ' · ' + String(r.tag || '') + (loan ? ' · ' + String(r.person || '') : '') +
+        (r.note ? ' — ' + r.note : '');
       var tag = document.createElement('span');
       tag.className = 'tag';
-      tag.textContent = off ? 'void' : r.queued ? 'waiting' : r.dir === 'in' ? 'in' : 'spent';
+      tag.textContent = off ? 'void' : r.queued ? 'waiting' : loan ? 'loan' :
+                        r.dir === 'in' ? 'in' : 'spent';
       li.append(when, what, tag);
       if (!off) {
         var b = document.createElement('button');
@@ -7757,8 +7855,9 @@ function renderMoney() {
     });
   });
   if (!list.childElementCount) emptyLine();
+  renderLoanBalances();
 
-  var held = outboxOurs().filter(function (it) { return it.action === 'money'; }).length;
+  var held = outboxOurs().filter(moneyItem).length;
   var note = [];
   if (moneyWhy) {
     note.push((moneyReadAt ? 'Could not refresh (' + moneyWhy + '), so this may be out of date.'
@@ -7796,7 +7895,26 @@ async function readMoney() {
     if (seq !== moneyReadSeq) return;
     moneyWhy = String((err && err.message) || err);
   }
+  if (!moneyWhy) await readLoans(seq);
+  if (seq !== moneyReadSeq) return;
   renderMoney();
+}
+
+/* Stage 13b. A balance is every loan row ever, not the last 90 days, and any
+ * void may cancel one. Its own read, so a failure costs only the People card. */
+async function readLoans(seq) {
+  try {
+    var loans = await sb.from('money').select(MONEY_COLS).eq('kind', 'loan').limit(5000);
+    if (loans.error) throw errorFrom(loans.error);
+    var voids = await sb.from('money').select(MONEY_COLS).not('voids_rid', 'is', null).limit(5000);
+    if (voids.error) throw errorFrom(voids.error);
+    if (seq !== moneyReadSeq) return;
+    loanRows = (loans.data || []).concat(voids.data || []);
+    loanWhy = '';
+  } catch (err) {
+    if (seq !== moneyReadSeq) return;
+    loanWhy = String((err && err.message) || err);
+  }
 }
 
 function scheduleMoneyRead(delay) {
@@ -7815,6 +7933,8 @@ function forgetMoney() {
   moneyLocal = [];
   moneyReadAt = 0;
   moneyWhy = '';
+  loanRows = [];
+  loanWhy = '';
   if (currentScreen === 'money') renderMoney();
 }
 
@@ -7823,6 +7943,130 @@ $('moneyInBtn').addEventListener('click', function () { pickMoneyDir('in'); });
 $('moneyAmount').addEventListener('input', paintMoneySave);
 $('moneyNewTag').addEventListener('input', paintMoneySave);
 $('moneySaveBtn').addEventListener('click', saveMoney);
+
+// ------------------------------------------------------------ lend / borrow
+
+/* Stage 13b. A loan is one money row with kind 'loan' and a person. The fixed
+ * tag is what an older app shows for it, which reads it as plain cash. */
+var LOAN_CHOICES = [
+  { label: 'I lent', dir: 'out', tag: 'Lent' },
+  { label: 'I borrowed', dir: 'in', tag: 'Borrowed' },
+  { label: 'They paid me back', dir: 'in', tag: 'Repaid to me' },
+  { label: 'I paid back', dir: 'out', tag: 'Repaid by me' }
+];
+var LOAN_PEOPLE_MAX = 12;       // names offered as chips
+var loanChoice = null;
+var loanDlg = $('loanDlg');
+
+/** The loan read plus the Money read, this page's saves and the outbox, once each. */
+function loanMerged() {
+  var have = userMap();
+  var out = [];
+  moneyMerged().concat(loanRows).forEach(function (r) {
+    if (r.rid && have[r.rid] === 1) return;
+    if (r.rid) have[r.rid] = 1;
+    out.push(r);
+  });
+  return out;
+}
+
+function renderLoanBalances() {
+  var list = $('loanList');
+  list.textContent = '';
+  var owed = loanBalances(loanMerged());
+  owed.forEach(function (b) {
+    var li = document.createElement('li');
+    li.textContent = loanBalanceLine(b);          // a typed name: never markup
+    list.appendChild(li);
+  });
+  $('loanNote').textContent = loanWhy ? 'Balances could not be read (' + loanWhy + ').' : '';
+  $('loanNote').hidden = !loanWhy;
+  $('loanCard').hidden = !owed.length && !loanWhy;
+}
+
+/** Names used on loans before, most used first, then the latest; one spelling each. */
+function loanPeople() {
+  var seen = userMap();
+  var list = [];
+  loanMerged().forEach(function (r) {
+    if (r.kind !== 'loan' || r.voids_rid) return;
+    var name = cleanPerson(r.person);
+    if (!name) return;
+    var key = name.toLowerCase();
+    var t = instantOf(r.at) || 0;
+    if (seen[key] === undefined) { seen[key] = { name: name, n: 0, t: t }; list.push(seen[key]); }
+    seen[key].n += 1;
+    if (t > seen[key].t) { seen[key].t = t; seen[key].name = name; }
+  });
+  return list.sort(function (a, b) { return (b.n - a.n) || (b.t - a.t); })
+    .slice(0, LOAN_PEOPLE_MAX).map(function (x) { return x.name; });
+}
+
+/** What was typed, spelled like a name already used so "ali" stays "Ali". */
+function loanPersonNow() {
+  var typed = cleanPerson($('loanPerson').value);
+  if (!typed) return '';
+  return loanPeople().filter(function (n) { return n.toLowerCase() === typed.toLowerCase(); })[0] || typed;
+}
+
+function paintLoan() {
+  var box = $('loanKinds');
+  box.textContent = '';
+  LOAN_CHOICES.forEach(function (c) {
+    box.appendChild(pickButton(c.label, loanChoice === c, false, function () {
+      loanChoice = c;
+      paintLoan();
+    }));
+  });
+  var people = $('loanPeople');
+  people.textContent = '';
+  var typed = cleanPerson($('loanPerson').value).toLowerCase();
+  loanPeople().forEach(function (name) {
+    var b = document.createElement('button');
+    b.type = 'button';
+    b.className = 'chip' + (name.toLowerCase() === typed ? ' on' : '');
+    b.textContent = name;                          // a typed name: never markup
+    b.addEventListener('click', function () {
+      $('loanPerson').value = name;
+      paintLoan();
+    });
+    people.appendChild(b);
+  });
+  $('loanSaveBtn').disabled = !(loanChoice && loanPersonNow() &&
+                                parseMoneyAmount($('loanAmount').value));
+}
+
+function openLoan() {
+  loanChoice = null;
+  $('loanPerson').value = '';
+  $('loanAmount').value = '';
+  paintLoan();
+  loanDlg.showModal();
+}
+
+function saveLoan() {
+  var typed = $('loanAmount').value;
+  var amount = parseMoneyAmount(typed);
+  var person = loanPersonNow();
+  if (!loanChoice || !person || !amount) {
+    flash(typed.trim() && !amount
+      ? 'That amount cannot be read: digits, and at most two after the point.'
+      : 'Pick what happened, a person and an amount.', 'err');
+    return;
+  }
+  var payload = { rid: newRid(), at: new Date().toISOString(), local_time: humanLocal(),
+                  dir: loanChoice.dir, amount: amount, tag: loanChoice.tag, note: '',
+                  person: person };
+  loanDlg.close();
+  sendMoney(payload, 'loan');
+  flash(moneyWhat(queuedMoney({ rid: payload.rid, action: 'loan', payload: payload })), 'ok');
+}
+
+$('loanBtn').addEventListener('click', openLoan);
+$('loanPerson').addEventListener('input', paintLoan);
+$('loanAmount').addEventListener('input', paintLoan);
+$('loanCancelBtn').addEventListener('click', function () { loanDlg.close(); });
+$('loanSaveBtn').addEventListener('click', saveLoan);
 
 // ------------------------------------------------------------------ taskboard
 
