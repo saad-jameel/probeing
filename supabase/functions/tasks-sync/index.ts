@@ -7,9 +7,9 @@
 // DORMANT until Google is connected and a list is picked: it answers
 // {ok:true, skipped} and writes nothing, not even an error.
 //
-// A pull is believed only when it is complete. A failed page, a missing list,
-// or an empty answer against a full mirror marks NOTHING gone; the reason goes
-// to sync_state.last_error instead, which Settings shows.
+// A pull is believed only when it is complete. A failed or unreadable page, a
+// missing list, or an empty answer against a full mirror marks NOTHING gone;
+// the reason goes to sync_state.last_error instead, which Settings shows.
 //
 // Secrets: the Stage 12 three (GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET,
 // GOOGLE_TOKEN_KEY), CRON_SECRET and ALLOWED_USER_ID. Needs task_nodes from
@@ -57,13 +57,23 @@ function pageUrl(listId, pageToken) {
          (pageToken ? '&pageToken=' + encodeURIComponent(pageToken) : '');
 }
 
+/** Plainly Google's answer to tasks.list. An HTML error page, a cut-off body
+ *  or a null reaches here as {} or null, and must not read as "no tasks". */
+function readablePage(body) {
+  if (!body || typeof body !== 'object' || Array.isArray(body) || body.kind !== 'tasks#tasks') return false;
+  if (!('items' in body)) return true;            // Google leaves items out of an empty list
+  return Array.isArray(body.items) && body.items.every(function (t) {
+    return t && typeof t === 'object' && typeof t.id === 'string' && t.id !== '';
+  });
+}
+
 /** Every task in the list, or a throw. Never part of one. */
 async function pullAll(d, grant) {
   var tasks = [];
   var page = '';
   for (var i = 0; i < MAX_PAGES; i++) {
     var body = await tasksGet(d, grant, pageUrl(grant.list_id, page));
-    if (body.items != null && !Array.isArray(body.items)) throw new Error('Google Tasks sent an unreadable page');
+    if (!readablePage(body)) throw new Error('page ' + (i + 1) + ' of the list came back unreadable');
     (body.items || []).forEach(function (t) { tasks.push(t); });
     page = body.nextPageToken || '';
     if (!page) return { tasks: tasks, pages: i + 1 };
