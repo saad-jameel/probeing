@@ -126,6 +126,15 @@
     <svg class="btn-ico" aria-hidden="true"><use href="#i-off"></use></svg>
     <span id="dayBtnLabel">End the day</span>
   </button>
+
+  <!-- Stage 13: sub-tasks from his Google Tasks list due today or before. Last on
+       the screen, under every logging control, so it costs no taps (rule 4).
+       Hidden until Google is connected. -->
+  <section id="planCard" class="card" hidden>
+    <h2 class="card-head">Today&rsquo;s plan</h2>
+    <ul id="planList" class="plan-list"></ul>
+    <p id="planEmpty" class="pending" hidden>Nothing due today.</p>
+  </section>
 </section>
 
 <!-- ============================================================ TODAY -->
@@ -385,10 +394,14 @@
         <div class="dlg-actions" style="justify-content: flex-start">
           <button type="button" id="googleConnectBtn" class="btn" hidden>Connect Google</button>
           <button type="button" id="googleListBtn" class="btn" hidden>Change list</button>
+          <button type="button" id="tasksSyncBtn" class="btn" hidden>Sync now</button>
           <button type="button" id="googleDisconnectBtn" class="link-btn" hidden>Disconnect</button>
         </div>
         <select id="googleListPick" class="cat-pick place-pick" aria-label="Your Tasks list" hidden></select>
         <p id="googleResult" class="hint"></p>
+        <!-- Stage 13: the read-only copy of the list, and when it was last pulled. -->
+        <p id="tasksSyncLine" class="hint" hidden></p>
+        <ul id="tasksTree" class="task-tree" hidden></ul>
       </div>
 
     <label class="check">
@@ -531,6 +544,7 @@
      takes the app down. See vendor/README.md for how it was verified. -->
 <script src="vendor/supabase.js"></script>
 <script src="supabase/functions/_shared/day.js"></script>
+<script src="supabase/functions/_shared/tree.js"></script>
 <script src="app.js"></script>
 </body>
 </html>

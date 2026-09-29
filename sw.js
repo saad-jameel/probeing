@@ -26,13 +26,15 @@
 
 /* v8 (Stage 11): the Money screen, and an outbox that holds actions it does not
  * know. A v7 page drops a queued money item, so the new shell must replace it.
- * v9 (Stage 12): the Google Tasks section in Settings. */
-var CACHE = 'probeing-shell-v9';
+ * v9 (Stage 12): the Google Tasks section in Settings.
+ * v10 (Stage 13): tree.js, Today's plan and the Tasks copy. */
+var CACHE = 'probeing-shell-v10';
 var SHELL = [
   './',
   'index.html',
   'styles.css',
   'supabase/functions/_shared/day.js',
+  'supabase/functions/_shared/tree.js',
   'app.js',
   'vendor/supabase.js',
   'manifest.webmanifest',

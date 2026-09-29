@@ -637,6 +637,24 @@ body {
 .dlg label.check input[type="checkbox"] {
   width: 20px; height: 20px; flex: none; padding: 0; margin: 0; accent-color: var(--accent);
 }
+/* Stage 13: the Google Tasks copy. Today's plan on Home, the whole tree in
+   Settings. Done and gone tasks stay visible, dimmed. */
+.plan-list, .task-tree, .task-tree ul { list-style: none; margin: 0; padding: 0; display: grid; gap: 6px; }
+/* Rule 6: both set `display`, so both declare their [hidden] pair. */
+.plan-list[hidden] { display: none; }
+.task-tree[hidden], .task-tree ul[hidden] { display: none; }
+.plan-list { margin-top: 10px; }
+.plan-list li { overflow-wrap: anywhere; font-size: 15px; }
+/* A <div> under the title, so it needs no `display` of its own. */
+.plan-meta { color: var(--muted); font-size: 12.5px; }
+.plan-meta.overdue { color: var(--warn, #c98a00); }
+.task-tree { margin-top: 10px; font-size: 14px; }
+.task-tree ul { margin: 4px 0 0; padding-left: 16px; gap: 3px; }
+.task-tree li { overflow-wrap: anywhere; }
+.task-tree .task-project { font-weight: 600; }
+.task-tree .task-done { opacity: .55; text-decoration: line-through; }
+.task-tree .task-gone { opacity: .4; font-style: italic; }
+
 /* Wraps because the row grew a fourth button: four of them do not fit across a
    phone, and an un-wrapped flex row would push Save off the edge. */
 .dlg-actions { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; justify-content: flex-end; margin-top: 18px; }

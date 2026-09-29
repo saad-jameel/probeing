@@ -227,6 +227,9 @@ function adoptSession(session) {
     signInDlg.close();
     watchLive();
     watchGoogle();
+    watchTasks();
+    // After the day's own read has had a head start: this is not on the logging path.
+    setTimeout(tasksOnOpen, TASKS_OPEN_DELAY_MS);
     refresh();
     /* Every launch, not just the first: a push subscription dies silently — a
      * browser update or a long idle and the endpoint answers 410 Gone — so the
@@ -1691,6 +1694,7 @@ function renderToday(data) {
   reconcileToggles(lastLog, data.carry);
   absorbChipStats(lastLog);
   renderProject();
+  paintPlan();                        // a read after Fajr is the new day's plan too
 
   /* The picker's checkmarks and the Home ticks are both driven by this, and the
    * queue goes back into it for the same reason it goes back into the rows
@@ -9249,6 +9253,11 @@ var GOOGLE_TIMEOUT_MS = 30000;   // a cold function plus a call to Google
 
 /** Ask google-link. Always resolves; a failure is {ok:false, error}. */
 async function googleCall(op, extra) {
+  return functionCall('google-link', Object.assign({ op: op }, extra || {}));
+}
+
+/** POST `body` to Edge Function `name` with his JWT. Always resolves, as above. */
+async function functionCall(name, body) {
   var ctrl = typeof AbortController === 'function' ? new AbortController() : null;
   var timer = ctrl ? setTimeout(function () { ctrl.abort(); }, GOOGLE_TIMEOUT_MS) : 0;
   try {
@@ -9257,19 +9266,19 @@ async function googleCall(op, extra) {
     var session = got && got.data ? got.data.session : null;
     if (!session || !session.access_token) return { ok: false, error: 'Sign in first.' };
     var base = String(cfg.supaUrl || '').trim().replace(/\/+$/, '');
-    var res = await fetch(base + '/functions/v1/google-link', {
+    var res = await fetch(base + '/functions/v1/' + name, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
         'Authorization': 'Bearer ' + session.access_token,
         'apikey': String(cfg.supaKey || '').trim()
       },
-      body: JSON.stringify(Object.assign({ op: op }, extra || {})),
+      body: JSON.stringify(body || {}),
       signal: ctrl ? ctrl.signal : undefined
     });
     var data = await res.json().catch(function () { return null; });
-    // google-link never answers 404; Supabase does when the function is not deployed.
-    if (res.status === 404) return { ok: false, notDeployed: true, error: 'the google-link function is not deployed yet' };
+    // Our functions never answer 404; Supabase does when the function is not deployed.
+    if (res.status === 404) return { ok: false, notDeployed: true, error: 'the ' + name + ' function is not deployed yet' };
     if (data && typeof data === 'object' && typeof data.ok === 'boolean') return data;
     return { ok: false, error: 'the server answered ' + res.status };
   } catch (e) {
@@ -9286,7 +9295,8 @@ async function readGoogleSync() {
   if (!sb) return;
   try {
     var res = await sb.from('sync_state')
-      .select('connected,google_email,list_title,last_error,last_error_at').limit(1);
+      .select('connected,google_email,list_title,last_error,last_error_at,last_pull_ok_at,deep_ignored')
+      .limit(1);
     if (!res.error) googleSync = (res.data || [])[0] || null;
   } catch (e) { /* the status reply stands in */ }
 }
@@ -9330,6 +9340,7 @@ function paintGoogle() {
   $('googleListBtn').hidden = v.state !== 'on';
   $('googleDisconnectBtn').hidden = v.state !== 'on' && v.state !== 'reconnect';
   if (v.state !== 'on') $('googleListPick').hidden = true;
+  paintTasksSettings(v);
   return v;
 }
 
@@ -9405,6 +9416,7 @@ $('googleListPick').addEventListener('change', async function () {
   $('googleListPick').hidden = true;
   paintGoogle();
   out.textContent = 'ProBeing will use “' + r.list_title + '”.';
+  syncTasks(true);                   // its first copy now, not in 15 minutes
 });
 
 $('googleDisconnectBtn').addEventListener('click', async function () {
@@ -9427,17 +9439,209 @@ function watchGoogle() {
   googleChannel = sb.channel('probeing-google')
     .on('postgres_changes', { event: '*', schema: 'public', table: 'sync_state' },
         function () {
-          if (!dlg.open) return;
-          readGoogleSync().then(paintGoogle);
+          // The Home card reads this row too, so it is re-read with Settings shut.
+          readGoogleSync().then(function () {
+            if (dlg.open) paintGoogle();
+            paintPlan();
+          });
         })
     .subscribe();
 }
 
 function stopGoogle() {
+  stopTasks();
   if (!googleChannel) return;
   try { sb.removeChannel(googleChannel); } catch (e) { /* already gone */ }
   googleChannel = null;
 }
+
+// ----------------------------------------- google tasks mirror (Stage 13)
+
+/* The read-only copy of his Tasks list. tasks-sync pulls it into task_nodes;
+ * this side asks for a pull, reads the rows and draws them, using tree.js.
+ * Titles are his text (rule 5). Nothing here is on the logging path (rule 4). */
+var taskNodes = [];              // this user's task_nodes rows, as last read
+var TASKS_SYNC_EVERY_MS = 2 * 60 * 1000;
+var TASKS_OPEN_DELAY_MS = 2000;
+var lastTasksSyncAt = 0;         // when a pull was last asked for
+var lastTasksCheckAt = 0;        // when sync_state was last read on open or return
+var tasksSyncing = false;
+var tasksChannel = null;
+var taskNodesTimer = 0;
+
+/** A list is picked, so there is something to pull. */
+function tasksConnected() {
+  return Boolean(googleSync && googleSync.connected && googleSync.list_title);
+}
+
+/** Open and done rows first, then the newest gone ones. A failed read keeps the last. */
+async function readTaskNodes() {
+  if (!sb) return;
+  try {
+    var res = await sb.from('task_nodes')
+      .select('id,google_id,parent_google_id,kind,title,position,due,g_status,gone_at')
+      .order('gone_at', { ascending: false, nullsFirst: true }).limit(1000);
+    if (!res.error) taskNodes = res.data || [];
+  } catch (e) { /* the last read stands */ }
+}
+
+/**
+ * Ask tasks-sync to pull, then read what it wrote. `force` is Sync now; the
+ * other callers pull at most once per TASKS_SYNC_EVERY_MS. Resolves to the
+ * function's reply, or null when it did not ask.
+ */
+async function syncTasks(force) {
+  if (tasksSyncing || !tasksConnected()) return null;
+  if (!force && Date.now() - lastTasksSyncAt < TASKS_SYNC_EVERY_MS) return null;
+  tasksSyncing = true;
+  lastTasksSyncAt = Date.now();
+  paintTasksSettings();
+  try {
+    var r = await functionCall('tasks-sync', {});
+    await Promise.all([readGoogleSync(), readTaskNodes()]);
+    return r;
+  } finally {
+    tasksSyncing = false;
+    paintTasks();
+    if (dlg.open) paintGoogle();
+  }
+}
+
+/** On sign-in and on coming back: what the table holds, then a pull if one is due. */
+async function tasksOnOpen() {
+  if (!sbUser) return;
+  lastTasksCheckAt = Date.now();
+  await readGoogleSync();
+  if (tasksConnected()) await readTaskNodes();
+  paintTasks();
+  syncTasks(false);
+}
+
+function paintTasks() {
+  paintPlan();
+  paintTasksSettings();
+}
+
+/** Home's Today's plan. Hidden until a list is connected. */
+function paintPlan() {
+  var card = $('planCard');
+  if (!tasksConnected() || typeof todaysPlan !== 'function') { card.hidden = true; return; }
+  var plan = todaysPlan(taskNodes, counterDate(Date.now()));
+  var list = $('planList');
+  list.textContent = '';
+  plan.forEach(function (p) {
+    var li = document.createElement('li');
+    var title = document.createElement('div');
+    title.textContent = p.title || '(untitled)';
+    var meta = document.createElement('div');
+    meta.className = 'plan-meta' + (p.overdue ? ' overdue' : '');
+    meta.textContent = [p.project, p.overdue ? 'due ' + humanYmd(p.due) : ''].filter(Boolean).join(' · ');
+    li.append(title, meta);
+    list.appendChild(li);
+  });
+  list.hidden = !plan.length;
+  $('planEmpty').hidden = plan.length > 0;
+  card.hidden = false;
+}
+
+/** When it last pulled, and why the last try failed. A reconnect is said above it. */
+function tasksSyncText(sync) {
+  var parts = [];
+  var t = Date.parse((sync && sync.last_pull_ok_at) || '');
+  if (tasksSyncing) parts.push('Syncing with Google Tasks…');
+  else if (isFinite(t)) {
+    var day = ymdLocal(new Date(t));
+    parts.push('Last synced ' + (day === ymdLocal(new Date()) ? '' : humanYmd(day) + ', ') +
+               clockOf({ at: sync.last_pull_ok_at }) + '.');
+  } else parts.push('Not synced yet.');
+  var err = String((sync && sync.last_error) || '');
+  if (err && err.indexOf('Reconnect Google') !== 0) parts.push('⚠ ' + err);
+  var deep = Number(sync && sync.deep_ignored) || 0;
+  if (deep > 0) {
+    parts.push(deep + (deep === 1 ? ' task is' : ' tasks are') +
+               ' nested under a sub-task, which ProBeing does not show.');
+  }
+  return parts.join(' ');
+}
+
+/** Settings: Sync now, the sync line and the whole tree, once a list is picked. */
+function paintTasksSettings(v) {
+  v = v || googleView(googleStatus, googleSync);
+  var on = v.state === 'on' && Boolean(v.list) && typeof mirrorTree === 'function';
+  var btn = $('tasksSyncBtn');
+  btn.hidden = !on;
+  btn.disabled = tasksSyncing;
+  btn.textContent = tasksSyncing ? 'Syncing…' : 'Sync now';
+  var line = $('tasksSyncLine');
+  line.hidden = !on;
+  line.textContent = on ? tasksSyncText(googleSync) : '';
+  var tree = $('tasksTree');
+  tree.textContent = '';
+  var projects = on ? mirrorTree(taskNodes) : [];
+  projects.forEach(function (p) {
+    var li = document.createElement('li');
+    var name = document.createElement('span');
+    name.className = 'task-project task-' + p.state;
+    name.textContent = p.node.title || '(untitled)';
+    li.appendChild(name);
+    if (p.children.length) {
+      var sub = document.createElement('ul');
+      p.children.forEach(function (c) {
+        var cli = document.createElement('li');
+        cli.className = 'task-' + c.state;
+        var due = dueOf(c.node.due);
+        cli.textContent = (c.node.title || '(untitled)') + (due ? ' · due ' + humanYmd(due) : '');
+        sub.appendChild(cli);
+      });
+      li.appendChild(sub);
+    }
+    tree.appendChild(li);
+  });
+  tree.hidden = !projects.length;
+}
+
+$('tasksSyncBtn').addEventListener('click', async function () {
+  var out = $('googleResult');
+  out.textContent = '';
+  var r = await syncTasks(true);
+  if (!r) return;
+  if (r.reconnect && googleStatus) { googleStatus.reconnect = true; paintGoogle(); }
+  if (!r.ok) out.textContent = '❌ ' + (r.error || 'not synced');
+  else if (r.skipped) out.textContent = 'Nothing to sync: ' + r.skipped + '.';
+  else out.textContent = 'Synced ' + r.tasks + (r.tasks === 1 ? ' task.' : ' tasks.');
+});
+
+/* Its own channel, like watchGoogle's: a task_nodes table not made yet must not
+ * take the sync_state feed down with it. A burst of rows is one re-read. */
+function watchTasks() {
+  if (!sb || !sbUser || tasksChannel) return;
+  tasksChannel = sb.channel('probeing-tasks')
+    .on('postgres_changes', { event: '*', schema: 'public', table: 'task_nodes' },
+        function () {
+          clearTimeout(taskNodesTimer);
+          taskNodesTimer = setTimeout(function () { readTaskNodes().then(paintTasks); }, 1000);
+        })
+    .subscribe();
+}
+
+function stopTasks() {
+  clearTimeout(taskNodesTimer);
+  taskNodes = [];
+  googleSync = null;
+  lastTasksSyncAt = 0;
+  lastTasksCheckAt = 0;
+  paintPlan();
+  if (!tasksChannel) return;
+  try { sb.removeChannel(tasksChannel); } catch (e) { /* already gone */ }
+  tasksChannel = null;
+}
+
+/* Coming back to the app: at most one check (and pull) per two minutes. */
+document.addEventListener('visibilitychange', function () {
+  if (document.visibilityState !== 'visible' || !sbUser) return;
+  if (Date.now() - lastTasksCheckAt < TASKS_SYNC_EVERY_MS) return;
+  tasksOnOpen();
+});
 
 // -------------------------------------------------------------------- boot
 
