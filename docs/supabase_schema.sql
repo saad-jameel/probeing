@@ -583,8 +583,9 @@ grant execute on function public.glance_for(text) to anon, authenticated;
 -- the app from Settings; the functions read it with the service role and fall
 -- back to Karachi (24.8607, 67.0011, Asia/Karachi) when there is no row.
 --
--- lat/lng are null until "Use my location" is pressed; the zone is filled in
--- regardless, from the device's own clock. `method` and `asr_school` are the keys
+-- lat/lng are null until "Use my location" is pressed, and the zone is written
+-- only together with them, by the device that measured them — a device with no
+-- location of its own never writes either, so it cannot erase or flip them. `method` and `asr_school` are the keys
 -- of PRAYER_METHODS / ASR_SCHOOLS in supabase/functions/_shared/day.js; an
 -- unknown one reads as the default there, so no check constraint is needed.
 create table if not exists public.user_settings (
