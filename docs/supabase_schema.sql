@@ -618,6 +618,72 @@ exception when duplicate_object then null; end $$;
 
 -- No delete policy: nothing deletes it, and an empty table means Karachi.
 
+-- Stage 11: his fixed money tags, one list per direction, e.g.
+--   {"out": ["Food", "Transport"], "in": ["Salary"]}
+-- jsonb rather than text[] because there are two lists. Null means the app's
+-- built-in defaults. Kept here, not per device, so phone and laptop agree.
+alter table public.user_settings add column if not exists money_tags jsonb
+  check (money_tags is null or jsonb_typeof(money_tags) = 'object');
+
+-- ==================================================================== money
+-- Stage 11. Money in and out, in PKR. Append-only, exactly as `events` is: no
+-- update and no delete policy.
+--
+-- A CORRECTION IS A VOID ROW. It carries the mistaken row's rid in `voids_rid`
+-- and copies that row's dir, amount and tag, so it passes the same checks as
+-- any row and a person reading the table sees what was cancelled. The app skips
+-- both rows in every figure. Chosen over `dir = 'void'`, which would need a
+-- nullable amount and turn both checks below into "unless it is a void".
+--
+-- No foreign key from voids_rid to rid, on purpose: a void of a row still
+-- waiting on the device could reach the table first, and a foreign key would
+-- refuse it — for good, since a refusal is never retried.
+create table if not exists public.money (
+  id          uuid          primary key default gen_random_uuid(),
+  user_id     uuid          not null default auth.uid() references auth.users on delete cascade,
+  -- One per logical write, reused by every resend; see the unique constraint.
+  rid         text          not null,
+  -- The press time, not the send time, and the same readable stamp events carry.
+  at          timestamptz   not null default now(),
+  local_time  text          not null default '',
+  tz          text          not null default '',
+  dir         text          not null check (dir in ('in', 'out')),
+  -- Two decimals; 0.50 is fine, 0 and negatives are refused.
+  amount      numeric(14,2) not null check (amount > 0),
+  currency    text          not null default 'PKR',
+  tag         text          not null check (char_length(tag) between 1 and 40),
+  note        text          not null default '' check (char_length(note) <= 200),
+  voids_rid   text          check (voids_rid is null or voids_rid <> rid),
+  created_at  timestamptz   not null default now(),
+  -- A resend is a no-op: the repeat fails with 23505, which the app reads as success.
+  constraint money_user_rid_key unique (user_id, rid)
+);
+
+create index if not exists money_user_at_idx
+  on public.money (user_id, at desc);
+
+-- One void per row. Voiding it again, from the other device say, is a 23505:
+-- already done, and read as success.
+create unique index if not exists money_user_voids_idx
+  on public.money (user_id, voids_rid) where voids_rid is not null;
+
+alter table public.money enable row level security;
+
+do $$ begin
+  create policy "read own money" on public.money
+    for select using (auth.uid() = user_id);
+exception when duplicate_object then null; end $$;
+
+do $$ begin
+  create policy "insert own money" on public.money
+    for insert with check (auth.uid() = user_id);
+exception when duplicate_object then null; end $$;
+
+-- So the other device's Money screen updates without a refresh.
+do $$ begin
+  alter publication supabase_realtime add table public.money;
+exception when duplicate_object then null; end $$;
+
 -- ================================================== the schedule (pg_cron)
 -- NOT RUN BY THIS FILE. It is commented out on purpose, because it carries two
 -- values that must never be committed — paste it into the SQL editor with your
