@@ -692,6 +692,82 @@ do $$ begin
   alter publication supabase_realtime add table public.money;
 exception when duplicate_object then null; end $$;
 
+-- ================================================================== google
+-- Stage 12. The Google grant (Tasks, and Drive files ProBeing makes), held by
+-- the google-link Edge Function. The sign-in stays GitHub; this is a separate
+-- permission keyed to the same user.
+
+-- google_grants: the encrypted tokens. RLS on and NO policies, and every
+-- privilege taken from the browser roles: only the service role reads it.
+-- refresh_enc / access_enc are AES-GCM under the GOOGLE_TOKEN_KEY function
+-- secret, so a leaked backup of this table is noise.
+create table if not exists public.google_grants (
+  -- Written by the function with the service role, so user_id is always named.
+  user_id           uuid        primary key references auth.users on delete cascade,
+  google_email      text        not null default '',
+  scopes            text[]      not null default '{}',   -- only what Google granted
+  refresh_enc       text        not null,
+  access_enc        text,
+  access_expires_at timestamptz,
+  list_id           text,                                 -- the one Tasks list mirrored
+  list_title        text,
+  sheet_id          text,                                 -- Stage 18's export sheet
+  connected_at      timestamptz not null default now(),
+  updated_at        timestamptz not null default now()
+);
+
+alter table public.google_grants enable row level security;
+revoke all on table public.google_grants from anon, authenticated;
+
+-- oauth_states: the sha256 of each Connect's state nonce, for 10 minutes.
+-- Finishing marks it used in the same statement that checks it.
+create table if not exists public.oauth_states (
+  nonce_sha256 text        primary key,
+  user_id      uuid        not null references auth.users on delete cascade,
+  expires_at   timestamptz not null,
+  used_at      timestamptz,
+  created_at   timestamptz not null default now()
+);
+
+create index if not exists oauth_states_user_idx
+  on public.oauth_states (user_id, expires_at);
+
+alter table public.oauth_states enable row level security;
+revoke all on table public.oauth_states from anon, authenticated;
+
+-- sync_state: what Settings shows about the connection. No tokens here. The
+-- browser may read its own row; only the function writes. Later stages fill
+-- the pull, push and export columns.
+create table if not exists public.sync_state (
+  user_id         uuid        primary key references auth.users on delete cascade,
+  connected       boolean     not null default false,
+  google_email    text,
+  list_title      text,
+  last_pull_ok_at timestamptz,
+  last_push_ok_at timestamptz,
+  -- Starts 'Reconnect Google' when only a new Connect can fix it.
+  last_error      text,
+  last_error_at   timestamptz,
+  deep_ignored    integer     not null default 0,        -- sub-tasks too deep to mirror
+  sheet_url       text,
+  last_export_at  timestamptz,
+  updated_at      timestamptz not null default now()
+);
+
+alter table public.sync_state enable row level security;
+
+do $$ begin
+  create policy "read own sync state" on public.sync_state
+    for select using (auth.uid() = user_id);
+exception when duplicate_object then null; end $$;
+
+revoke insert, update, delete, truncate on table public.sync_state from anon, authenticated;
+
+-- So both devices' Settings hear a connect, a list change or an error.
+do $$ begin
+  alter publication supabase_realtime add table public.sync_state;
+exception when duplicate_object then null; end $$;
+
 -- ================================================== the schedule (pg_cron)
 -- NOT RUN BY THIS FILE. It is commented out on purpose, because it carries two
 -- values that must never be committed — paste it into the SQL editor with your
