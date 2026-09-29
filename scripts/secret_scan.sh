@@ -99,12 +99,25 @@ done
 # total, which is exactly AIza + 35. The key belongs in the Edge Function's own
 # secrets and nowhere else — never in app.js, index.html, vendor/ or sw.js, all
 # of which are served verbatim from a public repo.
-KEY_HITS=$(scan -nE -- 'AIza[0-9A-Za-z_-]{35}|GOCSPX-[0-9A-Za-z_-]{28}' -- ':!scripts/secret_scan.sh')
+KEY_HITS=$(scan -nE -- 'AIza[0-9A-Za-z_-]{35}|GOCSPX-[0-9A-Za-z_-]{20,}' -- ':!scripts/secret_scan.sh')
 if [ -n "$KEY_HITS" ]; then
   fail "Google API key / OAuth secret committed:"
   printf '        %s\n' "$KEY_HITS"
 else
   pass "no Google API key or OAuth secret (incl. Gemini) in tracked files"
+fi
+
+# Stage 12: Google's own tokens, which only the google-link function may hold.
+# A refresh token starts 1//0, an access token ya29. Either in a tracked file
+# is a live credential for his Tasks and Drive files.
+GTOK_RE='1//0[0-9A-Za-z_-]{20,}|ya29\.[0-9A-Za-z_.-]{20,}'
+GTOK_HITS=$(scan -nE -- "$GTOK_RE" -- ':!scripts/secret_scan.sh')
+if [ -n "$GTOK_HITS" ]; then
+  fail "a Google refresh or access token is in a tracked file:"
+  printf '        %s\n' "$GTOK_HITS" | head -3
+  printf '        %s\n' "revoke it at myaccount.google.com/permissions, then remove it"
+else
+  pass "no Google refresh or access token in tracked files"
 fi
 
 # --- 5. the Supabase key that ships must be the ANON one ---------------------
@@ -372,6 +385,15 @@ if [ "$QUICK" -eq 0 ] && git rev-parse HEAD >/dev/null 2>&1; then
       fi
     fi
   done
+  # Stage 12's shapes: a client secret or Google token removed later is still public here.
+  HIST_GOOG=$(git log -S"GOCSPX-[0-9A-Za-z_-]{20,}|$GTOK_RE" --pickaxe-regex --oneline --all \
+                -- . ':!scripts/secret_scan.sh' 2>/dev/null)
+  if [ -n "$HIST_GOOG" ]; then
+    fail "a Google client secret or token appears in committed history"
+    printf '        %s\n' "$HIST_GOOG" | head -3
+    printf '        %s\n' "rotate the client secret or revoke the grant — removing the commit is not enough"
+    HIST_BAD=1
+  fi
   HIST_PRIV=$(git log -S'MIGHAgEAMBMGByqGSM49AgEGCCqGSM49AwEH' --pickaxe-regex --oneline --all \
                 -- . ':!scripts/secret_scan.sh' 2>/dev/null)
   if [ -n "$HIST_PRIV" ]; then
