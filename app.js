@@ -7558,21 +7558,21 @@ $('saveBtn').addEventListener('click', function () {
 // ------------------------------------------------------------ prayer times
 
 /** Write the place where the Edge Functions read it. Direct, like the push
- *  subscription: a setting, not a press, so the outbox does not hold it. */
+ *  subscription: a setting, not a press, so the outbox does not hold it.
+ *  Coordinates go only from the device that measured them (`own`); any other
+ *  sends method and Asr alone, and the upsert keeps the columns it leaves out. */
 async function pushPlace() {
   if (!supabaseReady()) throw new Error('Sign in first.');
   var p = currentPlace();
   var stamp = new Date().toISOString();
-  var res = await sb.from('user_settings').upsert({
-    // Named: a column default only fires on an insert, and this may be an update.
-    user_id: sbUser.id,
-    lat: p.known ? p.lat : null,
-    lng: p.known ? p.lng : null,
-    time_zone: p.zone,
-    method: p.method,
-    asr_school: p.asr,
-    updated_at: stamp
-  }, { onConflict: 'user_id' });
+  // Named: a column default only fires on an insert, and this may be an update.
+  var row = { user_id: sbUser.id, method: p.method, asr_school: p.asr, updated_at: stamp };
+  if (placeSaved.own && p.known) {
+    row.lat = p.lat;
+    row.lng = p.lng;
+  }
+  row.time_zone = p.zone;
+  var res = await sb.from('user_settings').upsert(row, { onConflict: 'user_id' });
   if (res.error) throw errorFrom(res.error);
   placeSaved.at = stamp;                    // so the next pull does not read our own write as newer
   placeSaved.synced = true;
@@ -7588,8 +7588,12 @@ async function pullPlace() {
   var row = (got.data || [])[0] || null;
   if (!row || !(Date.parse(row.updated_at) > (Date.parse(placeSaved.at || '') || 0))) return row;
 
-  placeSaved.lat = row.lat;
-  placeSaved.lng = row.lng;
+  // A row without coordinates never replaces a known location; its method and Asr still apply.
+  if (!isNaN(finiteNum(row.lat)) && !isNaN(finiteNum(row.lng))) {
+    placeSaved.lat = row.lat;
+    placeSaved.lng = row.lng;
+    placeSaved.own = false;                 // measured on the other device
+  }
   placeSaved.method = row.method;
   placeSaved.asr = row.asr_school;
   placeSaved.at = row.updated_at;
@@ -7702,7 +7706,8 @@ $('placeBtn').addEventListener('click', function () {
     changePlace({
       lat: Math.round(pos.coords.latitude * 1000) / 1000,
       lng: Math.round(pos.coords.longitude * 1000) / 1000,
-      zone: deviceTz() || currentPlace().zone
+      zone: deviceTz() || currentPlace().zone,
+      own: true                             // only this device may send these coordinates
     }, 'Location saved.');
   }, function (err) {
     placeRefused(err && err.code === 1 ? 'Location was refused.' : 'Your location could not be found.');
