@@ -8222,6 +8222,37 @@ $('signOutBtn').addEventListener('click', async function () {
 
 var dlg = $('settingsDlg');
 
+/* Stage 13b. Settings' explanations sit behind a "?" by each heading, so the
+ * screen shows the controls. The words are <template>s in index.html. */
+var helpDlg = $('helpDlg');
+var helpOpener = null;
+
+function openHelp(btn) {
+  var tpl = document.getElementById(btn.getAttribute('data-help'));
+  if (!tpl || !tpl.content) return;
+  $('helpTitle').textContent = btn.getAttribute('data-title') || '';
+  var body = $('helpBody');
+  body.textContent = '';
+  body.appendChild(tpl.content.cloneNode(true));   // our own static markup, never user text
+  helpOpener = btn;
+  helpDlg.showModal();
+  $('helpCloseBtn').focus();
+}
+
+function closeHelp() {
+  if (helpDlg.open) helpDlg.close();
+  if (helpOpener) helpOpener.focus();               // back where the reader was
+  helpOpener = null;
+}
+
+Array.prototype.forEach.call(document.querySelectorAll('.help-btn'), function (b) {
+  b.addEventListener('click', function () { openHelp(b); });
+});
+$('helpCloseBtn').addEventListener('click', closeHelp);
+// Escape: closed here, so focus goes back to the "?" whatever the browser does.
+helpDlg.addEventListener('cancel', function (e) { e.preventDefault(); closeHelp(); });
+helpDlg.addEventListener('click', function (e) { if (e.target === helpDlg) closeHelp(); });
+
 $('settingsBtn').addEventListener('click', function () {
   paintAccount();
   $('supaUrl').value = cfg.supaUrl || '';

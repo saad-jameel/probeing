@@ -395,7 +395,9 @@
     <h2>Settings</h2>
 
       <div class="dlg-block">
-        <h3>Bedtime notifications</h3>
+        <h3>Bedtime notifications <button type="button" class="help-btn" data-help="helpPush"
+          data-title="Bedtime notifications" aria-label="About bedtime notifications">?</button></h3>
+        <template id="helpPush">
         <p class="hint">If your day is still open at <strong>11:30 pm</strong>, ProBeing
           asks &ldquo;still awake?&rdquo; as a real notification &mdash; on the lock screen,
           with the app closed. Tap <strong>Yes</strong> and it asks again every 90 minutes,
@@ -404,6 +406,7 @@
         <p class="hint">Turn this on once per device. Android may also need ProBeing&rsquo;s
           battery setting to be <strong>Unrestricted</strong>, or Chrome sleeps and the
           notification arrives in the morning.</p>
+        </template>
         <div class="dlg-actions" style="justify-content: flex-start">
           <button type="button" id="pushOnBtn" class="btn">Turn on notifications</button>
           <button type="button" id="pushTestBtn" class="btn">Send me a test push now</button>
@@ -412,12 +415,15 @@
       </div>
 
       <div class="dlg-block">
-        <h3>Prayer times</h3>
+        <h3>Prayer times <button type="button" class="help-btn" data-help="helpPlace"
+          data-title="Prayer times" aria-label="About prayer times">?</button></h3>
+        <template id="helpPlace">
         <p class="hint">Worked out on this device from the sun&rsquo;s position where you are. Each
           prayer button waits for its time and logs once a day, and the day
           &mdash; your M count and prayer ticks &mdash; turns <strong>10 minutes before
           Fajr</strong>. The server uses the same place and time zone for the widget and the
           bedtime check.</p>
+        </template>
         <p id="placeNow" class="hint"></p>
         <div class="dlg-actions" style="justify-content: flex-start">
           <button type="button" id="placeBtn" class="btn">Use my location</button>
@@ -430,9 +436,12 @@
       </div>
 
       <div class="dlg-block">
-        <h3>Google Tasks</h3>
+        <h3>Google Tasks <button type="button" class="help-btn" data-help="helpGoogle"
+          data-title="Google Tasks" aria-label="About Google Tasks">?</button></h3>
+        <template id="helpGoogle">
         <p class="hint">ProBeing asks Google for two things only: your Tasks, and the files it
           makes itself in your Drive. Connect once, on either device; it serves both.</p>
+        </template>
         <p id="googleState" class="hint"></p>
         <p id="googleNote" class="hint" hidden></p>
         <div class="dlg-actions" style="justify-content: flex-start">
@@ -448,65 +457,101 @@
         <ul id="tasksTree" class="task-tree" hidden></ul>
       </div>
 
-    <label class="check">
-      <input id="micHide" type="checkbox">
-      <span>Hide ProBeing&rsquo;s mic button &mdash; I use my keyboard&rsquo;s mic</span>
-    </label>
+    <div class="help-row">
+      <label class="check">
+        <input id="micHide" type="checkbox">
+        <span>Hide ProBeing&rsquo;s mic button &mdash; I use my keyboard&rsquo;s mic</span>
+      </label>
+      <button type="button" class="help-btn" data-help="helpMic"
+        data-title="Hiding the mic button" aria-label="About hiding the mic button">?</button>
+    </div>
+    <template id="helpMic">
     <p class="hint">Turn this on if you dictate with <strong>Wispr Flow</strong> or Gboard.
       ProBeing&rsquo;s own mic can only use Chrome&rsquo;s built-in speech, which mishears
       unusual project names; a dictation app cannot be reached from a web page, only from
       the keyboard. Hiding this leaves you one mic instead of two. Per device, so the phone
       and the laptop can differ. Everything else &mdash; naming the project, the sub-tasks
       &mdash; works exactly the same however the words got into the box.</p>
+    </template>
 
-    <label class="check">
-      <input id="glanceOn" type="checkbox">
-      <span>Show today in the notification shade (this device)</span>
-    </label>
+    <div class="help-row">
+      <label class="check">
+        <input id="glanceOn" type="checkbox">
+        <span>Show today in the notification shade (this device)</span>
+      </label>
+      <button type="button" class="help-btn" data-help="helpGlance"
+        data-title="The notification shade" aria-label="About the notification shade">?</button>
+    </div>
+    <template id="helpGlance">
     <p class="hint">What you are working on, and today&rsquo;s hours, Ms and prayers, one swipe
       down and on the lock screen. Updates only while ProBeing is open; the day and time show
       how old it is. Swiping it away hides it until the app next updates it &mdash; untick
       this to turn it off.</p>
+    </template>
     <p id="glanceResult" class="hint"></p>
 
-    <label for="projectNames">Your project names (one per line)</label>
+    <div class="help-row">
+      <label for="projectNames">Your project names (one per line)</label>
+      <button type="button" class="help-btn" data-help="helpProjects"
+        data-title="Your project names" aria-label="About your project names">?</button>
+    </div>
     <textarea id="projectNames" rows="4" placeholder="NeuraVue&#10;OneNet&#10;NMEA"></textarea>
+    <template id="helpProjects">
     <p class="hint">Type your projects here <strong>spelled the way you want them</strong>.
       Voice typing mishears unusual names &mdash; &ldquo;NeuraVue&rdquo; comes out as
       &ldquo;my review&rdquo;, &ldquo;OneNet&rdquo; as &ldquo;one night&rdquo; &mdash; and this
       list is what lets the app put the right name back. What you actually said is always
       kept as well, so nothing is lost if it guesses wrong. Stored on this device only.</p>
+    </template>
 
     <div class="dlg-block">
-      <h3>Names the app has learned</h3>
+      <h3>Names the app has learned <button type="button" class="help-btn" data-help="helpLearned"
+        data-title="Names the app has learned" aria-label="About names the app has learned">?</button></h3>
+      <template id="helpLearned">
       <p class="hint">Picked up from your entries, and shown to Gemini every time it names one.
         <strong>Forget</strong> drops a wrong one; <strong>Forget kind</strong> clears which kind
         of work it was filed as. Both happen at once. Names typed in the box above are not
         listed here. Stored on this device only.</p>
+      </template>
       <div id="learnedNames" class="cat-list"></div>
     </div>
 
     <div class="dlg-block">
-      <h3>Which kind of work each project is</h3>
+      <h3>Which kind of work each project is <button type="button" class="help-btn" data-help="helpCats"
+        data-title="Which kind of work each project is" aria-label="About which kind of work each project is">?</button></h3>
+      <template id="helpCats">
       <p class="hint">The Review adds your hours up under these four headings. Nothing in
         your entries can tell office work from personal, so it is asked once per project
         &mdash; here, or in the Review the first time a new name turns up. Change one any
         time a project moves from one to the other. Stored on this device only.</p>
+      </template>
       <div id="catSettings" class="cat-list"></div>
       <p id="catSettingsNote" class="hint"></p>
     </div>
 
-    <label for="chipsInput">Break reasons (comma separated)</label>
+    <div class="help-row">
+      <label for="chipsInput">Break reasons (comma separated)</label>
+      <button type="button" class="help-btn" data-help="helpChips"
+        data-title="Break reasons" aria-label="About break reasons">?</button>
+    </div>
     <input id="chipsInput" type="text" placeholder="Prayer-break, Lunch, Coffee">
+    <template id="helpChips">
     <p class="hint">Stored on this device only, so each device has its own list. The comma is the separator, so a name cannot contain one. This list decides which reasons exist; the order re-sorts itself so the ones you use most sit first. The + on Home adds to it.</p>
+    </template>
 
-    <label for="moneyOutTags">Money tags for spending (comma separated)</label>
+    <div class="help-row">
+      <label for="moneyOutTags">Money tags for spending (comma separated)</label>
+      <button type="button" class="help-btn" data-help="helpMoneyTags"
+        data-title="Money tags" aria-label="About money tags">?</button>
+    </div>
     <input id="moneyOutTags" type="text" placeholder="Food, Groceries, Transport">
     <label for="moneyInTags">Money tags for income (comma separated)</label>
     <input id="moneyInTags" type="text" placeholder="Salary, Freelance, Gift">
+    <template id="helpMoneyTags">
     <p class="hint">Shared by your phone and laptop. A tag you type with + on the Money
       screen is offered too, for 90 days after you last use it; the ones you use most sit
       first. Leave a box empty for the starting list.</p>
+    </template>
 
     <p id="supaWho" class="hint"></p>
     <!-- Entries this device is holding: waiting, held for another account or
@@ -525,18 +570,27 @@
       <label for="supaUrl">Supabase project URL</label>
       <input id="supaUrl" type="url" placeholder="https://xxxx.supabase.co">
 
-      <label for="supaKey">Supabase anon key</label>
+      <div class="help-row">
+        <label for="supaKey">Supabase anon key</label>
+        <button type="button" class="help-btn" data-help="helpSupaKey"
+          data-title="The Supabase URL and key" aria-label="About the Supabase URL and key">?</button>
+      </div>
       <input id="supaKey" type="text" placeholder="eyJ...">
+      <template id="helpSupaKey">
       <p class="hint">Both are safe to store here &mdash; they are meant to be public. What
         protects your rows is the sign-in and the database&rsquo;s own rules.</p>
+      </template>
 
       <div class="dlg-block">
-        <h3>How often Gemini may be asked</h3>
+        <h3>How often Gemini may be asked <button type="button" class="help-btn" data-help="helpGemini"
+          data-title="How often Gemini may be asked" aria-label="About how often Gemini may be asked">?</button></h3>
+        <template id="helpGemini">
         <p class="hint">Gemini names your projects, and Google&rsquo;s free tier caps how
           often it may be asked &mdash; <strong>per model</strong>. Google&rsquo;s usage page
           shows both numbers as <strong>RPD</strong> (a day) and <strong>RPM</strong> (a
           minute); set these a little below them. Too low and names come late or stop early
           for no reason. Entries are always saved either way.</p>
+        </template>
         <label class="hint" for="geminiDaily">Calls a day (RPD)</label>
         <input id="geminiDaily" type="number" min="1" max="100000" step="1" placeholder="18">
         <label class="hint" for="geminiRpm">Calls a minute (RPM)</label>
@@ -544,7 +598,9 @@
       </div>
 
       <div class="dlg-block">
-        <h3>Home-screen widget</h3>
+        <h3>Home-screen widget <button type="button" class="help-btn" data-help="helpWidget"
+          data-title="Home-screen widget" aria-label="About the home-screen widget">?</button></h3>
+        <template id="helpWidget">
         <p class="hint">The Android widget shows the same two lines as the notification
           shade &mdash; what you are working on, this session&rsquo;s hours, and today&rsquo;s
           M and prayers &mdash; on your home
@@ -555,6 +611,7 @@
         <p class="hint">Pair it once. Press the button, write the code down, and type it
           into the widget. ProBeing keeps only a fingerprint of the code, so it can never be
           shown to you again &mdash; if it is lost, revoke it here and make another.</p>
+        </template>
         <div class="dlg-actions" style="justify-content: flex-start">
           <button type="button" id="pairBtn" class="btn">Pair a widget</button>
         </div>
@@ -582,6 +639,18 @@
     </div>
     <p id="testResult" class="hint"></p>
   </form>
+</dialog>
+
+<!-- Stage 13b. The explanation behind a Settings "?", copied in from its <template>.
+     The inner box fills the dialog, so a click on the dialog itself is the backdrop. -->
+<dialog id="helpDlg" class="dlg help-dlg" aria-labelledby="helpTitle">
+  <div class="help-inner">
+    <h2 id="helpTitle"></h2>
+    <div id="helpBody"></div>
+    <div class="dlg-actions">
+      <button type="button" id="helpCloseBtn" class="btn btn-accent">Close</button>
+    </div>
+  </div>
 </dialog>
 
 <!-- Vendored, not from a CDN: no build step, and no third party whose outage

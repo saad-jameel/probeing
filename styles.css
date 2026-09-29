@@ -574,6 +574,23 @@ body {
 }
 .dlg-block h3 { margin: 0; font-size: 14px; }
 
+/* Stage 13b: a "?" beside a Settings heading opens its explanation. */
+.help-btn {
+  width: 24px; height: 24px; margin-left: 6px; padding: 0;
+  border: 1px solid var(--line); border-radius: 999px;
+  background: var(--panel-2); color: var(--muted);
+  font-size: 13px; font-weight: 700; line-height: 1; cursor: pointer;
+  vertical-align: middle;
+}
+.help-btn:hover { color: var(--fg); }
+/* A label and its "?" on one line. Rule 6: sets `display`, so it has its pair. */
+.help-row { display: flex; align-items: center; gap: 4px; }
+.help-row[hidden] { display: none; }
+.help-row > label { flex: 1 1 auto; min-width: 0; }
+.help-dlg { padding: 0; }
+.help-inner { padding: 20px; }
+.help-dlg .hint { color: var(--fg); font-size: 14.5px; margin: 10px 0 0; }
+
 /* Set-once settings, folded away so the everyday ones stay short. */
 .dev-settings { margin-top: 18px; padding-top: 12px; border-top: 1px solid var(--line); }
 .dev-settings > summary { cursor: pointer; font-weight: 600; font-size: 14px; }
