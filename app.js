@@ -1367,10 +1367,14 @@ function coolDown(btn) {
   setTimeout(function () { btn.disabled = false; }, TAP_COOLDOWN_MS);
 }
 
-/** "2026-08-23T14:05:00+05:00" -> "14:05". Falls back to the raw string. */
+/** A row's time on this device's clock, "14:05". Postgres sends UTC, so the
+ *  digits in `at` are not the local time. Falls back to the readable stamp. */
 function clockOf(entry) {
-  var m = /T(\d{2}:\d{2})/.exec(entry.at || '');
-  if (m) return m[1];
+  var t = instantOf(entry.at || '');
+  if (isFinite(t)) {
+    var d = new Date(t);
+    return String(d.getHours()).padStart(2, '0') + ':' + String(d.getMinutes()).padStart(2, '0');
+  }
   var h = /(\d{1,2}:\d{2}\s*[AaPp][Mm])/.exec(entry.local || '');
   return h ? h[1] : '';
 }
