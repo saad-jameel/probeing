@@ -376,6 +376,20 @@
         <p id="placeResult" class="hint"></p>
       </div>
 
+      <div class="dlg-block">
+        <h3>Google Tasks</h3>
+        <p class="hint">ProBeing asks Google for two things only: your Tasks, and the files it
+          makes itself in your Drive. Connect once, on either device; it serves both.</p>
+        <p id="googleState" class="hint"></p>
+        <div class="dlg-actions" style="justify-content: flex-start">
+          <button type="button" id="googleConnectBtn" class="btn" hidden>Connect Google</button>
+          <button type="button" id="googleListBtn" class="btn" hidden>Change list</button>
+          <button type="button" id="googleDisconnectBtn" class="link-btn" hidden>Disconnect</button>
+        </div>
+        <select id="googleListPick" class="cat-pick place-pick" aria-label="Your Tasks list" hidden></select>
+        <p id="googleResult" class="hint"></p>
+      </div>
+
     <label class="check">
       <input id="micHide" type="checkbox">
       <span>Hide ProBeing&rsquo;s mic button &mdash; I use my keyboard&rsquo;s mic</span>

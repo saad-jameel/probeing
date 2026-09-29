@@ -226,6 +226,7 @@ function adoptSession(session) {
   if (sbUser && sbUser.id !== before) {
     signInDlg.close();
     watchLive();
+    watchGoogle();
     refresh();
     /* Every launch, not just the first: a push subscription dies silently — a
      * browser update or a long idle and the endpoint answers 410 Gone — so the
@@ -1302,6 +1303,7 @@ function watchLive() {
 }
 
 function stopLive() {
+  stopGoogle();
   if (!liveChannel) return;
   try { sb.removeChannel(liveChannel); } catch (e) { /* already gone */ }
   liveChannel = null;
@@ -7917,6 +7919,7 @@ $('settingsBtn').addEventListener('click', function () {
   hidePairCode();                    // never a code left over from a past visit
   $('pairResult').textContent = '';
   loadDeviceKeys();                  // not awaited: the dialog opens now
+  loadGoogle();                      // likewise
   dlg.showModal();
 });
 
@@ -9233,6 +9236,200 @@ document.addEventListener('visibilitychange', function () {
  * It only reads the permission; nothing on launch asks for it. */
 tidyGlance();
 
+// ------------------------------------------------- google tasks (Stage 12)
+
+/* Settings' Google Tasks section. Every Google token stays in the google-link
+ * function; this side only ever sees who is connected and which list. Nothing
+ * here is on the logging path (rule 4). */
+var googleStatus = null;       // the last google-link status reply; null while checking
+var googleSync = null;         // this user's sync_state row, or null
+var googleChannel = null;
+
+var GOOGLE_TIMEOUT_MS = 30000;   // a cold function plus a call to Google
+
+/** Ask google-link. Always resolves; a failure is {ok:false, error}. */
+async function googleCall(op, extra) {
+  var ctrl = typeof AbortController === 'function' ? new AbortController() : null;
+  var timer = ctrl ? setTimeout(function () { ctrl.abort(); }, GOOGLE_TIMEOUT_MS) : 0;
+  try {
+    if (!sb) return { ok: false, error: 'Sign in first.' };
+    var got = await sb.auth.getSession();
+    var session = got && got.data ? got.data.session : null;
+    if (!session || !session.access_token) return { ok: false, error: 'Sign in first.' };
+    var base = String(cfg.supaUrl || '').trim().replace(/\/+$/, '');
+    var res = await fetch(base + '/functions/v1/google-link', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': 'Bearer ' + session.access_token,
+        'apikey': String(cfg.supaKey || '').trim()
+      },
+      body: JSON.stringify(Object.assign({ op: op }, extra || {})),
+      signal: ctrl ? ctrl.signal : undefined
+    });
+    var data = await res.json().catch(function () { return null; });
+    if (data && typeof data === 'object') return data;
+    return { ok: false, error: res.status === 404 ? 'the google-link function is not deployed yet'
+                                                  : 'the server answered ' + res.status };
+  } catch (e) {
+    if (e && e.name === 'AbortError') return { ok: false, error: 'no answer within 30 seconds' };
+    return { ok: false, error: (e && e.message) || String(e) };
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+/** Row level security returns only this user's row. A missing table reads as none. */
+async function readGoogleSync() {
+  googleSync = null;
+  if (!sb) return;
+  try {
+    var res = await sb.from('sync_state')
+      .select('connected,google_email,list_title,last_error,last_error_at').limit(1);
+    if (!res.error) googleSync = (res.data || [])[0] || null;
+  } catch (e) { /* the status reply stands in */ }
+}
+
+/** Which state the section is in, and its words. sync_state wins where it has a row. */
+function googleView(status, sync) {
+  if (!status) return { state: 'checking', text: 'Checking Google…' };
+  if (status.configured === false) {
+    return { state: 'dormant', text: 'Google isn’t set up yet — see your to-do list.' };
+  }
+  if (!status.ok) return { state: 'unknown', text: 'Could not check Google: ' + (status.error || 'no answer') };
+  var connected = sync ? Boolean(sync.connected) : Boolean(status.connected);
+  if (!connected) return { state: 'off', text: 'Not connected.' };
+  var email = (sync && sync.google_email) || status.email || '';
+  var list = (sync && sync.list_title) || status.list_title || '';
+  var err = String((sync && sync.last_error) || '');
+  if (status.reconnect || err.indexOf('Reconnect Google') === 0) {
+    return { state: 'reconnect', email: email, list: list,
+             text: 'Reconnect Google: it stopped accepting ProBeing’s permission' +
+                   (email ? ' for ' + email : '') + '.' };
+  }
+  return { state: 'on', email: email, list: list,
+           text: 'Connected as ' + (email || 'your Google account') + '. ' +
+                 (list ? 'List: ' + list + '.' : 'No list chosen yet.') };
+}
+
+function paintGoogle() {
+  var v = googleView(googleStatus, googleSync);
+  $('googleState').textContent = v.text;                  // rule 5: email and title are data
+  var connect = $('googleConnectBtn');
+  connect.hidden = v.state !== 'off' && v.state !== 'reconnect';
+  connect.textContent = v.state === 'reconnect' ? 'Reconnect Google' : 'Connect Google';
+  $('googleListBtn').hidden = v.state !== 'on';
+  $('googleDisconnectBtn').hidden = v.state !== 'on' && v.state !== 'reconnect';
+  if (v.state !== 'on') $('googleListPick').hidden = true;
+  return v;
+}
+
+/** On opening Settings. Just connected with no list yet: the picker opens by itself. */
+async function loadGoogle() {
+  googleStatus = null;
+  $('googleResult').textContent = '';
+  $('googleListPick').hidden = true;
+  paintGoogle();
+  var both = await Promise.all([googleCall('status'), readGoogleSync()]);
+  googleStatus = both[0];
+  var v = paintGoogle();
+  if (v.state === 'on' && !v.list) showGoogleLists();
+}
+
+async function showGoogleLists() {
+  var out = $('googleResult');
+  var pick = $('googleListPick');
+  out.textContent = 'Reading your Tasks lists…';
+  var r = await googleCall('lists');
+  if (!r.ok) {
+    out.textContent = '❌ ' + (r.error || 'could not read your lists');
+    if (r.reconnect) {
+      await readGoogleSync();
+      if (googleStatus) googleStatus.reconnect = true;
+      paintGoogle();
+    }
+    return;
+  }
+  var lists = r.lists || [];
+  var chosen = (googleStatus && googleStatus.list_id) || '';
+  pick.textContent = '';
+  var first = document.createElement('option');
+  first.value = '';
+  first.textContent = lists.length ? 'Choose the list ProBeing should use' : 'You have no Tasks lists yet';
+  pick.appendChild(first);
+  lists.forEach(function (l) {
+    var o = document.createElement('option');
+    o.value = l.id;
+    o.textContent = l.title || '(untitled list)';
+    if (l.id === chosen) o.selected = true;
+    pick.appendChild(o);
+  });
+  pick.hidden = false;
+  out.textContent = '';
+}
+
+/* The page swaps for Google's own. The indirection lets a test watch it. */
+function googleGo(url) { window.location.assign(url); }
+
+$('googleConnectBtn').addEventListener('click', async function () {
+  var out = $('googleResult');
+  out.textContent = 'Opening Google…';
+  var r = await googleCall('start');
+  if (!r.ok || !/^https:\/\/accounts\.google\.com\//.test(String(r.url || ''))) {
+    out.textContent = '❌ ' + (r.error || 'no Google link came back');
+    return;
+  }
+  googleGo(r.url);
+});
+
+$('googleListBtn').addEventListener('click', function () { showGoogleLists(); });
+
+$('googleListPick').addEventListener('change', async function () {
+  var out = $('googleResult');
+  var id = $('googleListPick').value;
+  if (!id) return;
+  out.textContent = 'Saving…';
+  var r = await googleCall('pick', { list_id: id });
+  if (!r.ok) { out.textContent = '❌ ' + (r.error || 'not saved'); return; }
+  if (googleStatus) { googleStatus.list_id = r.list_id; googleStatus.list_title = r.list_title; }
+  if (googleSync) googleSync.list_title = r.list_title;
+  $('googleListPick').hidden = true;
+  paintGoogle();
+  out.textContent = 'ProBeing will use “' + r.list_title + '”.';
+});
+
+$('googleDisconnectBtn').addEventListener('click', async function () {
+  if (!confirm('Disconnect Google? ProBeing stops reading your Tasks, and Google is asked ' +
+               'to cancel its permission. Your ProBeing log is not touched.')) return;
+  var out = $('googleResult');
+  out.textContent = 'Disconnecting…';
+  var r = await googleCall('disconnect');
+  if (!r.ok) { out.textContent = '❌ ' + (r.error || 'not disconnected'); return; }
+  googleStatus = { ok: true, configured: true, connected: false };
+  await readGoogleSync();
+  paintGoogle();
+  out.textContent = r.note || 'Disconnected. Google has cancelled ProBeing’s permission.';
+});
+
+/* Its own channel, so a missing sync_state table cannot upset the events feed.
+ * The announcement is only a nudge: the row is read again. */
+function watchGoogle() {
+  if (!sb || !sbUser || googleChannel) return;
+  googleChannel = sb.channel('probeing-google')
+    .on('postgres_changes', { event: '*', schema: 'public', table: 'sync_state' },
+        function () {
+          if (!dlg.open) return;
+          readGoogleSync().then(paintGoogle);
+        })
+    .subscribe();
+}
+
+function stopGoogle() {
+  if (!googleChannel) return;
+  try { sb.removeChannel(googleChannel); } catch (e) { /* already gone */ }
+  googleChannel = null;
+}
+
 // -------------------------------------------------------------------- boot
 
 if ('serviceWorker' in navigator) {
@@ -9305,3 +9502,8 @@ renderDaySummary();
 lastVisibleRefresh = Date.now();     // the boot reconcile counts as the first one
 refresh();
 if (!cfg.supaUrl || !cfg.supaKey) dlg.showModal();
+// google-callback.html links back to ./#google: open Settings there.
+if (location.hash === '#google') {
+  try { history.replaceState(null, '', location.pathname + location.search); } catch (e) { /* stays */ }
+  $('settingsBtn').click();
+}
