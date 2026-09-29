@@ -514,19 +514,19 @@ body {
 
 /* ------------------------------------------------------------------- nav */
 
-/* Four tabs: Home, Today, Money, Review. Stage 13's Tasks makes it five. */
+/* Five tabs: Home, Today, Tasks, Money, Review. */
 .tabs {
   position: fixed; left: 50%; transform: translateX(-50%);
   bottom: 0; z-index: 9;
   width: min(560px, 100%);
   height: calc(var(--nav-h) + env(safe-area-inset-bottom));
   padding: 0 12px env(safe-area-inset-bottom);
-  display: grid; grid-template-columns: repeat(4, 1fr); align-items: center;
+  display: grid; grid-template-columns: repeat(5, 1fr); align-items: center;
   background: var(--panel);
   border-top: 1px solid var(--line);
 }
 .tab {
-  height: 44px; margin: 0 auto; padding: 0 20px;
+  height: 44px; margin: 0 auto; padding: 0 16px;
   display: flex; align-items: center; justify-content: center;
   background: none; border: 0; border-radius: 999px;
   color: var(--muted); cursor: pointer;
@@ -675,6 +675,22 @@ body {
 .task-tree .task-project { font-weight: 600; }
 .task-tree .task-done { opacity: .55; text-decoration: line-through; }
 .task-tree .task-gone { opacity: .4; font-style: italic; }
+
+/* The Tasks page and Today's plan: each open task is a button that opens its box.
+   Rule 6: these set `display`, so each declares its [hidden] pair. */
+.task-item {
+  display: block; width: 100%; padding: 6px 0; text-align: left;
+  background: none; border: 0; color: inherit; font: inherit; cursor: pointer;
+}
+.task-item[hidden] { display: none; }
+.task-item:hover .plan-title { color: var(--accent); }
+.task-item:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 6px; }
+.task-tree .task-item { padding: 2px 0; }
+.task-when { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+.task-when[hidden] { display: none; }
+.task-when-actions { margin-top: 8px; }
+.task-dlg-main { display: grid; gap: 10px; margin-top: 16px; }
+.task-dlg-main[hidden] { display: none; }
 
 /* Wraps because the row grew a fourth button: four of them do not fit across a
    phone, and an un-wrapped flex row would push Save off the edge. */

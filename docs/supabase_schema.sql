@@ -847,6 +847,57 @@ alter table public.money drop constraint if exists money_loan_person;
 alter table public.money add constraint money_loan_person
   check (kind <> 'loan' or person is not null);
 
+-- ============================================================ tasks page
+-- The Tasks page (29 Sep). "Start working on it" names its task on the work
+-- row it writes, so later stages can count time per sub-task. Set only at
+-- insert: the label grant above stays (project, detail), so a browser cannot
+-- change node_id afterwards. Tasks are never deleted, so the reference holds.
+alter table public.events add column if not exists node_id uuid
+  references public.task_nodes(id) on delete set null;
+
+-- His plan for a task: on the Planned list or not, and when he expects to
+-- finish it. ProBeing's own; Google keeps no times. One row per task, written
+-- by the app with an upsert, so both devices see one answer. No delete: taking
+-- a task off Planned sets planned = false.
+create table if not exists public.task_plans (
+  id          uuid        primary key default gen_random_uuid(),
+  user_id     uuid        not null default auth.uid() references auth.users on delete cascade,
+  node_id     uuid        not null references public.task_nodes(id) on delete cascade,
+  planned     boolean     not null default false,
+  expected_at timestamptz,
+  updated_at  timestamptz not null default now(),
+  created_at  timestamptz not null default now(),
+  constraint task_plans_user_node_key unique (user_id, node_id)
+);
+
+alter table public.task_plans enable row level security;
+
+do $$ begin
+  create policy "read own task plans" on public.task_plans
+    for select using (auth.uid() = user_id);
+exception when duplicate_object then null; end $$;
+
+-- Only for his own tasks: a plan row cannot point at someone else's node.
+do $$ begin
+  create policy "insert own task plans" on public.task_plans
+    for insert with check (auth.uid() = user_id and exists (
+      select 1 from public.task_nodes n where n.id = node_id and n.user_id = auth.uid()));
+exception when duplicate_object then null; end $$;
+
+do $$ begin
+  create policy "update own task plans" on public.task_plans
+    for update using (auth.uid() = user_id)
+    with check (auth.uid() = user_id and exists (
+      select 1 from public.task_nodes n where n.id = node_id and n.user_id = auth.uid()));
+exception when duplicate_object then null; end $$;
+
+revoke delete, truncate on table public.task_plans from anon, authenticated;
+
+-- So a plan changed on one device redraws the other.
+do $$ begin
+  alter publication supabase_realtime add table public.task_plans;
+exception when duplicate_object then null; end $$;
+
 -- ================================================== the schedule (pg_cron)
 -- NOT RUN BY THIS FILE. It is commented out on purpose, because it carries two
 -- values that must never be committed — paste it into the SQL editor with your
