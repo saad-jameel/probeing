@@ -7559,8 +7559,9 @@ $('saveBtn').addEventListener('click', function () {
 
 /** Write the place where the Edge Functions read it. Direct, like the push
  *  subscription: a setting, not a press, so the outbox does not hold it.
- *  Coordinates go only from the device that measured them (`own`); any other
- *  sends method and Asr alone, and the upsert keeps the columns it leaves out. */
+ *  Coordinates, and the zone measured with them, go only from the device that
+ *  measured them (`own`); any other sends method and Asr alone, and the upsert
+ *  keeps the columns it leaves out. */
 async function pushPlace() {
   if (!supabaseReady()) throw new Error('Sign in first.');
   var p = currentPlace();
@@ -7570,8 +7571,8 @@ async function pushPlace() {
   if (placeSaved.own && p.known) {
     row.lat = p.lat;
     row.lng = p.lng;
+    row.time_zone = p.zone;
   }
-  row.time_zone = p.zone;
   var res = await sb.from('user_settings').upsert(row, { onConflict: 'user_id' });
   if (res.error) throw errorFrom(res.error);
   placeSaved.at = stamp;                    // so the next pull does not read our own write as newer
@@ -7592,6 +7593,7 @@ async function pullPlace() {
   if (!isNaN(finiteNum(row.lat)) && !isNaN(finiteNum(row.lng))) {
     placeSaved.lat = row.lat;
     placeSaved.lng = row.lng;
+    placeSaved.zone = row.time_zone;        // the zone travels with the location
     placeSaved.own = false;                 // measured on the other device
   }
   placeSaved.method = row.method;
@@ -7605,33 +7607,16 @@ async function pullPlace() {
   return row;
 }
 
-/* At every sign-in. A change this device made that the server never got goes
- * first; otherwise the server's copy is read. Then the zone: free to read, no
- * permission, so the server's clock follows a trip. Only that column is sent,
- * so a device that never used its location cannot wipe the other one's. */
+/* At every sign-in: a change this device made that the server never got goes
+ * first; otherwise the server's copy is read. Nothing is written just because
+ * the app opened. The server's zone moves only when "Use my location" is
+ * pressed, with the location - otherwise a laptop on UTC, or a phone abroad
+ * while the laptop stays home, would flip it at every launch. */
 async function syncPlace() {
   if (!supabaseReady()) return;
   try {
-    var serverZone;
-    if (placeSaved.synced === false) {
-      await pushPlace();
-      serverZone = currentPlace().zone;
-    } else {
-      var row = await pullPlace();
-      serverZone = row ? row.time_zone : PRAYER_DEFAULT_PLACE.zone;   // no row reads as Karachi
-    }
-
-    var tz = deviceTz();
-    if (tz && tz !== currentPlace().zone) {
-      placeSaved.zone = tz;
-      savePlace(placeSaved);
-      setPrayerPlace(placeSaved);
-    }
-    if (tz && tz !== serverZone) {
-      var res = await sb.from('user_settings').upsert({ user_id: sbUser.id, time_zone: tz },
-                                                      { onConflict: 'user_id' });
-      if (res.error) throw errorFrom(res.error);
-    }
+    if (placeSaved.synced === false) await pushPlace();
+    else await pullPlace();
   } catch (e) { /* tried again at the next sign-in; this device's own day is unaffected */ }
 }
 
