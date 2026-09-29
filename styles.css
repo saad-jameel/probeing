@@ -501,6 +501,8 @@ body {
 /* A voided row stays in the list, struck through: a correction, not a deletion. */
 .log-list li.voided .what { text-decoration: line-through; color: var(--muted); }
 .log-list li .link-btn { padding: 0 2px; }
+/* The Money list's day heading: a label, not a card. */
+.log-list li.day-head { background: none; border: 0; padding: 6px 2px 0; color: var(--muted); font-size: 13px; }
 /* Money on the Review card. No `display` here, so no Rule 6 pair. */
 .review-money { margin-top: 12px; }
 .review-money .money-head { margin: 0; font-size: 14.5px; font-weight: 600; font-variant-numeric: tabular-nums; }

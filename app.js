@@ -7256,6 +7256,7 @@ var MONEY_TAG_MAX = 40;
 var MONEY_NOTE_MAX = 200;
 var MONEY_TAGS_MAX = 30;
 var MONEY_LEARN_DAYS = 90;      // a typed tag is offered for this long after its last use
+var MONEY_LIST_DAYS = 31;       // the list reaches back this far, so an older mistake can be voided
 
 var moneyRows = [];             // the last read, MONEY_LEARN_DAYS back
 var moneyLocal = [];            // saved on this page and not yet seen in a read
@@ -7554,6 +7555,19 @@ function voidMoney(r) {
   flash('Voided: ' + moneyWhat(r), 'ok');
 }
 
+/** A Money list heading: "Today", "Yesterday", else "Sat 26 Sep". `back` is days before today. */
+function moneyDayName(ymd, back) {
+  if (back === 0) return 'Today';
+  if (back === 1) return 'Yesterday';
+  var p = String(ymd).split('-');
+  var d = new Date(Number(p[0]), Number(p[1]) - 1, Number(p[2]));
+  try {
+    return d.toLocaleDateString(undefined, { weekday: 'short', day: 'numeric', month: 'short' });
+  } catch (e) {
+    return String(ymd);
+  }
+}
+
 function renderMoney() {
   var rows = moneyMerged();
   var today = counterToday(new Date());
@@ -7573,40 +7587,55 @@ function renderMoney() {
   rows.forEach(function (r) { if (r.voids_rid) cancelled[r.voids_rid] = 1; });
   var list = $('moneyList');
   list.textContent = '';
-  rows.filter(function (r) {
-    var t = instantOf(r.at);
-    return !r.voids_rid && t >= day[0].startMs && t < day[0].endMs;
-  }).forEach(function (r) {
-    var off = Boolean(r.rid) && cancelled[r.rid] === 1;
-    var li = document.createElement('li');
-    if (off) li.className = 'voided';
-    var when = document.createElement('span');
-    when.className = 'when';
-    when.textContent = glanceClock(instantOf(r.at));
-    var what = document.createElement('span');
-    what.className = 'what';
-    what.textContent = (r.dir === 'in' ? '+' : '−') + formatPkr(moneyPaisa(r.amount) / 100) +
-      ' · ' + String(r.tag || '') + (r.note ? ' — ' + r.note : '');
-    var tag = document.createElement('span');
-    tag.className = 'tag';
-    tag.textContent = off ? 'void' : r.queued ? 'waiting' : r.dir === 'in' ? 'in' : 'spent';
-    li.append(when, what, tag);
-    if (!off) {
-      var b = document.createElement('button');
-      b.type = 'button';
-      b.className = 'link-btn';
-      b.textContent = 'Void';
-      b.addEventListener('click', function () { voidMoney(r); });
-      li.appendChild(b);
-    }
-    list.appendChild(li);
-  });
-  if (!list.childElementCount) {
+  function emptyLine() {
     var empty = document.createElement('li');
     empty.className = 'empty';
     empty.textContent = 'Nothing logged today.';
     list.appendChild(empty);
   }
+  // Newest day first under a small heading, back MONEY_LIST_DAYS counter days.
+  var from = new Date(today.getFullYear(), today.getMonth(), today.getDate() - (MONEY_LIST_DAYS - 1));
+  var groups = dayWindows(from, today).reverse().map(function (w) {
+    return { w: w, rows: rows.filter(function (r) {
+      var t = instantOf(r.at);
+      return !r.voids_rid && t >= w.startMs && t < w.endMs;
+    }) };
+  });
+  var older = groups.slice(1).some(function (g) { return g.rows.length; });
+  groups.forEach(function (g, i) {
+    if (!g.rows.length && !(i === 0 && older)) return;
+    var head = document.createElement('li');
+    head.className = 'day-head';
+    head.textContent = moneyDayName(g.w.ymd, i);
+    list.appendChild(head);
+    if (!g.rows.length) emptyLine();
+    g.rows.forEach(function (r) {
+      var off = Boolean(r.rid) && cancelled[r.rid] === 1;
+      var li = document.createElement('li');
+      if (off) li.className = 'voided';
+      var when = document.createElement('span');
+      when.className = 'when';
+      when.textContent = glanceClock(instantOf(r.at));
+      var what = document.createElement('span');
+      what.className = 'what';
+      what.textContent = (r.dir === 'in' ? '+' : '−') + formatPkr(moneyPaisa(r.amount) / 100) +
+        ' · ' + String(r.tag || '') + (r.note ? ' — ' + r.note : '');
+      var tag = document.createElement('span');
+      tag.className = 'tag';
+      tag.textContent = off ? 'void' : r.queued ? 'waiting' : r.dir === 'in' ? 'in' : 'spent';
+      li.append(when, what, tag);
+      if (!off) {
+        var b = document.createElement('button');
+        b.type = 'button';
+        b.className = 'link-btn';
+        b.textContent = 'Void';
+        b.addEventListener('click', function () { voidMoney(r); });
+        li.appendChild(b);
+      }
+      list.appendChild(li);
+    });
+  });
+  if (!list.childElementCount) emptyLine();
 
   var held = outboxOurs().filter(function (it) { return it.action === 'money'; }).length;
   var note = [];
@@ -7621,7 +7650,7 @@ function renderMoney() {
   if (!moneyForm.dir) renderMoneyTags();
 }
 
-/** The last MONEY_LEARN_DAYS of rows: today's list, the month, and the learned tags. */
+/** The last MONEY_LEARN_DAYS of rows: the list, the month, and the learned tags. */
 async function readMoney() {
   clearTimeout(moneyReadTimer);
   if (!supabaseReady()) {
