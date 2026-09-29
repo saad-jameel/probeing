@@ -8,8 +8,10 @@
 // {ok:true, skipped} and writes nothing, not even an error.
 //
 // A pull is believed only when it is complete. A failed or unreadable page, a
-// missing list, or an empty answer against a full mirror marks NOTHING gone;
-// the reason goes to sync_state.last_error instead, which Settings shows.
+// missing list, or an empty answer against a full mirror marks NOTHING; the
+// reason goes to sync_state.last_error instead, which Settings shows. Even a
+// complete pull only marks an absent task missing; a second one in a row
+// marks it gone.
 //
 // Secrets: the Stage 12 three (GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET,
 // GOOGLE_TOKEN_KEY), CRON_SECRET and ALLOWED_USER_ID. Needs task_nodes from
@@ -119,18 +121,27 @@ function mirrorStore(sb) {
         must(await sb.from('task_nodes').upsert(batch, { onConflict: 'user_id,google_id' }));
       }
     },
+    // Both skip a row a later run has synced since this run began (nowIso is its start).
+    markMissing: async function (userId, ids, nowIso) {
+      for (var i = 0; i < ids.length; i += GONE_BATCH) {
+        must(await sb.from('task_nodes').update({ missing_since: nowIso })
+          .eq('user_id', userId).in('id', ids.slice(i, i + GONE_BATCH)).is('gone_at', null)
+          .is('missing_since', null).lte('synced_at', nowIso));
+      }
+    },
     markGone: async function (userId, ids, nowIso) {
       for (var i = 0; i < ids.length; i += GONE_BATCH) {
-        must(await sb.from('task_nodes').update({ gone_at: nowIso, synced_at: nowIso })
-          .eq('user_id', userId).in('id', ids.slice(i, i + GONE_BATCH)).is('gone_at', null));
+        must(await sb.from('task_nodes').update({ gone_at: nowIso })
+          .eq('user_id', userId).in('id', ids.slice(i, i + GONE_BATCH)).is('gone_at', null)
+          .lte('synced_at', nowIso));
       }
     }
   };
 }
 
-async function failSync(d, why) {
+async function failSync(d, why, listId) {
   try {
-    await d.store.setSync({ user_id: d.userId, last_error: why,
+    await d.store.setSync({ user_id: d.userId, list_id: listId, last_error: why,
                             last_error_at: new Date(d.now()).toISOString() });
   } catch (_e) { /* the reply still says it */ }
 }
@@ -139,6 +150,7 @@ async function failSync(d, why) {
 async function syncTasks(d) {
   var grant = await d.store.getGrant(d.userId);
   if (!grant || !grant.list_id) return { ok: true, skipped: 'not connected' };
+  // The run's start: rows another run synced after it are left alone.
   var nowIso = new Date(d.now()).toISOString();
 
   var pull;
@@ -151,30 +163,32 @@ async function syncTasks(d) {
     }
     var why = e && e.status === 404 ? LIST_GONE
             : 'Could not read Google Tasks, so nothing changed: ' + scrub((e && e.message) || e);
-    await failSync(d, why);
+    await failSync(d, why, grant.list_id);
     return { ok: false, error: why };
   }
 
   var diff;
   try {
-    diff = diffPull(await d.store.nodes(d.userId), pull.tasks, nowIso);
+    diff = diffPull(await d.store.nodes(d.userId), pull.tasks, nowIso, grant.list_id);
     if (diff.refused) {
-      await failSync(d, diff.refused);
+      await failSync(d, diff.refused, grant.list_id);
       return { ok: false, error: diff.refused };
     }
     await d.store.upsertNodes(d.userId, diff.write);
+    await d.store.markMissing(d.userId, diff.missing, nowIso);
     await d.store.markGone(d.userId, diff.gone, nowIso);
   } catch (e) {
     var said = 'Could not save the copy of your Tasks: ' + scrub((e && e.message) || e);
-    await failSync(d, said);
+    await failSync(d, said, grant.list_id);
     return { ok: false, error: said };
   }
 
-  await d.store.setSync({ user_id: d.userId, last_pull_ok_at: nowIso, last_error: null,
-                          last_error_at: null, deep_ignored: diff.deep });
+  // list_id tells the browser which rows are the current list's.
+  await d.store.setSync({ user_id: d.userId, list_id: grant.list_id, last_pull_ok_at: nowIso,
+                          last_error: null, last_error_at: null, deep_ignored: diff.deep });
   return { ok: true, tasks: pull.tasks.length, pages: pull.pages, added: diff.added,
-           changed: diff.changed, revived: diff.revived, gone: diff.gone.length,
-           deep_ignored: diff.deep };
+           changed: diff.changed, revived: diff.revived, missing: diff.missing.length,
+           gone: diff.gone.length, deep_ignored: diff.deep };
 }
 
 /* ─────────────────────────────────────────────────────────────────────── */

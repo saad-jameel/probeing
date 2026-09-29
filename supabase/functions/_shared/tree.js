@@ -48,22 +48,40 @@ function kindOf(task, byId) {
   return up.parent ? 'deep' : 'subtask';
 }
 
+/** Later than the run's start: another run saw this row more recently. */
+function newerThan(iso, nowIso) {
+  var t = Date.parse(iso || '');
+  return isFinite(t) && t > Date.parse(nowIso);
+}
+
+/** A list id as rows carry it; a row or run without one reads as null. */
+function listKey(id) {
+  return id == null || id === '' ? null : String(id);
+}
+
 /**
- * What a COMPLETE pull changes in the mirror. Never call it with part of one:
- * anything missing here is marked gone.
- *   mirror  every task_nodes row of this user, gone ones included
+ * What a COMPLETE pull of list `listId` changes in the mirror. Never call it
+ * with part of one: anything missing here is counted absent.
+ *   mirror  every task_nodes row of this user, gone ones and other lists' included
  *   pulled  every task Google returned, deleted ones included
- *   nowIso  the stamp for gone_at, g_reopened_at and synced_at
+ *   nowIso  the run's START: the stamp for gone_at, missing_since and synced_at
  * Returns {refused: why} when the pull cannot be believed. Otherwise
- * {write, gone, deep, orphans, added, changed, revived}: `write` are whole rows
- * to upsert on (user_id, google_id), all with the same keys; `gone` are the ids
- * of rows to stamp gone_at. A row that has not changed is not written.
+ * {write, missing, gone, deep, orphans, added, changed, revived}: `write` are
+ * whole rows to upsert on (user_id, google_id), all with the same keys;
+ * `missing` are ids to stamp missing_since (a first absence); `gone` are ids to
+ * stamp gone_at (a second absence in a row, or moved too deep). Rows of other
+ * lists are never counted, stamped or refused over. A row that has not changed
+ * is not written; nor is one a later run has already synced.
  */
-function diffPull(mirror, pulled, nowIso) {
+function diffPull(mirror, pulled, nowIso, listId) {
   mirror = mirror || [];
   pulled = (pulled || []).filter(function (t) { return t && t.id; });
-  var openNow = mirror.filter(nodeOpen).length;
-  if (!pulled.length && openNow > EMPTY_PULL_TRUST) {
+  var list = listKey(listId);
+  var here = mirror.filter(function (n) { return listKey(n.list_id) === list; });
+  var openNow = here.filter(nodeOpen).length;
+  // Deleted tasks do not count: a page of only those is as empty as none.
+  var live = pulled.filter(function (t) { return !t.deleted; }).length;
+  if (!live && openNow > EMPTY_PULL_TRUST) {
     return { refused: 'Google Tasks sent back an empty list while ProBeing holds ' + openNow +
                       ' open tasks, so nothing was removed. If you emptied it on purpose, this ' +
                       'clears once the list holds a task again.' };
@@ -71,16 +89,19 @@ function diffPull(mirror, pulled, nowIso) {
 
   var byId = {};
   pulled.forEach(function (t) { byId[t.id] = t; });
+  // Every list's rows, so a task moved between lists keeps its uuid.
   var have = {};
   mirror.forEach(function (n) { have[n.google_id] = n; });
 
-  var out = { write: [], gone: [], deep: 0, orphans: 0, added: 0, changed: 0, revived: 0 };
+  var out = { write: [], missing: [], gone: [], deep: 0, orphans: 0, added: 0, changed: 0, revived: 0 };
   var seen = {};
+  var tooDeep = {};
   pulled.forEach(function (t) {
     var kind = kindOf(t, byId);
     if (kind === 'deep') {
       if (!t.deleted) out.deep += 1;
-      return;                                   // not mirrored, so a row for it goes below
+      tooDeep[t.id] = true;                     // not mirrored, so a row for it goes below
+      return;
     }
     if (kind === 'orphan') {
       if (!t.deleted) out.orphans += 1;
@@ -88,11 +109,13 @@ function diffPull(mirror, pulled, nowIso) {
     }
     var old = have[t.id] || null;
     seen[t.id] = true;
+    if (old && newerThan(old.synced_at, nowIso)) return;   // a later run's copy wins
     if (!old && t.deleted) return;              // deleted before we ever saw it
 
     var done = t.status === 'completed';
     var row = {
       google_id: String(t.id),
+      list_id: list,
       parent_google_id: kind === 'subtask' ? String(t.parent) : null,
       kind: kind,
       title: String(t.title || ''),
@@ -104,6 +127,7 @@ function diffPull(mirror, pulled, nowIso) {
       // Unticked in Google since the last pull: Stage 15 must not tick it straight back.
       g_reopened_at: old && old.g_status === 'completed' && !done ? nowIso
                    : (old && old.g_reopened_at) || null,
+      missing_since: null,                      // it is here, so any first strike is cleared
       gone_at: t.deleted ? (old && old.gone_at) || nowIso : null,
       synced_at: nowIso
     };
@@ -118,16 +142,20 @@ function diffPull(mirror, pulled, nowIso) {
     out.write.push(row);
   });
 
-  // In the mirror, missing from a complete pull: deleted for good, or moved too deep.
-  mirror.forEach(function (n) {
-    if (!seen[n.google_id] && !n.gone_at) out.gone.push(n.id);
+  // In this list, not in a complete pull. Moved too deep is known, so gone at
+  // once; plain absence needs two complete runs in a row.
+  here.forEach(function (n) {
+    if (n.gone_at || seen[n.google_id] || newerThan(n.synced_at, nowIso)) return;
+    if (tooDeep[n.google_id] || n.missing_since) out.gone.push(n.id);
+    else out.missing.push(n.id);
   });
   return out;
 }
 
 /** Everything diffPull writes, compared as Postgres hands it back. */
 function sameRow(old, row) {
-  return (old.parent_google_id || null) === row.parent_google_id &&
+  return listKey(old.list_id) === row.list_id &&
+         (old.parent_google_id || null) === row.parent_google_id &&
          old.kind === row.kind &&
          String(old.title || '') === row.title &&
          String(old.position || '') === row.position &&
@@ -136,6 +164,7 @@ function sameRow(old, row) {
          sameInstant(old.g_completed_at, row.g_completed_at) &&
          sameInstant(old.g_updated, row.g_updated) &&
          sameInstant(old.g_reopened_at, row.g_reopened_at) &&
+         sameInstant(old.missing_since, row.missing_since) &&
          sameInstant(old.gone_at, row.gone_at);
 }
 

@@ -768,16 +768,20 @@ do $$ begin
   alter publication supabase_realtime add table public.sync_state;
 exception when duplicate_object then null; end $$;
 
+-- Stage 13: the list tasks-sync last read, so the browser shows only its rows.
+alter table public.sync_state add column if not exists list_id text;
+
 -- task_nodes: Stage 13's copy of his chosen Tasks list, written only by the
 -- tasks-sync function. Top-level tasks are projects, their children sub-tasks;
 -- deeper ones are not kept. Google wins for the tree; nothing is deleted here —
 -- a task gone from Google gets gone_at, so time and items (Stage 14) stay
--- attached to its stable id.
+-- attached to its stable id. Rows of a list no longer chosen stay, unmarked.
 create table if not exists public.task_nodes (
   id               uuid        primary key default gen_random_uuid(),
   -- Written with the service role, so user_id is always named.
   user_id          uuid        not null references auth.users on delete cascade,
   google_id        text        not null,
+  list_id          text        not null,                  -- the Tasks list it came from
   parent_google_id text,                                  -- null for a project
   kind             text        not null check (kind in ('project', 'subtask')),
   title            text        not null default '',
@@ -789,12 +793,22 @@ create table if not exists public.task_nodes (
   g_reopened_at    timestamptz,                           -- unticked in Google
   pb_done_at       timestamptz,                           -- Stage 15
   pb_pushed_at     timestamptz,                           -- Stage 15
-  gone_at          timestamptz,                           -- deleted, or no longer in the list
+  missing_since    timestamptz,                           -- absent from one complete pull
+  gone_at          timestamptz,                           -- deleted, or absent from two in a row
   synced_at        timestamptz not null default now(),
   created_at       timestamptz not null default now(),
   -- What the function upserts on: two syncs at once cannot make a second row.
   constraint task_nodes_user_google_key unique (user_id, google_id)
 );
+
+-- For a table made before list_id and missing_since. A row with no list to
+-- give it is dropped: it is a copy, and the next sync makes it again.
+alter table public.task_nodes add column if not exists missing_since timestamptz;
+alter table public.task_nodes add column if not exists list_id text;
+update public.task_nodes n set list_id = g.list_id
+  from public.google_grants g where g.user_id = n.user_id and n.list_id is null;
+delete from public.task_nodes where list_id is null;
+alter table public.task_nodes alter column list_id set not null;
 
 create index if not exists task_nodes_user_parent_idx
   on public.task_nodes (user_id, parent_google_id);
