@@ -9309,12 +9309,16 @@ function googleView(status, sync) {
   }
   return { state: 'on', email: email, list: list,
            text: 'Connected as ' + (email || 'your Google account') + '. ' +
-                 (list ? 'List: ' + list + '.' : 'No list chosen yet.') };
+                 (list ? 'List: ' + list + '.' : 'No list chosen yet.'),
+           note: status.drive === false ? 'Drive not allowed — the Google Sheets copy (later) won’t ' +
+                                          'work. Reconnect and tick both boxes to fix.' : '' };
 }
 
 function paintGoogle() {
   var v = googleView(googleStatus, googleSync);
   $('googleState').textContent = v.text;                  // rule 5: email and title are data
+  $('googleNote').textContent = v.note || '';
+  $('googleNote').hidden = !v.note;
   var connect = $('googleConnectBtn');
   connect.hidden = v.state !== 'off' && v.state !== 'reconnect';
   connect.textContent = v.state === 'reconnect' ? 'Reconnect Google' : 'Connect Google';

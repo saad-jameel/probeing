@@ -8,7 +8,7 @@
 // GitHub user's id, not a way of signing in.
 //
 // Ops, POSTed as {op, ...} with the signed-in user's JWT:
-//   status      {configured, connected, email, list_id, list_title, reconnect}
+//   status      {configured, connected, email, list_id, list_title, reconnect, drive}
 //   start       Google's consent URL; a state nonce is stored as its sha256
 //   finish      {code, state} from google-callback.html; exchanges the code
 //   lists       his Tasks lists, [{id, title}]
@@ -494,6 +494,8 @@ async function grantStatus(d) {
   var s = await d.store.getSync(d.userId).catch(function () { return null; });
   return { ok: true, configured: true, connected: true, email: g.google_email || '',
            scopes: g.scopes || [], list_id: g.list_id || '', list_title: g.list_title || '',
+           // drive.file unticked still connects; Settings says the Sheets copy won't work.
+           drive: (g.scopes || []).indexOf(DRIVE_FILE_SCOPE) !== -1,
            reconnect: Boolean(s && String(s.last_error || '').indexOf(RECONNECT) === 0) };
 }
 
