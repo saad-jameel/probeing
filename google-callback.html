@@ -1,0 +1,91 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<!-- The address carries Google's one-time code: never send it on as a referrer. -->
+<meta name="referrer" content="no-referrer">
+<title>Connecting Google — ProBeing</title>
+<meta name="theme-color" content="#0d1420">
+<link rel="icon" href="icons/favicon-32.png" sizes="32x32">
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+<!-- Google sends him back here after Connect Google. This page hands the code
+     to the google-link function, which swaps it for tokens this page never sees.
+     Not in the service worker's cache (sw.js skips it). -->
+<main>
+  <section class="card">
+    <h2 class="card-head">Google Tasks</h2>
+    <p id="googleMsg">Finishing the connection…</p>
+    <p><a id="backLink" class="btn" href="./#google">Back to ProBeing</a></p>
+  </section>
+</main>
+
+<script src="vendor/supabase.js"></script>
+<script>
+(function () {
+  'use strict';
+
+  // The same two app.js ships with; a saved Settings value wins, as there.
+  var DEFAULT_SUPABASE_URL = 'https://whxgzdrowvkpzpgfilof.supabase.co';
+  var DEFAULT_SUPABASE_ANON = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6IndoeGd6ZHJvd3ZrcHpwZ2ZpbG9mIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODc4NDEzNDQsImV4cCI6MjEwMzQxNzM0NH0.qJyTdirLFpOu5uBsLwOWAnwWUp4lU1Ka0ZwM6Vsz3mE';
+
+  var msg = document.getElementById('googleMsg');
+  function say(text) { msg.textContent = text; }        // rule 5: never innerHTML
+
+  var q = new URLSearchParams(location.search);
+  var code = q.get('code') || '';
+  var state = q.get('state') || '';
+  var error = q.get('error') || '';
+  // Take the one-time code out of the address bar and the history.
+  try { history.replaceState(null, '', location.pathname); } catch (e) { /* stays; it is single-use */ }
+
+  if (error === 'access_denied') {
+    say('You said no on Google’s screen, so nothing was connected. You can try again from Settings.');
+    return;
+  }
+  if (error) { say('Google did not connect: ' + error.slice(0, 120)); return; }
+  if (!code || !state) { say('Nothing to finish here. Connect Google from ProBeing’s Settings.'); return; }
+
+  var cfg = {};
+  try { cfg = JSON.parse(localStorage.getItem('probeing.config')) || {}; } catch (e) { cfg = {}; }
+  var url = String(cfg.supaUrl || DEFAULT_SUPABASE_URL).trim().replace(/\/+$/, '');
+  var key = String(cfg.supaKey || DEFAULT_SUPABASE_ANON).trim();
+
+  // detectSessionInUrl false: Google's ?code= is not a Supabase sign-in.
+  var sb = supabase.createClient(url, key, {
+    auth: { persistSession: true, autoRefreshToken: false, detectSessionInUrl: false }
+  });
+
+  sb.auth.getSession().then(function (res) {
+    var session = res && res.data ? res.data.session : null;
+    if (!session || !session.access_token) {
+      say('You are not signed in to ProBeing in this browser. Open ProBeing, sign in, and press Connect Google again.');
+      return null;
+    }
+    return fetch(url + '/functions/v1/google-link', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': 'Bearer ' + session.access_token,
+        'apikey': key
+      },
+      body: JSON.stringify({ op: 'finish', code: code, state: state })
+    }).then(function (r) {
+      return r.json().catch(function () { return null; }).then(function (body) {
+        if (body && body.ok) {
+          say('Google is connected' + (body.email ? ' as ' + body.email : '') +
+              '. Go back to ProBeing and choose your Tasks list in Settings.');
+        } else {
+          say('Not connected. ' + ((body && body.error) || ('The server answered ' + r.status + '.')));
+        }
+      });
+    });
+  }).catch(function (e) {
+    say('Not connected: could not reach ProBeing’s server (' + ((e && e.message) || e) + '). Try again from Settings.');
+  });
+})();
+</script>
+</body>
+</html>

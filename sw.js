@@ -25,8 +25,9 @@
  */
 
 /* v8 (Stage 11): the Money screen, and an outbox that holds actions it does not
- * know. A v7 page drops a queued money item, so the new shell must replace it. */
-var CACHE = 'probeing-shell-v8';
+ * know. A v7 page drops a queued money item, so the new shell must replace it.
+ * v9 (Stage 12): the Google Tasks section in Settings. */
+var CACHE = 'probeing-shell-v9';
 var SHELL = [
   './',
   'index.html',
@@ -58,6 +59,8 @@ self.addEventListener('fetch', function (e) {
   // Only ever serve our own same-origin GETs from cache. Supabase is another
   // origin, so its traffic always hits the network.
   if (req.method !== 'GET' || new URL(req.url).origin !== self.location.origin) return;
+  // Its address carries Google's one-time code: never stored, never served stale.
+  if (/\/google-callback\.html$/.test(new URL(req.url).pathname)) return;
 
   // Network-first so a deploy shows up immediately; cache is the offline net.
   e.respondWith(

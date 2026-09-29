@@ -31,6 +31,8 @@
 !/styles.css
 !/manifest.webmanifest
 !/sw.js
+# Stage 12: where Google sends him back after Connect Google.
+!/google-callback.html
 !/icons/
 !/icons/**
 
