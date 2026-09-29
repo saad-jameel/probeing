@@ -27,7 +27,7 @@
   <g id="i-history"><path d="M3.2 12a8.8 8.8 0 1 0 2.9-6.5"/><path d="M3 4.2v5h5"/><path d="M12 7.5V12l3.4 2"/></g>
   <g id="i-chart"><path d="M4 20.2V11M9.3 20.2V4.5M14.7 20.2v-6M20 20.2v-9.6"/></g>
   <g id="i-target"><circle cx="12" cy="12" r="8.7"/><circle cx="12" cy="12" r="4.6"/><circle cx="12" cy="12" r="1.4"/></g>
-  <g id="i-board"><rect x="3" y="4.5" width="18" height="15" rx="2.2"/><path d="M9 4.5v15M15 4.5v15"/></g>
+  <g id="i-money"><rect x="2.5" y="6" width="19" height="12" rx="2.2"/><circle cx="12" cy="12" r="2.8"/><path d="M6 9.5v5M18 9.5v5"/></g>
 </defs></svg>
 
 <div id="banner" class="banner" hidden></div>
@@ -154,6 +154,34 @@
   <ul id="logList" class="log-list"><li class="empty">Not connected yet.</li></ul>
 </section>
 
+<!-- ============================================================ MONEY -->
+<!-- Stage 11. I spent / I get, the amount, a tag, Save: four taps and the
+     digits. Saved on the device first, like M, so it works with no signal. -->
+<section class="screen" data-screen="money" hidden>
+  <div class="pick-grid money-dirs">
+    <button type="button" id="moneyOutBtn" class="pick" aria-pressed="false">I spent</button>
+    <button type="button" id="moneyInBtn" class="pick" aria-pressed="false">I get</button>
+  </div>
+  <input id="moneyAmount" class="money-field money-amount" type="text" inputmode="decimal"
+         autocomplete="off" placeholder="Amount in PKR" aria-label="Amount in PKR">
+  <p id="moneyTagHint" class="hint">Pick &ldquo;I spent&rdquo; or &ldquo;I get&rdquo; for its tags.</p>
+  <div id="moneyTags" class="chips" aria-label="Tag"></div>
+  <input id="moneyNewTag" class="money-field" type="text" maxlength="40" autocomplete="off"
+         placeholder="New tag" aria-label="New tag" hidden>
+  <input id="moneyNote" class="money-field" type="text" maxlength="200" autocomplete="off"
+         placeholder="Note (optional)" aria-label="Note">
+  <button type="button" id="moneySaveBtn" class="btn btn-accent btn-wide" disabled>Save</button>
+
+  <section class="card">
+    <h2 class="card-head"><svg class="card-ico" aria-hidden="true"><use href="#i-money"></use></svg> Today</h2>
+    <div id="moneySums" class="sum-row three"></div>
+    <p id="moneyMonth" class="hint"></p>
+    <p id="moneyStatus" class="hint" hidden></p>
+  </section>
+
+  <ul id="moneyList" class="log-list"></ul>
+</section>
+
 <!-- =========================================================== REVIEW -->
 <!-- The range picker is a real control, not a test mode. A shortcut that only
      exists while testing means the thing that gets tested is not the thing that
@@ -177,6 +205,8 @@
     <p id="reviewSleep" class="review-sleep"></p>
     <!-- Each prayer by mode, and the days it was missed. -->
     <div id="reviewPrayers" hidden></div>
+    <!-- Money in and out for the range, added up here; never sent to Gemini. -->
+    <div id="reviewMoney" class="review-money" hidden></div>
     <p id="reviewProse" class="review-prose"></p>
     <p id="reviewNote" class="pending"></p>
   </section>
@@ -216,11 +246,13 @@
 </main>
 
 <!-- ============================================================== NAV -->
+<!-- Stage 13 adds Tasks between Today and Money. The taskboard link is in
+     Settings → Developer settings. -->
 <nav class="tabs" aria-label="Sections">
   <button class="tab is-on" data-goto="home" aria-label="Home"><svg aria-hidden="true"><use href="#i-home"></use></svg></button>
   <button class="tab" data-goto="today" aria-label="Today"><svg aria-hidden="true"><use href="#i-history"></use></svg></button>
+  <button class="tab" data-goto="money" aria-label="Money"><svg aria-hidden="true"><use href="#i-money"></use></svg></button>
   <button class="tab" data-goto="review" aria-label="Weekly review"><svg aria-hidden="true"><use href="#i-chart"></use></svg></button>
-  <button class="tab" id="boardTab" aria-label="Taskboard"><svg aria-hidden="true"><use href="#i-board"></use></svg></button>
 </nav>
 
 <dialog id="prayerDlg" class="dlg">
@@ -396,6 +428,14 @@
     <input id="chipsInput" type="text" placeholder="Prayer-break, Lunch, Coffee">
     <p class="hint">Stored on this device only, so each device has its own list. The comma is the separator, so a name cannot contain one. This list decides which reasons exist; the order re-sorts itself so the ones you use most sit first. The + on Home adds to it.</p>
 
+    <label for="moneyOutTags">Money tags for spending (comma separated)</label>
+    <input id="moneyOutTags" type="text" placeholder="Food, Groceries, Transport">
+    <label for="moneyInTags">Money tags for income (comma separated)</label>
+    <input id="moneyInTags" type="text" placeholder="Salary, Freelance, Gift">
+    <p class="hint">Shared by your phone and laptop. A tag you type with + on the Money
+      screen is offered too, for 90 days after you last use it; the ones you use most sit
+      first. Leave a box empty for the starting list.</p>
+
     <p id="supaWho" class="hint"></p>
     <!-- Entries this device is holding: waiting, held for another account or
          project, or refused outright. -->
@@ -453,7 +493,10 @@
 
       <label for="boardUrl">Taskboard link (optional)</label>
       <input id="boardUrl" type="url" placeholder="https://trello.com/b/... or any board you use">
-      <p class="hint">The fourth tab opens this in your browser. Any board works &mdash; Trello, Notion, Jira, Google Tasks. Left empty, the tab tells you to set it.</p>
+      <p class="hint">The button below opens this in your browser. Any board works &mdash; Trello, Notion, Jira, Google Tasks.</p>
+      <div class="dlg-actions" style="justify-content: flex-start">
+        <button type="button" id="boardOpenBtn" class="btn">Open the taskboard</button>
+      </div>
 
       <div class="dlg-actions" style="justify-content: flex-start">
         <button type="button" id="testBtn" class="btn">Test</button>

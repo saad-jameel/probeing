@@ -24,7 +24,9 @@
  * off. Neither of them touches the cache above.
  */
 
-var CACHE = 'probeing-shell-v7';
+/* v8 (Stage 11): the Money screen, and an outbox that holds actions it does not
+ * know. A v7 page drops a queued money item, so the new shell must replace it. */
+var CACHE = 'probeing-shell-v8';
 var SHELL = [
   './',
   'index.html',

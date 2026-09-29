@@ -2,8 +2,10 @@
  *
  * Home     : M / Prayer / Sleep-Wake / Break-Work, prayer ticks, current project
  * Today    : the tracker input and today's raw log
+ * Money    : money in and out, PKR, and today's list (Stage 11)
  * Review   : the weekly report (layout final, numbers land with the backend)
- * Board    : the fourth tab is a link out to whatever taskboard you already use
+ *
+ * The taskboard link lives in Settings → Developer settings.
  *
  * Everything writes through api() below — with one deliberate exception, the
  * Gemini call in extractProject(), which must not queue behind it.
@@ -232,6 +234,8 @@ function adoptSession(session) {
      * user here; it does nothing at all unless permission was already given. */
     syncPushSubscription();
     syncPlace();
+    syncMoneyTags();
+    if (currentScreen === 'money') readMoney();
   } else if (!sbUser) {
     stopLive();
     /* Nothing repaints the glance until a signed-in read lands again, and a real
@@ -240,7 +244,7 @@ function adoptSession(session) {
      * signed in before it, and closing the glance then would throw away the last
      * true figures for nothing. */
     forgetGlance();
-    if (before) closeGlance();
+    if (before) { closeGlance(); forgetMoney(); }
     /* A SIGN-IN BOX THAT CANNOT REACH GITHUB IS A DEAD END. An app opened with
      * no signal lands here — the token expired and could not be refreshed — and
      * the box would sit over the buttons refusing to do anything. Presses are
@@ -493,6 +497,34 @@ async function callSupabase(action, payload) {
     return { ok: true, prayer: name, mode: mode };
   }
 
+  if (action === 'money') {
+    // Checked again here: a held item is sent exactly as it was stored.
+    var amount = parseMoneyAmount(payload.amount);
+    var tag = String(payload.tag || '').trim();
+    if ((payload.dir !== 'in' && payload.dir !== 'out') || !amount || !tag ||
+        tag.length > MONEY_TAG_MAX) {
+      var badMoney = new Error('bad_money');
+      badMoney.fatal = true;
+      throw badMoney;
+    }
+    var pressed = typeof payload.at === 'string' && !isNaN(Date.parse(payload.at));
+    var ins = await sb.from('money').insert({
+      rid: payload.rid,
+      at: pressed ? payload.at : new Date().toISOString(),
+      local_time: pressed ? (payload.local_time || '') : humanLocal(),
+      tz: deviceTz(),
+      dir: payload.dir,
+      amount: amount,
+      currency: 'PKR',
+      tag: tag,
+      note: String(payload.note || '').trim().slice(0, MONEY_NOTE_MAX),
+      voids_rid: payload.voids_rid || null
+    });
+    // 23505: this rid, or a void of this row, is already in. Success either way.
+    if (ins.error && ins.error.code !== '23505') throw errorFrom(ins.error);
+    return { ok: true, duplicate: Boolean(ins.error) };
+  }
+
   if (action === 'review') return { ok: true, stub: true, text: 'Review arrives in Stage 5.' };
   /* DEAD ON PURPOSE, and not a Stage 4 gap. The plan's step 2 was a one-line
    * "what am I doing right now", written by a model after every log. The two
@@ -540,6 +572,29 @@ async function rangeEvents(startIso, endIso) {
    * so no instant can land in two days or in none. */
   return (res.data || []).map(sbRow);
 }
+
+/**
+ * Money rows between two instants, for the Review card and the reports. Like
+ * rangeEvents, one direct select. Voids pressed after `endIso` are read too:
+ * voiding yesterday's mistake today must still take it out of yesterday.
+ */
+var MONEY_COLS = 'rid,at,local_time,dir,amount,tag,note,voids_rid';
+
+async function rangeMoney(startIso, endIso) {
+  if (!sb || !sbUser) throw new Error('Sign in to read your money.');
+  var res = await sb.from('money').select(MONEY_COLS)
+    .gte('at', startIso).lt('at', endIso)
+    .order('at', { ascending: true }).limit(5000);
+  if (res.error) throw errorFrom(res.error);
+  var later = await sb.from('money').select(MONEY_COLS)
+    .gte('at', endIso).not('voids_rid', 'is', null).limit(5000);
+  if (later.error) throw errorFrom(later.error);
+  return (res.data || []).concat(later.data || []);
+}
+
+/** The instants a run of day windows opens and closes at, for a read. */
+function windowsStartIso(windows) { return new Date(windows[0].startMs).toISOString(); }
+function windowsEndIso(windows) { return new Date(windows[windows.length - 1].endMs).toISOString(); }
 
 // ---------------------------------------------------------------------- api
 
@@ -721,10 +776,10 @@ var SIGNED_OUT_KEY = 'probeing.signedout';
 var OUTBOX_MAX = 500;
 var PARKED_MAX = 50;
 
-/* The three writes a person makes. `label` is deliberately absent: it only ever
+/* The writes a person makes. `label` is deliberately absent: it only ever
  * fills in a project name on a row, and a name that never arrives leaves the
  * entry called by its own sentence — which is what it was called anyway. */
-var QUEUEABLE = { log: 1, m: 1, prayer: 1 };
+var QUEUEABLE = { log: 1, m: 1, prayer: 1, money: 1 };
 
 function trimUrl(u) { return String(u || '').trim().replace(/\/+$/, ''); }
 
@@ -757,10 +812,17 @@ function storedList(raw) {
   return Array.isArray(v) ? v : [];
 }
 
+/* ANY action is kept, including one this version does not know: a newer app on
+ * this device may have queued it, and filtering it out here deletes it the next
+ * time this page saves the list. Unknown actions are held, never sent (R8). */
 function sensibleItem(it) {
-  return Boolean(it) && typeof it === 'object' && QUEUEABLE[it.action] === 1 &&
-         Boolean(it.payload) && typeof it.payload === 'object' && Boolean(it.rid);
+  return Boolean(it) && typeof it === 'object' && typeof it.action === 'string' &&
+         Boolean(it.action) && Boolean(it.payload) && typeof it.payload === 'object' &&
+         Boolean(it.rid);
 }
+
+/** Can this version send it? */
+function knownAction(it) { return QUEUEABLE[it.action] === 1; }
 
 function outboxAll() {
   var raw = '';
@@ -810,10 +872,18 @@ function ourItem(it) {
          it.url === trimUrl(cfg.supaUrl);
 }
 
-function outboxOurs() { return outboxAll().filter(ourItem); }
+/** This account's items, whether or not this version can send them. */
+function outboxMine() { return outboxAll().filter(ourItem); }
+
+function outboxOurs() { return outboxMine().filter(knownAction); }
 
 function outboxHeld() {
-  return outboxAll().filter(function (it) { return !ourItem(it); });
+  return outboxAll().filter(function (it) { return !ourItem(it) || !knownAction(it); });
+}
+
+/** Ours, but saved by a newer version of the app: held until that version runs. */
+function outboxNewer() {
+  return outboxMine().filter(function (it) { return !knownAction(it); });
 }
 
 /* `sending` marks a write this page is attempting right now. It is on the device
@@ -935,7 +1005,8 @@ function addParked(it, why) {
   list.push({
     rid: it.rid,
     at: (it.payload || {}).at || '',
-    what: String(row.raw_text || row.type || it.action),
+    what: it.action === 'money' ? moneyWhat(queuedMoney(it))
+                                : String(row.raw_text || row.type || it.action),
     why: String(why || 'refused')
   });
   try {
@@ -958,7 +1029,8 @@ function forgetParked() {
  *  row that has landed. Prayers are drawn from their own list, hence the null. */
 function queuedRow(it) {
   var p = it.payload || {};
-  if (it.action === 'prayer') return null;
+  // Only log and M are log rows. Money has queuedMoney(); an unknown action, none.
+  if (it.action !== 'log' && it.action !== 'm') return null;
   if (it.action === 'm') {
     return { at: p.at, local: p.local_time || '', type: 'M',
              raw_text: '', project: '', detail: '', rid: it.rid };
@@ -966,6 +1038,14 @@ function queuedRow(it) {
   return { at: p.at, local: p.local_time || '', type: p.type || 'work',
            raw_text: p.raw_text || '', project: p.project || '',
            detail: p.detail || '', rid: it.rid };
+}
+
+/** A queued money write as a `money` row, for the Money screen and its figures. */
+function queuedMoney(it) {
+  var p = it.payload || {};
+  return { rid: it.rid, at: p.at, local_time: p.local_time || '', dir: p.dir,
+           amount: p.amount, tag: p.tag || '', note: p.note || '',
+           voids_rid: p.voids_rid || null, queued: true };
 }
 
 function queuedPrayer(it) {
@@ -1011,12 +1091,15 @@ function queuedPrayersToday(have) {
 }
 
 /** Every local date with something still waiting, any day — what the report gate
- *  asks about. */
+ *  asks about. Items from a newer version count too: they are real and unsent.
+ *  A void also holds the day of the row it cancels. */
 function queuedDates() {
   var seen = userMap();
-  outboxOurs().forEach(function (it) {
+  outboxMine().forEach(function (it) {
     var d = queuedDay(it);
     if (d) seen[d] = 1;
+    var voidsAt = instantOf((it.payload || {}).voids_at);
+    if (it.action === 'money' && !isNaN(voidsAt)) seen[counterDate(voidsAt)] = 1;
   });
   return Object.keys(seen);
 }
@@ -1086,6 +1169,7 @@ async function drainOutbox(why) {
   if (sent) {
     flash(sent + (sent === 1 ? ' offline entry sent' : ' offline entries sent'), 'ok');
     refresh();                              // the table has them now; re-read once
+    if (currentScreen === 'money') readMoney();
   }
   // Deliberately not awaited: the rows are safe in the table and only the name
   // is outstanding, so nothing above waits on a language model.
@@ -1197,6 +1281,9 @@ function watchLive() {
     .on('postgres_changes',
         { event: '*', schema: 'public', table: 'events' },
         function () { scheduleRefresh(400); })
+    .on('postgres_changes',
+        { event: 'INSERT', schema: 'public', table: 'money' },
+        function () { if (currentScreen === 'money') scheduleMoneyRead(400); })
     .subscribe();
 }
 
@@ -1348,11 +1435,12 @@ function showScreen(name) {
   window.scrollTo(0, 0);
   if (name === 'today') renderDaySummary();     // catch up the clock on arrival
   if (name === 'review') openReview();
+  if (name === 'money') openMoney();
 }
 
-/* Only tabs that name a screen switch screens. The taskboard tab is also a
- * .tab but carries no data-goto — without this guard it would call
- * showScreen(undefined), which matches no screen and hides all of them. */
+/* Only tabs that name a screen switch screens. Every tab does since the
+ * taskboard link moved to Settings (Stage 11); the guard stays so a link-style
+ * tab can never call showScreen(undefined) and hide every screen. */
 (function wireTabs() {
   var tabs = document.querySelectorAll('.tab[data-goto]');
   for (var i = 0; i < tabs.length; i++) {
@@ -5056,6 +5144,91 @@ function missedDueTimes(w) {
   });
 }
 
+// ------------------------------------------------------------------- money
+
+/* Stage 11. Counted in whole paisa, so 0.10 + 0.20 is 0.30 and never
+ * 0.30000000000000004. numeric(14,2) allows 12 digits before the point. */
+var MONEY_INT_DIGITS = 12;
+var MONEY_UNTAGGED = 'Untagged';
+
+/** An amount off a row (Postgres sends a number, the outbox holds a string) as
+ *  whole paisa, or NaN if it cannot be read. */
+function moneyPaisa(x) {
+  var s = typeof x === 'number' ? (isFinite(x) ? x.toFixed(2) : '')
+                                : String(x === null || x === undefined ? '' : x).trim();
+  var m = /^(\d+)(?:\.(\d{1,2}))?$/.exec(s);
+  if (!m) return NaN;
+  return Number(m[1]) * 100 + Number(((m[2] || '') + '00').slice(0, 2));
+}
+
+/** What was typed, as '450.00', or '' when it is not an amount above zero with at
+ *  most two decimals. Commas and spaces are grouping and are ignored. */
+function parseMoneyAmount(text) {
+  var s = String(text === null || text === undefined ? '' : text).replace(/[\s,]/g, '');
+  var m = new RegExp('^(\\d{0,' + MONEY_INT_DIGITS + '})(?:\\.(\\d{0,2}))?$').exec(s);
+  if (!m || (!m[1] && !m[2])) return '';
+  var paisa = Number(m[1] || '0') * 100 + Number(((m[2] || '') + '00').slice(0, 2));
+  if (!(paisa > 0)) return '';
+  return Math.floor(paisa / 100) + '.' + String(paisa % 100).padStart(2, '0');
+}
+
+/** 12450 -> "12,450"; 0.5 -> "0.50". Fixed shape, not the locale's, so a
+ *  report reads the same on both devices. */
+function formatPkr(n) {
+  var paisa = Math.round(Math.abs(Number(n) || 0) * 100);
+  var whole = String(Math.floor(paisa / 100)).replace(/\B(?=(\d{3})+(?!\d))/g, ',');
+  var cents = paisa % 100;
+  return (Number(n) < 0 && paisa ? '-' : '') + whole +
+         (cents ? '.' + String(cents).padStart(2, '0') : '');
+}
+
+/** A net figure: "+1,200", "-300", "0". */
+function signedPkr(n) { return (Number(n) > 0 ? '+' : '') + formatPkr(n); }
+
+/**
+ * Money in and out over counter-day windows, from `money` rows. Pure.
+ *
+ * A void and the row it cancels are both left out of every figure. Voids are
+ * read from every row given, not only those inside the windows, because a
+ * mistake can be voided the next day. Tags go through userMap(), so a tag
+ * called __proto__ is counted like any other.
+ *
+ * @returns {{in, out, net, byTagIn, byTagOut, entries, voided}} in rupees.
+ */
+function moneyFigures(rows, windows) {
+  var cancelled = userMap();
+  (rows || []).forEach(function (r) { if (r && r.voids_rid) cancelled[r.voids_rid] = 1; });
+
+  var paisa = { 'in': 0, out: 0 };
+  var byTag = { 'in': userMap(), out: userMap() };
+  var out = { entries: 0, voided: 0 };
+
+  bucketByWindow(rows, windows || []).forEach(function (day) {
+    day.forEach(function (r) {
+      if (r.voids_rid || (r.dir !== 'in' && r.dir !== 'out')) return;
+      if (r.rid && cancelled[r.rid] === 1) { out.voided += 1; return; }
+      var p = moneyPaisa(r.amount);
+      if (!(p > 0)) return;
+      var tag = String(r.tag || '').trim() || MONEY_UNTAGGED;
+      paisa[r.dir] += p;
+      byTag[r.dir][tag] = (byTag[r.dir][tag] || 0) + p;
+      out.entries += 1;
+    });
+  });
+
+  function rupees(map) {
+    var m = userMap();
+    Object.keys(map).forEach(function (k) { m[k] = map[k] / 100; });
+    return m;
+  }
+  out['in'] = paisa['in'] / 100;
+  out.out = paisa.out / 100;
+  out.net = (paisa['in'] - paisa.out) / 100;
+  out.byTagIn = rupees(byTag['in']);
+  out.byTagOut = rupees(byTag.out);
+  return out;
+}
+
 /** What one range read must cover, first to last counter day inclusive: from a
  *  lead-in's reach before the first, so a session already running is replayed
  *  from where it began, to the rollover after the last. */
@@ -5806,6 +5979,7 @@ function clearReview() {
   $('reviewFigures').textContent = '';
   $('reviewSleep').textContent = '';
   showPrayerTable($('reviewPrayers'), null);
+  showMoneyFigures($('reviewMoney'), null, '');
   $('reviewProse').textContent = '';
   $('reviewNote').textContent = '';
   $('reviewProjects').textContent = '';
@@ -6008,6 +6182,20 @@ async function runReview(force) {
   var got = spanFigures(rows, win, prior, priorKnown, projectCategories);
   var sum = got.sum;
   var tasks = got.tasks;
+
+  /* Money is its own read and its own lines: a failure costs those lines, never
+   * the review. Drawn before the empty check, since money can be logged on a day
+   * with no other entry. */
+  var moneyFigs = null;
+  var moneyErr = '';
+  try {
+    moneyFigs = moneyFigures(await rangeMoney(windowsStartIso(got.windows),
+                                              windowsEndIso(got.windows)), got.windows);
+  } catch (err) {
+    moneyErr = String((err && err.message) || err);
+  }
+  if (!mine()) return;
+  showMoneyFigures($('reviewMoney'), moneyFigs, moneyErr);
 
   if (sum.empty) {
     /* Nothing at all was logged. Zero Gemini calls: there is nothing for a
@@ -6286,8 +6474,8 @@ function spanText(win) {
  * without anybody parsing English out of a paragraph. Not one sentence belongs
  * in here.
  */
-function reportStats(sum, prayers) {
-  return {
+function reportStats(sum, prayers, money) {
+  var stats = {
     worked: sum.worked,
     paused: sum.paused,
     unattributed: sum.unattributed,
@@ -6301,6 +6489,8 @@ function reportStats(sum, prayers) {
     daysWithRows: sum.daysWithRows,
     avgWorked: sum.avgWorked
   };
+  if (money) stats.money = money;              // Stage 11; never shown to Gemini
+  return stats;
 }
 
 /** Every saved report, newest first. Re-read on every visit and never cached —
@@ -6365,6 +6555,12 @@ function reportFigureLine(stats) {
   bits.push(Number(stats.prayers || 0) + ' prayers');
   if (stats.days) bits.push(Number(stats.daysWithRows || 0) + '/' + Number(stats.days) +
                             ' days logged');
+  // Reports from before Stage 11 have no money, and a week with none says nothing.
+  var money = stats.money;
+  if (money && (Number(money.out) || Number(money['in']))) {
+    bits.push('PKR ' + formatPkr(money.out) + ' out · ' + formatPkr(money['in']) + ' in · net ' +
+              signedPkr(money.net));
+  }
   return bits.join(' · ');
 }
 
@@ -6522,6 +6718,11 @@ async function generateReport(win) {
   var prompt = reviewPrompt(win, { sum: got.sum, tasks: got.tasks }, got.earlier,
                             projectCategories, got.pace);
 
+  /* Money is read before the one call, so a failed read costs no call, and a
+   * failure stops the report: it is written once, and must not miss the money. */
+  var money = moneyFigures(await rangeMoney(windowsStartIso(got.windows),
+                                            windowsEndIso(got.windows)), got.windows);
+
   /* Checked HERE rather than by the caller, and checked twice over. Everything
    * above this line is free — no call has left the device — and the pacer's
    * answer thirty seconds ago is not its answer now. */
@@ -6552,7 +6753,7 @@ async function generateReport(win) {
   }
 
   await saveReport(win, answer,
-                   reportStats(got.sum, prayerStats(got.inRange, got.windows)),
+                   reportStats(got.sum, prayerStats(got.inRange, got.windows), money),
                    lastGeminiModel);
   return '';
 }
@@ -7039,11 +7240,445 @@ function redrawForgotten(droppedKey) {
   renderLearnedNames();
 }
 
+// ------------------------------------------------------------ money screen
+
+/* Stage 11. I spent / I get, the amount, a tag, Save: four taps and the digits.
+ * Save hands the row to api(), which holds it on the device before anything is
+ * sent, and the list shows it at once. Nothing on that path waits for a read. */
+
+var MONEY_TAGS_KEY = 'probeing.moneytags';
+var MONEY_DEFAULT_TAGS = {
+  out: ['Food', 'Groceries', 'Transport', 'Bills', 'Health', 'Family', 'Shopping', 'Other'],
+  'in': ['Salary', 'Freelance', 'Gift', 'Other']
+};
+// The same limits as the checks in docs/supabase_schema.sql.
+var MONEY_TAG_MAX = 40;
+var MONEY_NOTE_MAX = 200;
+var MONEY_TAGS_MAX = 30;
+var MONEY_LEARN_DAYS = 90;      // a typed tag is offered for this long after its last use
+
+var moneyRows = [];             // the last read, MONEY_LEARN_DAYS back
+var moneyLocal = [];            // saved on this page and not yet seen in a read
+var moneyReadAt = 0;
+var moneyWhy = '';              // why the last read failed, or ''
+var moneyReadSeq = 0;
+var moneyReadTimer;
+var moneyForm = { dir: '', tag: '' };
+
+/** Trimmed, no commas, no repeats whatever the case, at most MONEY_TAGS_MAX. */
+function cleanTags(list) {
+  var seen = userMap();
+  var out = [];
+  (Array.isArray(list) ? list : []).forEach(function (t) {
+    var tag = String(t === null || t === undefined ? '' : t).replace(/,/g, ' ')
+      .replace(/\s+/g, ' ').trim().slice(0, MONEY_TAG_MAX);
+    var key = tag.toLowerCase();
+    if (!tag || seen[key] === 1 || out.length >= MONEY_TAGS_MAX) return;
+    seen[key] = 1;
+    out.push(tag);
+  });
+  return out;
+}
+
+function loadMoneyTags() {
+  var saved = null;
+  try { saved = JSON.parse(localStorage.getItem(MONEY_TAGS_KEY)); } catch (e) { /* the defaults */ }
+  return (saved && typeof saved === 'object' && !Array.isArray(saved)) ? saved : {};
+}
+
+// {out, in, synced}: this device's copy of user_settings.money_tags, so the
+// chips work offline. `synced` false means the server has not got it yet.
+var moneyTags = loadMoneyTags();
+
+function saveMoneyTags() {
+  try { localStorage.setItem(MONEY_TAGS_KEY, JSON.stringify(moneyTags)); } catch (e) { /* kept for this visit */ }
+}
+
+/** His fixed list for a direction, or the defaults. */
+function fixedTags(dir) {
+  var mine = cleanTags(moneyTags[dir]);
+  return mine.length ? mine : MONEY_DEFAULT_TAGS[dir].slice();
+}
+
+/** Both lists to user_settings. Only money_tags is sent, so updated_at, which
+ *  decides whose prayer place wins, does not move. */
+async function pushMoneyTags() {
+  if (!supabaseReady()) throw new Error('Sign in first.');
+  var res = await sb.from('user_settings').upsert({
+    user_id: sbUser.id, money_tags: { out: fixedTags('out'), 'in': fixedTags('in') }
+  }, { onConflict: 'user_id' });
+  if (res.error) throw errorFrom(res.error);
+  moneyTags.synced = true;
+  saveMoneyTags();
+}
+
+async function pullMoneyTags() {
+  var got = await sb.from('user_settings').select('money_tags').eq('user_id', sbUser.id).limit(1);
+  if (got.error) throw errorFrom(got.error);
+  var t = ((got.data || [])[0] || {}).money_tags;
+  if (!t || typeof t !== 'object' || Array.isArray(t)) return;     // none saved: keep ours
+  moneyTags = { out: cleanTags(t.out), 'in': cleanTags(t['in']), synced: true };
+  saveMoneyTags();
+  if (!moneyForm.dir) renderMoneyTags();                           // never under a finger
+}
+
+/* At sign-in, like the prayer place: a change the server never got goes up,
+ * otherwise the server's copy is read. */
+async function syncMoneyTags() {
+  if (!supabaseReady()) return;
+  try {
+    if (moneyTags.synced === false) await pushMoneyTags();
+    else await pullMoneyTags();
+  } catch (e) { /* tried again at the next sign-in; this device keeps its list */ }
+}
+
+/** From Settings. Empty means the defaults. */
+function changeMoneyTags(outTags, inTags) {
+  var next = { out: outTags.length ? outTags : MONEY_DEFAULT_TAGS.out.slice(),
+               'in': inTags.length ? inTags : MONEY_DEFAULT_TAGS['in'].slice() };
+  if (next.out.join('\n') === fixedTags('out').join('\n') &&
+      next['in'].join('\n') === fixedTags('in').join('\n')) return;
+  moneyTags = { out: next.out, 'in': next['in'], synced: false };
+  saveMoneyTags();
+  renderMoneyTags();
+  if (!supabaseReady()) return;
+  pushMoneyTags().catch(function (err) {
+    flash('Money tags saved on this device, but not on the server (' +
+      String((err && err.message) || err) + '). Sent again next time the app opens.', 'warn');
+  });
+}
+
+/** Tags to offer for a direction: the fixed list plus any tag used in the last
+ *  MONEY_LEARN_DAYS, most used first; ties keep the fixed order. */
+function moneyTagOrder(dir, rows, fixed) {
+  var cancelled = userMap();
+  rows.forEach(function (r) { if (r.voids_rid) cancelled[r.voids_rid] = 1; });
+  var count = userMap();
+  var names = fixed.slice();
+  var since = Date.now() - MONEY_LEARN_DAYS * 86400000;
+  rows.forEach(function (r) {
+    if (r.dir !== dir || r.voids_rid || (r.rid && cancelled[r.rid] === 1)) return;
+    if (!(instantOf(r.at) >= since)) return;
+    var tag = String(r.tag || '').trim();
+    if (!tag) return;
+    if (count[tag] === undefined) {
+      count[tag] = 0;
+      if (names.indexOf(tag) === -1) names.push(tag);
+    }
+    count[tag] += 1;
+  });
+  return names.map(function (t, i) { return { t: t, i: i, n: count[t] || 0 }; })
+    .sort(function (a, b) { return (b.n - a.n) || (a.i - b.i); })
+    .map(function (x) { return x.t; });
+}
+
+/** The read's rows, rows saved since, and what the outbox holds; newest first. */
+function moneyMerged() {
+  var have = userMap();
+  var out = moneyRows.slice();
+  out.forEach(function (r) { if (r.rid) have[r.rid] = 1; });
+  function add(r) {
+    if (r.rid && have[r.rid] === 1) return;
+    if (r.rid) have[r.rid] = 1;
+    out.push(r);
+  }
+  moneyLocal.forEach(add);
+  outboxOurs().filter(function (it) { return it.action === 'money'; }).map(queuedMoney).forEach(add);
+  return out.sort(function (a, b) { return (instantOf(b.at) || 0) - (instantOf(a.at) || 0); });
+}
+
+/** "Spent 450 · Food", for the parked list and the confirm. */
+function moneyWhat(r) {
+  return (r.voids_rid ? 'Void of ' : '') + (r.dir === 'in' ? 'Got ' : 'Spent ') +
+    formatPkr(moneyPaisa(r.amount) / 100) + ' · ' + String(r.tag || '');
+}
+
+/** A range's money as a few lines; none when nothing was logged. */
+function moneyLines(figs) {
+  if (!figs || !figs.entries) return [];
+  function byAmount(map) {
+    return Object.keys(map).sort(function (a, b) { return (map[b] - map[a]) || (a < b ? -1 : 1); })
+      .map(function (k) { return k + ' ' + formatPkr(map[k]); }).join(' · ');
+  }
+  var lines = ['PKR ' + formatPkr(figs.out) + ' spent · ' + formatPkr(figs['in']) + ' in · net ' +
+               signedPkr(figs.net)];
+  if (Object.keys(figs.byTagOut).length) lines.push('Spent on: ' + byAmount(figs.byTagOut));
+  if (Object.keys(figs.byTagIn).length) lines.push('In from: ' + byAmount(figs.byTagIn));
+  if (figs.voided) {
+    lines.push(figs.voided + (figs.voided === 1 ? ' voided entry is' : ' voided entries are') +
+               ' left out.');
+  }
+  return lines;
+}
+
+/** Draw moneyLines() into `box`, or `why` the money could not be read. */
+function showMoneyFigures(box, figs, why) {
+  box.textContent = '';
+  var lines = why ? ['Money could not be read: ' + why] : moneyLines(figs);
+  lines.forEach(function (text, i) {
+    var p = document.createElement('p');
+    p.className = i ? 'money-sub' : 'money-head';
+    p.textContent = text;
+    box.appendChild(p);
+  });
+  box.hidden = !lines.length;
+}
+
+function renderMoneyTags() {
+  var box = $('moneyTags');
+  box.textContent = '';
+  var dir = moneyForm.dir;
+  $('moneyTagHint').hidden = Boolean(dir);
+  if (!dir) return;
+  moneyTagOrder(dir, moneyMerged(), fixedTags(dir)).forEach(function (tag) {
+    var b = document.createElement('button');
+    b.type = 'button';
+    b.className = 'chip' + (tag === moneyForm.tag ? ' on' : '');
+    b.textContent = tag;                  // user text: never markup
+    b.addEventListener('click', function () { pickMoneyTag(tag); });
+    box.appendChild(b);
+  });
+  var add = document.createElement('button');
+  add.type = 'button';
+  add.className = 'chip chip-add';
+  add.textContent = '+';
+  add.setAttribute('aria-label', 'A new tag');
+  add.addEventListener('click', openNewTag);
+  box.appendChild(add);
+}
+
+function pickMoneyDir(dir) {
+  if (moneyForm.dir !== dir) {
+    moneyForm.dir = dir;
+    moneyForm.tag = '';
+    $('moneyNewTag').hidden = true;
+    $('moneyNewTag').value = '';
+  }
+  $('moneyOutBtn').setAttribute('aria-pressed', String(dir === 'out'));
+  $('moneyInBtn').setAttribute('aria-pressed', String(dir === 'in'));
+  renderMoneyTags();
+  paintMoneySave();
+  $('moneyAmount').focus();               // the digits need no tap of their own
+}
+
+function pickMoneyTag(tag) {
+  moneyForm.tag = tag;
+  $('moneyNewTag').hidden = true;
+  $('moneyNewTag').value = '';
+  Array.prototype.forEach.call($('moneyTags').querySelectorAll('.chip'), function (b) {
+    b.classList.toggle('on', !b.classList.contains('chip-add') && b.textContent === tag);
+  });
+  paintMoneySave();
+}
+
+function openNewTag() {
+  moneyForm.tag = '';
+  Array.prototype.forEach.call($('moneyTags').querySelectorAll('.chip'), function (b) {
+    b.classList.remove('on');
+  });
+  $('moneyNewTag').hidden = false;
+  $('moneyNewTag').focus();
+  paintMoneySave();
+}
+
+/** The tag Save will use: the chip, or what was typed, spelled like a tag it
+ *  already matches so "chai" does not become a second "Chai". */
+function moneyTagNow() {
+  if ($('moneyNewTag').hidden) return moneyForm.tag;
+  var typed = cleanTags([$('moneyNewTag').value])[0] || '';
+  if (!typed || !moneyForm.dir) return typed;
+  var same = moneyTagOrder(moneyForm.dir, moneyMerged(), fixedTags(moneyForm.dir))
+    .filter(function (t) { return t.toLowerCase() === typed.toLowerCase(); })[0];
+  return same || typed;
+}
+
+function paintMoneySave() {
+  $('moneySaveBtn').disabled = !(moneyForm.dir && parseMoneyAmount($('moneyAmount').value) &&
+                                 moneyTagNow());
+}
+
+function resetMoneyForm() {
+  moneyForm = { dir: '', tag: '' };
+  $('moneyAmount').value = '';
+  $('moneyNote').value = '';
+  $('moneyNewTag').value = '';
+  $('moneyNewTag').hidden = true;
+  $('moneyOutBtn').setAttribute('aria-pressed', 'false');
+  $('moneyInBtn').setAttribute('aria-pressed', 'false');
+  $('moneyAmount').blur();
+  renderMoneyTags();
+  paintMoneySave();
+}
+
+/** Show it, then send it. api() has it on the device before this returns. */
+function sendMoney(payload) {
+  var row = queuedMoney({ rid: payload.rid, payload: payload });
+  row.queued = false;
+  moneyLocal.unshift(row);
+  api('money', payload).then(function (res) {
+    if (!(res && res.queued)) scheduleMoneyRead();
+  }, function (err) {
+    // Refused outright: take it back off the screen, as a failed prayer is.
+    moneyLocal = moneyLocal.filter(function (r) { return r.rid !== payload.rid; });
+    renderMoney();
+    writeFailed(err);
+  });
+  renderMoney();
+}
+
+function saveMoney() {
+  var typed = $('moneyAmount').value;
+  var amount = parseMoneyAmount(typed);
+  var tag = moneyTagNow();
+  if (!moneyForm.dir || !amount || !tag) {
+    flash(typed.trim() && !amount
+      ? 'That amount cannot be read: digits, and at most two after the point.'
+      : 'Pick I spent or I get, an amount and a tag.', 'err');
+    return;
+  }
+  var payload = { rid: newRid(), at: new Date().toISOString(), local_time: humanLocal(),
+                  dir: moneyForm.dir, amount: amount, tag: tag,
+                  note: $('moneyNote').value.trim().slice(0, MONEY_NOTE_MAX) };
+  sendMoney(payload);
+  flash(moneyWhat(payload), 'ok');
+  resetMoneyForm();
+}
+
+/** A void is a new row naming the old one; the old one is never changed. */
+function voidMoney(r) {
+  if (!window.confirm('Void ' + moneyWhat(r) + '? It stays in your record, struck through, ' +
+                      'and stops counting.')) return;
+  sendMoney({ rid: newRid(), at: new Date().toISOString(), local_time: humanLocal(),
+              dir: r.dir, amount: parseMoneyAmount(r.amount), tag: String(r.tag || ''), note: '',
+              voids_rid: r.rid, voids_at: r.at });
+  flash('Voided: ' + moneyWhat(r), 'ok');
+}
+
+function renderMoney() {
+  var rows = moneyMerged();
+  var today = counterToday(new Date());
+  var day = dayWindows(today, today);
+  var figs = moneyFigures(rows, day);
+
+  var sums = $('moneySums');
+  sums.textContent = '';
+  reviewFigure(sums, formatPkr(figs.out), 'spent today');
+  reviewFigure(sums, formatPkr(figs['in']), 'in today');
+  reviewFigure(sums, signedPkr(figs.net), 'net today');
+  var month = moneyFigures(rows, dayWindows(new Date(today.getFullYear(), today.getMonth(), 1), today));
+  $('moneyMonth').textContent = 'This month so far: PKR ' + formatPkr(month.out) + ' spent · ' +
+    formatPkr(month['in']) + ' in.';
+
+  var cancelled = userMap();
+  rows.forEach(function (r) { if (r.voids_rid) cancelled[r.voids_rid] = 1; });
+  var list = $('moneyList');
+  list.textContent = '';
+  rows.filter(function (r) {
+    var t = instantOf(r.at);
+    return !r.voids_rid && t >= day[0].startMs && t < day[0].endMs;
+  }).forEach(function (r) {
+    var off = Boolean(r.rid) && cancelled[r.rid] === 1;
+    var li = document.createElement('li');
+    if (off) li.className = 'voided';
+    var when = document.createElement('span');
+    when.className = 'when';
+    when.textContent = glanceClock(instantOf(r.at));
+    var what = document.createElement('span');
+    what.className = 'what';
+    what.textContent = (r.dir === 'in' ? '+' : '−') + formatPkr(moneyPaisa(r.amount) / 100) +
+      ' · ' + String(r.tag || '') + (r.note ? ' — ' + r.note : '');
+    var tag = document.createElement('span');
+    tag.className = 'tag';
+    tag.textContent = off ? 'void' : r.queued ? 'waiting' : r.dir === 'in' ? 'in' : 'spent';
+    li.append(when, what, tag);
+    if (!off) {
+      var b = document.createElement('button');
+      b.type = 'button';
+      b.className = 'link-btn';
+      b.textContent = 'Void';
+      b.addEventListener('click', function () { voidMoney(r); });
+      li.appendChild(b);
+    }
+    list.appendChild(li);
+  });
+  if (!list.childElementCount) {
+    var empty = document.createElement('li');
+    empty.className = 'empty';
+    empty.textContent = 'Nothing logged today.';
+    list.appendChild(empty);
+  }
+
+  var held = outboxOurs().filter(function (it) { return it.action === 'money'; }).length;
+  var note = [];
+  if (moneyWhy) {
+    note.push((moneyReadAt ? 'Could not refresh (' + moneyWhy + '), so this may be out of date.'
+                           : 'Could not read your money (' + moneyWhy + '), so only what this ' +
+                             'device is holding is shown.'));
+  }
+  if (held) note.push(held + ' waiting to be sent from this device.');
+  $('moneyStatus').textContent = note.join(' ');
+  $('moneyStatus').hidden = !note.length;
+  if (!moneyForm.dir) renderMoneyTags();
+}
+
+/** The last MONEY_LEARN_DAYS of rows: today's list, the month, and the learned tags. */
+async function readMoney() {
+  clearTimeout(moneyReadTimer);
+  if (!supabaseReady()) {
+    if (!moneyReadAt) moneyWhy = navigator.onLine === false ? 'offline' : 'not signed in';
+    renderMoney();
+    return;
+  }
+  var seq = ++moneyReadSeq;
+  var since = new Date(counterDayStart(Date.now()) - MONEY_LEARN_DAYS * 86400000).toISOString();
+  try {
+    var res = await sb.from('money').select(MONEY_COLS).gte('at', since)
+      .order('at', { ascending: false }).limit(5000);
+    if (res.error) throw errorFrom(res.error);
+    if (seq !== moneyReadSeq) return;
+    moneyRows = res.data || [];
+    var have = userMap();
+    moneyRows.forEach(function (r) { have[r.rid] = 1; });
+    moneyLocal = moneyLocal.filter(function (r) { return have[r.rid] !== 1; });
+    moneyReadAt = Date.now();
+    moneyWhy = '';
+  } catch (err) {
+    if (seq !== moneyReadSeq) return;
+    moneyWhy = String((err && err.message) || err);
+  }
+  renderMoney();
+}
+
+function scheduleMoneyRead(delay) {
+  clearTimeout(moneyReadTimer);
+  moneyReadTimer = setTimeout(readMoney, typeof delay === 'number' ? delay : 1500);
+}
+
+function openMoney() {
+  renderMoney();
+  readMoney();
+}
+
+/** Signed out, or another database: this account's money is not the next one's. */
+function forgetMoney() {
+  moneyRows = [];
+  moneyLocal = [];
+  moneyReadAt = 0;
+  moneyWhy = '';
+  if (currentScreen === 'money') renderMoney();
+}
+
+$('moneyOutBtn').addEventListener('click', function () { pickMoneyDir('out'); });
+$('moneyInBtn').addEventListener('click', function () { pickMoneyDir('in'); });
+$('moneyAmount').addEventListener('input', paintMoneySave);
+$('moneyNewTag').addEventListener('input', paintMoneySave);
+$('moneySaveBtn').addEventListener('click', saveMoney);
+
 // ------------------------------------------------------------------ taskboard
 
-/* The fourth tab is a link, not a screen. Whatever board you already use stays
- * where it is — this app has no business becoming a second one. Opened in the
- * browser, not in the PWA frame, so the back gesture still belongs to ProBeing. */
+/* A link, not a screen: whatever board you already use stays where it is. It was
+ * the fourth tab until Stage 11 gave that place to Money; now it is a button in
+ * Settings → Developer settings. Opened in the browser, not the PWA frame. */
 
 /** Only http(s) links may be opened. The Save button is type="button", so the
  *  <input type="url"> constraint never runs — this is the only check there is,
@@ -7053,11 +7688,11 @@ function safeBoardUrl(raw) {
   return /^https?:\/\//i.test(url) ? url : '';
 }
 
-$('boardTab').addEventListener('click', function () {
-  var url = safeBoardUrl(cfg.boardUrl);
+// The link as typed, so it can be tried before Save; else the saved one.
+$('boardOpenBtn').addEventListener('click', function () {
+  var url = safeBoardUrl($('boardUrl').value) || safeBoardUrl(cfg.boardUrl);
   if (!url) {
-    flash('Add a taskboard link starting with https:// in Settings → Developer settings.');
-    dlg.showModal();
+    $('testResult').textContent = 'Add a taskboard link starting with https:// first.';
     return;
   }
   window.open(url, '_blank', 'noopener');
@@ -7119,7 +7754,8 @@ function paintOutboxNote() {
   if (!el) return;
 
   var ours = outboxCount();
-  var held = outboxHeld().length;
+  var newer = outboxNewer().length;
+  var held = outboxHeld().length - newer;
   var parked = parkedAll();
   var lines = [];
 
@@ -7134,6 +7770,13 @@ function paintOutboxNote() {
       (held === 1 ? 'it is' : 'they are') + ' being held here rather than sent. ' +
       'Sign in to that account, or put that project back in Developer settings, ' +
       'and ' + (held === 1 ? 'it goes' : 'they go') + ' up.');
+  }
+  if (newer) {
+    lines.push(newer + (newer === 1 ? ' entry was' : ' entries were') + ' saved by a newer ' +
+      'version of ProBeing on this device. This version cannot send ' +
+      (newer === 1 ? 'it' : 'them') + ', so ' + (newer === 1 ? 'it is' : 'they are') +
+      ' kept untouched. Close and reopen the app to get the newer version, which sends ' +
+      (newer === 1 ? 'it' : 'them') + '.');
   }
   if (parked.length) {
     lines.push(parked.length + (parked.length === 1 ? ' entry was' : ' entries were') +
@@ -7193,6 +7836,8 @@ $('settingsBtn').addEventListener('click', function () {
   $('geminiRpm').value = cfg.geminiRpm || '';
   $('boardUrl').value = cfg.boardUrl || '';
   $('chipsInput').value = chipLabels().join(', ');
+  $('moneyOutTags').value = fixedTags('out').join(', ');
+  $('moneyInTags').value = fixedTags('in').join(', ');
   $('projectNames').value = pinnedNames.join('\n');
   renderCategorySettings();
   renderLearnedNames();
@@ -7548,8 +8193,12 @@ $('saveBtn').addEventListener('click', function () {
     todayPrayers = [];
     forgetGlance();                  // another database's day is not this one's
     closeGlance();
+    forgetMoney();
     initSupabase();
   }
+  // After the switch, so a new database gets them at its own sign-in.
+  changeMoneyTags(cleanTags(parseChips($('moneyOutTags').value)),
+                  cleanTags(parseChips($('moneyInTags').value)));
   // Applied here and not on the tick, so Cancel leaves the shade as it found it.
   applyGlanceSetting();
   if (!sbUser) askSignIn(); else refresh();
