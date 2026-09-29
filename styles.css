@@ -437,12 +437,12 @@ body {
 .pick[aria-pressed="true"] { background: var(--accent); color: var(--accent-ink); border-color: transparent; font-weight: 600; }
 .pick .done { color: var(--accent); margin-left: 6px; }
 .pick[aria-pressed="true"] .done { color: var(--accent-ink); }
-/* Not yet its time: dimmed, and held rather than tapped, so no text selection
-   or callout gets in the way of the hold. */
+/* Not yet its time, or already logged today: neither can be picked. */
 .pick.waiting {
   opacity: .55;
   -webkit-user-select: none; user-select: none; -webkit-touch-callout: none;
 }
+.pick.logged { color: var(--muted); cursor: default; }
 
 /* --------------------------------------------------------------- tracker */
 

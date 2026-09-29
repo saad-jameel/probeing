@@ -2671,8 +2671,22 @@ var prayerDlg = $('prayerDlg');
 var pickedPrayer = null;
 var pickedMode = null;
 
+/** The row logging `name` in the current counter day, the latest if an old
+ *  shell wrote two, or null. Held presses count: they are in todayPrayers. */
+function loggedRow(name) {
+  var today = counterDate(Date.now());
+  var hit = null;
+  todayPrayers.forEach(function (p) {
+    if (p.prayer !== name) return;
+    var t = instantOf(p.at);
+    if (!isNaN(t) && counterDate(t) !== today) return;     // yesterday's, until the re-read
+    if (!hit || !(instantOf(hit.at) > t)) hit = p;
+  });
+  return hit;
+}
+
 function loggedToday(name) {
-  return todayPrayers.some(function (p) { return p.prayer === name; });
+  return Boolean(loggedRow(name));
 }
 
 /** When `name` begins in the counter day holding `now`. The day turns before
@@ -2691,25 +2705,6 @@ function prayerWaiting(name, now) {
 /** "Asr · 4:52 PM", for a prayer whose time has not come. */
 function prayerWaitLabel(name, now) {
   return name + ' · ' + glanceClock(prayerOpensAt(name, now));
-}
-
-var PRAYER_HOLD_MS = 600;      // press and hold this long to log a prayer before its time
-
-/** Call `onHold` once the button is pressed and held for PRAYER_HOLD_MS. */
-function holdToOpen(btn, onHold) {
-  var timer = null;
-  function stop() {
-    if (timer) { clearTimeout(timer); timer = null; }
-  }
-  btn.addEventListener('pointerdown', function () {
-    stop();
-    timer = setTimeout(function () { timer = null; onHold(); }, PRAYER_HOLD_MS);
-  });
-  ['pointerup', 'pointerleave', 'pointercancel'].forEach(function (type) {
-    btn.addEventListener(type, stop);
-  });
-  // Android otherwise answers a long press with its own menu.
-  btn.addEventListener('contextmenu', function (e) { e.preventDefault(); });
 }
 
 /** Point 6: Home shows the five prayers as ticks, not as log lines. Read-only —
@@ -2770,43 +2765,43 @@ function pickButton(label, isPicked, done, onPick) {
   return b;
 }
 
-// Prayers opened early by a long press, for as long as the picker stays open.
-var prayerUnlocked = userMap();
-
-/* A prayer whose time has not come is aria-disabled rather than `disabled`:
- * a disabled button receives no pointer events in Chrome, so it could never be
- * held down to log it anyway. The tap is refused here instead. */
+/* Once per counter day, and never before its time: Saad removed the
+ * press-and-hold override on 29 Sep. Both are aria-disabled rather than
+ * `disabled`, so a tap can still say why. */
 function renderPrayerPicks() {
   var box = $('prayerList');
   box.textContent = '';
   var now = Date.now();
 
-  PRAYER_NAMES.forEach(function (name) {
-    var done = loggedToday(name);
-    var waiting = !done && !prayerUnlocked[name] && prayerWaiting(name, now);
-    var label = waiting ? prayerWaitLabel(name, now) : name;
+  // A re-read (the other device's row) can land while this one is picked.
+  if (pickedPrayer && loggedToday(pickedPrayer)) {
+    pickedPrayer = null;
+    $('modeWrap').hidden = true;
+    $('prayerSaveBtn').disabled = true;
+  }
 
-    function pick() {
+  PRAYER_NAMES.forEach(function (name) {
+    var row = loggedRow(name);
+    var waiting = !row && prayerWaiting(name, now);
+    var label = row ? name + (row.mode ? ' · ' + row.mode : '')
+                    : waiting ? prayerWaitLabel(name, now) : name;
+
+    var b = pickButton(label, pickedPrayer === name, Boolean(row), function () {
+      if (row) { flash(name + ' is already logged today.', 'warn'); return; }
+      if (waiting) {
+        flash(name + ' begins at ' + glanceClock(prayerOpensAt(name, now)) + '.', 'warn');
+        return;
+      }
       pickedPrayer = name;
       pickedMode = null;
       $('modeWrap').hidden = false;
       $('prayerSaveBtn').disabled = true;
       renderPrayerPicks();
       renderModePicks();
-    }
-
-    var b = pickButton(label, pickedPrayer === name, done, function () {
-      if (!waiting) { pick(); return; }
-      flash(name + ' begins at ' + glanceClock(prayerOpensAt(name, now)) +
-            '. Press and hold to log it anyway.', 'warn');
     });
-    if (waiting) {
+    if (row || waiting) {
       b.setAttribute('aria-disabled', 'true');
-      b.classList.add('waiting');
-      holdToOpen(b, function () {
-        prayerUnlocked[name] = 1;
-        pick();
-      });
+      b.classList.add(row ? 'logged' : 'waiting');
     }
     box.appendChild(b);
   });
@@ -2828,7 +2823,6 @@ function renderModePicks() {
 $('prayerBtn').addEventListener('click', function () {
   pickedPrayer = null;
   pickedMode = null;
-  prayerUnlocked = userMap();
   $('modeWrap').hidden = true;
   $('prayerSaveBtn').disabled = true;
   renderPrayerPicks();
@@ -2842,9 +2836,17 @@ $('prayerCancelBtn').addEventListener('click', function () { prayerDlg.close(); 
 $('prayerSaveBtn').addEventListener('click', function () {
   if (!pickedPrayer || !pickedMode) return;
 
-  // Append-only by design: a duplicate is warned about, never overwritten.
-  if (loggedToday(pickedPrayer) &&
-      !window.confirm(pickedPrayer + ' is already logged today. Log it again?')) return;
+  // Checked again: a re-read or the clock may have moved since the pick.
+  var refused = loggedToday(pickedPrayer) ? ' is already logged today.'
+    : prayerWaiting(pickedPrayer, Date.now()) ? ' has not begun yet.' : '';
+  if (refused) {
+    flash(pickedPrayer + refused, 'warn');
+    pickedPrayer = null;
+    $('modeWrap').hidden = true;
+    $('prayerSaveBtn').disabled = true;
+    renderPrayerPicks();
+    return;
+  }
 
   var name = pickedPrayer;
   var mode = pickedMode;
