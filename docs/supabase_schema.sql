@@ -768,6 +768,51 @@ do $$ begin
   alter publication supabase_realtime add table public.sync_state;
 exception when duplicate_object then null; end $$;
 
+-- task_nodes: Stage 13's copy of his chosen Tasks list, written only by the
+-- tasks-sync function. Top-level tasks are projects, their children sub-tasks;
+-- deeper ones are not kept. Google wins for the tree; nothing is deleted here —
+-- a task gone from Google gets gone_at, so time and items (Stage 14) stay
+-- attached to its stable id.
+create table if not exists public.task_nodes (
+  id               uuid        primary key default gen_random_uuid(),
+  -- Written with the service role, so user_id is always named.
+  user_id          uuid        not null references auth.users on delete cascade,
+  google_id        text        not null,
+  parent_google_id text,                                  -- null for a project
+  kind             text        not null check (kind in ('project', 'subtask')),
+  title            text        not null default '',
+  position         text        not null default '',       -- Google's sort key
+  due              date,                                  -- date only, as Google keeps it
+  g_status         text        not null default 'needsAction',
+  g_completed_at   timestamptz,
+  g_updated        timestamptz,
+  g_reopened_at    timestamptz,                           -- unticked in Google
+  pb_done_at       timestamptz,                           -- Stage 15
+  pb_pushed_at     timestamptz,                           -- Stage 15
+  gone_at          timestamptz,                           -- deleted, or no longer in the list
+  synced_at        timestamptz not null default now(),
+  created_at       timestamptz not null default now(),
+  -- What the function upserts on: two syncs at once cannot make a second row.
+  constraint task_nodes_user_google_key unique (user_id, google_id)
+);
+
+create index if not exists task_nodes_user_parent_idx
+  on public.task_nodes (user_id, parent_google_id);
+
+alter table public.task_nodes enable row level security;
+
+do $$ begin
+  create policy "read own task nodes" on public.task_nodes
+    for select using (auth.uid() = user_id);
+exception when duplicate_object then null; end $$;
+
+revoke insert, update, delete, truncate on table public.task_nodes from anon, authenticated;
+
+-- So a sync on one device (or the scheduler) redraws both.
+do $$ begin
+  alter publication supabase_realtime add table public.task_nodes;
+exception when duplicate_object then null; end $$;
+
 -- ================================================== the schedule (pg_cron)
 -- NOT RUN BY THIS FILE. It is commented out on purpose, because it carries two
 -- values that must never be committed — paste it into the SQL editor with your
