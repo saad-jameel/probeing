@@ -9268,9 +9268,10 @@ async function googleCall(op, extra) {
       signal: ctrl ? ctrl.signal : undefined
     });
     var data = await res.json().catch(function () { return null; });
-    if (data && typeof data === 'object') return data;
-    return { ok: false, error: res.status === 404 ? 'the google-link function is not deployed yet'
-                                                  : 'the server answered ' + res.status };
+    // google-link never answers 404; Supabase does when the function is not deployed.
+    if (res.status === 404) return { ok: false, notDeployed: true, error: 'the google-link function is not deployed yet' };
+    if (data && typeof data === 'object' && typeof data.ok === 'boolean') return data;
+    return { ok: false, error: 'the server answered ' + res.status };
   } catch (e) {
     if (e && e.name === 'AbortError') return { ok: false, error: 'no answer within 30 seconds' };
     return { ok: false, error: (e && e.message) || String(e) };
@@ -9293,7 +9294,11 @@ async function readGoogleSync() {
 /** Which state the section is in, and its words. sync_state wins where it has a row. */
 function googleView(status, sync) {
   if (!status) return { state: 'checking', text: 'Checking Google…' };
-  if (status.configured === false) {
+  if (status.configured === false && status.problem === 'token key malformed') {
+    return { state: 'dormant', text: 'Google setup has a problem: the token key is malformed.' };
+  }
+  // A reply without `ok` is Supabase's own, not google-link's: not deployed yet.
+  if (status.configured === false || status.notDeployed || typeof status.ok !== 'boolean') {
     return { state: 'dormant', text: 'Google isn’t set up yet — see your to-do list.' };
   }
   if (!status.ok) return { state: 'unknown', text: 'Could not check Google: ' + (status.error || 'no answer') };

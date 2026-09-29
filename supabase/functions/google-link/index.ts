@@ -16,7 +16,8 @@
 //   disconnect  revokes at Google, then forgets the grant
 //
 // DORMANT until GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET and GOOGLE_TOKEN_KEY are
-// set: `status` answers {configured:false} and every other op refuses.
+// set: `status` answers {configured:false} and every other op refuses. A key that is
+// not 32 bytes of base64 adds problem:'token key malformed'.
 // GOOGLE_TOKEN_KEY is 32 random bytes, base64 (openssl rand -base64 32).
 // Also reads ALLOWED_USER_ID, as `gemini` does. Needs google_grants,
 // oauth_states and sync_state from docs/supabase_schema.sql.
@@ -552,10 +553,11 @@ Deno.serve(async (req: Request): Promise<Response> => {
   let key: CryptoKey;
   try {
     key = await importTokenKey(cfg.tokenKey);
-  } catch (e) {
-    const why = (e as Error).message;
-    if (op === 'status') return reply(200, { ok: true, configured: false, error: why });
-    return reply(503, { ok: false, configured: false, error: why });
+  } catch (_e) {
+    // Named, never quoted: the parser's message could echo part of the key.
+    if (op === 'status') return reply(200, { ok: true, configured: false, problem: 'token key malformed' });
+    return reply(503, { ok: false, configured: false,
+                        error: 'Google setup has a problem: the token key is malformed.' });
   }
 
   const d = {
