@@ -299,7 +299,22 @@ async function finishGrant(d, code, state) {
     return { ok: false, error: 'Could not reach Google: ' + scrub(e && e.message) };
   }
   var t = readTokenResponse(got.body, now);
-  if (t.error) return { ok: false, error: t.error };
+  if (t.error) {
+    // Tasks unticked: hand back what Google just issued, unless it may be the same
+    // account as a stored grant (Google's revoke would end that grant too).
+    var gb = got.body || {};
+    var issued = String(gb.refresh_token || gb.access_token || '');
+    if (t.scopes && issued) {
+      try {
+        var had = await d.store.getGrant(d.userId);
+        var who0 = idTokenEmail(gb.id_token);
+        if (!had || (had.google_email && who0 && had.google_email !== who0)) {
+          await postForm(d.fetch, GOOGLE_REVOKE_URL, { token: issued });
+        }
+      } catch (_e) { /* best effort; the reply is the same */ }
+    }
+    return { ok: false, error: t.error };
+  }
 
   var email = idTokenEmail(t.idToken);
   if (!email) {
@@ -307,33 +322,50 @@ async function finishGrant(d, code, state) {
       var who = await d.fetch(GOOGLE_USERINFO_URL, { headers: { Authorization: 'Bearer ' + t.access } });
       var wb = await who.json().catch(function () { return null; });
       email = String((wb && wb.email) || '');
-    } catch (_e) { /* shown blank; the grant still works */ }
+    } catch (_e) { /* the stored email stands in, below */ }
   }
 
-  // No refresh token on a re-consent: keep the one already stored, never blank it.
-  // Only for the same Google account, or the old token would sit under a new name.
   var old = await d.store.getGrant(d.userId);
-  var sameAccount = !old || !old.google_email || !email || old.google_email === email;
-  var refreshEnc = t.refresh ? await sealToken(d.key, d.userId, t.refresh)
-                             : (sameAccount && old && old.refresh_enc) || '';
+  var oldEmail = (old && old.google_email) || '';
+  var knownSame = Boolean(old && oldEmail && email && oldEmail === email);
+  var knownOther = Boolean(old && oldEmail && email && oldEmail !== email);
+  var refreshEnc = '';
+  if (t.refresh) {
+    refreshEnc = await sealToken(d.key, d.userId, t.refresh);
+  } else if (old && !knownSame && !knownOther) {
+    // No new refresh token and no way to tell whose grant this is: keep the stored one untouched.
+    return { ok: false, error: 'ProBeing could not tell which Google account this is, so nothing was ' +
+             'changed. Press Connect Google again; if this repeats, remove ProBeing at ' +
+             'myaccount.google.com/permissions first.' };
+  } else if (knownSame) {
+    // A re-consent brings no refresh token. Keep the stored one, but only if it still opens.
+    try {
+      await openToken(d.key, d.userId, old.refresh_enc);
+      refreshEnc = old.refresh_enc;
+    } catch (_e) {
+      await markReconnect(d, 'the saved permission could not be decrypted');
+    }
+  }
   if (!refreshEnc) {
-    return { ok: false, error: 'Google did not give ProBeing lasting access. Reconnect: remove ProBeing ' +
-             'at myaccount.google.com/permissions, then press Connect Google again.' };
+    return { ok: false, reconnect: Boolean(knownSame),
+             error: 'Google did not give ProBeing lasting access. Reconnect: remove ProBeing ' +
+                    'at myaccount.google.com/permissions, then press Connect Google again.' };
   }
 
   var stamp = new Date(now).toISOString();
+  var keptEmail = email || oldEmail;
   var grantRow = {
-    user_id: d.userId, google_email: email, scopes: t.scopes, refresh_enc: refreshEnc,
+    user_id: d.userId, google_email: keptEmail, scopes: t.scopes, refresh_enc: refreshEnc,
     access_enc: await sealToken(d.key, d.userId, t.access),
     access_expires_at: new Date(t.expiresMs).toISOString(), connected_at: stamp, updated_at: stamp
   };
   // A list belongs to one Google account; another account starts with none.
-  if (!sameAccount) { grantRow.list_id = null; grantRow.list_title = null; }
+  if (knownOther) { grantRow.list_id = null; grantRow.list_title = null; }
   await d.store.saveGrant(grantRow);
-  await d.store.setSync({ user_id: d.userId, connected: true, google_email: email,
-                          list_title: (sameAccount && old && old.list_title) || null,
+  await d.store.setSync({ user_id: d.userId, connected: true, google_email: keptEmail,
+                          list_title: (!knownOther && old && old.list_title) || null,
                           last_error: null, last_error_at: null });
-  return { ok: true, email: email, scopes: t.scopes };
+  return { ok: true, email: keptEmail, scopes: t.scopes };
 }
 
 /** A usable access token: the cached one, or one fresh from the refresh token. */
