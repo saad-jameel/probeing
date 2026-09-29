@@ -5154,6 +5154,8 @@ function missedDueTimes(w) {
  * 0.30000000000000004. numeric(14,2) allows 12 digits before the point. */
 var MONEY_INT_DIGITS = 12;
 var MONEY_UNTAGGED = 'Untagged';
+// The first counter day with money. A range starting earlier is labelled, not read as whole.
+var MONEY_SINCE = '2026-09-29';
 
 /** An amount off a row (Postgres sends a number, the outbox holds a string) as
  *  whole paisa, or NaN if it cannot be read. */
@@ -5188,6 +5190,19 @@ function formatPkr(n) {
 
 /** A net figure: "+1,200", "-300", "0". */
 function signedPkr(n) { return (Number(n) > 0 ? '+' : '') + formatPkr(n); }
+
+/** Mark `figs` with MONEY_SINCE when `windows` start before it. Returns `figs`. */
+function moneySince(figs, windows) {
+  if (figs && windows && windows.length && windows[0].ymd < MONEY_SINCE) figs.since = MONEY_SINCE;
+  return figs;
+}
+
+/** "29 Sep" for figures moneySince() marked, else ''. Not the locale's: en-GB now says "Sept". */
+function moneySinceDay(figs) {
+  if (!figs || !figs.since) return '';
+  var p = String(figs.since).split('-');
+  return Number(p[2]) + ' ' + 'Jan Feb Mar Apr May Jun Jul Aug Sep Oct Nov Dec'.split(' ')[Number(p[1]) - 1];
+}
 
 /**
  * Money in and out over counter-day windows, from `money` rows. Pure.
@@ -6193,8 +6208,9 @@ async function runReview(force) {
   var moneyFigs = null;
   var moneyErr = '';
   try {
-    moneyFigs = moneyFigures(await rangeMoney(windowsStartIso(got.windows),
-                                              windowsEndIso(got.windows)), got.windows);
+    moneyFigs = moneySince(moneyFigures(await rangeMoney(windowsStartIso(got.windows),
+                                                         windowsEndIso(got.windows)), got.windows),
+                           got.windows);
   } catch (err) {
     moneyErr = String((err && err.message) || err);
   }
@@ -6563,7 +6579,7 @@ function reportFigureLine(stats) {
   var money = stats.money;
   if (money && (Number(money.out) || Number(money['in']))) {
     bits.push('PKR ' + formatPkr(money.out) + ' out · ' + formatPkr(money['in']) + ' in · net ' +
-              signedPkr(money.net));
+              signedPkr(money.net) + (money.since ? ' since ' + moneySinceDay(money) : ''));
   }
   return bits.join(' · ');
 }
@@ -6724,8 +6740,9 @@ async function generateReport(win) {
 
   /* Money is read before the one call, so a failed read costs no call, and a
    * failure stops the report: it is written once, and must not miss the money. */
-  var money = moneyFigures(await rangeMoney(windowsStartIso(got.windows),
-                                            windowsEndIso(got.windows)), got.windows);
+  var money = moneySince(moneyFigures(await rangeMoney(windowsStartIso(got.windows),
+                                                       windowsEndIso(got.windows)), got.windows),
+                         got.windows);
 
   /* Checked HERE rather than by the caller, and checked twice over. Everything
    * above this line is free — no call has left the device — and the pacer's
@@ -7406,7 +7423,7 @@ function moneyLines(figs) {
       .map(function (k) { return k + ' ' + formatPkr(map[k]); }).join(' · ');
   }
   var lines = ['PKR ' + formatPkr(figs.out) + ' spent · ' + formatPkr(figs['in']) + ' in · net ' +
-               signedPkr(figs.net)];
+               signedPkr(figs.net) + (figs.since ? ' since ' + moneySinceDay(figs) : '')];
   if (Object.keys(figs.byTagOut).length) lines.push('Spent on: ' + byAmount(figs.byTagOut));
   if (Object.keys(figs.byTagIn).length) lines.push('In from: ' + byAmount(figs.byTagIn));
   if (figs.voided) {
@@ -7583,9 +7600,10 @@ function renderMoney() {
   reviewFigure(sums, formatPkr(figs.out), 'spent today');
   reviewFigure(sums, formatPkr(figs['in']), 'in today');
   reviewFigure(sums, signedPkr(figs.net), 'net today');
-  var month = moneyFigures(rows, dayWindows(new Date(today.getFullYear(), today.getMonth(), 1), today));
-  $('moneyMonth').textContent = 'This month so far: PKR ' + formatPkr(month.out) + ' spent · ' +
-    formatPkr(month['in']) + ' in.';
+  var monthDays = dayWindows(new Date(today.getFullYear(), today.getMonth(), 1), today);
+  var month = moneySince(moneyFigures(rows, monthDays), monthDays);
+  $('moneyMonth').textContent = (month.since ? 'Since ' + moneySinceDay(month) : 'This month so far') +
+    ': PKR ' + formatPkr(month.out) + ' spent · ' + formatPkr(month['in']) + ' in.';
 
   var cancelled = userMap();
   rows.forEach(function (r) { if (r.voids_rid) cancelled[r.voids_rid] = 1; });
