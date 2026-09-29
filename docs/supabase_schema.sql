@@ -847,6 +847,31 @@ alter table public.money drop constraint if exists money_loan_person;
 alter table public.money add constraint money_loan_person
   check (kind <> 'loan' or person is not null);
 
+-- ======================================================== prayer reminders
+-- 29 Sep. The prayer-remind Edge Function pushes when a prayer's time begins
+-- and 60/30/15 minutes before it ends while it is not logged. Its schedule is
+-- docs/prayer_remind.sql.
+
+-- The Settings toggle. Owner-writable through the user_settings policies above.
+alter table public.user_settings add column if not exists prayer_reminders boolean not null default true;
+
+-- One row per reminder sent, so none is sent twice. Server-only: RLS on, no
+-- policies, nothing granted to the browser roles.
+--   kind  'Asr-begin', 'Asr-60', 'Asr-30', 'Asr-15', or 'Asr-clear' (the quiet
+--         push that replaces a reminder once the prayer is logged)
+--   day   the date whose prayer times it belongs to (Isha's run past midnight)
+create table if not exists public.reminders_sent (
+  -- Written with the service role, so user_id is always named.
+  user_id  uuid        not null references auth.users on delete cascade,
+  kind     text        not null,
+  day      date        not null,
+  sent_at  timestamptz not null default now(),
+  primary key (user_id, kind, day)
+);
+
+alter table public.reminders_sent enable row level security;
+revoke all on table public.reminders_sent from anon, authenticated;
+
 -- ================================================== the schedule (pg_cron)
 -- NOT RUN BY THIS FILE. It is commented out on purpose, because it carries two
 -- values that must never be committed — paste it into the SQL editor with your
