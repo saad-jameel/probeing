@@ -880,6 +880,13 @@ revoke all on table public.reminders_sent from anon, authenticated;
 alter table public.events add column if not exists node_id uuid
   references public.task_nodes(id) on delete set null;
 
+-- A foreign key ignores row level security, so without this a row could name
+-- another user's task. Altered in place: the policy is never absent, not even
+-- for an instant, so a press arriving mid-change is not refused.
+alter policy "insert own rows" on public.events
+  with check (auth.uid() = user_id and (node_id is null or exists (
+    select 1 from public.task_nodes n where n.id = node_id and n.user_id = auth.uid())));
+
 -- His plan for a task: on the Planned list or not, and when he expects to
 -- finish it. ProBeing's own; Google keeps no times. One row per task, written
 -- by the app with an upsert, so both devices see one answer. No delete: taking
