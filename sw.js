@@ -29,8 +29,9 @@
  * v9 (Stage 12): the Google Tasks section in Settings.
  * v10 (Stage 13): tree.js, Today's plan and the Tasks copy.
  * v11 (Stage 13b): prayers once a day, loans, and Settings help behind "?".
- * v12: prayer reminders (their push, their tap, and the Settings toggle). */
-var CACHE = 'probeing-shell-v12';
+ * v12: prayer reminders (their push, their tap, and the Settings toggle).
+ * v13: the Tasks page, and a work row that can carry node_id. */
+var CACHE = 'probeing-shell-v13';
 var SHELL = [
   './',
   'index.html',
