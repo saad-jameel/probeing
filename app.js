@@ -289,11 +289,13 @@ function counterDayStartIso() {
  * told apart from the copy this device is still holding in the outbox. Nothing
  * else reads it off a row. */
 function sbRow(r) {
-  return {
+  var row = {
     at: r.at, local: r.local_time || '', type: r.type,
     raw_text: r.raw_text || '', project: r.project || '', detail: r.detail || '',
     rid: r.rid || ''
   };
+  if (r.node_id) row.node_id = r.node_id;       // the task a Tasks-page start named
+  return row;
 }
 
 async function sbInsert(payload) {
@@ -313,6 +315,8 @@ async function sbInsert(payload) {
     detail: String(payload.detail || ''),
     rid: payload.rid || null
   };
+  // Only when set, so a row without a task still saves on a database without the column.
+  if (payload.node_id) row.node_id = String(payload.node_id);
 
   var res = await sb.from('events').insert(row);
   if (res.error) {
@@ -1083,9 +1087,11 @@ function queuedRow(it) {
     return { at: p.at, local: p.local_time || '', type: 'M',
              raw_text: '', project: '', detail: '', rid: it.rid };
   }
-  return { at: p.at, local: p.local_time || '', type: p.type || 'work',
-           raw_text: p.raw_text || '', project: p.project || '',
-           detail: p.detail || '', rid: it.rid };
+  var row = { at: p.at, local: p.local_time || '', type: p.type || 'work',
+              raw_text: p.raw_text || '', project: p.project || '',
+              detail: p.detail || '', rid: it.rid };
+  if (p.node_id) row.node_id = p.node_id;
+  return row;
 }
 
 /** A money or loan write (Stage 13b), both of which become a `money` row. */
@@ -1496,6 +1502,7 @@ function showScreen(name) {
   if (name === 'today') renderDaySummary();     // catch up the clock on arrival
   if (name === 'review') openReview();
   if (name === 'money') openMoney();
+  if (name === 'tasks') openTasksPage();
 }
 
 /* Only tabs that name a screen switch screens. Every tab does since the
@@ -1528,11 +1535,12 @@ function localIso(d) {
  *
  * Rows go in newest-first, matching today(), because replayDay() breaks
  * same-second ties on that order. */
-function noteLocalRow(type, text, project, detail) {
+function noteLocalRow(type, text, project, detail, nodeId) {
   var row = {
     at: localIso(), local: '', type: type,
     raw_text: text || '', project: project || '', detail: detail || ''
   };
+  if (nodeId) row.node_id = nodeId;
   lastLog.unshift(row);
   renderProject();
   renderDaySummary();
@@ -1732,6 +1740,7 @@ function renderToday(data) {
   absorbChipStats(lastLog);
   renderProject();
   paintPlan();                        // a read after Fajr is the new day's plan too
+  if (currentScreen === 'tasks') paintTasksPage();   // its Working on reads these rows
 
   /* The picker's checkmarks and the Home ticks are both driven by this, and the
    * queue goes back into it for the same reason it goes back into the rows
@@ -9945,7 +9954,7 @@ async function tasksOnOpen() {
   if (!sbUser) return;
   lastTasksCheckAt = Date.now();
   await readGoogleSync();
-  if (tasksConnected()) await readTaskNodes();
+  if (tasksConnected()) await Promise.all([readTaskNodes(), readTaskPlans()]);
   paintTasks();
   syncTasks(false);
 }
@@ -9953,29 +9962,22 @@ async function tasksOnOpen() {
 function paintTasks() {
   paintPlan();
   paintTasksSettings();
+  paintTasksPage();
 }
 
-/** Home's Today's plan. Hidden until a list is connected. */
+/** Home's Today's plan: Planned and due tasks, soonest first; when there are
+ *  none, every open task (13b). Hidden until a list is connected. */
 function paintPlan() {
   var card = $('planCard');
   if (!tasksConnected() || typeof todaysPlan !== 'function') { card.hidden = true; return; }
-  var plan = todaysPlan(currentNodes(), counterDate(Date.now()));
+  var now = Date.now();
+  var today = counterDate(now);
+  var plan = homePlanLeaves(currentNodes(), today, counterDayEnd(now));
   var list = $('planList');
   list.textContent = '';
-  plan.forEach(function (p) {
+  plan.forEach(function (leaf) {
     var li = document.createElement('li');
-    var title = document.createElement('div');
-    title.textContent = p.title || '(untitled)';
-    li.appendChild(title);
-    // null: no project to name (a childless project, or its parent is not in the list).
-    var project = p.project === null ? '' : p.project || '(untitled)';
-    var line = [project, p.overdue ? 'due ' + humanYmd(p.due) : ''].filter(Boolean).join(' · ');
-    if (line) {
-      var meta = document.createElement('div');
-      meta.className = 'plan-meta' + (p.overdue ? ' overdue' : '');
-      meta.textContent = line;
-      li.appendChild(meta);
-    }
+    li.appendChild(taskButton(leaf, 'planList', taskMeta(leaf, today, true)));
     list.appendChild(li);
   });
   list.hidden = !plan.length;
@@ -10054,6 +10056,7 @@ $('tasksSyncBtn').addEventListener('click', async function () {
 /* Its own channel, like watchGoogle's: a task_nodes table not made yet must not
  * take the sync_state feed down with it. A burst of rows is one re-read. */
 function watchTasks() {
+  watchPlans();
   if (!sb || !sbUser || tasksChannel) return;
   tasksChannel = sb.channel('probeing-tasks')
     .on('postgres_changes', { event: '*', schema: 'public', table: 'task_nodes' },
@@ -10066,14 +10069,497 @@ function watchTasks() {
 
 function stopTasks() {
   clearTimeout(taskNodesTimer);
+  stopPlans();
   taskNodes = [];
   googleSync = null;
   lastTasksSyncAt = 0;
   lastTasksCheckAt = 0;
   paintPlan();
+  paintTasksPage();
   if (!tasksChannel) return;
   try { sb.removeChannel(tasksChannel); } catch (e) { /* already gone */ }
   tasksChannel = null;
+}
+
+// --------------------------------------------------------- the Tasks page
+
+/* Working on, Planned and All tasks, from the mirror above plus task_plans,
+ * his own plan for each task: on Planned or not, and when he expects to finish.
+ * A plan write goes straight to the table, not the outbox: it is a setting the
+ * last change wins, and a copy replayed hours later could undo a newer one from
+ * the other device. A failure is said in the box; the next tap retries.
+ * Start working on it IS a logging press, so it goes through api() and the outbox. */
+var taskPlans = userMap();       // node id -> its task_plans row, as last read
+var plansChannel = null;
+var plansTimer = 0;
+var taskDlg = $('taskDlg');
+var taskDlgNode = null;          // the task the box is open on
+var taskDlgOpener = null;        // {el, list}: where focus goes back to
+var taskDlgBusy = false;
+
+/** This user's plans. False when they could not be read; the last read stands. */
+async function readTaskPlans() {
+  if (!sb) return false;
+  try {
+    var res = await sb.from('task_plans').select('node_id,planned,expected_at,updated_at').limit(2000);
+    if (res.error) return false;
+    var map = userMap();
+    (res.data || []).forEach(function (r) { if (r && r.node_id) map[r.node_id] = r; });
+    taskPlans = map;
+    return true;
+  } catch (e) { return false; }
+}
+
+function planOf(id) { return taskPlans[id] || null; }
+
+/** His planned finish for a task, in ms; NaN when none is set. */
+function expectedMs(id) {
+  var plan = planOf(id);
+  return plan && plan.expected_at ? Date.parse(plan.expected_at) : NaN;
+}
+
+/** When the counter day holding `now` ends. 30 hours after its start is always the next day. */
+function counterDayEnd(now) {
+  return counterDayStart(counterDayStart(now) + 30 * 3600000);
+}
+
+/** Every task that can be worked on, in any state: a sub-task, or a project with
+ *  no sub-task left (todaysPlan's rule). `up` is its project, or null. */
+function taskLeaves(nodes) {
+  var byGoogle = userMap();
+  var hasKids = userMap();
+  (nodes || []).forEach(function (n) {
+    byGoogle[n.google_id] = n;
+    if (n.kind === 'subtask' && !n.gone_at) hasKids[n.parent_google_id] = 1;
+  });
+  return (nodes || []).filter(function (n) {
+    return n.kind === 'subtask' || (n.kind === 'project' && !hasKids[n.google_id]);
+  }).map(function (n) {
+    return { node: n, up: n.kind === 'subtask' ? byGoogle[n.parent_google_id] || null : null };
+  });
+}
+
+/** Open in Google, and not under a deleted project. */
+function leafOpen(leaf) {
+  return nodeOpen(leaf.node) && !(leaf.up && leaf.up.gone_at);
+}
+
+function openLeafById(id) {
+  var hit = taskLeaves(currentNodes()).filter(function (l) { return l.node.id === id && leafOpen(l); });
+  return hit[0] || null;
+}
+
+/** Sort key: his expected finish, else the end of Google's due date, else never. */
+function taskWhenMs(leaf) {
+  var t = expectedMs(leaf.node.id);
+  if (isFinite(t)) return t;
+  var due = dueOf(leaf.node.due);
+  if (!due) return Infinity;
+  var p = due.split('-');
+  return new Date(Number(p[0]), Number(p[1]) - 1, Number(p[2]), 23, 59, 59, 999).getTime();
+}
+
+/** Soonest first, then Google's own order. */
+function byTaskWhen(a, b) {
+  var ta = taskWhenMs(a);
+  var tb = taskWhenMs(b);
+  if (ta !== tb) return ta < tb ? -1 : 1;
+  var ka = [String((a.up || a.node).position || ''), a.up ? String(a.node.position || '') : '',
+            String(a.node.title || '')];
+  var kb = [String((b.up || b.node).position || ''), b.up ? String(b.node.position || '') : '',
+            String(b.node.title || '')];
+  for (var i = 0; i < ka.length; i++) {
+    if (ka[i] !== kb[i]) return ka[i] < kb[i] ? -1 : 1;
+  }
+  return 0;
+}
+
+/** Open tasks on Planned, soonest finish first, unset last. */
+function plannedLeaves(nodes) {
+  return taskLeaves(nodes).filter(function (l) {
+    var plan = planOf(l.node.id);
+    return leafOpen(l) && Boolean(plan && plan.planned);
+  }).sort(byTaskWhen);
+}
+
+/** Home's card: Planned, due by `today` (the counter date) in Google, or expected
+ *  to finish before `endMs`; soonest first. None of those: every open task, as
+ *  todaysPlan lists them (13b). */
+function homePlanLeaves(nodes, today, endMs) {
+  var open = taskLeaves(nodes).filter(leafOpen);
+  var picked = open.filter(function (l) {
+    var plan = planOf(l.node.id);
+    var due = dueOf(l.node.due);
+    return Boolean(plan && plan.planned) || Boolean(due && due <= today) || expectedMs(l.node.id) < endMs;
+  }).sort(byTaskWhen);
+  if (picked.length) return picked;
+  var byId = userMap();
+  open.forEach(function (l) { byId[l.node.id] = l; });
+  return todaysPlan(nodes, today).map(function (p) { return byId[p.id]; }).filter(Boolean);
+}
+
+function sameTitle(a, b) {
+  var norm = function (s) { return String(s || '').replace(/\s+/g, ' ').trim().toLowerCase(); };
+  return norm(a) !== '' && norm(a) === norm(b);
+}
+
+/**
+ * What is being worked on, as tasks. Each open project in the session
+ * (replayDay), newest first, matched to open tasks by the node_id its rows
+ * carry, then by title: its sub-tasks as projectTasks reads them, or a task
+ * named on its own. {running, items: [{name, leaf}]}; leaf null = no match.
+ */
+function workingOnLeaves(nodes, rows) {
+  var day = replayDay(rows);
+  var open = taskLeaves(nodes).filter(leafOpen);
+  var byId = userMap();
+  open.forEach(function (l) { byId[l.node.id] = l; });
+  var seen = userMap();
+  var items = [];
+  day.activeProjects.slice().reverse().forEach(function (name) {
+    var hits = [];
+    function add(l) { if (hits.indexOf(l) === -1) hits.push(l); }
+    (rows || []).forEach(function (r) {
+      if ((r.type !== 'work' && r.type !== 'voice') || !r.node_id || !byId[r.node_id]) return;
+      if (String(r.project || r.raw_text || '').trim() === name) add(byId[r.node_id]);
+    });
+    var tasks = projectTasks(rows, name);
+    open.forEach(function (l) {
+      if (l.up && sameTitle(l.up.title, name) &&
+          tasks.some(function (t) { return sameTitle(t, l.node.title); })) add(l);
+    });
+    if (!hits.length) open.forEach(function (l) { if (sameTitle(l.node.title, name)) add(l); });
+    if (!hits.length) { items.push({ name: name, leaf: null }); return; }
+    hits.forEach(function (l) {
+      if (seen[l.node.id]) return;
+      seen[l.node.id] = 1;
+      items.push({ name: name, leaf: l });
+    });
+  });
+  return { running: day.running, items: items };
+}
+
+/** "today, 17:00" or "3 Oct 2026, 09:30", on this device's clock. */
+function taskWhenLabel(ms) {
+  var d = new Date(ms);
+  var day = ymdLocal(d) === ymdLocal(new Date()) ? 'today' : humanYmd(ymdLocal(d));
+  return day + ', ' + clockOf({ at: d.toISOString() });
+}
+
+/** The line under a task: its project (when asked) and when it is expected.
+ *  Google's due is named only once it has passed, as the Home card did. */
+function taskMeta(leaf, today, withProject) {
+  var parts = [];
+  var late = false;
+  if (withProject && leaf.up) parts.push(leaf.up.title || '(untitled)');
+  var t = expectedMs(leaf.node.id);
+  var due = dueOf(leaf.node.due);
+  if (isFinite(t)) {
+    late = t < Date.now();
+    parts.push('finish ' + taskWhenLabel(t));
+  } else if (due && due < today) {
+    late = true;
+    parts.push('due ' + humanYmd(due));
+  }
+  return { text: parts.join(' · '), late: late };
+}
+
+/** A task as a button that opens its box. Titles are his text (rule 5). */
+function taskButton(leaf, listId, meta) {
+  var b = document.createElement('button');
+  b.type = 'button';
+  b.className = 'task-item';
+  b.setAttribute('data-node', leaf.node.id);
+  var title = document.createElement('div');
+  title.className = 'plan-title';
+  title.textContent = leaf.node.title || '(untitled)';
+  b.appendChild(title);
+  if (meta && meta.text) {
+    var m = document.createElement('div');
+    m.className = 'plan-meta' + (meta.late ? ' overdue' : '');
+    m.textContent = meta.text;
+    b.appendChild(m);
+  }
+  b.addEventListener('click', function () { openTaskDlg(leaf.node.id, b, listId); });
+  return b;
+}
+
+/** A line that is not a button: an unmatched project, or a done or gone task. */
+function taskLine(text, meta, cls) {
+  var li = document.createElement('li');
+  if (cls) li.className = cls;
+  var title = document.createElement('div');
+  title.textContent = text;
+  li.appendChild(title);
+  if (meta) {
+    var m = document.createElement('div');
+    m.className = 'plan-meta';
+    m.textContent = meta;
+    li.appendChild(m);
+  }
+  return li;
+}
+
+function paintTasksPage() {
+  var on = tasksConnected() && typeof mirrorTree === 'function';
+  $('tasksOff').hidden = on;
+  ['tasksNowCard', 'tasksPlannedCard', 'tasksAllCard'].forEach(function (id) { $(id).hidden = !on; });
+  if (!on) {
+    ['tasksNow', 'tasksPlanned', 'tasksAll'].forEach(function (id) { $(id).textContent = ''; });
+    if (taskDlg && taskDlg.open) closeTaskDlg();
+    return;
+  }
+  var nodes = currentNodes();
+  var today = counterDate(Date.now());
+
+  var now = workingOnLeaves(nodes, sessionLog());
+  var nowList = $('tasksNow');
+  nowList.textContent = '';
+  now.items.forEach(function (it) {
+    if (!it.leaf) {
+      nowList.appendChild(taskLine(it.name, 'not in your Tasks list' + (now.running ? '' : ' · paused')));
+      return;
+    }
+    var meta = taskMeta(it.leaf, today, true);
+    if (!now.running) meta.text = (meta.text ? meta.text + ' · ' : '') + 'paused';
+    var li = document.createElement('li');
+    li.appendChild(taskButton(it.leaf, 'tasksNow', meta));
+    nowList.appendChild(li);
+  });
+  nowList.hidden = !now.items.length;
+  $('tasksNowEmpty').hidden = now.items.length > 0;
+
+  var planned = plannedLeaves(nodes);
+  var plist = $('tasksPlanned');
+  plist.textContent = '';
+  planned.forEach(function (l) {
+    var li = document.createElement('li');
+    li.appendChild(taskButton(l, 'tasksPlanned', taskMeta(l, today, true)));
+    plist.appendChild(li);
+  });
+  plist.hidden = !planned.length;
+  $('tasksPlannedEmpty').hidden = planned.length > 0;
+
+  // All tasks: the tree, open tasks as buttons, done and gone ones dimmed.
+  var openIds = userMap();
+  taskLeaves(nodes).forEach(function (l) { if (leafOpen(l)) openIds[l.node.id] = l; });
+  var all = $('tasksAll');
+  all.textContent = '';
+  var projects = mirrorTree(nodes);
+  projects.forEach(function (p) {
+    var li = document.createElement('li');
+    var own = p.node ? openIds[p.node.id] : null;
+    if (own) {
+      li.appendChild(taskButton(own, 'tasksAll', taskMeta(own, today, false)));
+    } else {
+      var name = document.createElement('span');
+      name.className = 'task-project task-' + p.state;
+      name.textContent = p.node ? p.node.title || '(untitled)' : '(no project)';
+      li.appendChild(name);
+    }
+    if (p.children.length) {
+      var sub = document.createElement('ul');
+      p.children.forEach(function (c) {
+        var leaf = openIds[c.node.id];
+        if (leaf) {
+          var cli = document.createElement('li');
+          cli.appendChild(taskButton(leaf, 'tasksAll', taskMeta(leaf, today, false)));
+          sub.appendChild(cli);
+        } else {
+          // Done, gone, or open under a deleted project: dimmed, not a button.
+          sub.appendChild(taskLine(c.node.title || '(untitled)', '',
+                                   'task-' + (c.state === 'open' ? 'gone' : c.state)));
+        }
+      });
+      li.appendChild(sub);
+    }
+    all.appendChild(li);
+  });
+  all.hidden = !projects.length;
+  $('tasksAllEmpty').hidden = projects.length > 0;
+
+  if (taskDlg && taskDlg.open) paintTaskDlg();
+}
+
+/** Arriving on the page: draw what is held, then read the plans again. */
+function openTasksPage() {
+  paintTasksPage();
+  if (!tasksConnected()) return;
+  readTaskPlans().then(function (ok) { if (ok) paintTasks(); });
+}
+
+// ------------------------------------------------------------ the task box
+
+function pad2(n) { return String(n).padStart(2, '0'); }
+
+/** The date and time boxes as an instant, on this device's clock. No time means
+ *  the end of that day. Null when the date is not a real one. */
+function expectedFromInputs(dateStr, timeStr) {
+  var d = /^(\d{4})-(\d{2})-(\d{2})$/.exec(String(dateStr || ''));
+  if (!d) return null;
+  var t = /^(\d{2}):(\d{2})/.exec(String(timeStr || ''));
+  var at = new Date(Number(d[1]), Number(d[2]) - 1, Number(d[3]),
+                    t ? Number(t[1]) : 23, t ? Number(t[2]) : 59);
+  if (isNaN(at.getTime()) || ymdLocal(at) !== d[1] + '-' + d[2] + '-' + d[3]) return null;
+  return at.toISOString();
+}
+
+function fillTaskWhen(id) {
+  var t = expectedMs(id);
+  var d = isFinite(t) ? new Date(t) : null;
+  $('taskDate').value = d ? ymdLocal(d) : '';
+  $('taskTime').value = d ? pad2(d.getHours()) + ':' + pad2(d.getMinutes()) : '';
+}
+
+function openTaskDlg(id, opener, listId) {
+  var leaf = openLeafById(id);
+  if (!leaf) return;
+  taskDlgNode = id;
+  taskDlgOpener = { el: opener, list: listId };
+  $('taskDlgTitle').textContent = leaf.node.title || '(untitled)';
+  $('taskDlgProject').textContent = leaf.up ? 'In ' + (leaf.up.title || '(untitled)')
+                                            : 'A task of its own, with no project above it.';
+  fillTaskWhen(id);
+  $('taskDlgNote').textContent = '';
+  paintTaskDlg();
+  taskDlg.showModal();
+  $('taskStartBtn').focus();                // not the date box: on a phone that opens a picker
+}
+
+/** The Planned button's words, and the plan buttons off while a save is out. */
+function paintTaskDlg() {
+  var plan = planOf(taskDlgNode);
+  $('taskPlanBtn').textContent = plan && plan.planned ? 'Remove from Planned' : 'Add to Planned';
+  ['taskPlanBtn', 'taskWhenSave', 'taskWhenClear'].forEach(function (b) { $(b).disabled = taskDlgBusy; });
+}
+
+function closeTaskDlg() {
+  if (taskDlg.open) taskDlg.close();
+  var back = taskDlgOpener;
+  var id = taskDlgNode;
+  taskDlgOpener = null;
+  taskDlgNode = null;
+  if (!back) return;
+  // A repaint may have replaced the button; the same task in the same list stands in.
+  var el = back.el && back.el.isConnected ? back.el : null;
+  if (!el && $(back.list)) {
+    Array.prototype.some.call($(back.list).querySelectorAll('.task-item'), function (b) {
+      if (b.getAttribute('data-node') === id) { el = b; return true; }
+      return false;
+    });
+  }
+  if (el) el.focus();
+}
+
+/** Upsert this task's plan with `fields`. Only the fields named change, so
+ *  setting a finish keeps Planned as the other device left it. */
+async function savePlan(id, fields) {
+  if (!supabaseReady()) throw new Error('Sign in first.');
+  var row = Object.assign({ user_id: sbUser.id, node_id: id,
+                            updated_at: new Date().toISOString() }, fields);
+  var res = await sb.from('task_plans').upsert(row, { onConflict: 'user_id,node_id' });
+  if (res.error) throw errorFrom(res.error);
+  taskPlans[id] = Object.assign({}, planOf(id) || { node_id: id, planned: false, expected_at: null }, fields);
+  await readTaskPlans();                    // the table wins where it answers
+}
+
+/** Run one plan change from the box, and say there how it went. */
+function changePlan(fields, said) {
+  var id = taskDlgNode;
+  if (!id || taskDlgBusy) return;
+  var note = $('taskDlgNote');
+  taskDlgBusy = true;
+  paintTaskDlg();
+  note.textContent = 'Saving…';
+  savePlan(id, fields).then(function () {
+    note.textContent = said;
+  }, function (err) {
+    note.textContent = '❌ Not saved: ' + ((err && err.message) || 'no answer') + '. Try again.';
+  }).then(function () {
+    taskDlgBusy = false;
+    paintTasks();
+    if (taskDlg.open && taskDlgNode === id) paintTaskDlg();
+  });
+}
+
+$('taskWhenSave').addEventListener('click', function () {
+  var iso = expectedFromInputs($('taskDate').value, $('taskTime').value);
+  if (!iso) { $('taskDlgNote').textContent = 'Pick a date first.'; return; }
+  changePlan({ expected_at: iso }, 'Saved: finish ' + taskWhenLabel(Date.parse(iso)) + '.');
+});
+
+$('taskWhenClear').addEventListener('click', function () {
+  $('taskDate').value = '';
+  $('taskTime').value = '';
+  if (isFinite(expectedMs(taskDlgNode))) changePlan({ expected_at: null }, 'Expected finish cleared.');
+});
+
+$('taskPlanBtn').addEventListener('click', function () {
+  var plan = planOf(taskDlgNode);
+  var on = !(plan && plan.planned);
+  changePlan({ planned: on }, on ? 'Added to Planned.' : 'Removed from Planned.');
+});
+
+/** The work row Start writes, named the way a labelled tracker row is: project,
+ *  and the sub-task in detail. So no Gemini call is needed. */
+function taskEntry(leaf) {
+  var title = String(leaf.node.title || '').trim() || '(untitled)';
+  if (!leaf.up) return { project: title, detail: '', raw_text: title };
+  var project = String(leaf.up.title || '').trim() || '(untitled)';
+  return { project: project, detail: title, raw_text: project + TASK_SEP + title };
+}
+
+/** The tracker's own steps (close the night first, then one `work` row through
+ *  the outbox), with the project already named and node_id set. */
+function startTask(id) {
+  var leaf = openLeafById(id);
+  if (!leaf) return false;
+  var e = taskEntry(leaf);
+  var undo = beginToggleWrite();
+  var steps = wakeSteps(true);
+  if (toggles.work.state !== 'working') setToggle('work', 'working');
+  noteLocalRow('work', e.raw_text, e.project, e.detail, leaf.node.id);
+  steps.push({ type: 'work', raw_text: e.raw_text, project: e.project, detail: e.detail,
+               node_id: leaf.node.id, rid: newRid() });
+  flash('Working on ' + (e.detail ? e.project + ': ' + e.detail : e.project), 'ok');
+  runWrites(steps, undo);
+  paintTasksPage();
+  return true;
+}
+
+$('taskStartBtn').addEventListener('click', function () {
+  if (!startTask(taskDlgNode)) {
+    $('taskDlgNote').textContent = 'This task is no longer open in Google Tasks.';
+    return;
+  }
+  closeTaskDlg();
+});
+
+$('taskCloseBtn').addEventListener('click', closeTaskDlg);
+// Escape: closed here, so focus goes back to the task whatever the browser does.
+taskDlg.addEventListener('cancel', function (e) { e.preventDefault(); closeTaskDlg(); });
+
+/* Its own channel: a task_plans table not made yet must not take the task_nodes
+ * feed down with it. The announcement is only a nudge; the plans are read again. */
+function plansChanged() {
+  clearTimeout(plansTimer);
+  plansTimer = setTimeout(function () { readTaskPlans().then(paintTasks); }, 400);
+}
+
+function watchPlans() {
+  if (!sb || !sbUser || plansChannel) return;
+  plansChannel = sb.channel('probeing-plans')
+    .on('postgres_changes', { event: '*', schema: 'public', table: 'task_plans' }, plansChanged)
+    .subscribe();
+}
+
+function stopPlans() {
+  clearTimeout(plansTimer);
+  taskPlans = userMap();
+  if (taskDlg && taskDlg.open) closeTaskDlg();
+  if (!plansChannel) return;
+  try { sb.removeChannel(plansChannel); } catch (e) { /* already gone */ }
+  plansChannel = null;
 }
 
 /* Coming back to the app: at most one check (and pull) per two minutes. */

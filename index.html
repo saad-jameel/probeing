@@ -28,6 +28,7 @@
   <g id="i-chart"><path d="M4 20.2V11M9.3 20.2V4.5M14.7 20.2v-6M20 20.2v-9.6"/></g>
   <g id="i-target"><circle cx="12" cy="12" r="8.7"/><circle cx="12" cy="12" r="4.6"/><circle cx="12" cy="12" r="1.4"/></g>
   <g id="i-money"><rect x="2.5" y="6" width="19" height="12" rx="2.2"/><circle cx="12" cy="12" r="2.8"/><path d="M6 9.5v5M18 9.5v5"/></g>
+  <g id="i-tasks"><path d="M10 6.5h10M10 12h10M10 17.5h10"/><path d="M3.5 6.5l1.5 1.5 2.5-3M3.5 12l1.5 1.5 2.5-3M3.5 17.5l1.5 1.5 2.5-3"/></g>
 </defs></svg>
 
 <div id="banner" class="banner" hidden></div>
@@ -127,15 +128,40 @@
     <span id="dayBtnLabel">End the day</span>
   </button>
 
-  <!-- Stage 13: sub-tasks from his Google Tasks list due today or before, then
-       (13b) the undated ones. Last on
-       the screen, under every logging control, so it costs no taps (rule 4).
+  <!-- Stage 13: his Google Tasks. Planned tasks and ones due by today; when there
+       are none, every open task (13b). A tap opens the task's box. Last on the
+       screen, under every logging control, so it costs no taps (rule 4).
        Hidden until Google is connected. -->
   <section id="planCard" class="card" hidden>
     <h2 class="card-head">Today&rsquo;s plan</h2>
     <ul id="planList" class="plan-list"></ul>
     <p id="planEmpty" class="pending" hidden>Nothing due today.</p>
   </section>
+</section>
+
+<!-- ============================================================ TASKS -->
+<!-- His Google Tasks list: what he is on, what he planned, and all of it. -->
+<section class="screen" data-screen="tasks" hidden>
+  <p id="tasksOff" class="pending">Connect Google Tasks in Settings to see your tasks here.</p>
+
+  <section id="tasksNowCard" class="card" hidden>
+    <h2 class="card-head">Working on</h2>
+    <ul id="tasksNow" class="plan-list"></ul>
+    <p id="tasksNowEmpty" class="pending" hidden>Nothing running. Tap a task below and choose Start working on it.</p>
+  </section>
+
+  <section id="tasksPlannedCard" class="card" hidden>
+    <h2 class="card-head">Planned</h2>
+    <ul id="tasksPlanned" class="plan-list"></ul>
+    <p id="tasksPlannedEmpty" class="pending" hidden>Nothing planned. Tap a task and choose Add to Planned.</p>
+  </section>
+
+  <section id="tasksAllCard" class="card" hidden>
+    <h2 class="card-head">All tasks</h2>
+    <ul id="tasksAll" class="task-tree"></ul>
+    <p id="tasksAllEmpty" class="pending" hidden>Your list is empty.</p>
+  </section>
+  <p id="tasksNote" class="hint" hidden></p>
 </section>
 
 <!-- ============================================================ TODAY -->
@@ -266,11 +292,12 @@
 </main>
 
 <!-- ============================================================== NAV -->
-<!-- Stage 13 adds Tasks between Today and Money. The taskboard link is in
+<!-- Tasks sits between Today and Money. The taskboard link is in
      Settings → Developer settings. -->
 <nav class="tabs" aria-label="Sections">
   <button class="tab is-on" data-goto="home" aria-label="Home"><svg aria-hidden="true"><use href="#i-home"></use></svg></button>
   <button class="tab" data-goto="today" aria-label="Today"><svg aria-hidden="true"><use href="#i-history"></use></svg></button>
+  <button class="tab" data-goto="tasks" aria-label="Tasks"><svg aria-hidden="true"><use href="#i-tasks"></use></svg></button>
   <button class="tab" data-goto="money" aria-label="Money"><svg aria-hidden="true"><use href="#i-money"></use></svg></button>
   <button class="tab" data-goto="review" aria-label="Weekly review"><svg aria-hidden="true"><use href="#i-chart"></use></svg></button>
 </nav>
@@ -646,6 +673,35 @@
     </div>
     <p id="testResult" class="hint"></p>
   </form>
+</dialog>
+
+<!-- One task: its expected finish, Start working on it, and Planned. The title is
+     his text, so app.js fills it with textContent. -->
+<dialog id="taskDlg" class="dlg" aria-labelledby="taskDlgTitle">
+  <div>
+    <h2 id="taskDlgTitle"></h2>
+    <p id="taskDlgProject" class="hint"></p>
+
+    <label for="taskDate">Expected finish</label>
+    <div class="task-when">
+      <input id="taskDate" type="date" aria-label="Expected finish date">
+      <input id="taskTime" type="time" aria-label="Expected finish time">
+    </div>
+    <div class="dlg-actions task-when-actions">
+      <button type="button" id="taskWhenClear" class="link-btn">Clear</button>
+      <button type="button" id="taskWhenSave" class="btn">Save finish</button>
+    </div>
+    <p id="taskDlgNote" class="hint" role="status"></p>
+
+    <div class="task-dlg-main">
+      <button type="button" id="taskStartBtn" class="btn btn-accent btn-wide">Start working on it</button>
+      <button type="button" id="taskPlanBtn" class="btn btn-wide">Add to Planned</button>
+    </div>
+
+    <div class="dlg-actions">
+      <button type="button" id="taskCloseBtn" class="link-btn">Close</button>
+    </div>
+  </div>
 </dialog>
 
 <!-- Stage 13b. The explanation behind a Settings "?", copied in from its <template>.
