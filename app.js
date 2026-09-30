@@ -2356,7 +2356,12 @@ sleepBtn.addEventListener('click', async function () {
   coolDown(sleepBtn);
 
   function go() {
-    // Read again: the prayer prompt may have been open while a re-read landed.
+    // The prompt may have been open while a re-read landed: already asleep
+    // (the 11:30 check, or the other device) means there is nothing to write.
+    if (toSleep && toggles.sleep.state !== 'awake') {
+      flash('Sleep was already logged', 'ok');
+      return;
+    }
     closing = toSleep ? sleepClosingRow(toggles.work.state, night) : null;
     var undo = beginToggleWrite();       // before the first optimistic change
 
@@ -2427,10 +2432,17 @@ function paintDayBtn() {
 dayBtn.addEventListener('click', async function () {
   if (dayBtn.disabled) return;
   coolDown(dayBtn);
+  var ending = toggles.work.state !== 'off';     // what the tap meant, fixed now
 
   function go() {
-    // Read here, not at the tap: the prayer prompt may have been open a while.
-    var off = toggles.work.state === 'off';
+    /* The prompt may have been open while the 11:30 check or the other device
+     * closed the day. "End day anyway" must then write nothing: acting on the
+     * new state would START the day. */
+    if (ending && toggles.work.state === 'off') {
+      flash('The day was already closed', 'ok');
+      return;
+    }
+    var off = !ending;
     var undo = beginToggleWrite();
 
     var steps = wakeSteps(off);              // starting the day ends the night
@@ -2446,7 +2458,7 @@ dayBtn.addEventListener('click', async function () {
     if (off) maybeAskProject();
   }
 
-  if (toggles.work.state === 'off') go();
+  if (!ending) go();
   else askDayPrayers(go);
 });
 
