@@ -10239,10 +10239,11 @@ function workingOnLeaves(nodes, rows) {
   return { running: day.running, items: items };
 }
 
-/** "today, 17:00" or "3 Oct 2026, 09:30", on this device's clock. */
+/** "today, 17:00" or "3 Oct 2026, 09:30", on this device's clock. "today" is the
+ *  counter day, as on Home: at 01:00, 03:00 is today and 23:59 is not. */
 function taskWhenLabel(ms) {
   var d = new Date(ms);
-  var day = ymdLocal(d) === ymdLocal(new Date()) ? 'today' : humanYmd(ymdLocal(d));
+  var day = counterDate(ms) === counterDate(Date.now()) ? 'today' : humanYmd(ymdLocal(d));
   return day + ', ' + clockOf({ at: d.toISOString() });
 }
 
@@ -10392,8 +10393,9 @@ function openTasksPage() {
 
 function pad2(n) { return String(n).padStart(2, '0'); }
 
-/** The date and time boxes as an instant, on this device's clock. No time means
- *  the end of that day. Null when the date is not a real one. */
+/** The date and time boxes as an instant, on this device's clock. A date with no
+ *  time is 23:59 on it, which is always inside that date's counter day, so it is
+ *  "today" (and on Home) on exactly that counter day. Null for a date that is not real. */
 function expectedFromInputs(dateStr, timeStr) {
   var d = /^(\d{4})-(\d{2})-(\d{2})$/.exec(String(dateStr || ''));
   if (!d) return null;
@@ -10404,11 +10406,22 @@ function expectedFromInputs(dateStr, timeStr) {
   return at.toISOString();
 }
 
+var taskDlgFilled = { at: null, date: '', time: '' };   // what the boxes were last filled with
+
 function fillTaskWhen(id) {
+  var plan = planOf(id);
   var t = expectedMs(id);
   var d = isFinite(t) ? new Date(t) : null;
   $('taskDate').value = d ? ymdLocal(d) : '';
   $('taskTime').value = d ? pad2(d.getHours()) + ':' + pad2(d.getMinutes()) : '';
+  taskDlgFilled = { at: (plan && plan.expected_at) || null, date: $('taskDate').value, time: $('taskTime').value };
+}
+
+/** He is in the boxes, or has changed them since they were filled. */
+function taskWhenTouched() {
+  var a = document.activeElement;
+  return a === $('taskDate') || a === $('taskTime') ||
+         $('taskDate').value !== taskDlgFilled.date || $('taskTime').value !== taskDlgFilled.time;
 }
 
 function openTaskDlg(id, opener, listId) {
@@ -10430,6 +10443,8 @@ function openTaskDlg(id, opener, listId) {
 function paintTaskDlg() {
   var plan = planOf(taskDlgNode);
   $('taskPlanBtn').textContent = plan && plan.planned ? 'Remove from Planned' : 'Add to Planned';
+  // A finish changed elsewhere (the other device, say) shows, unless he is typing one.
+  if (((plan && plan.expected_at) || null) !== taskDlgFilled.at && !taskWhenTouched()) fillTaskWhen(taskDlgNode);
   ['taskPlanBtn', 'taskWhenSave', 'taskWhenClear'].forEach(function (b) { $(b).disabled = taskDlgBusy; });
 }
 
@@ -10473,6 +10488,7 @@ function changePlan(fields, said) {
   note.textContent = 'Saving…';
   savePlan(id, fields).then(function () {
     note.textContent = said;
+    if ('expected_at' in fields && taskDlgNode === id) fillTaskWhen(id);   // the boxes now match the table
   }, function (err) {
     note.textContent = '❌ Not saved: ' + ((err && err.message) || 'no answer') + '. Try again.';
   }).then(function () {
@@ -10488,10 +10504,18 @@ $('taskWhenSave').addEventListener('click', function () {
   changePlan({ expected_at: iso }, 'Saved: finish ' + taskWhenLabel(Date.parse(iso)) + '.');
 });
 
+/* Asks the table first: the other device may have set a finish this box never saw.
+ * If the table cannot be read, the clear is sent anyway. */
 $('taskWhenClear').addEventListener('click', function () {
+  var id = taskDlgNode;
+  if (!id || taskDlgBusy) return;
   $('taskDate').value = '';
   $('taskTime').value = '';
-  if (isFinite(expectedMs(taskDlgNode))) changePlan({ expected_at: null }, 'Expected finish cleared.');
+  readTaskPlans().then(function (ok) {
+    if (taskDlgNode !== id) return;
+    if (!ok || isFinite(expectedMs(id))) changePlan({ expected_at: null }, 'Expected finish cleared.');
+    else { $('taskDlgNote').textContent = 'No finish was set.'; fillTaskWhen(id); }
+  });
 });
 
 $('taskPlanBtn').addEventListener('click', function () {
