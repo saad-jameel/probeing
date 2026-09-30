@@ -195,13 +195,18 @@ function admin() {
 }
 
 /** His settings row, place adopted. `*` so a database without the
- *  prayer_reminders column still reads the place (and reminders stay on). */
+ *  prayer_reminders column still reads the place (and reminders stay on).
+ *  Only an absent row means the defaults; a failed read returns `error`, because
+ *  guessing Karachi and "on" would send the wrong prayer and burn its slot. */
 async function readSettings(sb: ReturnType<typeof admin>, owner: string, now: number) {
   let row: Record<string, unknown> | null = null;
   try {
     const got = await sb.from('user_settings').select('*').eq('user_id', owner).limit(1);
-    if (!got.error) row = (got.data || [])[0] || null;
-  } catch (_e) { /* the default */ }
+    if (got.error) return { error: String(got.error.message || 'the settings read failed') };
+    row = (got.data || [])[0] || null;
+  } catch (e) {
+    return { error: String((e && (e as Error).message) || e) };
+  }
   const place = Day.setPrayerPlace(row ? { lat: row.lat, lng: row.lng, zone: row.time_zone,
                                            method: row.method, asr: row.asr_school } : null);
   const off = Day.zoneOffsetMin(place.zone, now, NaN);
@@ -243,6 +248,8 @@ Deno.serve(async (req: Request): Promise<Response> => {
 
   const sb = admin();
   const place = await readSettings(sb, owner, now);
+  // Settings unreadable: skip this minute; the next run tries again.
+  if ('error' in place) return reply(503, { ok: false, act: 'skipped', error: place.error });
   if (!place.on) return reply(200, { ok: true, act: 'off', why: 'prayer reminders are turned off' });
 
   const list = remindersAround(now, place.offset, (d: unknown) => Day.prayerTimes(d, place.offset));
