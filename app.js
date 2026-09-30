@@ -8046,8 +8046,13 @@ function renderLoanBalances() {
     li.textContent = loanBalanceLine(b);          // a typed name: never markup
     list.appendChild(li);
   });
-  $('loanNote').textContent = loanWhy ? 'Balances could not be read (' + loanWhy + ').' : '';
-  $('loanNote').hidden = !loanWhy;
+  // The same condition as the Money status line: a failed read means a partial list.
+  var note = loanWhy ? 'Balances could not be read (' + loanWhy + ').'
+    : !moneyWhy || !owed.length ? ''
+    : moneyReadAt ? 'Could not refresh (' + moneyWhy + '), so these balances may be out of date.'
+    : 'Could not read your loans (' + moneyWhy + '), so only what this device holds is counted.';
+  $('loanNote').textContent = note;
+  $('loanNote').hidden = !note;
   $('loanCard').hidden = !owed.length && !loanWhy;
 }
 
