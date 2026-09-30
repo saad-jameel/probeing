@@ -382,6 +382,17 @@ async function callSupabase(action, payload) {
     var log = [];
     var prayers = [];
 
+    /* Between the rollover and Fajr the prayer day is still yesterday's
+     * (prayerDate), so its prayers are read from yesterday's Fajr. */
+    var prayerStartMs = prayerDayStart(Date.now());
+    if (prayerStartMs < dayStartMs) {
+      var early = await sb.from('events').select('*').eq('type', 'prayer')
+        .gte('at', new Date(prayerStartMs).toISOString()).lt('at', dayStartIso)
+        .order('at', { ascending: false }).limit(100);
+      if (early.error) throw errorFrom(early.error);
+      rows = rows.concat(early.data || []);
+    }
+
     rows.forEach(function (r) {
       if (r.type === 'prayer') {
         prayers.push({ at: r.at, local: r.local_time || '', rid: r.rid || '',
@@ -580,7 +591,18 @@ async function rangeEvents(startIso, endIso) {
    * belongs to the next day. Harmless: the day windows below drop it, because
    * a day is [rollover, next rollover) — closed at the start, open at the end,
    * so no instant can land in two days or in none. */
-  return (res.data || []).map(sbRow);
+  var rows = res.data || [];
+
+  /* A prayer's day turns at Fajr, FAJR_MARGIN_MIN after the rollover: an Isha
+   * logged in those minutes belongs to the last day read, so read them too.
+   * prayerDays() places them; everything else counts by window and skips them. */
+  var endMs = Date.parse(endIso);
+  var tail = await sb.from('events').select('*').eq('type', 'prayer')
+    .gte('at', new Date(endMs + 1).toISOString())
+    .lt('at', new Date(endMs + FAJR_MARGIN_MIN * 60000).toISOString())
+    .order('at', { ascending: true }).limit(100);
+  if (tail.error) throw errorFrom(tail.error);
+  return rows.concat(tail.data || []).map(sbRow);
 }
 
 /**
@@ -1116,9 +1138,11 @@ function queuedRowsToday(have) {
   });
 }
 
+/** Held prayer presses of the current PRAYER day (prayerDate), not the counter day. */
 function queuedPrayersToday(have) {
-  return queuedToday().filter(function (it) { return it.action === 'prayer'; })
-    .map(queuedPrayer).filter(function (p) { return !(have && have[p.rid]); });
+  var today = prayerDate(Date.now());
+  var held = outboxOurs().filter(function (it) { return it.action === 'prayer'; }).map(queuedPrayer);
+  return prayersOn(held, today).filter(function (p) { return !(have && have[p.rid]); });
 }
 
 /** Every local date with something still waiting, any day — what the report gate
@@ -1716,7 +1740,7 @@ function renderToday(data) {
    * turns off the "already logged today" warning, and the next tap writes a
    * SECOND real row under a different rid. The unique index cannot catch that
    * one: it is a genuinely new write, and the store is append-only. */
-  todayPrayers = (data.prayers || []).concat(queuedPrayersToday(have));
+  todayPrayers = prayersOn(data.prayers, prayerDate(Date.now())).concat(queuedPrayersToday(have));
   renderPrayerTicks();
   if (prayerDlg.open) renderPrayerPicks();
 
@@ -2762,16 +2786,16 @@ var prayerDlg = $('prayerDlg');
 var pickedPrayer = null;
 var pickedMode = null;
 
-/** The row logging `name` in the current counter day, the latest if an old
- *  shell wrote two, or null. Held presses count: they are in todayPrayers. */
+/** The row logging `name` in the current prayer day (prayerDate), or null. If two
+ *  devices both logged it, the FIRST one counts. Held presses are in todayPrayers. */
 function loggedRow(name) {
-  var today = counterDate(Date.now());
+  var today = prayerDate(Date.now());
   var hit = null;
   todayPrayers.forEach(function (p) {
     if (p.prayer !== name) return;
     var t = instantOf(p.at);
-    if (!isNaN(t) && counterDate(t) !== today) return;     // yesterday's, until the re-read
-    if (!hit || !(instantOf(hit.at) > t)) hit = p;
+    if (!isNaN(t) && prayerDate(t) !== today) return;      // another day's, until the re-read
+    if (!hit || t < instantOf(hit.at)) hit = p;
   });
   return hit;
 }
@@ -2780,10 +2804,10 @@ function loggedToday(name) {
   return Boolean(loggedRow(name));
 }
 
-/** When `name` begins in the counter day holding `now`. The day turns before
- *  Fajr, so all five are that date's — Isha at 1 AM is still open. */
+/** When `name` begins in the prayer day holding `now`. That day turns at Fajr,
+ *  so all five are that date's — Isha at 1 AM, or 5 minutes before Fajr, is open. */
 function prayerOpensAt(name, now) {
-  var ymd = counterDate(now).split('-');
+  var ymd = prayerDate(now).split('-');
   return prayerTimes({ y: Number(ymd[0]), m: Number(ymd[1]), d: Number(ymd[2]) })[name];
 }
 
@@ -2834,7 +2858,7 @@ function renderPrayerTicks() {
 var prayerGates = '';
 function prayerGateKey(now) {
   return PRAYER_NAMES.map(function (name) { return prayerWaiting(name, now) ? 1 : 0; }).join('') +
-         counterDate(now);
+         counterDate(now) + prayerDate(now);
 }
 
 /** One picker button. `done` adds the "already logged today" tick. */
@@ -5036,6 +5060,38 @@ function bucketByWindow(rows, windows) {
 }
 
 /**
+ * Each window's prayers, one per name. A prayer row goes to its PRAYER day
+ * (prayerDate: an Isha in the minutes before Fajr is the day before's), not to
+ * the counter-day window it sits in. When a name was logged twice in a day (two
+ * devices at once, or an old tab), the EARLIEST row counts and the rest are
+ * `repeats`. Pass every row read, so such an Isha just past the range is seen.
+ *
+ * @returns {Array<{names, order, repeats}>} per window: names maps a name to its row.
+ */
+function prayerDays(rows, windows) {
+  var at = userMap();
+  var out = windows.map(function (w, i) {
+    at[w.ymd] = i;
+    return { names: userMap(), order: [], repeats: 0 };
+  });
+  (rows || []).filter(function (r) { return r && r.type === 'prayer'; })
+    .map(function (r) { return { row: r, t: instantOf(r.at) }; })
+    .filter(function (x) { return !isNaN(x.t); })
+    .sort(function (a, b) { return a.t - b.t; })
+    .forEach(function (x) {
+      var i = at[prayerDate(x.t)];
+      if (i === undefined) return;
+      var day = out[i];
+      // The name lives in `project`; raw_text is the fallback for a row without one.
+      var name = String(x.row.project || x.row.raw_text || '').trim();
+      if (day.names[name] !== undefined) { day.repeats += 1; return; }
+      day.names[name] = x.row;
+      day.order.push(name);
+    });
+  return out;
+}
+
+/**
  * Sleep, measured the only way it can be: from a `sleep` row to the `wake` row
  * that closes it.
  *
@@ -5108,6 +5164,7 @@ function summariseRange(rows, windows) {
   };
 
   var buckets = bucketByWindow(rows, windows);
+  var prayed = prayerDays(rows, windows);
   var newestFirst = (rows || []).slice().reverse();     // sessionLead's order
 
   windows.forEach(function (w, i) {
@@ -5140,11 +5197,12 @@ function summariseRange(rows, windows) {
      * lived through. */
     dayRows.forEach(function (row) {
       if (row.type === 'M') sum.m += 1;
-      if (row.type === 'prayer') {
-        sum.prayers += 1;
-        var mode = String(row.detail || '').trim();
-        if (mode) sum.byMode[mode] = (sum.byMode[mode] || 0) + 1;
-      }
+    });
+    // Prayers by their prayer day, each name once, with its first-logged mode.
+    prayed[i].order.forEach(function (name) {
+      sum.prayers += 1;
+      var mode = String(prayed[i].names[name].detail || '').trim();
+      if (mode) sum.byMode[mode] = (sum.byMode[mode] || 0) + 1;
     });
 
     sum.perDay.push({ ymd: w.ymd, rows: dayRows.length, worked: day.worked });
@@ -5175,11 +5233,11 @@ function summariseRange(rows, windows) {
  * a claim about how Saad prayed. A day that has rows and no Fajr among them is
  * a real miss, and is counted as one.
  *
- * `logged` is every prayer row seen, and it is deliberately the same figure
- * summariseRange() reports as `prayers`: the two are counted from the same
- * buckets in the same order, so a report whose breakdown disagrees with its own
- * total is a bug in one of them rather than a difference of opinion. Per prayer,
- * a day counts once (`total`), so sum(total) + other + repeats = logged.
+ * `logged` counts each (prayer, prayer day) once, and it is deliberately the same
+ * figure summariseRange() reports as `prayers`: both read prayerDays(), so a
+ * report whose breakdown disagrees with its own total is a bug rather than a
+ * difference of opinion. sum(total) + other = logged; a second row of one
+ * prayer in a day (two devices, or an old tab) is in `repeats` only (13b).
  *
  * @param rows    every row in the range. Only `type:'prayer'` rows are counted,
  *                but the rest decide which days count as measured at all.
@@ -5194,7 +5252,7 @@ function prayerStats(rows, windows, nowMs) {
     modes: PRAYER_MODES.slice(),
     logged: 0,
     other: 0,
-    repeats: 0,              // a prayer's second row on one day: in `logged`, not in `total`
+    repeats: 0,              // a prayer's second row on one day: in neither `logged` nor `total`
     days: wins.length,
     daysWithRows: 0,
     daysFinished: 0,         // days already over; only these can hold a miss
@@ -5214,38 +5272,34 @@ function prayerStats(rows, windows, nowMs) {
   });
 
   var buckets = bucketByWindow(rows, wins);
+  var prayed = prayerDays(rows, wins);
 
   wins.forEach(function (w, i) {
     // A day not yet over judges a prayer only once the next one has begun.
     var finished = w.endMs <= now;
     if (finished) out.daysFinished += 1;
-    var dayRows = buckets[i];
-    if (!dayRows.length) return;           // unmeasured: not five misses
+    var day = prayed[i];
+    if (!buckets[i].length && !day.order.length) return;   // unmeasured: not five misses
     out.daysWithRows += 1;
     if (finished) out.daysJudged += 1;
 
+    // One per prayer per day (prayerDays), as on the Today card; the first row's mode.
+    out.repeats += day.repeats;
     var seen = userMap();                  // the prayer names logged this day
-    // Newest first (bucketByWindow), so a name's first row is that day's latest.
-    dayRows.forEach(function (row) {
-      if (row.type !== 'prayer') return;
+    day.order.forEach(function (name) {
       out.logged += 1;
 
-      /* The name lives in `project`, exactly as the data model says. raw_text is
-       * the same fallback the rest of the review uses for a row that never got
-       * one, and a name that is neither of the five is counted apart rather than
+      /* A name that is neither of the five is counted apart rather than
        * dropped — see `other` below. */
-      var one = index[String(row.project || row.raw_text || '').trim()];
+      var one = index[name];
       if (!one) { out.other += 1; return; }
-
-      // One per prayer per day, as on the Today card; the latest row's mode wins.
-      if (seen[one.name] === 1) { out.repeats += 1; return; }
       one.total += 1;
       seen[one.name] = 1;
 
       /* A mode that is not one of the three is counted too. `total` must always
        * equal the modes plus `noMode`, or the breakdown loses a prayer that was
        * really offered — the same rule that makes `other` exist. */
-      var mode = String(row.detail || '').trim();
+      var mode = String(day.names[name].detail || '').trim();
       if (one.byMode[mode] === undefined) one.noMode += 1;
       else one.byMode[mode] += 1;
     });
@@ -5966,7 +6020,8 @@ function spanFigures(rows, win, prior, priorKnown, cats) {
   var pace = paceOf(focus.ms, priorFocus ? priorFocus.ms : 0, prior,
                     Boolean(priorFocus) && focus.filed && priorFocus.filed);
 
-  return { windows: windows, inRange: inRange, sum: sum, tasks: rangeTasks(inRange),
+  // `rows` too: prayerStats() places prayers by prayer day, which can lie just past the windows.
+  return { windows: windows, inRange: inRange, rows: rows, sum: sum, tasks: rangeTasks(inRange),
            earlier: earlier, focus: focus, pace: pace };
 }
 
@@ -6413,7 +6468,7 @@ async function runReview(force) {
   }
 
   renderReviewFigures(sum);
-  showPrayerTable($('reviewPrayers'), prayerStats(got.inRange, got.windows));
+  showPrayerTable($('reviewPrayers'), prayerStats(got.rows, got.windows));
   /* Published for the dialog's Save to find later — see reviewRegroup. Called
    * immediately, because this IS the first draw. */
   reviewRegroup = function () { renderReviewProjects(sum, projectCategories, tasks); };
@@ -6823,7 +6878,7 @@ function prayerTable(stats) {
   if (Number(stats.days) > Number(finished)) {
     text += ' Today counts a prayer as missed once the next one has begun, and Isha once the day turns.';
   }
-  if (Number(stats.repeats) > 0) text += ' A prayer logged twice in a day counts once, with its latest mode.';
+  if (Number(stats.repeats) > 0) text += ' A prayer logged twice in a day counts once.';
   var other = Number(stats.other) || 0;
   if (other) text += other === 1 ? ' 1 prayer row had another name and is not in the table.'
                                   : ' ' + other + ' prayer rows had another name and are not in the table.';
@@ -6962,7 +7017,7 @@ async function generateReport(win) {
   }
 
   await saveReport(win, answer,
-                   reportStats(got.sum, prayerStats(got.inRange, got.windows), money),
+                   reportStats(got.sum, prayerStats(got.rows, got.windows), money),
                    lastGeminiModel);
   return '';
 }

@@ -24,6 +24,8 @@ const Day = (globalThis as unknown as { ProBeingDay: {
   setPrayerPlace: (p: unknown) => { zone: string };
   zoneOffsetMin: (zone: string, ms: number, fallback: number) => number;
   counterDayStart: (t: number, offsetMin?: number) => number;
+  counterDate: (t: number, offsetMin?: number) => string;
+  prayersOn: (prayers: unknown[], ymd: string, offsetMin?: number) => unknown[];
   sessionLead: (rows: unknown[], beforeMs: number) => unknown[];
   LEAD_MAX_MS: number;
   LEAD_TYPES: string[];
@@ -156,7 +158,9 @@ Deno.serve(async (req: Request): Promise<Response> => {
   const lead = Day.sessionLead(splitToday(leadRes.data || []).log, dayStartMs);
 
   const split = splitToday(todayRes.data || []);
-  const figures = Day.dayFigures(split.log, split.prayers, now, carryRes.data || [], lead);
+  // An Isha logged in the minutes before Fajr is the day before's (prayerDate).
+  const prayers = Day.prayersOn(split.prayers, Day.counterDate(now, place.offset), place.offset);
+  const figures = Day.dayFigures(split.log, prayers, now, carryRes.data || [], lead);
   const text = Day.glanceText(figures, now, place.offset);
   // The widget's list of open projects; the notification shade keeps title and body.
   const lines = Day.glanceList(split.log, now, lead);

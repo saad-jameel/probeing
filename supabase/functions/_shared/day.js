@@ -376,6 +376,34 @@ function counterDate(t, offsetMin) {
   return d.y + '-' + (d.m < 10 ? '0' : '') + d.m + '-' + (d.d < 10 ? '0' : '') + d.d;
 }
 
+/* A PRAYER's day turns at Fajr itself, not FAJR_MARGIN_MIN before it (1 Oct:
+ * "Isha is open until Fajr"). Only Isha can fall in that gap, since Fajr cannot
+ * be logged before its time. Everything else keeps the counter day. */
+
+/** 'YYYY-MM-DD' of the prayer day holding `t`: counterDate(), except in the
+ *  minutes between the rollover and Fajr, which belong to the day before. */
+function prayerDate(t, offsetMin) {
+  if (!isFinite(t)) return '';
+  var day = counterDayOf(t, offsetMin);
+  var fajr = prayerTimes(day.date, offsetMin).Fajr;
+  var d = isFinite(fajr) && t < fajr ? dayBefore(day.date) : day.date;
+  return d.y + '-' + (d.m < 10 ? '0' : '') + d.m + '-' + (d.d < 10 ? '0' : '') + d.d;
+}
+
+/** The instant the prayer day holding `t` began: that day's Fajr. */
+function prayerDayStart(t, offsetMin) {
+  var p = prayerDate(t, offsetMin).split('-');
+  var fajr = prayerTimes({ y: Number(p[0]), m: Number(p[1]), d: Number(p[2]) }, offsetMin).Fajr;
+  return isFinite(fajr) ? fajr : counterDayStart(t, offsetMin);
+}
+
+/** The prayer rows ({at, prayer}) whose prayer day is `ymd`. */
+function prayersOn(prayers, ymd, offsetMin) {
+  return (prayers || []).filter(function (p) {
+    return prayerDate(instantOf(p.at), offsetMin) === ymd;
+  });
+}
+
 /* ── The lead-in ───────────────────────────────────────────────────────────
  * The work session does not reset at the rollover. The counter day's rows are
  * replayed together with this lead-in: the work-clock rows since the last
@@ -911,6 +939,8 @@ globalThis.ProBeingDay = {
   zoneOffsetMin: zoneOffsetMin,
   counterDayStart: counterDayStart,
   counterDate: counterDate,
+  prayerDate: prayerDate,
+  prayersOn: prayersOn,
   sessionLead: sessionLead,
   LEAD_MAX_MS: LEAD_MAX_MS,
   LEAD_TYPES: LEAD_TYPES,
