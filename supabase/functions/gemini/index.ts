@@ -28,6 +28,7 @@
 //   npx supabase secrets set ALLOWED_USER_ID=<the owner's user id> --project-ref <ref>
 
 import { createClient } from 'jsr:@supabase/supabase-js@2';
+import { usageDay, takeCall } from '../_shared/usage.ts';
 
 const GEMINI_URL = 'https://generativelanguage.googleapis.com/v1beta/models/';
 
@@ -217,6 +218,16 @@ Deno.serve(async (req: Request): Promise<Response> => {
   }
 
   if (!prompt) return reply(400, { ok: false, error: 'prompt is required' });
+
+  /* Stage 14a: counted in the server's daily tally, so classify knows what the
+   * devices spent. Counted, never refused, and a failure to count never fails
+   * the call: the browser keeps its own limit. */
+  try {
+    const admin = createClient(Deno.env.get('SUPABASE_URL') || '',
+                               Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') || '',
+                               { auth: { persistSession: false } });
+    await takeCall(admin, owner, await usageDay(admin, owner, Date.now()), null, 0);
+  } catch (_e) { /* uncounted beats unanswered */ }
 
   const ask: Record<string, unknown> = { contents: [{ parts: [{ text: prompt }] }] };
   if (wantsJson || schema || think !== null) {
