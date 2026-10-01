@@ -874,9 +874,9 @@ revoke all on table public.reminders_sent from anon, authenticated;
 
 -- ============================================================ tasks page
 -- The Tasks page (29 Sep). "Start working on it" names its task on the work
--- row it writes, so later stages can count time per sub-task. Set only at
--- insert: the label grant above stays (project, detail), so a browser cannot
--- change node_id afterwards. Tasks are never deleted, so the reference holds.
+-- row it writes, so later stages can count time per sub-task. Stage 14a lets a
+-- blank one be filled once, later in this file. Tasks are never deleted, so the
+-- reference holds.
 alter table public.events add column if not exists node_id uuid
   references public.task_nodes(id) on delete set null;
 
@@ -929,6 +929,186 @@ revoke delete, truncate on table public.task_plans from anon, authenticated;
 do $$ begin
   alter publication supabase_realtime add table public.task_plans;
 exception when duplicate_object then null; end $$;
+
+-- ============================================================ filing (14a)
+-- Stage 14a. The classify Edge Function files each typed entry under one of his
+-- Google tasks; docs/classify.sql schedules it. The three tables below are
+-- written by the server only. The browser reads entry_filing and items, and
+-- files an Unsorted entry itself through the label policy.
+
+-- The label policy, widened: a blank entry (project '' AND no node_id) may be
+-- filled once with project, detail and node_id, and only with a node of his
+-- own. Once either is set the row is frozen. Altered in place, as above.
+alter policy "label own unlabelled rows" on public.events
+  using (auth.uid() = user_id and project = '' and node_id is null and type in ('work', 'voice'))
+  with check (auth.uid() = user_id and (node_id is null or exists (
+    select 1 from public.task_nodes n where n.id = node_id and n.user_id = auth.uid())));
+grant update (project, detail, node_id) on public.events to authenticated;
+
+-- entry_filing: one row per entry the server is to file, keyed by the entry's
+-- rid. pending -> filed or unsorted. claimed_until/claim_id let only one run
+-- work on a row at a time; tries counts Gemini answers that could not be used.
+create table if not exists public.entry_filing (
+  -- Written with the service role, so user_id is always named.
+  user_id       uuid        not null references auth.users on delete cascade,
+  entry_rid     text        not null,
+  state         text        not null default 'pending'
+                            check (state in ('pending', 'filed', 'unsorted')),
+  reason        text        not null default '',
+  tries         integer     not null default 0,
+  claimed_until timestamptz,
+  claim_id      text,
+  created_at    timestamptz not null default now(),
+  updated_at    timestamptz not null default now(),
+  primary key (user_id, entry_rid)
+);
+
+create index if not exists entry_filing_user_state_idx
+  on public.entry_filing (user_id, state, created_at);
+
+alter table public.entry_filing enable row level security;
+
+do $$ begin
+  create policy "read own filing" on public.entry_filing
+    for select using (auth.uid() = user_id);
+exception when duplicate_object then null; end $$;
+
+revoke insert, update, delete, truncate on table public.entry_filing from anon, authenticated;
+
+-- So "filing…" turns into a name, or into the Unsorted tray, on both devices.
+do $$ begin
+  alter publication supabase_realtime add table public.entry_filing;
+exception when duplicate_object then null; end $$;
+
+-- items: the small jobs Gemini reads out of an entry. rid is <entry rid>-i<k>,
+-- so filing the same entry twice makes one set. node_id is null while the
+-- entry is Unsorted. Server-written in 14a; the Done/Drop marks come in 14b.
+create table if not exists public.items (
+  id          uuid        primary key default gen_random_uuid(),
+  user_id     uuid        not null default auth.uid() references auth.users on delete cascade,
+  rid         text        not null,
+  node_id     uuid        references public.task_nodes(id) on delete set null,
+  source_rid  text,                                     -- the entry it came from
+  title       text        not null check (char_length(title) between 1 and 200),
+  made_by     text        not null default 'gemini' check (made_by in ('gemini', 'hand')),
+  at          timestamptz not null default now(),
+  created_at  timestamptz not null default now(),
+  constraint items_user_rid_key unique (user_id, rid)
+);
+
+create index if not exists items_user_node_idx on public.items (user_id, node_id);
+create index if not exists items_user_source_idx on public.items (user_id, source_rid);
+
+alter table public.items enable row level security;
+
+do $$ begin
+  create policy "read own items" on public.items
+    for select using (auth.uid() = user_id);
+exception when duplicate_object then null; end $$;
+
+revoke insert, update, delete, truncate on table public.items from anon, authenticated;
+
+do $$ begin
+  alter publication supabase_realtime add table public.items;
+exception when duplicate_object then null; end $$;
+
+-- gemini_usage: Gemini calls per counter day, one tally for every device and
+-- the server. No browser access at all: nothing on screen reads it yet, and
+-- the table editor shows it.
+create table if not exists public.gemini_usage (
+  user_id  uuid        not null references auth.users on delete cascade,
+  day      date        not null,
+  n        integer     not null default 0 check (n >= 0),
+  last_at  timestamptz,
+  primary key (user_id, day)
+);
+
+alter table public.gemini_usage enable row level security;
+revoke all on table public.gemini_usage from anon, authenticated;
+
+-- Take one call from the day's budget, in one statement so two runs cannot
+-- both take the last one. Returns the new count; 0 when the day is spent
+-- (p_cap reached); -1 when the last call was under p_pace_ms ago. A null
+-- p_cap counts without limiting (the gemini function's own calls).
+create or replace function public.gemini_usage_take(p_user uuid, p_day date,
+                                                    p_cap integer, p_pace_ms integer)
+returns integer
+language plpgsql
+security definer
+set search_path = ''
+as $fn$
+declare
+  got integer;
+begin
+  insert into public.gemini_usage (user_id, day) values (p_user, p_day)
+    on conflict (user_id, day) do nothing;
+  update public.gemini_usage
+     set n = n + 1, last_at = now()
+   where user_id = p_user and day = p_day
+     and (p_cap is null or n < p_cap)
+     and (coalesce(p_pace_ms, 0) <= 0 or last_at is null
+          or last_at <= now() - p_pace_ms * interval '1 millisecond')
+  returning n into got;
+  if got is not null then return got; end if;
+  select case when p_cap is not null and n >= p_cap then 0 else -1 end into got
+    from public.gemini_usage where user_id = p_user and day = p_day;
+  return got;
+end;
+$fn$;
+
+-- Google said the day is gone: count it spent, whatever this tally thought.
+create or replace function public.gemini_usage_spend(p_user uuid, p_day date, p_cap integer)
+returns void
+language sql
+security definer
+set search_path = ''
+as $fn$
+  insert into public.gemini_usage (user_id, day, n, last_at) values (p_user, p_day, p_cap, now())
+    on conflict (user_id, day) do update
+      set n = greatest(public.gemini_usage.n, excluded.n), last_at = now();
+$fn$;
+
+-- Callable over the REST API only by the service role.
+revoke all on function public.gemini_usage_take(uuid, date, integer, integer) from public, anon, authenticated;
+revoke all on function public.gemini_usage_spend(uuid, date, integer) from public, anon, authenticated;
+grant execute on function public.gemini_usage_take(uuid, date, integer, integer) to service_role;
+grant execute on function public.gemini_usage_spend(uuid, date, integer) to service_role;
+
+-- Filed from the Unsorted tray: the browser sets the entry's node_id, and this
+-- moves its filing row to filed and its items under the same node. Only an
+-- Unsorted row: the server's own filing sets its state itself. A failure here
+-- never refuses the filing; the tray hides a filed entry either way.
+create or replace function public.entry_filed_by_hand()
+returns trigger
+language plpgsql
+security definer
+set search_path = ''
+as $fn$
+begin
+  begin
+    update public.entry_filing
+       set state = 'filed', reason = 'by hand', updated_at = now(),
+           claimed_until = null, claim_id = null
+     where user_id = new.user_id and entry_rid = new.rid and state = 'unsorted';
+    if found then
+      update public.items set node_id = new.node_id
+       where user_id = new.user_id and source_rid = new.rid and node_id is null;
+    end if;
+  exception when others then
+    null;
+  end;
+  return null;
+end;
+$fn$;
+
+revoke all on function public.entry_filed_by_hand() from public, anon, authenticated;
+
+drop trigger if exists entry_filed_by_hand on public.events;
+create trigger entry_filed_by_hand
+  after update of node_id on public.events
+  for each row
+  when (old.node_id is null and new.node_id is not null and new.rid is not null)
+  execute function public.entry_filed_by_hand();
 
 -- ================================================== the schedule (pg_cron)
 -- NOT RUN BY THIS FILE. It is commented out on purpose, because it carries two

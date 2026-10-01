@@ -736,6 +736,25 @@ function dayFigures(log, prayers, endMs, carry, lead) {
   };
 }
 
+/** Is the tile keyed `key` still open in these rows (newest first)? */
+function isOpenAt(rows, key) {
+  return replayDay(rows).activeProjects.indexOf(String(key == null ? '' : key).trim()) !== -1;
+}
+
+/**
+ * May the entry with `rid`, keyed `key` (its sentence), be renamed `name`?
+ * Not when that would open a tile nobody opened: a Stop (`done`) closed the
+ * sentence, and no `done` names the new name. A tile closed by End day stays
+ * closed under any name, so that rename is safe.
+ */
+function canRename(rows, rid, key, name) {
+  if (isOpenAt(rows, key) || isOpenAt(rows, name)) return true;
+  var renamed = (rows || []).map(function (r) {
+    return r && r.rid === rid ? Object.assign({}, r, { project: name }) : r;
+  });
+  return !isOpenAt(renamed, name);
+}
+
 /* Row types that say whether the work day was open or closed. `wake` is left
  * out on purpose: like replayDay(), it does not move the work clock. */
 var OPEN_TYPES = { work: 1, voice: 1, resume: 1, 'break': 1 };
@@ -945,6 +964,8 @@ globalThis.ProBeingDay = {
   LEAD_MAX_MS: LEAD_MAX_MS,
   LEAD_TYPES: LEAD_TYPES,
   dayFigures: dayFigures,
+  isOpenAt: isOpenAt,
+  canRename: canRename,
   openBeforeToday: openBeforeToday,
   glanceText: glanceText,
   glanceList: glanceList
