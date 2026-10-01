@@ -662,10 +662,16 @@ create table if not exists public.money (
 );
 
 -- For a table made before the NaN rule: swap the old unnamed check for the named one.
+-- Added only when missing: Money 2 (below) widens it, and putting the narrow one
+-- back on a re-run would fail on a zero starting amount.
 alter table public.money drop constraint if exists money_amount_check;
-alter table public.money drop constraint if exists money_amount_positive;
-alter table public.money add constraint money_amount_positive
-  check (amount > 0 and amount <> 'NaN');
+do $$ begin
+  if not exists (select 1 from pg_constraint where conrelid = 'public.money'::regclass
+                 and conname = 'money_amount_positive') then
+    alter table public.money add constraint money_amount_positive
+      check (amount > 0 and amount <> 'NaN');
+  end if;
+end $$;
 
 create index if not exists money_user_at_idx
   on public.money (user_id, at desc);
@@ -836,9 +842,13 @@ exception when duplicate_object then null; end $$;
 alter table public.money add column if not exists kind text not null default 'cash';
 alter table public.money add column if not exists person text;
 
-alter table public.money drop constraint if exists money_kind_check;
-alter table public.money add constraint money_kind_check
-  check (kind in ('cash', 'loan'));
+-- Added only when missing, like money_amount_positive: Money 2 widens it below.
+do $$ begin
+  if not exists (select 1 from pg_constraint where conrelid = 'public.money'::regclass
+                 and conname = 'money_kind_check') then
+    alter table public.money add constraint money_kind_check check (kind in ('cash', 'loan'));
+  end if;
+end $$;
 alter table public.money drop constraint if exists money_person_check;
 alter table public.money add constraint money_person_check
   check (person is null or char_length(person) between 1 and 40);
@@ -1226,3 +1236,32 @@ grant select on public.item_mark_latest to authenticated;
 -- To see what the function answered:
 --   select created, status_code, content from net._http_response order by created desc limit 10;
 -- To change it: select cron.unschedule('probeing-wrapup');  then schedule it again.
+
+-- ================================================================ money 2
+-- 1 Oct. Dues and a running wallet, still in the one append-only money table.
+--   kind 'loan'     cash moved between him and a person: the 13b rows, "cash
+--                   moved now", and settlements. dir is the way the cash went.
+--   kind 'due'      a record only, no cash moved: dir 'they_owe' or 'i_owe'.
+--   kind 'opening'  what the wallet held at `at`; dir 'set'; 0 is allowed.
+-- The new dirs are outside in/out on purpose: the app before Money 2 counts an
+-- in/out row that is not a loan as spending or income, and skips any other dir.
+-- Every live row (cash and loan, in or out) passes all four checks below.
+-- To see what is there first:
+--   select conname, pg_get_constraintdef(oid) from pg_constraint
+--    where conrelid = 'public.money'::regclass and contype = 'c';
+alter table public.money drop constraint if exists money_kind_check;
+alter table public.money add constraint money_kind_check
+  check (kind in ('cash', 'loan', 'due', 'opening'));
+-- money_dir_check is the name Postgres gave the column check in create table.
+alter table public.money drop constraint if exists money_dir_check;
+alter table public.money add constraint money_dir_check check (
+  (kind in ('cash', 'loan') and dir in ('in', 'out')) or
+  (kind = 'due' and dir in ('they_owe', 'i_owe')) or
+  (kind = 'opening' and dir = 'set'));
+alter table public.money drop constraint if exists money_amount_positive;
+alter table public.money add constraint money_amount_positive
+  check (amount <> 'NaN' and (amount > 0 or (kind = 'opening' and amount = 0)));
+-- A due, like a loan, is per person.
+alter table public.money drop constraint if exists money_loan_person;
+alter table public.money add constraint money_loan_person
+  check (kind not in ('loan', 'due') or person is not null);
