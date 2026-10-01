@@ -1166,6 +1166,17 @@ do $$ begin
   alter publication supabase_realtime add table public.item_marks;
 exception when duplicate_object then null; end $$;
 
+-- The newest mark of each item, the state the app draws: one row per item
+-- instead of every mark ever made. Same order as day.js itemStates. It reads
+-- item_marks as the caller (security_invoker, Postgres 15+), so the policies
+-- above still decide: his own marks only.
+create or replace view public.item_mark_latest with (security_invoker = true) as
+  select distinct on (user_id, item_rid) rid, user_id, item_rid, mark, at, local_time, created_at
+    from public.item_marks
+   order by user_id, item_rid, at desc, created_at desc, rid desc;
+revoke all on public.item_mark_latest from anon, authenticated;
+grant select on public.item_mark_latest to authenticated;
+
 -- ================================================== the schedule (pg_cron)
 -- NOT RUN BY THIS FILE. It is commented out on purpose, because it carries two
 -- values that must never be committed — paste it into the SQL editor with your

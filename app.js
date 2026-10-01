@@ -11150,11 +11150,20 @@ async function readItems() {
   outboxAll().forEach(function (x) { held[x.rid] = 1; });
   var startedAt = Date.now();
   try {
-    var it = await sb.from('items').select('rid,node_id,title,made_by,at,created_at')
-      .not('node_id', 'is', null).order('at', { ascending: false }).limit(2000);
+    var it = await readPages(function () {
+      return sb.from('items').select('rid,node_id,title,made_by,at,created_at')
+        .not('node_id', 'is', null).order('at', { ascending: false }).order('rid');
+    });
     if (it.error) return false;
-    var mk = await sb.from('item_marks').select('rid,item_rid,mark,at,created_at')
-      .order('at', { ascending: false }).limit(5000);
+    // The newest mark of each item (item_mark_latest); before that view exists, the newest marks.
+    var mk = await readPages(function () {
+      return sb.from('item_mark_latest').select('rid,item_rid,mark,at,local_time,created_at')
+        .order('at', { ascending: false }).order('rid');
+    });
+    if (mk.error) {
+      mk = await sb.from('item_marks').select('rid,item_rid,mark,at,local_time,created_at')
+        .order('at', { ascending: false }).limit(5000);
+    }
     if (mk.error) return false;
     itemRows = it.data || [];
     markRows = mk.data || [];
@@ -11168,6 +11177,24 @@ async function readItems() {
     marksPressed = marksPressed.filter(pending);
     return true;
   } catch (e) { return false; }
+}
+
+/* PostgREST hands back at most 1000 rows a request (Supabase's default), so a
+ * read of every row goes in pages. A page that repeats the last one ends it. */
+var ITEMS_PAGE = 1000;
+var ITEMS_PAGES_MAX = 50;
+
+async function readPages(query) {
+  var rows = [];
+  var seen = userMap();
+  for (var page = 0; page < ITEMS_PAGES_MAX; page++) {
+    var res = await query().range(page * ITEMS_PAGE, page * ITEMS_PAGE + ITEMS_PAGE - 1);
+    if (res.error) return { error: res.error };
+    var got = (res.data || []).filter(function (r) { return !seen[r.rid]; });
+    got.forEach(function (r) { seen[r.rid] = 1; rows.push(r); });
+    if ((res.data || []).length < ITEMS_PAGE || !got.length) break;
+  }
+  return { data: rows };
 }
 
 function scheduleItems(ms) {

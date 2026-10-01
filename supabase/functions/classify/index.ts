@@ -429,10 +429,20 @@ function store(sb: any, owner: string) {
         .select('rid,node_id,title').eq('user_id', owner).in('node_id', nodeIds)
         .order('created_at', { ascending: false }).limit(500)) || [];
       if (!rows.length) return rows;
-      const marks = await sb.from('item_marks').select('rid,item_rid,mark,at,created_at')
-        .eq('user_id', owner).order('at', { ascending: false }).limit(5000);
-      if (marks.error) return rows;
-      const state = Day.itemStates(marks.data || []);
+      // The newest mark of each, a hundred items a request; item_marks before the view exists.
+      const marks: unknown[] = [];
+      for (let i = 0; i < rows.length; i += 100) {
+        const rids = rows.slice(i, i + 100).map((r: { rid: string }) => r.rid);
+        let got = await sb.from('item_mark_latest').select('rid,item_rid,mark,at,created_at')
+          .eq('user_id', owner).in('item_rid', rids);
+        if (got.error) {
+          got = await sb.from('item_marks').select('rid,item_rid,mark,at,created_at')
+            .eq('user_id', owner).in('item_rid', rids).order('at', { ascending: false }).limit(1000);
+        }
+        if (got.error) return rows;
+        marks.push(...(got.data || []));
+      }
+      const state = Day.itemStates(marks);
       return rows.filter((r: { rid: string }) => (state[r.rid] || 'open') === 'open');
     },
     // Fill-once, as the browser's label: only a row still blank.
