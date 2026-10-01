@@ -454,6 +454,11 @@ async function callSupabase(action, payload) {
   }
 
   if (action === 'log') {
+    // 14b: a subdone whose closing mark was refused (parked) is withdrawn, not written.
+    if (payload.type === 'subdone' && payload.closing_rid &&
+        parkedAll().some(function (x) { return x && x.rid === payload.closing_rid; })) {
+      return { ok: true, withdrawn: true };
+    }
     if (!String(payload.raw_text || '').trim() && payload.type !== 'M') {
       var empty = new Error('empty_text');
       empty.fatal = true;
@@ -1335,6 +1340,7 @@ async function drainOutbox(why) {
     refresh();                              // the table has them now; re-read once
     if (currentScreen === 'money') readMoney();
     scheduleFiling();                       // a filed entry leaves the tray
+    scheduleItems();                        // and the items, which the other device may have closed
   }
   // Deliberately not awaited: the rows are safe in the table and only the name
   // is outstanding, so nothing above waits on a language model. With Google
@@ -2170,7 +2176,7 @@ function renderProject() {
      * being worked on is drawn below with its items instead (14b). */
     var sub = name === day.subtaskProject ? nodeIndex(taskNodes).byId[day.currentSubtask] : null;
     var subTitle = sub ? String(sub.title || '').trim() || '(untitled)' : '';
-    var tasks = projectTasks(rows, name).filter(function (t) { return !sub || !sameTitle(t, subTitle); });
+    var tasks = projectTasks(rows, name).filter(function (t) { return !sub || sub.kind !== 'subtask' || !sameTitle(t, subTitle); });
     if (tasks.length) {
       var ul = document.createElement('ul');
       ul.className = 'proj-tasks';
@@ -2202,10 +2208,30 @@ function renderProject() {
 function closeProject(name) {
   // The project's task, when it has exactly one, so a rename in Google keeps it closed.
   var node = tileNode(name);
-  noteLocalRow('done', name, name, '', node);
-  var row = { type: 'done', raw_text: name, project: name };
-  if (node) row.node_id = node;
-  runWrites([row]);
+  var steps = storedNames(name).map(function (stored) {
+    noteLocalRow('done', stored, stored, '', node);
+    var row = { type: 'done', raw_text: stored, project: stored };
+    if (node) row.node_id = node;
+    return row;
+  });
+  runWrites(steps);
+}
+
+/** The names the rows behind the tile `name` were stored under, still open in a
+ *  replay of the stored rows (as Review replays them). After a rename in Google
+ *  the tile shows the new name; Stop must close the old one too. */
+function storedNames(name) {
+  var raw = sessionLog();
+  var shown = named(raw);
+  var open = replayDay(raw).activeProjects;
+  var out = [];
+  raw.forEach(function (r, i) {
+    if (r.type !== 'work' && r.type !== 'voice') return;
+    var key = String(r.project || r.raw_text || '').trim();
+    if (String(shown[i].project || shown[i].raw_text || '').trim() !== name) return;
+    if (open.indexOf(key) !== -1 && out.indexOf(key) === -1) out.push(key);
+  });
+  return out.length ? out : [name];
 }
 
 /** The task_nodes id of the one Google project the tile `name` is filed under,
@@ -11208,6 +11234,43 @@ function scheduleItems(ms) {
 function paintItems() {
   renderProject();
   paintTasksPage();
+  closeFinishedTasks();
+}
+
+/**
+ * Write `subdone` for every task whose items are all closed, one at least Done,
+ * with no subdone at or after its newest closing mark. From the merged state, so
+ * two devices each closing one of the last two items still end the task: both
+ * write the same row (its rid comes from that mark), and the second is a 23505.
+ * Only marks in the table or held here count; a parked one is not in taskTree.
+ */
+var subdoneTried = userMap();            // rids written or tried on this page
+
+function closeFinishedTasks() {
+  if (!itemsRead) return;
+  var tree = taskTree();
+  var newest = itemNewest(tree.marks);
+  var since = counterDayStart(Date.now()) - LEAD_MAX_MS;   // older closes are not replayed
+  var byNode = userMap();
+  tree.items.forEach(function (it) {
+    if (it && it.node_id) (byNode[it.node_id] = byNode[it.node_id] || []).push(it);
+  });
+  var held = userMap();
+  outboxMine().forEach(function (x) { held[x.rid] = 1; });
+  Object.keys(byNode).forEach(function (nodeId) {
+    var marks = byNode[nodeId].map(function (it) { return newest[it.rid] || null; });
+    if (marks.some(function (m) { return !m || m.mark === 'open'; })) return;
+    if (!marks.some(function (m) { return m.mark === 'done'; })) return;
+    var closing = marks.reduce(function (a, m) { return markNewer(m, a) ? m : a; });
+    var rid = 'sd-' + closing.rid;
+    if (subdoneTried[rid] || held[rid] || !(instantOf(closing.at) >= since)) return;
+    var t = instantOf(closing.at);
+    var written = sessionLog().some(function (r) {
+      return r.type === 'subdone' && (r.rid === rid || (r.node_id === nodeId && instantOf(r.at) >= t));
+    });
+    subdoneTried[rid] = 1;
+    if (!written) subtaskDone(nodeId, closing);
+  });
 }
 
 /** The items under one task, open ones first; done and dropped ones behind a
@@ -11283,30 +11346,29 @@ function itemLine(it) {
 function currentSubtaskBlock(node, title) {
   var box = document.createElement('div');
   box.className = 'proj-sub';
-  var head = document.createElement('div');
-  head.className = 'proj-sub-title';
-  head.textContent = '▸ ' + title;
-  box.appendChild(head);
+  if (node.kind === 'subtask') {               // a project's own items need no second heading
+    var head = document.createElement('div');
+    head.className = 'proj-sub-title';
+    head.textContent = '▸ ' + title;
+    box.appendChild(head);
+  }
   box.appendChild(itemsBlock(node.id, HOME_ITEMS_MAX));
   return box;
 }
 
-/**
- * Done, Drop or Undo ('open') on one item, through the outbox. When this closes
- * the last open item under its task and at least one of them is Done, a
- * `subdone` row ends that task's clock. All dropped is not finished, so it does
- * not. Its rid comes from the mark's, so it is written once per mark.
- */
+/** Done, Drop or Undo ('open') on one item, through the outbox. Closing the
+ *  last open one may end the task: closeFinishedTasks. */
 function markItem(it, mark, btn) {
   if (btn) {
     if (btn.disabled) return;
     coolDown(btn);
   }
-  var before = itemsOf(taskTree(), it.node_id);
-  var was = before.filter(function (x) { return x.rid === it.rid; })[0];
+  var was = itemsOf(taskTree(), it.node_id).filter(function (x) { return x.rid === it.rid; })[0];
   if (!was || was.state === mark) return;   // a second tap, or the other device got there first
-  var openBefore = before.filter(function (x) { return x.state === 'open'; }).length;
-  var payload = { rid: newRid(), at: new Date().toISOString(), local_time: humanLocal(),
+  // A device clock running slow must not make this press older than the last.
+  var seenMark = itemNewest(taskTree().marks)[it.rid];
+  var at = Math.max(Date.now(), seenMark ? instantOf(seenMark.at) + 1 : 0);
+  var payload = { rid: newRid(), at: new Date(at).toISOString(), local_time: humanLocal(),
                   item_rid: it.rid, mark: mark, title: it.title, node_id: it.node_id };
   api('mark', payload).then(function (res) {
     if (res && !res.queued) scheduleItems();
@@ -11314,18 +11376,11 @@ function markItem(it, mark, btn) {
     flash(String((err && err.message) || err), 'err');
     paintItems();                           // a refused press is parked, and the item shows as it was
   });
-  paintItems();                             // held on the device already, so it shows now
-
-  var after = itemsOf(taskTree(), it.node_id);
-  var openAfter = after.filter(function (x) { return x.state === 'open'; }).length;
-  if (mark !== 'open' && openBefore === 1 && openAfter === 0 &&
-      after.some(function (x) { return x.state === 'done'; })) {
-    subtaskDone(it.node_id, payload);
-  }
+  paintItems();                             // held on the device already, so it shows now (and may end the task)
   flash(ITEM_VERBS[mark] + ': ' + it.title, 'ok');
 }
 
-/** The `subdone` row for task `nodeId`, stamped with the closing mark. */
+/** The `subdone` row for task `nodeId`, stamped with its closing mark. */
 function subtaskDone(nodeId, mark) {
   var names = nodeNames(nodeIndex(taskNodes), nodeId);
   var project = names ? names.project : '';
@@ -11333,7 +11388,8 @@ function subtaskDone(nodeId, mark) {
   var text = detail || project || 'Task done';
   noteLocalRow('subdone', text, project, detail, nodeId);
   runWrites([{ type: 'subdone', raw_text: text, project: project, detail: detail, node_id: nodeId,
-               rid: 'sd-' + mark.rid, at: mark.at, local_time: mark.local_time }]);
+               rid: 'sd-' + mark.rid, at: mark.at, local_time: mark.local_time || '',
+               closing_rid: mark.rid }]);
 }
 
 function openItemDlg(nodeId) {
@@ -11398,6 +11454,7 @@ function stopItems() {
   markRows = [];
   itemsPressed = [];
   marksPressed = [];
+  subdoneTried = userMap();
   itemsRead = false;
   showClosed = userMap();
   if (itemDlg.open) itemDlg.close();
