@@ -670,13 +670,14 @@ function replayDay(log, endMs, fromMs) {
       reasons = userMap();
       underWay = false;
       dayClosed = true;
-      curSub = '';
       /* `off` ends the session, so its projects close with it and the next one
        * starts empty. Every Sleep that ends the day writes `off` too; a lone
-       * `sleep` is a nap on a break, which keeps them (Saad, 29 Sep). */
+       * `sleep` is a nap on a break, which keeps them (Saad, 29 Sep), and its
+       * sub-task, which the resume carries on (1 Oct). */
       if (row.type === 'off') {
         active = userMap();
         order = [];
+        curSub = '';
       }
     } else if (row.type === 'subdone') {
       // The last item under it was closed. Only that sub-task stops.
@@ -738,6 +739,7 @@ function dayFigures(log, prayers, endMs, carry, lead, tree) {
   var day = replayDay(nodes ? namedRows(rows, nodes) : rows, endMs);
   var sub = nodes && day.currentSubtask && day.subtaskProject === day.project
           ? nodeIndex(nodes).byId[day.currentSubtask] : null;
+  if (sub && sub.kind !== 'subtask') sub = null;         // filed under a project with no sub-tasks
 
   return {
     day: day,                               // the whole replay, for the card's list
@@ -838,14 +840,20 @@ function markNewer(a, b) {
 
 var ITEM_MARKS = { done: 1, drop: 1, open: 1 };
 
-/** item rid -> 'done' | 'drop' | 'open': its newest mark. No mark is open. */
-function itemStates(marks) {
+/** item rid -> its newest mark row. */
+function itemNewest(marks) {
   var newest = userMap();
   (marks || []).forEach(function (m) {
     if (!m || !m.item_rid || ITEM_MARKS[m.mark] !== 1 || isNaN(instantOf(m.at))) return;
     var have = newest[m.item_rid];
     if (!have || markNewer(m, have)) newest[m.item_rid] = m;
   });
+  return newest;
+}
+
+/** item rid -> 'done' | 'drop' | 'open': its newest mark. No mark is open. */
+function itemStates(marks) {
+  var newest = itemNewest(marks);
   var out = userMap();
   Object.keys(newest).forEach(function (rid) { out[rid] = newest[rid].mark; });
   return out;
@@ -1077,7 +1085,10 @@ function glanceList(log, endMs, lead, tree) {
   open.slice(0, GLANCE_LIST_PROJECTS).forEach(function (name) {
     lines.push('- ' + clipLine(name, GLANCE_LIST_CHARS));
     if (subNode && name === day.subtaskProject) {
-      lines.push('    ▸ ' + clipLine(String(subNode.title || '').trim() || '(untitled)', GLANCE_LIST_CHARS));
+      // A project with no sub-tasks lists its items straight under its name.
+      if (subNode.kind === 'subtask') {
+        lines.push('    ▸ ' + clipLine(String(subNode.title || '').trim() || '(untitled)', GLANCE_LIST_CHARS));
+      }
       var items = itemsOf(tree, subNode.id).filter(function (it) { return it.state === 'open'; });
       items.slice(0, GLANCE_LIST_ITEMS).forEach(function (it) {
         lines.push('    - ' + clipLine(it.title, GLANCE_LIST_CHARS));
@@ -1120,5 +1131,6 @@ globalThis.ProBeingDay = {
   glanceList: glanceList,
   namedRows: namedRows,
   itemStates: itemStates,
+  itemNewest: itemNewest,
   itemsOf: itemsOf
 };
