@@ -10156,6 +10156,9 @@ function paintTasks() {
   paintPlan();
   paintTasksSettings();
   paintTasksPage();
+  // Names and the current sub-task come from the mirror (14b), so these follow it.
+  renderProject();
+  renderDaySummary();
 }
 
 /** Home's Today's plan: Planned and due tasks, soonest first; when there are
@@ -11278,7 +11281,6 @@ function markItem(it, mark, btn) {
   var openBefore = before.filter(function (x) { return x.state === 'open'; }).length;
   var payload = { rid: newRid(), at: new Date().toISOString(), local_time: humanLocal(),
                   item_rid: it.rid, mark: mark, title: it.title, node_id: it.node_id };
-  marksPressed.push(markOf({ rid: payload.rid, payload: payload }));
   api('mark', payload).then(function (res) {
     if (res && !res.queued) scheduleItems();
   }, function (err) {
@@ -11323,7 +11325,6 @@ function addItem(nodeId, text) {
   if (!nodeId || !title) return false;
   var payload = { rid: newRid(), at: new Date().toISOString(), local_time: humanLocal(),
                   node_id: nodeId, title: title };
-  itemsPressed.push(itemOf({ rid: payload.rid, payload: payload }));
   api('item', payload).then(function (res) {
     if (res && !res.queued) scheduleItems();
   }, function (err) {
