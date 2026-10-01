@@ -9797,8 +9797,8 @@ async function readGoogleSync() {
       .limit(1);
     if (!res.error) {
       googleSync = (res.data || [])[0] || null;
+      await rememberServerFiles();
       googleSyncRead = true;
-      rememberServerFiles();
     }
   } catch (e) { /* the status reply stands in */ }
 }
@@ -10684,22 +10684,41 @@ function googleFiles(sync) {
   return Boolean(sync && sync.connected && sync.list_id && sync.list_title);
 }
 
-/** Does the server file typed entries? Before sync_state is read this visit,
- *  the last answer this device had for this account: an offline launch must
- *  not start naming entries the server will name when they land. */
+/** Does the server file typed entries? Connected, AND this device has seen
+ *  filing work (filingConfirmed). Before sync_state is read this visit, the
+ *  last answer for this account: an offline launch must not start naming
+ *  entries the server will name when they land. */
 function serverFiles() {
-  if (googleSyncRead) return googleFiles(googleSync);
+  if (googleSyncRead) return googleFiles(googleSync) && filingConfirmed();
+  return filingConfirmed();
+}
+
+/** Remembered per account once an entry_filing read has succeeded. Until then
+ *  the browser keeps naming entries, so an app pushed before the server side
+ *  is deployed does not leave entries unnamed. */
+function filingConfirmed() {
   try {
     var who = currentUserId();
     return Boolean(who) && localStorage.getItem(SERVER_FILES_KEY) === who;
   } catch (e) { return false; }
 }
 
-function rememberServerFiles() {
+function confirmFiling() {
+  try { if (sbUser) localStorage.setItem(SERVER_FILES_KEY, sbUser.id); } catch (e) { /* asked again next time */ }
+}
+
+/** After sync_state is read: forget it when not connected; when connected and
+ *  not yet confirmed, try one entry_filing read. */
+async function rememberServerFiles() {
+  if (!googleFiles(googleSync)) {
+    try { localStorage.removeItem(SERVER_FILES_KEY); } catch (e) { /* the next read decides */ }
+    return;
+  }
+  if (filingConfirmed() || !sb) return;
   try {
-    if (googleFiles(googleSync) && sbUser) localStorage.setItem(SERVER_FILES_KEY, sbUser.id);
-    else localStorage.removeItem(SERVER_FILES_KEY);
-  } catch (e) { /* full disk: the next read decides */ }
+    var res = await sb.from('entry_filing').select('entry_rid').limit(1);
+    if (!res.error) confirmFiling();
+  } catch (e) { /* not confirmed; asked again on the next read */ }
 }
 
 /** Typed entries not named yet: the ones the server may still file. */
@@ -10774,6 +10793,7 @@ async function readFiling() {
   try {
     var res = await sb.from('entry_filing').select('entry_rid,state,reason').in('entry_rid', rids);
     if (res.error) return;
+    confirmFiling();
     var map = userMap();
     (res.data || []).forEach(function (r) { map[r.entry_rid] = r; });
     filingByRid = map;
