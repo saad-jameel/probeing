@@ -8557,7 +8557,7 @@ var SETTLE_CHOICES = [
 ];
 var LOAN_PEOPLE_MAX = 12;       // names offered as chips
 var dueChoice = null;
-var settle = { person: '', choice: null };
+var settle = { person: '', choice: null, warned: '' };
 
 function renderDues() {
   var list = $('duesList');
@@ -8676,12 +8676,31 @@ function balanceOf(person) {
   return loanBalances(moneyMerged()).filter(function (b) { return b.person.toLowerCase() === key; })[0] || null;
 }
 
+/** The line asking to confirm a settlement that takes the balance past zero,
+ *  or '' when it stays on the same side (the normal case: no extra tap). */
+function settleOverLine(b, choice, amountText) {
+  var amount = parseMoneyAmount(amountText);
+  if (!b || !choice || !amount) return '';
+  var owed = Math.round(b.owed * 100);
+  var after = owed + (choice.dir === 'out' ? 1 : -1) * moneyPaisa(amount);
+  if (after === 0 || (after > 0) === (owed > 0)) return '';
+  var was = owed > 0 ? b.person + ' owes (' + formatPkr(owed / 100) + ')'
+                     : 'you owe ' + b.person + ' (' + formatPkr(-owed / 100) + ')';
+  var then = after > 0 ? b.person + ' will owe you ' + formatPkr(after / 100)
+                       : 'you’ll owe ' + b.person + ' ' + formatPkr(-after / 100);
+  return 'That’s more than ' + was + '. Save anyway? Then ' + then + '.';
+}
+
 function paintSettle() {
   Array.prototype.forEach.call(settleDlg.querySelectorAll('[data-settle]'), function (b) {
     var c = SETTLE_CHOICES[Number(b.dataset.settle)];
     b.textContent = c.label(settle.person);         // a typed name: never markup
     b.setAttribute('aria-pressed', String(settle.choice === c));
   });
+  // Any change takes back a warning already shown: it described the old amount.
+  settle.warned = '';
+  $('settleWarn').hidden = true;
+  $('settleSaveBtn').textContent = 'Save';
   $('settleSaveBtn').disabled = !(settle.choice && parseMoneyAmount($('settleAmount').value));
 }
 
@@ -8690,7 +8709,7 @@ function paintSettle() {
 function openSettle(person, opener) {
   var b = balanceOf(person);
   settle = { person: b ? b.person : cleanPerson(person),
-             choice: SETTLE_CHOICES[b && b.owed < 0 ? 1 : 0] };
+             choice: SETTLE_CHOICES[b && b.owed < 0 ? 1 : 0], warned: '' };
   $('settleTitle').textContent = 'Settle with ' + settle.person;
   $('settleOwed').textContent = b ? loanBalanceLine(b) + '.' : 'You are square.';
   $('settleAmount').value = b ? formatPkr(Math.abs(b.owed)).replace(/,/g, '') : '';
@@ -8702,6 +8721,15 @@ function saveSettle() {
   var amount = parseMoneyAmount($('settleAmount').value);
   if (!settle.choice || !settle.person || !amount) {
     flash('That amount cannot be read: digits, and at most two after the point.', 'err');
+    return;
+  }
+  // Past zero, the first Save only says so; the second saves.
+  var over = settleOverLine(balanceOf(settle.person), settle.choice, $('settleAmount').value);
+  if (over && settle.warned !== over) {
+    settle.warned = over;
+    $('settleWarn').textContent = over;             // a typed name: never markup
+    $('settleWarn').hidden = false;
+    $('settleSaveBtn').textContent = 'Save anyway';
     return;
   }
   var payload = { rid: newRid(), at: new Date().toISOString(), local_time: humanLocal(),

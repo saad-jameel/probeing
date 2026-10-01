@@ -497,9 +497,13 @@ body {
 .money-field:focus { outline: 2px solid var(--accent); outline-offset: 1px; }
 .money-amount { font-size: 22px; font-weight: 600; font-variant-numeric: tabular-nums; }
 .money-dirs { margin-top: 0; }
-.money-dirs .pick { flex: 1 1 40%; padding: 11px 10px; font-size: 16px; font-weight: 600; }
-/* Tighter than other screens, so the calculator and Today fit on a phone. */
-.screen[data-screen="money"] { gap: 10px; }
+.money-dirs .pick { flex: 1 1 40%; padding: 9px 10px; font-size: 16px; font-weight: 600; }
+/* Tighter than other screens. Measured in Chrome at 360x800 with 12 tags and a
+   wallet set: Save and the Today line end above the tab bar. Longer text can
+   still push them down; the body's bottom padding then lets them scroll clear. */
+.screen[data-screen="money"] { gap: 8px; }
+.screen[data-screen="money"] .money-field { padding: 10px 12px; }
+.screen[data-screen="money"] #moneySaveBtn { padding: 11px 16px; }
 /* A voided row stays in the list, struck through: a correction, not a deletion. */
 .log-list li.voided .what { text-decoration: line-through; color: var(--muted); }
 .log-list li .link-btn { padding: 0 2px; }
@@ -513,27 +517,29 @@ body {
    every class here that sets `display` has its [hidden] pair. */
 .money-top { display: flex; gap: 8px; }
 .money-top[hidden] { display: none; }
-.btn-sm { padding: 9px 16px; font-size: 14px; font-weight: 600; }
-.wallet-card { padding: 12px 14px; }
+.btn-sm { padding: 7px 16px; font-size: 14px; font-weight: 600; }
+.wallet-card { padding: 8px 12px; line-height: 1.25; }
+.wallet-card .hint { margin-top: 4px; font-size: 12.5px; }
 .wallet-row { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
 .wallet-row[hidden] { display: none; }
 .wallet-fig { display: flex; flex-direction: column; min-width: 0; }
 .wallet-fig[hidden] { display: none; }
-.wallet-n { font-size: 20px; font-weight: 700; color: var(--accent); font-variant-numeric: tabular-nums;
+.wallet-n { font-size: 19px; font-weight: 700; color: var(--accent); font-variant-numeric: tabular-nums;
   overflow-wrap: anywhere; }
-.wallet-foot { display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; gap: 0 8px; }
+.wallet-foot { display: flex; align-items: baseline; justify-content: space-between; gap: 0 8px; }
 .wallet-foot[hidden] { display: none; }
-.wallet-foot .link-btn { padding: 2px 0; font-size: 13px; }
+.wallet-foot #moneyMonth { flex: 1 1 auto; min-width: 0; overflow-wrap: anywhere; }
+.wallet-foot .link-btn { flex: 0 0 auto; padding: 0; font-size: 13px; }
 /* The tag grid: an icon over a name, four across. It scrolls inside itself past
    three rows, so a long tag list never grows the screen. */
 .tag-grid {
   display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 6px;
-  max-height: 180px; overflow-y: auto; overscroll-behavior: contain;
+  max-height: 158px; overflow-y: auto; overscroll-behavior: contain;
 }
 .tag-grid[hidden] { display: none; }
 .tag-cell {
   display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 2px;
-  min-width: 0; min-height: 56px; padding: 5px 4px;
+  min-width: 0; min-height: 48px; padding: 4px;
   background: var(--panel); color: var(--fg);
   border: 1px solid var(--line); border-radius: 12px; cursor: pointer;
 }
@@ -545,10 +551,10 @@ body {
 .tag-add .tag-ico { color: var(--muted); font-weight: 700; }
 .money-today {
   display: flex; align-items: baseline; gap: 8px; width: 100%;
-  padding: 12px 14px; text-align: left;
+  padding: 9px 12px; text-align: left; line-height: 1.3;
   background: var(--panel); color: var(--fg);
   border: 1px solid var(--line); border-radius: var(--radius);
-  font-size: 15px; font-variant-numeric: tabular-nums; cursor: pointer;
+  font-size: 14px; font-variant-numeric: tabular-nums; cursor: pointer;
 }
 .money-today[hidden] { display: none; }
 .money-today-l { font-weight: 600; }
@@ -572,6 +578,10 @@ body {
 .dues-list li { display: flex; align-items: center; gap: 10px; }
 .due-line { flex: 1; min-width: 0; overflow-wrap: anywhere; }
 .dlg .pick { overflow-wrap: anywhere; }
+/* A person's name may be 40 characters with no space: it wraps wherever it shows. */
+.dlg .hint, .loan-people .chip { overflow-wrap: anywhere; }
+.loan-people .chip { max-width: 100%; text-align: left; }
+.settle-warn { color: var(--fg); }
 /* Money on the Review card. No `display` here, so no Rule 6 pair. */
 .review-money { margin-top: 12px; }
 .review-money .money-head { margin: 0; font-size: 14.5px; font-weight: 600; font-variant-numeric: tabular-nums; }
@@ -621,7 +631,7 @@ body {
 /* Room for a thumb at the bottom of a phone screen. */
 .dlg > form { padding-bottom: 4px; }
 .dlg::backdrop { background: rgba(0, 0, 0, .6); }
-.dlg h2 { margin: 0 0 4px; font-size: 18px; }
+.dlg h2 { margin: 0 0 4px; font-size: 18px; overflow-wrap: anywhere; }
 .dlg label { display: block; margin: 14px 0 6px; font-size: 13px; color: var(--muted); }
 .dlg input, .dlg textarea {
   width: 100%; padding: 12px;
@@ -787,6 +797,7 @@ body {
   border: 1px solid var(--line);
   font-size: 14px;
   box-shadow: 0 8px 24px rgba(0, 0, 0, .45);
+  overflow-wrap: anywhere;
 }
 .banner.ok { background: var(--accent); color: var(--accent-ink); border-color: transparent; }
 .banner.err { background: var(--danger); color: #fff; border-color: transparent; }

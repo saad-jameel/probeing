@@ -1265,3 +1265,7 @@ alter table public.money add constraint money_amount_positive
 alter table public.money drop constraint if exists money_loan_person;
 alter table public.money add constraint money_loan_person
   check (kind not in ('loan', 'due') or person is not null);
+-- A wallet count belongs to nobody.
+alter table public.money drop constraint if exists money_opening_person;
+alter table public.money add constraint money_opening_person
+  check (kind <> 'opening' or person is null);
