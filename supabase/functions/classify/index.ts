@@ -340,13 +340,13 @@ function scrub(text: unknown): string {
 
 const GEMINI_URL = 'https://generativelanguage.googleapis.com/v1beta/models/';
 
-/** One call. {ok, text} or {ok:false, quota: 'day'|'minute'|'', error}. `another()`
- *  takes a budget slot for a second request; false means there is none. */
-async function askGemini(key: string, model: string, prompt: string, another: () => Promise<boolean>) {
+/** One call. {ok, text} or {ok:false, quota: 'day'|'minute'|'', error}. */
+async function askGemini(key: string, model: string, prompt: string) {
   const ask: Record<string, unknown> = {
     contents: [{ parts: [{ text: prompt }] }],
-    generationConfig: { responseMimeType: 'application/json', responseSchema: CLASSIFY_SCHEMA,
-                        thinkingConfig: { thinkingBudget: 0 } }
+    // No thinking knob: gemini-flash-lite-latest refused it (400), so every batch
+    // cost two calls (1 Oct, live). A batch is not waiting on a person, so speed is moot.
+    generationConfig: { responseMimeType: 'application/json', responseSchema: CLASSIFY_SCHEMA }
   };
   const ctrl = new AbortController();
   const timer = setTimeout(() => ctrl.abort(), GEMINI_TIMEOUT_MS);
@@ -358,13 +358,7 @@ async function askGemini(key: string, model: string, prompt: string, another: ()
   });
   try {
     let res = await call(ask);
-    // A model that will not take the thinking knob: drop it once, as the gemini
-    // function does, but only with a slot of its own.
-    if (res.status === 400 && await another()) {
-      const gen = { ...(ask.generationConfig as Record<string, unknown>) };
-      delete gen.thinkingConfig;
-      res = await call({ ...ask, generationConfig: gen });
-    }
+
     const body = await res.json().catch(() => null);
     if (!res.ok) {
       const why = scrub((body && body.error && body.error.message) || res.status);
@@ -556,15 +550,7 @@ async function classifyRun(d: any) {
 
   out.calls = 1;
   out.model = d.model;
-  const another = async () => {
-    try {
-      if ((await takeCall(db.sb, d.owner, day, d.cap, 0)) <= 0) return false;
-    } catch (_e) { return false; }
-    out.calls += 1;
-    return true;
-  };
-  const g = await askGemini(d.key, d.model, classifyPrompt(live.map((x) => x.e.raw_text), cands, itemsByNode),
-                            another);
+  const g = await askGemini(d.key, d.model, classifyPrompt(live.map((x) => x.e.raw_text), cands, itemsByNode));
   if (!g.ok) {
     if (g.quota === 'day') {
       await spendDay(db.sb, d.owner, day, d.cap);
