@@ -198,41 +198,50 @@
 </section>
 
 <!-- ============================================================ MONEY -->
-<!-- Stage 11. I spent / I get, the amount, a tag, Save: four taps and the
-     digits. Saved on the device first, like M, so it works with no signal. -->
+<!-- Money 2 (1 Oct, his design). Dues and Logs first, so history never pushes
+     them down; then the wallet; then the calculator, Expense already picked.
+     History lives in the Logs dialog, so this screen does not grow. Every press
+     is saved on the device first, like M, so it works with no signal. -->
 <section class="screen" data-screen="money" hidden>
-  <div class="pick-grid money-dirs">
-    <button type="button" id="moneyOutBtn" class="pick" aria-pressed="false">I spent</button>
-    <button type="button" id="moneyInBtn" class="pick" aria-pressed="false">I get</button>
+  <div class="money-top">
+    <button type="button" id="duesBtn" class="btn btn-sm">Dues</button>
+    <button type="button" id="logsBtn" class="btn btn-sm">Logs</button>
+  </div>
+
+  <section class="card wallet-card">
+    <div class="wallet-row">
+      <div class="wallet-fig">
+        <span class="sum-l">Left in wallet</span>
+        <span class="wallet-n">PKR <span id="walletLeft">&mdash;</span></span>
+      </div>
+      <div class="wallet-fig">
+        <span class="sum-l">Per day till 1st</span>
+        <span class="wallet-n">PKR <span id="walletPerDay">&mdash;</span></span>
+        <span id="walletDays" class="sum-l"></span>
+      </div>
+    </div>
+    <p class="hint wallet-foot"><span id="moneyMonth"></span>
+      <button type="button" id="walletSetBtn" class="link-btn">Set starting amount</button></p>
+    <p id="walletHint" class="hint">Set what is in your wallet now, and it counts from there.</p>
+  </section>
+
+  <div class="pick-grid money-dirs" aria-label="Expense or income">
+    <button type="button" id="moneyOutBtn" class="pick" aria-pressed="true">Expense</button>
+    <button type="button" id="moneyInBtn" class="pick" aria-pressed="false">Income</button>
   </div>
   <input id="moneyAmount" class="money-field money-amount" type="text" inputmode="decimal"
          autocomplete="off" placeholder="Amount in PKR" aria-label="Amount in PKR">
-  <p id="moneyTagHint" class="hint">Pick &ldquo;I spent&rdquo; or &ldquo;I get&rdquo; for its tags.</p>
-  <div id="moneyTags" class="chips" aria-label="Tag"></div>
+  <div id="moneyTags" class="tag-grid" aria-label="Tag"></div>
   <input id="moneyNewTag" class="money-field" type="text" maxlength="40" autocomplete="off"
          placeholder="New tag" aria-label="New tag" hidden>
   <input id="moneyNote" class="money-field" type="text" maxlength="200" autocomplete="off"
          placeholder="Note (optional)" aria-label="Note">
   <button type="button" id="moneySaveBtn" class="btn btn-accent btn-wide" disabled>Save</button>
 
-  <section class="card">
-    <h2 class="card-head"><svg class="card-ico" aria-hidden="true"><use href="#i-money"></use></svg> Today</h2>
-    <div id="moneySums" class="sum-row three"></div>
-    <p id="moneyLoanNote" class="hint" hidden>Loans move cash but aren&rsquo;t spending: they are in the net, not in spent or in.</p>
-    <p id="moneyMonth" class="hint"></p>
-    <p id="moneyStatus" class="hint" hidden></p>
-  </section>
-
-  <ul id="moneyList" class="log-list"></ul>
-
-  <!-- Stage 13b. Who owes whom, from every loan row; hidden when all are square. -->
-  <section id="loanCard" class="card" hidden>
-    <h2 class="card-head">People</h2>
-    <ul id="loanList" class="plan-list"></ul>
-    <p id="loanNote" class="hint" hidden></p>
-  </section>
-  <!-- Below everything, so ordinary spending gains no tap (rule 4). -->
-  <button type="button" id="loanBtn" class="btn btn-wide">Lend / Borrow</button>
+  <!-- Totals only; the entries are in Logs, which this opens at today. -->
+  <button type="button" id="moneyTodayBtn" class="money-today"><span class="money-today-l">Today</span>
+    <span id="moneyTodayText">spent 0 · got 0</span> <span aria-hidden="true">&rsaquo;</span></button>
+  <p id="moneyStatus" class="hint" hidden></p>
 </section>
 
 <!-- =========================================================== REVIEW -->
@@ -342,23 +351,96 @@
   </form>
 </dialog>
 
-<!-- Stage 13b. One loan row: who, how much, and which of the four it was. -->
-<dialog id="loanDlg" class="dlg">
+<!-- Money 2. Every money entry, searched and filtered; Void is here. -->
+<dialog id="logsDlg" class="dlg">
   <form method="dialog">
-    <h2>Lend or borrow</h2>
+    <div class="dlg-top">
+      <h2>Money logs</h2>
+      <button type="button" id="logsCloseBtn" class="link-btn">Close</button>
+    </div>
+    <input id="logsSearch" type="search" autocomplete="off" placeholder="Search notes, tags, people"
+           aria-label="Search notes, tags and people">
+    <div id="logsKinds" class="pick-grid logs-kinds" aria-label="Show"></div>
+    <div class="logs-selects">
+      <select id="logsTag" aria-label="Tag"></select>
+      <select id="logsMonth" aria-label="Month"></select>
+    </div>
+    <p id="logsDayRow" class="hint logs-day" hidden><span id="logsDayText"></span>
+      <button type="button" id="logsDayClear" class="link-btn">Show every day</button></p>
+    <p id="logsCount" class="hint"></p>
+    <p id="logsNote" class="hint" hidden></p>
+    <ul id="logsList" class="log-list logs-list"></ul>
+  </form>
+</dialog>
 
-    <div id="loanKinds" class="pick-grid" aria-label="What happened"></div>
+<!-- Money 2 (was Lend / Borrow). Who owes whom, Add a due, Settle. -->
+<dialog id="duesDlg" class="dlg">
+  <form method="dialog">
+    <div class="dlg-top">
+      <h2>Dues</h2>
+      <button type="button" id="duesCloseBtn" class="link-btn">Close</button>
+    </div>
+    <ul id="duesList" class="dues-list"></ul>
+    <p id="duesEmpty" class="hint">Nobody owes you anything, and you owe nobody.</p>
+    <p id="duesNote" class="hint" hidden></p>
+    <div class="dlg-actions">
+      <button type="button" id="dueAddBtn" class="btn btn-accent">Add a due</button>
+    </div>
+  </form>
+</dialog>
 
-    <label for="loanPerson">Person</label>
-    <input id="loanPerson" type="text" maxlength="40" autocomplete="off" placeholder="Ali">
-    <div id="loanPeople" class="chips loan-people" aria-label="People you have used before"></div>
+<!-- A record only moves no cash; cash moved now moves the wallet, never as spending. -->
+<dialog id="dueDlg" class="dlg">
+  <form method="dialog">
+    <h2>Add a due</h2>
+    <p class="pick-head">Record only &mdash; no cash moves</p>
+    <div id="dueRecordKinds" class="pick-grid"></div>
+    <p class="pick-head">Cash moved now</p>
+    <div id="dueCashKinds" class="pick-grid"></div>
 
-    <label for="loanAmount">Amount in PKR</label>
-    <input id="loanAmount" type="text" inputmode="decimal" autocomplete="off" placeholder="2000">
+    <label for="duePerson">Person</label>
+    <input id="duePerson" type="text" maxlength="40" autocomplete="off" placeholder="Ali">
+    <div id="duePeople" class="chips loan-people" aria-label="People you have used before"></div>
+
+    <label for="dueAmount">Amount in PKR</label>
+    <input id="dueAmount" type="text" inputmode="decimal" autocomplete="off" placeholder="2000">
+    <label for="dueNote">Note (optional)</label>
+    <input id="dueNote" type="text" maxlength="200" autocomplete="off">
 
     <div class="dlg-actions">
-      <button type="button" id="loanCancelBtn" class="link-btn">Cancel</button>
-      <button type="button" id="loanSaveBtn" class="btn btn-accent" disabled>Save</button>
+      <button type="button" id="dueCancelBtn" class="link-btn">Cancel</button>
+      <button type="button" id="dueSaveBtn" class="btn btn-accent" disabled>Save</button>
+    </div>
+  </form>
+</dialog>
+
+<!-- Settling moves cash. The full balance is filled in; less is a part payment. -->
+<dialog id="settleDlg" class="dlg">
+  <form method="dialog">
+    <h2 id="settleTitle">Settle</h2>
+    <p id="settleOwed" class="hint"></p>
+    <div id="settleKinds" class="pick-grid"></div>
+    <label for="settleAmount">Amount in PKR</label>
+    <input id="settleAmount" type="text" inputmode="decimal" autocomplete="off">
+    <p class="hint">Change it for a part payment.</p>
+    <div class="dlg-actions">
+      <button type="button" id="settleCancelBtn" class="link-btn">Cancel</button>
+      <button type="button" id="settleSaveBtn" class="btn btn-accent" disabled>Save</button>
+    </div>
+  </form>
+</dialog>
+
+<!-- The wallet's starting amount, or a recount: it counts from now. -->
+<dialog id="walletDlg" class="dlg">
+  <form method="dialog">
+    <h2>What is in your wallet now?</h2>
+    <p class="hint">Everything you log after this adds to it or takes from it. Set it again
+      whenever you count your cash.</p>
+    <label for="walletAmount">Amount in PKR</label>
+    <input id="walletAmount" type="text" inputmode="decimal" autocomplete="off" placeholder="0">
+    <div class="dlg-actions">
+      <button type="button" id="walletCancelBtn" class="link-btn">Cancel</button>
+      <button type="button" id="walletSaveBtn" class="btn btn-accent" disabled>Save</button>
     </div>
   </form>
 </dialog>

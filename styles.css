@@ -497,16 +497,81 @@ body {
 .money-field:focus { outline: 2px solid var(--accent); outline-offset: 1px; }
 .money-amount { font-size: 22px; font-weight: 600; font-variant-numeric: tabular-nums; }
 .money-dirs { margin-top: 0; }
-.money-dirs .pick { flex: 1 1 40%; padding: 16px 10px; font-size: 16px; font-weight: 600; }
+.money-dirs .pick { flex: 1 1 40%; padding: 11px 10px; font-size: 16px; font-weight: 600; }
+/* Tighter than other screens, so the calculator and Today fit on a phone. */
+.screen[data-screen="money"] { gap: 10px; }
 /* A voided row stays in the list, struck through: a correction, not a deletion. */
 .log-list li.voided .what { text-decoration: line-through; color: var(--muted); }
 .log-list li .link-btn { padding: 0 2px; }
 /* The Money list's day heading: a label, not a card. */
 .log-list li.day-head { background: none; border: 0; padding: 6px 2px 0; color: var(--muted); font-size: 13px; }
-/* Stage 13b: a loan in the Money list, and the names offered in its dialog. */
+/* Stage 13b: a due in the Logs list, and the names offered in its dialog. */
 .log-list li.loan .tag { color: var(--muted); }
 .loan-people { margin-top: 8px; }
-#loanList { margin-top: 10px; }
+
+/* Money 2. Dues and Logs at the top, the wallet, then the calculator. Rule 6:
+   every class here that sets `display` has its [hidden] pair. */
+.money-top { display: flex; gap: 8px; }
+.money-top[hidden] { display: none; }
+.btn-sm { padding: 9px 16px; font-size: 14px; font-weight: 600; }
+.wallet-card { padding: 12px 14px; }
+.wallet-row { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+.wallet-row[hidden] { display: none; }
+.wallet-fig { display: flex; flex-direction: column; min-width: 0; }
+.wallet-fig[hidden] { display: none; }
+.wallet-n { font-size: 20px; font-weight: 700; color: var(--accent); font-variant-numeric: tabular-nums;
+  overflow-wrap: anywhere; }
+.wallet-foot { display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; gap: 0 8px; }
+.wallet-foot[hidden] { display: none; }
+.wallet-foot .link-btn { padding: 2px 0; font-size: 13px; }
+/* The tag grid: an icon over a name, four across. It scrolls inside itself past
+   three rows, so a long tag list never grows the screen. */
+.tag-grid {
+  display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 6px;
+  max-height: 180px; overflow-y: auto; overscroll-behavior: contain;
+}
+.tag-grid[hidden] { display: none; }
+.tag-cell {
+  display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 2px;
+  min-width: 0; min-height: 56px; padding: 5px 4px;
+  background: var(--panel); color: var(--fg);
+  border: 1px solid var(--line); border-radius: 12px; cursor: pointer;
+}
+.tag-cell[hidden] { display: none; }
+.tag-cell:active { transform: scale(.97); }
+.tag-cell.on { background: var(--accent); color: var(--accent-ink); border-color: transparent; font-weight: 600; }
+.tag-ico { font-size: 20px; line-height: 1.1; }
+.tag-name { max-width: 100%; font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.tag-add .tag-ico { color: var(--muted); font-weight: 700; }
+.money-today {
+  display: flex; align-items: baseline; gap: 8px; width: 100%;
+  padding: 12px 14px; text-align: left;
+  background: var(--panel); color: var(--fg);
+  border: 1px solid var(--line); border-radius: var(--radius);
+  font-size: 15px; font-variant-numeric: tabular-nums; cursor: pointer;
+}
+.money-today[hidden] { display: none; }
+.money-today-l { font-weight: 600; }
+.money-today #moneyTodayText { flex: 1; min-width: 0; color: var(--muted); overflow-wrap: anywhere; }
+/* Dialog heading with its Close beside it. */
+.dlg-top { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.dlg-top[hidden] { display: none; }
+.logs-kinds .pick { flex: 1 1 20%; padding: 8px 4px; font-size: 14px; }
+.logs-selects { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-top: 8px; }
+.logs-selects[hidden] { display: none; }
+.dlg select {
+  width: 100%; min-width: 0; padding: 10px;
+  background: var(--bg); color: var(--fg);
+  border: 1px solid var(--line); border-radius: 10px; font-size: 15px; font-family: inherit;
+}
+.logs-day .link-btn { padding: 0 4px; font-size: 13px; }
+.logs-list { margin-top: 8px; }
+.logs-list li { font-size: 14.5px; }
+.dues-list { list-style: none; margin: 10px 0 0; padding: 0; display: grid; gap: 8px; }
+.dues-list[hidden] { display: none; }
+.dues-list li { display: flex; align-items: center; gap: 10px; }
+.due-line { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+.dlg .pick { overflow-wrap: anywhere; }
 /* Money on the Review card. No `display` here, so no Rule 6 pair. */
 .review-money { margin-top: 12px; }
 .review-money .money-head { margin: 0; font-size: 14.5px; font-weight: 600; font-variant-numeric: tabular-nums; }

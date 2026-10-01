@@ -33,8 +33,10 @@
  * v13: the Tasks page, and a work row that can carry node_id.
  * v14 (Stage 14a): server filing, the Unsorted tray and its `file` outbox action.
  * v15 (Stage 14b): items with Done and Drop, the `mark` and `item` outbox actions,
- * and time per sub-task. */
-var CACHE = 'probeing-shell-v15';
+ * and time per sub-task.
+ * v16 (Money 2): Dues and Logs dialogs, the wallet, and the `due` and `wallet`
+ * outbox actions. */
+var CACHE = 'probeing-shell-v16';
 var SHELL = [
   './',
   'index.html',
