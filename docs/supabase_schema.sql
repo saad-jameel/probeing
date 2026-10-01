@@ -1012,8 +1012,8 @@ do $$ begin
   alter publication supabase_realtime add table public.items;
 exception when duplicate_object then null; end $$;
 
--- gemini_usage: Gemini calls per counter day, one tally for every device and
--- the server. No browser access at all: nothing on screen reads it yet, and
+-- gemini_usage: Gemini calls per Google quota day (the Pacific date, when the
+-- free tier's daily count resets), one tally for every device and the server. No browser access at all: nothing on screen reads it yet, and
 -- the table editor shows it.
 create table if not exists public.gemini_usage (
   user_id  uuid        not null references auth.users on delete cascade,

@@ -2,27 +2,13 @@
 // gemini_usage table and its two functions (docs/supabase_schema.sql). Used by
 // classify, which stops at the cap, and gemini, which only counts.
 //
-// `sb` is a service-role client. The day is his counter day at his saved place.
+// `sb` is a service-role client. The day is Google's quota day: the date in
+// Pacific time, when the free tier's daily count resets (DST included).
 
-import './day.js';
-
-const Day = (globalThis as unknown as { ProBeingDay: {
-  setPrayerPlace: (p: unknown) => { zone: string };
-  zoneOffsetMin: (zone: string, ms: number, fallback: number) => number;
-  counterDate: (t: number, offsetMin?: number) => string;
-} }).ProBeingDay;
-
-/** His counter day at `now`, 'YYYY-MM-DD'. Karachi when the settings cannot be read. */
-export async function usageDay(sb: any, owner: string, now: number): Promise<string> {
-  let row: Record<string, unknown> | null = null;
-  try {
-    const got = await sb.from('user_settings').select('*').eq('user_id', owner).limit(1);
-    if (!got.error) row = (got.data || [])[0] || null;
-  } catch (_e) { /* Karachi */ }
-  const place = Day.setPrayerPlace(row ? { lat: row.lat, lng: row.lng, zone: row.time_zone,
-                                           method: row.method, asr: row.asr_school } : null);
-  const off = Day.zoneOffsetMin(place.zone, now, NaN);
-  return Day.counterDate(now, isNaN(off) ? 300 : off);
+/** Google's quota day at `now`, 'YYYY-MM-DD'. */
+export function usageDay(now: number): string {
+  return new Intl.DateTimeFormat('en-CA', { timeZone: 'America/Los_Angeles', year: 'numeric',
+                                            month: '2-digit', day: '2-digit' }).format(new Date(now));
 }
 
 /** Take one call: the new count, 0 when the day is spent, -1 when too soon

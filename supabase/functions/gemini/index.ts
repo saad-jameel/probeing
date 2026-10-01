@@ -58,6 +58,24 @@ const CORS: Record<string, string> = {
   'Access-Control-Allow-Methods': 'POST, OPTIONS'
 };
 
+/** How long counting a call may take before it is given up on. */
+const COUNT_TIMEOUT_MS = 3000;
+
+/** Add one call to today's shared tally (Google's Pacific day). Resolves within
+ *  COUNT_TIMEOUT_MS whatever the database does, and never rejects. */
+function countCall(owner: string): Promise<unknown> {
+  const timed = (input: RequestInfo | URL, init?: RequestInit) =>
+    fetch(input, { ...(init || {}), signal: AbortSignal.timeout(COUNT_TIMEOUT_MS) });
+  let timer = 0;
+  const give = new Promise((resolve) => { timer = setTimeout(resolve, COUNT_TIMEOUT_MS); });
+  const work = (async () => {
+    const admin = createClient(Deno.env.get('SUPABASE_URL') || '', Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') || '',
+                               { auth: { persistSession: false }, global: { fetch: timed } });
+    await takeCall(admin, owner, usageDay(Date.now()), null, 0);
+  })().catch(() => { /* uncounted beats unanswered */ });
+  return Promise.race([work, give]).finally(() => clearTimeout(timer));
+}
+
 function reply(status: number, body: unknown): Response {
   return new Response(JSON.stringify(body), {
     status,
@@ -220,14 +238,9 @@ Deno.serve(async (req: Request): Promise<Response> => {
   if (!prompt) return reply(400, { ok: false, error: 'prompt is required' });
 
   /* Stage 14a: counted in the server's daily tally, so classify knows what the
-   * devices spent. Counted, never refused, and a failure to count never fails
-   * the call: the browser keeps its own limit. */
-  try {
-    const admin = createClient(Deno.env.get('SUPABASE_URL') || '',
-                               Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') || '',
-                               { auth: { persistSession: false } });
-    await takeCall(admin, owner, await usageDay(admin, owner, Date.now()), null, 0);
-  } catch (_e) { /* uncounted beats unanswered */ }
+   * devices spent. Counted, never refused; it runs beside the call, gives up
+   * after COUNT_TIMEOUT_MS, and a failure never fails the call. */
+  const counted: Promise<unknown>[] = [countCall(owner)];
 
   const ask: Record<string, unknown> = { contents: [{ parts: [{ text: prompt }] }] };
   if (wantsJson || schema || think !== null) {
@@ -261,6 +274,7 @@ Deno.serve(async (req: Request): Promise<Response> => {
      *
      * Only on 400, only once, and only when we actually sent it. */
     if (res.status === 400 && think !== null) {
+      counted.push(countCall(owner));            // a second request is a second call
       const gen = { ...(ask.generationConfig as Record<string, unknown>) };
       delete gen.thinkingConfig;
       const retry: Record<string, unknown> = { ...ask };
@@ -269,9 +283,12 @@ Deno.serve(async (req: Request): Promise<Response> => {
       res = await call(retry);
     }
   } catch (e) {
+    await Promise.all(counted);
     return reply(502, { ok: false, error: 'could not reach gemini: ' + scrub(e) });
   }
 
+  // Bounded by COUNT_TIMEOUT_MS, so this never holds the answer for long.
+  await Promise.all(counted);
   const body = await res.json().catch(() => null);
   if (!res.ok) {
     const why = scrub((body && body.error && body.error.message) || res.status);
