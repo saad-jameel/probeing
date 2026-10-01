@@ -711,6 +711,23 @@
   </div>
 </dialog>
 
+<!-- Stage 14b: an item added by hand under one task. The task's title is his
+     text, so app.js fills it with textContent. -->
+<dialog id="itemDlg" class="dlg" aria-labelledby="itemDlgTitle">
+  <form id="itemForm" method="dialog">
+    <h2 id="itemDlgTitle">New item</h2>
+    <p id="itemDlgTask" class="hint"></p>
+
+    <label for="itemName">Item</label>
+    <input id="itemName" type="text" placeholder="Send the invoice" maxlength="200" autocomplete="off">
+
+    <div class="dlg-actions">
+      <button type="button" id="itemCancelBtn" class="link-btn">Cancel</button>
+      <button type="submit" id="itemSaveBtn" class="btn btn-accent">Add</button>
+    </div>
+  </form>
+</dialog>
+
 <!-- Stage 13b. The explanation behind a Settings "?", copied in from its <template>.
      The inner box fills the dialog, so a click on the dialog itself is the backdrop. -->
 <dialog id="helpDlg" class="dlg help-dlg" aria-labelledby="helpTitle">

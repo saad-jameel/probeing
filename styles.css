@@ -732,3 +732,33 @@ body {
 @media (prefers-reduced-motion: reduce) {
   * { transition: none !important; animation: none !important; }
 }
+
+/* Stage 14b: items under a task, each with Done and Drop; done and dropped ones
+   dimmed behind a toggle. The .proj-list and .task-tree rules reach these lists
+   too, so the overrides are written at a higher specificity.
+   Rule 6: the classes that set `display` declare their [hidden] pair. */
+.items { margin: 2px 0 4px; }
+.item-list, .task-tree ul.item-list, .proj-list ul.item-list {
+  list-style: none; margin: 4px 0 0; padding: 0 0 0 10px; display: grid; gap: 4px;
+}
+.item-list[hidden], .task-tree ul.item-list[hidden], .proj-list ul.item-list[hidden] { display: none; }
+.item, .proj-list li.item, .proj-list li.item:first-child {
+  display: flex; align-items: center; gap: 8px; padding: 0; border-top: 0; font-size: 14px;
+}
+.item[hidden], .proj-list li.item[hidden] { display: none; }
+.item-title { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+.item-done .item-title { text-decoration: line-through; opacity: .55; }
+.item-drop .item-title { opacity: .45; font-style: italic; }
+.item-btn {
+  flex: 0 0 auto; padding: 4px 10px; background: none; color: var(--fg);
+  border: 1px solid var(--line); border-radius: 999px; font-size: 12.5px; cursor: pointer;
+}
+.item-btn.item-done-btn { color: var(--accent); border-color: var(--accent); }
+.item-btn:active { transform: scale(.96); }
+.item-btn[disabled] { opacity: .5; cursor: default; }
+.item-foot { display: flex; flex-wrap: wrap; gap: 4px 10px; align-items: baseline; }
+.item-foot[hidden] { display: none; }
+.item-link { font-size: 12.5px; padding: 4px 2px; }
+.proj-sub { margin-top: 6px; }
+.proj-sub-title { font-size: 14px; font-weight: 600; overflow-wrap: anywhere; }
+.sum-projects .p-sub { padding-left: 14px; color: var(--muted); }

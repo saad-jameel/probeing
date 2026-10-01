@@ -515,6 +515,42 @@ async function callSupabase(action, payload) {
     throw taken;
   }
 
+  /* Stage 14b: Done, Drop or Undo ('open') on an item, append-only. The item is
+   * named by its rid, so a mark on an item still waiting here can be sent too. */
+  if (action === 'mark') {
+    if (!payload.item_rid || ITEM_MARKS[payload.mark] !== 1) {
+      var badMark = new Error('bad_mark');
+      badMark.fatal = true;
+      throw badMark;
+    }
+    var markAt = typeof payload.at === 'string' && !isNaN(Date.parse(payload.at));
+    var mk = await sb.from('item_marks').insert({
+      rid: payload.rid, item_rid: String(payload.item_rid), mark: payload.mark,
+      at: markAt ? payload.at : new Date().toISOString(),
+      local_time: markAt ? (payload.local_time || '') : humanLocal()
+    });
+    // 23505: this mark is already in.
+    if (mk.error && mk.error.code !== '23505') throw errorFrom(mk.error);
+    return { ok: true, duplicate: Boolean(mk.error) };
+  }
+
+  // Stage 14b: an item added by hand under one of his tasks.
+  if (action === 'item') {
+    var itemTitle = cleanItemTitle(payload.title);
+    if (!payload.node_id || !itemTitle) {
+      var badItem = new Error('bad_item');
+      badItem.fatal = true;
+      throw badItem;
+    }
+    var itemAt = typeof payload.at === 'string' && !isNaN(Date.parse(payload.at));
+    var ni = await sb.from('items').insert({
+      rid: payload.rid, node_id: String(payload.node_id), title: itemTitle, made_by: 'hand',
+      at: itemAt ? payload.at : new Date().toISOString()
+    });
+    if (ni.error && ni.error.code !== '23505') throw errorFrom(ni.error);
+    return { ok: true, duplicate: Boolean(ni.error) };
+  }
+
   if (action === 'm') {
     // at/local_time forwarded, not rebuilt: this row must carry the instant the
     // tile was tapped even when it is sent off the outbox hours later.
@@ -847,7 +883,7 @@ var PARKED_MAX = 50;
 /* The writes a person makes. `label` is deliberately absent: it only ever
  * fills in a project name on a row, and a name that never arrives leaves the
  * entry called by its own sentence — which is what it was called anyway. */
-var QUEUEABLE = { log: 1, m: 1, prayer: 1, money: 1, loan: 1, file: 1 };
+var QUEUEABLE = { log: 1, m: 1, prayer: 1, money: 1, loan: 1, file: 1, mark: 1, item: 1 };
 
 function trimUrl(u) { return String(u || '').trim().replace(/\/+$/, ''); }
 
@@ -1073,6 +1109,7 @@ function addParked(it, why) {
   var list = parkedAll();
   var what = moneyItem(it) ? moneyWhat(queuedMoney(it))
            : it.action === 'file' ? 'Filing "' + String((it.payload || {}).raw_text || '') + '"'
+           : it.action === 'mark' || it.action === 'item' ? itemWhat(it)
            : String(row.raw_text || row.type || it.action);
   list.push({
     rid: it.rid,
@@ -1142,6 +1179,38 @@ function queuedPrayer(it) {
   var p = it.payload || {};
   return { at: p.at, local: p.local_time || '', rid: it.rid,
            prayer: p.prayer || '', mode: p.mode || '' };
+}
+
+/** Held marks and hand-added items (14b), as the rows they will become, so a
+ *  press shows at once and survives a reload. `have`: rids the read returned. */
+function queuedMarks(have) {
+  return outboxOurs().filter(function (it) {
+    return it.action === 'mark' && !(have && have[it.rid]);
+  }).map(markOf);
+}
+
+function queuedItems(have) {
+  return outboxOurs().filter(function (it) {
+    return it.action === 'item' && !(have && have[it.rid]);
+  }).map(itemOf);
+}
+
+function markOf(it) {
+  var p = it.payload || {};
+  return { rid: it.rid, item_rid: p.item_rid, mark: p.mark, at: p.at, queued: true };
+}
+
+function itemOf(it) {
+  var p = it.payload || {};
+  return { rid: it.rid, node_id: p.node_id, title: cleanItemTitle(p.title), made_by: 'hand',
+           at: p.at, queued: true };
+}
+
+/** How a held mark or item is named in Settings. */
+function itemWhat(it) {
+  var p = it.payload || {};
+  var verb = it.action === 'item' ? 'New item' : ITEM_VERBS[p.mark] || 'Mark';
+  return verb + ' "' + String(p.title || '') + '"';
 }
 
 /** The counter day a queued press belongs to — the day it was PRESSED. An M
@@ -1743,6 +1812,12 @@ function sessionLog() {
   return lastLog.concat(lastLead);
 }
 
+/** Rows with their tasks' current titles from the mirror (day.js namedRows), for
+ *  what is drawn. Filing and naming keep reading the rows as stored. */
+function named(rows) {
+  return namedRows(rows, taskNodes);
+}
+
 /** The lead-in: the read's, plus presses still queued from before the rollover. */
 function leadWithQueue(lead, have) {
   var start = counterDayStart(Date.now());
@@ -1943,7 +2018,7 @@ function paintTodayNote() {
 function renderDaySummary() {
   paintTodayNote();
   // Hours and projects are the session's; M and prayers the counter day's.
-  var figures = dayFigures(lastLog, todayPrayers, undefined, undefined, lastLead);
+  var figures = dayFigures(lastLog, todayPrayers, undefined, undefined, lastLead, taskTree());
   var day = figures.day;
 
   $('sumWorked').textContent = humanDuration(figures.worked);
@@ -1957,12 +2032,13 @@ function renderDaySummary() {
   var filing = filingKeys();
 
   /** One "name .... 1h 20m" line. `muted` marks it as a break, not work;
-   *  `finished` ticks a project you have pressed Done on. */
-  function line(name, ms, muted, finished) {
+   *  `finished` ticks a project you have pressed Done on; `sub` indents a
+   *  sub-task under its project. */
+  function line(name, ms, muted, finished, sub) {
     var li = document.createElement('li');
 
     var n = document.createElement('span');
-    n.className = 'p-name' + (muted ? ' p-why' : '');
+    n.className = 'p-name' + (muted ? ' p-why' : '') + (sub ? ' p-sub' : '');
 
     if (finished) {
       var tick = document.createElement('span');
@@ -1974,7 +2050,7 @@ function renderDaySummary() {
     // textContent on a text node, never markup — this is user input.
     n.appendChild(document.createTextNode(name));
     // Still its sentence because filing has not landed: said, so it is not read as a project.
-    if (!muted && filing[name] === 1) {
+    if (!muted && !sub && filing[name] === 1) {
       var f = document.createElement('span');
       f.className = 'p-filing';
       f.textContent = 'filing…';
@@ -1997,14 +2073,21 @@ function renderDaySummary() {
    * 29 Sep), so "not open" is no longer the test. */
   var open = userMap();                     // project names again — see userMap()
   day.activeProjects.forEach(function (p) { open[p] = 1; });
-  var pressed = donePressed(sessionLog());
+  var pressed = donePressed(named(sessionLog()));
+  var subs = subtaskTimes(day);
 
   Object.keys(day.byProject)
     .filter(function (name) { return name && day.byProject[name] > 0; })
     .sort(byTime(day.byProject))
     .forEach(function (name) {
       line(name, day.byProject[name], false, !open[name] && pressed[name] === 1);
+      (subs[name] || []).forEach(function (s) { line('▸ ' + s.title, s.ms, false, false, true); });
+      delete subs[name];
     });
+  // A sub-task whose project line is not here (an entry filed under its sentence).
+  Object.keys(subs).forEach(function (name) {
+    subs[name].forEach(function (s) { line('▸ ' + name + ' › ' + s.title, s.ms, false, false, true); });
+  });
 
   // Where the break time actually went — Lunch 45m, Prayer-break 20m.
   if (day.unattributed > 0) line('Not on a named project', day.unattributed, true);
@@ -2013,6 +2096,22 @@ function renderDaySummary() {
     .filter(function (why) { return why && day.byReason[why] > 0; })
     .sort(byTime(day.byReason))
     .forEach(function (why) { line(why, day.byReason[why], true); });
+}
+
+/** day.bySubtask by project name, as the tree names them now: {project:
+ *  [{title, ms}]}, longest first. A task the tree does not know is left out, and
+ *  so is a project with no sub-tasks (its own line already says it). */
+function subtaskTimes(day) {
+  var index = nodeIndex(taskNodes);
+  var out = userMap();
+  Object.keys(day.bySubtask || {}).forEach(function (id) {
+    var ms = day.bySubtask[id];
+    var names = nodeNames(index, id);
+    if (!(ms > 0) || !names || !names.detail) return;
+    (out[names.project] = out[names.project] || []).push({ title: names.detail, ms: ms });
+  });
+  Object.keys(out).forEach(function (p) { out[p].sort(function (a, b) { return b.ms - a.ms; }); });
+  return out;
 }
 
 /** Projects whose newest work/voice/done row is a Done press, keyed as
@@ -2033,7 +2132,8 @@ function donePressed(rows) {
 // projectTasks() and TASK_SEP live in day.js, shared with the widget's list.
 
 function renderProject() {
-  var day = replayDay(sessionLog());
+  var rows = named(sessionLog());
+  var day = replayDay(rows);
   var list = $('projList');
   var empty = $('projEmpty');
 
@@ -2066,8 +2166,11 @@ function renderProject() {
     main.append(n, t);
 
     /* The sub-tasks, under their heading. Every one is either the user's own
-     * words or a model's reading of them, so textContent throughout. */
-    var tasks = projectTasks(sessionLog(), name);
+     * words or a model's reading of them, so textContent throughout. The one
+     * being worked on is drawn below with its items instead (14b). */
+    var sub = name === day.subtaskProject ? nodeIndex(taskNodes).byId[day.currentSubtask] : null;
+    var subTitle = sub ? String(sub.title || '').trim() || '(untitled)' : '';
+    var tasks = projectTasks(rows, name).filter(function (t) { return !sub || !sameTitle(t, subTitle); });
     if (tasks.length) {
       var ul = document.createElement('ul');
       ul.className = 'proj-tasks';
@@ -2078,6 +2181,7 @@ function renderProject() {
       });
       main.appendChild(ul);
     }
+    if (sub) main.appendChild(currentSubtaskBlock(sub, subTitle));
 
     // "Stop", not "Done": it stops the clock on this; Done is for finished items (C1).
     var done = document.createElement('button');
@@ -2096,8 +2200,29 @@ function renderProject() {
  * same row: closing a project is how an append-only store takes something back,
  * and a rename that reopens one has to be able to close it again. */
 function closeProject(name) {
-  noteLocalRow('done', name, name);
-  runWrites([{ type: 'done', raw_text: name, project: name }]);
+  // The project's task, when it has exactly one, so a rename in Google keeps it closed.
+  var node = tileNode(name);
+  noteLocalRow('done', name, name, '', node);
+  var row = { type: 'done', raw_text: name, project: name };
+  if (node) row.node_id = node;
+  runWrites([row]);
+}
+
+/** The task_nodes id of the one Google project the tile `name` is filed under,
+ *  or '' when there is none or more than one. */
+function tileNode(name) {
+  var index = nodeIndex(taskNodes);
+  var found = userMap();
+  named(sessionLog()).forEach(function (r) {
+    if ((r.type !== 'work' && r.type !== 'voice') || !r.node_id) return;
+    if (String(r.project || r.raw_text || '').trim() !== name) return;
+    var n = index.byId[r.node_id];
+    if (!n) return;
+    var up = n.kind === 'subtask' ? index.byGoogle[(n.list_id || '') + '|' + n.parent_google_id] : n;
+    if (up) found[up.id] = 1;
+  });
+  var ids = Object.keys(found);
+  return ids.length === 1 ? ids[0] : '';
 }
 
 function finishProject(btn, name) {
@@ -9556,7 +9681,7 @@ function glanceWords() {
     if (!isNaN(t) && t > at) at = t;
   });
 
-  var text = glanceText(dayFigures(log, prayers, at, snap.carry, lead), at);
+  var text = glanceText(dayFigures(log, prayers, at, snap.carry, lead, taskTree()), at);
   return { title: text.title, body: text.body, at: at };
 }
 
@@ -10023,6 +10148,7 @@ async function tasksOnOpen() {
   if (tasksConnected()) await Promise.all([readTaskNodes(), readTaskPlans()]);
   paintTasks();
   scheduleFiling();
+  scheduleItems(0);
   syncTasks(false);
 }
 
@@ -10125,6 +10251,7 @@ $('tasksSyncBtn').addEventListener('click', async function () {
 function watchTasks() {
   watchPlans();
   watchFiling();
+  watchItems();
   if (!sb || !sbUser || tasksChannel) return;
   tasksChannel = sb.channel('probeing-tasks')
     .on('postgres_changes', { event: '*', schema: 'public', table: 'task_nodes' },
@@ -10139,6 +10266,7 @@ function stopTasks() {
   clearTimeout(taskNodesTimer);
   stopPlans();
   stopFiling();
+  stopItems();
   taskNodes = [];
   googleSync = null;
   googleSyncRead = false;
@@ -10384,7 +10512,7 @@ function paintTasksPage() {
   var nodes = currentNodes();
   var today = counterDate(Date.now());
 
-  var now = workingOnLeaves(nodes, sessionLog());
+  var now = workingOnLeaves(nodes, named(sessionLog()));
   var nowList = $('tasksNow');
   nowList.textContent = '';
   now.items.forEach(function (it) {
@@ -10423,6 +10551,7 @@ function paintTasksPage() {
     var own = p.node ? openIds[p.node.id] : null;
     if (own) {
       li.appendChild(taskButton(own, 'tasksAll', taskMeta(own, today, false)));
+      li.appendChild(itemsBlock(own.node.id));
     } else {
       var name = document.createElement('span');
       name.className = 'task-project task-' + p.state;
@@ -10436,6 +10565,7 @@ function paintTasksPage() {
         if (leaf) {
           var cli = document.createElement('li');
           cli.appendChild(taskButton(leaf, 'tasksAll', taskMeta(leaf, today, false)));
+          cli.appendChild(itemsBlock(leaf.node.id));
           sub.appendChild(cli);
         } else {
           // Done, gone, or open under a deleted project: dimmed, not a button.
@@ -10459,6 +10589,7 @@ function openTasksPage() {
   if (!tasksConnected()) return;
   readTaskPlans().then(function (ok) { if (ok) paintTasks(); });
   scheduleFiling(0);
+  scheduleItems(0);
 }
 
 // ------------------------------------------------------------ the task box
@@ -10955,6 +11086,299 @@ function stopFiling() {
   if (!filingChannel) return;
   try { sb.removeChannel(filingChannel); } catch (e) { /* already gone */ }
   filingChannel = null;
+}
+
+// --------------------------------------------- items: Done and Drop (14b)
+
+/* An item's state is its newest mark (day.js itemStates). Each tap is a new
+ * item_marks row through the outbox as `mark`; a hand-added item is `item`.
+ * A held press shows at once and comes back after every read, as an M does.
+ * Titles are Gemini's or his (rule 5). Nothing here is on the M or prayer
+ * path (rule 4). */
+var ITEM_TITLE_MAX = 200;                 // the check on items.title
+var ITEM_VERBS = { done: 'Done', drop: 'Drop', open: 'Undo' };
+var HOME_ITEMS_MAX = 5;                   // open items on the Home tile; the rest on Tasks
+var itemRows = [];                        // items filed under a task, as last read
+var markRows = [];                        // item_marks, as last read
+var itemsPressed = [];                    // pressed on this page, not yet seen in a read
+var marksPressed = [];
+var itemsRead = false;                    // both read this visit; until then only held presses
+var itemsTimer = 0;
+var itemsChannel = null;
+var marksChannel = null;
+var showClosed = userMap();               // node id -> 1: its done and dropped items are shown
+var itemDlg = $('itemDlg');
+var itemDlgNode = null;
+
+/** Whitespace folded, cut to the column's 200 characters. */
+function cleanItemTitle(text) {
+  return Array.from(String(text || '').replace(/\s+/g, ' ').trim()).slice(0, ITEM_TITLE_MAX).join('');
+}
+
+/**
+ * The mirror, items and marks, with every press this page has seen merged in
+ * by rid. A press is kept here until a read returns it: once the outbox lets go
+ * of it, it is nowhere else until then. A refused one is parked, and leaves.
+ */
+function taskTree() {
+  var have = userMap();
+  itemRows.concat(markRows).forEach(function (r) { have[r.rid] = 1; });
+  adopt(itemsPressed, queuedItems(have));
+  adopt(marksPressed, queuedMarks(have));
+  parkedAll().forEach(function (r) { if (r && r.rid) have[r.rid] = 1; });
+  function unseen(r) { return !have[r.rid]; }
+  return { nodes: taskNodes, items: itemRows.concat(itemsPressed.filter(unseen)),
+           marks: markRows.concat(marksPressed.filter(unseen)) };
+}
+
+/** Add the held rows `list` does not have yet. */
+function adopt(list, held) {
+  var known = userMap();
+  list.forEach(function (r) { known[r.rid] = 1; });
+  held.forEach(function (r) { if (!known[r.rid]) list.push(r); });
+}
+
+/** Items and marks together, or neither: an item without its marks would show
+ *  Done ones as open. A failed read keeps the last. */
+async function readItems() {
+  if (!supabaseReady()) return false;
+  // Presses still on the device when the read set out, and when it did; see below.
+  var held = userMap();
+  outboxAll().forEach(function (x) { held[x.rid] = 1; });
+  var startedAt = Date.now();
+  try {
+    var it = await sb.from('items').select('rid,node_id,title,made_by,at,created_at')
+      .not('node_id', 'is', null).order('at', { ascending: false }).limit(2000);
+    if (it.error) return false;
+    var mk = await sb.from('item_marks').select('rid,item_rid,mark,at,created_at')
+      .order('at', { ascending: false }).limit(5000);
+    if (mk.error) return false;
+    itemRows = it.data || [];
+    markRows = mk.data || [];
+    itemsRead = true;
+    /* A press the read returned is the table's now. One that had already left
+     * the device before the read set out, and is not in it, was refused. */
+    var seen = userMap();
+    itemRows.concat(markRows).forEach(function (r) { seen[r.rid] = 1; });
+    function pending(r) { return !seen[r.rid] && (held[r.rid] === 1 || !(instantOf(r.at) < startedAt)); }
+    itemsPressed = itemsPressed.filter(pending);
+    marksPressed = marksPressed.filter(pending);
+    return true;
+  } catch (e) { return false; }
+}
+
+function scheduleItems(ms) {
+  clearTimeout(itemsTimer);
+  itemsTimer = setTimeout(function () {
+    if (!tasksConnected()) return;
+    readItems().then(function (ok) { if (ok) paintItems(); });
+  }, typeof ms === 'number' ? ms : 400);
+}
+
+function paintItems() {
+  renderProject();
+  paintTasksPage();
+}
+
+/** The items under one task, open ones first; done and dropped ones behind a
+ *  toggle. `max` caps the open ones shown (Home). Before a read only presses
+ *  held here are known, so nothing is drawn. */
+function itemsBlock(nodeId, max) {
+  var box = document.createElement('div');
+  box.className = 'items';
+  if (!itemsRead) return box;
+  var all = itemsOf(taskTree(), nodeId);
+  var open = all.filter(function (it) { return it.state === 'open'; });
+  var closed = all.filter(function (it) { return it.state !== 'open'; });
+  var ul = document.createElement('ul');
+  ul.className = 'item-list';
+  (max ? open.slice(0, max) : open).forEach(function (it) { ul.appendChild(itemLine(it)); });
+  if (showClosed[nodeId]) closed.forEach(function (it) { ul.appendChild(itemLine(it)); });
+  if (ul.childNodes.length) box.appendChild(ul);
+
+  var foot = document.createElement('div');
+  foot.className = 'item-foot';
+  if (max && open.length > max) {
+    var more = document.createElement('span');
+    more.className = 'plan-meta';
+    more.textContent = '+' + (open.length - max) + ' more on Tasks';
+    foot.appendChild(more);
+  }
+  foot.appendChild(itemLink('+ item', 'Add an item', function () { openItemDlg(nodeId); }));
+  if (closed.length) {
+    foot.appendChild(itemLink(showClosed[nodeId] ? 'Hide closed' : closed.length + ' closed',
+                              showClosed[nodeId] ? 'Hide done and dropped items' : 'Show done and dropped items',
+                              function () {
+                                if (showClosed[nodeId]) delete showClosed[nodeId]; else showClosed[nodeId] = 1;
+                                paintItems();
+                              }));
+  }
+  box.appendChild(foot);
+  return box;
+}
+
+function itemLink(text, label, onTap) {
+  var b = document.createElement('button');
+  b.type = 'button';
+  b.className = 'link-btn item-link';
+  b.textContent = text;
+  b.setAttribute('aria-label', label);
+  b.addEventListener('click', onTap);
+  return b;
+}
+
+/** One item: its title, then Done and Drop; a closed one dimmed, with Undo. */
+function itemLine(it) {
+  var li = document.createElement('li');
+  li.className = 'item item-' + it.state;
+  li.setAttribute('data-item', it.rid);
+  var title = document.createElement('span');
+  title.className = 'item-title';
+  title.textContent = it.title;
+  li.appendChild(title);
+  var acts = it.state === 'open' ? ['done', 'drop'] : ['open'];
+  acts.forEach(function (mark) {
+    var b = document.createElement('button');
+    b.type = 'button';
+    b.className = 'item-btn item-' + mark + '-btn';
+    b.textContent = ITEM_VERBS[mark];
+    b.setAttribute('aria-label', ITEM_VERBS[mark] + ': ' + it.title);
+    b.addEventListener('click', function () { markItem(it, mark, b); });
+    li.appendChild(b);
+  });
+  return li;
+}
+
+/** The sub-task being worked on, under its project on the Home tile. */
+function currentSubtaskBlock(node, title) {
+  var box = document.createElement('div');
+  box.className = 'proj-sub';
+  var head = document.createElement('div');
+  head.className = 'proj-sub-title';
+  head.textContent = '▸ ' + title;
+  box.appendChild(head);
+  box.appendChild(itemsBlock(node.id, HOME_ITEMS_MAX));
+  return box;
+}
+
+/**
+ * Done, Drop or Undo ('open') on one item, through the outbox. When this closes
+ * the last open item under its task and at least one of them is Done, a
+ * `subdone` row ends that task's clock. All dropped is not finished, so it does
+ * not. Its rid comes from the mark's, so it is written once per mark.
+ */
+function markItem(it, mark, btn) {
+  if (btn) {
+    if (btn.disabled) return;
+    coolDown(btn);
+  }
+  var before = itemsOf(taskTree(), it.node_id);
+  var was = before.filter(function (x) { return x.rid === it.rid; })[0];
+  if (!was || was.state === mark) return;   // a second tap, or the other device got there first
+  var openBefore = before.filter(function (x) { return x.state === 'open'; }).length;
+  var payload = { rid: newRid(), at: new Date().toISOString(), local_time: humanLocal(),
+                  item_rid: it.rid, mark: mark, title: it.title, node_id: it.node_id };
+  marksPressed.push(markOf({ rid: payload.rid, payload: payload }));
+  api('mark', payload).then(function (res) {
+    if (res && !res.queued) scheduleItems();
+  }, function (err) {
+    flash(String((err && err.message) || err), 'err');
+    paintItems();                           // a refused press is parked, and the item shows as it was
+  });
+  paintItems();                             // held on the device already, so it shows now
+
+  var after = itemsOf(taskTree(), it.node_id);
+  var openAfter = after.filter(function (x) { return x.state === 'open'; }).length;
+  if (mark !== 'open' && openBefore === 1 && openAfter === 0 &&
+      after.some(function (x) { return x.state === 'done'; })) {
+    subtaskDone(it.node_id, payload);
+  }
+  flash(ITEM_VERBS[mark] + ': ' + it.title, 'ok');
+}
+
+/** The `subdone` row for task `nodeId`, stamped with the closing mark. */
+function subtaskDone(nodeId, mark) {
+  var names = nodeNames(nodeIndex(taskNodes), nodeId);
+  var project = names ? names.project : '';
+  var detail = names ? names.detail : '';
+  var text = detail || project || 'Task done';
+  noteLocalRow('subdone', text, project, detail, nodeId);
+  runWrites([{ type: 'subdone', raw_text: text, project: project, detail: detail, node_id: nodeId,
+               rid: 'sd-' + mark.rid, at: mark.at, local_time: mark.local_time }]);
+}
+
+function openItemDlg(nodeId) {
+  var names = nodeNames(nodeIndex(taskNodes), nodeId);
+  if (!names) return;
+  itemDlgNode = nodeId;
+  $('itemDlgTask').textContent = names.detail ? names.project + ' › ' + names.detail : names.project;
+  $('itemName').value = '';
+  itemDlg.showModal();
+  $('itemName').focus();
+}
+
+/** Add an item by hand under task `nodeId`, through the outbox. */
+function addItem(nodeId, text) {
+  var title = cleanItemTitle(text);
+  if (!nodeId || !title) return false;
+  var payload = { rid: newRid(), at: new Date().toISOString(), local_time: humanLocal(),
+                  node_id: nodeId, title: title };
+  itemsPressed.push(itemOf({ rid: payload.rid, payload: payload }));
+  api('item', payload).then(function (res) {
+    if (res && !res.queued) scheduleItems();
+  }, function (err) {
+    flash(String((err && err.message) || err), 'err');
+    paintItems();
+  });
+  paintItems();
+  flash('Added: ' + title, 'ok');
+  return true;
+}
+
+$('itemForm').addEventListener('submit', function (e) {
+  e.preventDefault();
+  if (!addItem(itemDlgNode, $('itemName').value)) {
+    flash('Type the item first.', 'err');
+    return;
+  }
+  itemDlg.close();
+});
+
+$('itemCancelBtn').addEventListener('click', function () { itemDlg.close(); });
+
+/* Their own channels, like the others: a missing item_marks table must not take
+ * the items feed down. The announcement is only a nudge; both are read again. */
+function watchItems() {
+  if (!sb || !sbUser) return;
+  if (!itemsChannel) {
+    itemsChannel = sb.channel('probeing-items')
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'items' },
+          function () { scheduleItems(); })
+      .subscribe();
+  }
+  if (!marksChannel) {
+    marksChannel = sb.channel('probeing-marks')
+      .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'item_marks' },
+          function () { scheduleItems(); })
+      .subscribe();
+  }
+}
+
+function stopItems() {
+  clearTimeout(itemsTimer);
+  itemRows = [];
+  markRows = [];
+  itemsPressed = [];
+  marksPressed = [];
+  itemsRead = false;
+  showClosed = userMap();
+  if (itemDlg.open) itemDlg.close();
+  [itemsChannel, marksChannel].forEach(function (ch) {
+    if (!ch) return;
+    try { sb.removeChannel(ch); } catch (e) { /* already gone */ }
+  });
+  itemsChannel = null;
+  marksChannel = null;
 }
 
 // ------------------------------------------------- prayer reminders (29 Sep)

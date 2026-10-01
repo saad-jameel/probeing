@@ -31,8 +31,10 @@
  * v11 (Stage 13b): prayers once a day, loans, and Settings help behind "?".
  * v12: prayer reminders (their push, their tap, and the Settings toggle).
  * v13: the Tasks page, and a work row that can carry node_id.
- * v14 (Stage 14a): server filing, the Unsorted tray and its `file` outbox action. */
-var CACHE = 'probeing-shell-v14';
+ * v14 (Stage 14a): server filing, the Unsorted tray and its `file` outbox action.
+ * v15 (Stage 14b): items with Done and Drop, the `mark` and `item` outbox actions,
+ * and time per sub-task. */
+var CACHE = 'probeing-shell-v15';
 var SHELL = [
   './',
   'index.html',
