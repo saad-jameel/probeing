@@ -24,7 +24,7 @@ shipped in `f733804`; `CLAUDE.md` carries the full reasoning.
 
 ---
 
-> ## Where things stand — 29 Sep 2026
+> ## Where things stand — 1 Oct 2026
 >
 > | | Stage | |
 > |---|---|---|
@@ -41,7 +41,26 @@ shipped in `f733804`; `CLAUDE.md` carries the full reasoning.
 > | ✅ | **7c Offline logging** | **closed 29 Sep by Saad's decision, on simulated evidence** ("my testing is not that important at this point"). Verified on the phone 23–24 Sep; since then 112-check offline replay across 8 network modes and 63 refusal checks. Not proven on a device, to be noticed in normal use: a cold launch with no signal, and the laptop |
 > | ✅ | **8 Home-screen widget** | **signed off 22 Sep.** Refreshes itself unattended — reads 25, 36 and 29 minutes apart on 18 Sep, no hand on the phone. A made-up pairing code returns nothing (run 22 Sep). Its "within a minute" check was impossible on Android and now says 30 minutes. A TWA, not Capacitor, and look-only. **Since then:** server-side refresh (22 Sep — the server writes the widget's lines every 10 minutes and whenever an entry is written or named), and **the widget as a list of open projects with their sub-tasks** (APK v3, proven on the phone 24 Sep) |
 > | ✅ | **Day boundary (after 8)** | **live 25 Sep, fixes live 29 Sep.** M and prayers turned at 04:30 (25 Sep), and since **29 Sep turn 10 minutes before Fajr at his location** (v2 Stage 10); "working on" lasts until Sleep / End day / a missed check; night checks every 90 min until 11 AM; reports split on the same line. Proven by a 16-checkpoint simulated day-in-the-life of the deployed code and 100 jittered nights — see `claudeWorkingDocs/day-boundary-plan.md` |
-> | ⬜ | **Version 2** | Google Tasks list as ground truth; project → sub-task → Gemini-made items with Done and roll-up; a "What's done" page; finance page; Sheets as a readable copy. Being scoped — `claudeWorkingDocs/revision-2.md` |
+> | ✅ | **Version 1** | **closed 29 Sep** by Saad's decision, on simulated evidence of the deployed code |
+>
+> **Version 2** — plan in `claudeWorkingDocs/v2-plan.md`. Built stage by stage: each one starts only when Saad says so.
+>
+> | | Stage | |
+> |---|---|---|
+> | ✅ | 9 Version 1 leftovers | live 29 Sep — request timeout, per-prayer table, forget a project name |
+> | ✅ | 10 Prayer times from his location | live 29 Sep — the day turns 10 min before Fajr where he is; prayer buttons open at their time |
+> | ✅ | 11 Money page | live 29 Sep |
+> | ✅ | 12 Connect Google | live 29 Sep; connected the same day (Tasks + Drive) |
+> | ✅ | 13 Copy of his Google Tasks list | live 29 Sep; list "Daily Tasks", refreshed every 15 min |
+> | ✅ | 13b (added) Strict prayers, End-day prayer check, Lend/Borrow, "?" help | live 1 Oct — a prayer logs once a day; Isha counts until Fajr |
+> | ✅ | (added) Prayer reminders | live 1 Oct — at each prayer's start, then 60/30/15 min before it ends while unlogged |
+> | ✅ | (added) Tasks page | live 1 Oct — Working on, Planned, All tasks |
+> | 🟡 | 14a Gemini files his entries; Unsorted tray | built; fix round in progress |
+> | ⬜ | 14b Done/Drop items, time per sub-task, widget shows the sub-task | waiting for Saad's go |
+> | ⬜ | 15 Finishing a task flows back to Google | waiting |
+> | ⬜ | 16 "What's done" page | waiting |
+> | ⬜ | 17 Morning push: "Today: N due" | waiting |
+> | ⬜ | 18 A Google Sheet copy in his Drive, as a backup | waiting |
 >
 > **A great deal was built with no stage number.** Read *Built, but never planned*
 > at the end before assuming a gap is a gap.
