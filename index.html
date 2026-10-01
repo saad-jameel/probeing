@@ -96,7 +96,7 @@
   <div id="chipRow" class="chips" aria-label="Step away for"></div>
 
   <!-- Point 6: the project you are on, and how long today. Survives a break. -->
-  <!-- Several at once, each with its own Done. -->
+  <!-- Several at once, each with its own Stop. -->
   <section class="card">
     <h2 class="card-head">Working on</h2>
     <ul id="projList" class="proj-list"></ul>
@@ -143,6 +143,13 @@
 <!-- His Google Tasks list: what he is on, what he planned, and all of it. -->
 <section class="screen" data-screen="tasks" hidden>
   <p id="tasksOff" class="pending">Connect Google Tasks in Settings to see your tasks here.</p>
+
+  <!-- Stage 14a: entries the server could not file. Project, then task. -->
+  <section id="tasksTrayCard" class="card" hidden>
+    <h2 class="card-head">Unsorted</h2>
+    <p class="hint">Gemini could not file these. Tap the project, then the task.</p>
+    <ul id="tasksTray" class="tray-list"></ul>
+  </section>
 
   <section id="tasksNowCard" class="card" hidden>
     <h2 class="card-head">Working on</h2>

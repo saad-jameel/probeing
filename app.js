@@ -485,6 +485,36 @@ async function callSupabase(action, payload) {
     return { ok: true, labelled: (lab.data || []).length > 0 };
   }
 
+  /* Stage 14a: an Unsorted entry filed from the tray. The same fill-once update
+   * as `label`, now with the task. Sent again off the outbox, it finds the row
+   * already carrying this node_id, which is success. */
+  if (action === 'file') {
+    if (!payload.entry_rid || !payload.node_id) {
+      var badFile = new Error('bad_file');
+      badFile.fatal = true;
+      throw badFile;
+    }
+    var put = { node_id: String(payload.node_id) };
+    if (payload.project) {
+      put.project = String(payload.project);
+      put.detail = String(payload.detail || '');
+    }
+    var fil = await sb.from('events').update(put)
+      .eq('rid', payload.entry_rid).eq('project', '').is('node_id', null)
+      .select('rid');
+    if (fil.error) throw errorFrom(fil.error);
+    if ((fil.data || []).length) return { ok: true, filed: true };
+    var fileRow = await sb.from('events').select('node_id,project').eq('rid', payload.entry_rid).limit(1);
+    if (fileRow.error) throw errorFrom(fileRow.error);
+    var filedRow = (fileRow.data || [])[0];
+    if (filedRow && filedRow.node_id === put.node_id) return { ok: true, filed: true, already: true };
+    var taken = new Error(!filedRow ? 'that entry is not in your log'
+                          : filedRow.node_id || filedRow.project ? 'it was already filed somewhere else'
+                          : 'the database did not accept the filing');
+    taken.fatal = true;                          // sending it again would get the same answer
+    throw taken;
+  }
+
   if (action === 'm') {
     // at/local_time forwarded, not rebuilt: this row must carry the instant the
     // tile was tapped even when it is sent off the outbox hours later.
@@ -817,7 +847,7 @@ var PARKED_MAX = 50;
 /* The writes a person makes. `label` is deliberately absent: it only ever
  * fills in a project name on a row, and a name that never arrives leaves the
  * entry called by its own sentence — which is what it was called anyway. */
-var QUEUEABLE = { log: 1, m: 1, prayer: 1, money: 1, loan: 1 };
+var QUEUEABLE = { log: 1, m: 1, prayer: 1, money: 1, loan: 1, file: 1 };
 
 function trimUrl(u) { return String(u || '').trim().replace(/\/+$/, ''); }
 
@@ -1042,7 +1072,8 @@ function addParked(it, why) {
   var row = queuedRow(it) || {};
   var list = parkedAll();
   var what = moneyItem(it) ? moneyWhat(queuedMoney(it))
-                           : String(row.raw_text || row.type || it.action);
+           : it.action === 'file' ? 'Filing "' + String((it.payload || {}).raw_text || '') + '"'
+           : String(row.raw_text || row.type || it.action);
   list.push({
     rid: it.rid,
     at: (it.payload || {}).at || '',
@@ -1161,6 +1192,9 @@ function queuedDates() {
     if (d) seen[d] = 1;
     var voidsAt = instantOf((it.payload || {}).voids_at);
     if (moneyItem(it) && !isNaN(voidsAt)) seen[counterDate(voidsAt)] = 1;
+    // Filing renames an entry, so it holds that entry's day too.
+    var entryAt = instantOf((it.payload || {}).entry_at);
+    if (it.action === 'file' && !isNaN(entryAt)) seen[counterDate(entryAt)] = 1;
   });
   return Object.keys(seen);
 }
@@ -1231,10 +1265,12 @@ async function drainOutbox(why) {
     flash(sent + (sent === 1 ? ' offline entry sent' : ' offline entries sent'), 'ok');
     refresh();                              // the table has them now; re-read once
     if (currentScreen === 'money') readMoney();
+    scheduleFiling();                       // a filed entry leaves the tray
   }
   // Deliberately not awaited: the rows are safe in the table and only the name
-  // is outstanding, so nothing above waits on a language model.
-  if (landed.length) labelLanded(landed);
+  // is outstanding, so nothing above waits on a language model. With Google
+  // connected the server names them as they land (Stage 14a).
+  if (landed.length && !serverFiles()) labelLanded(landed);
 }
 
 /* NAMING WHAT ARRIVES LATE.
@@ -1784,6 +1820,13 @@ function renderLogList() {
     what.className = 'what';
     // textContent, not markup — log text is user input and must never be parsed as HTML.
     what.textContent = entry.raw_text || (entry.type === 'M' ? '—' : '');
+    var filed = filingNote(entry);
+    if (filed) {
+      var note = document.createElement('span');
+      note.className = 'filing';
+      note.textContent = filed;
+      what.appendChild(note);
+    }
 
     var tag = document.createElement('span');
     tag.className = 'tag';
@@ -1911,6 +1954,8 @@ function renderDaySummary() {
   var box = $('sumProjects');
   box.textContent = '';
 
+  var filing = filingKeys();
+
   /** One "name .... 1h 20m" line. `muted` marks it as a break, not work;
    *  `finished` ticks a project you have pressed Done on. */
   function line(name, ms, muted, finished) {
@@ -1928,6 +1973,13 @@ function renderDaySummary() {
 
     // textContent on a text node, never markup — this is user input.
     n.appendChild(document.createTextNode(name));
+    // Still its sentence because filing has not landed: said, so it is not read as a project.
+    if (!muted && filing[name] === 1) {
+      var f = document.createElement('span');
+      f.className = 'p-filing';
+      f.textContent = 'filing…';
+      n.appendChild(f);
+    }
 
     var t = document.createElement('span');
     t.className = 'p-time';
@@ -2027,10 +2079,11 @@ function renderProject() {
       main.appendChild(ul);
     }
 
+    // "Stop", not "Done": it stops the clock on this; Done is for finished items (C1).
     var done = document.createElement('button');
     done.type = 'button';
     done.className = 'done-btn';
-    done.textContent = 'Done';
+    done.textContent = 'Stop';
     done.addEventListener('click', function () { finishProject(done, name); });
 
     li.append(main, done);
@@ -2051,7 +2104,7 @@ function finishProject(btn, name) {
   if (btn.disabled) return;
   coolDown(btn);
   closeProject(name);
-  flash(name + ' — done', 'ok');
+  flash(name + ' — stopped', 'ok');
 }
 
 // The clock on screen should move without a round trip. Cheap: it only re-reads
@@ -4358,6 +4411,14 @@ $('trackerForm').addEventListener('submit', function (e) {
 
   // On the tap. Everything below only decides what this row is CALLED.
   var wrote = runWrites(steps, undo);
+  row.rid = rid;                           // so Today can show its filing
+
+  /* Stage 14a: with Google connected the server files it (classify). Naming it
+   * here too would race the server for the same fill-once row (C9). */
+  if (serverFiles()) {
+    wrote.then(function () { scheduleFiling(); });
+    return;
+  }
 
   holdName(text);
 
@@ -4458,7 +4519,7 @@ function openProjects() {
 
 /** Is `name` still an open project, as far as this device knows right now? */
 function isOpenProject(name) {
-  return replayDay(sessionLog()).activeProjects.indexOf(name) !== -1;
+  return isOpenAt(sessionLog(), name);
 }
 
 /**
@@ -9683,6 +9744,7 @@ tidyGlance();
  * here is on the logging path (rule 4). */
 var googleStatus = null;       // the last google-link status reply; null while checking
 var googleSync = null;         // this user's sync_state row, or null
+var googleSyncRead = false;    // read this visit; until then serverFiles() remembers
 var googleChannel = null;
 
 var GOOGLE_TIMEOUT_MS = 30000;   // a cold function plus a call to Google
@@ -9733,7 +9795,11 @@ async function readGoogleSync() {
     var res = await sb.from('sync_state')
       .select('connected,google_email,list_id,list_title,last_error,last_error_at,last_pull_ok_at,deep_ignored')
       .limit(1);
-    if (!res.error) googleSync = (res.data || [])[0] || null;
+    if (!res.error) {
+      googleSync = (res.data || [])[0] || null;
+      googleSyncRead = true;
+      rememberServerFiles();
+    }
   } catch (e) { /* the status reply stands in */ }
 }
 
@@ -9956,6 +10022,7 @@ async function tasksOnOpen() {
   await readGoogleSync();
   if (tasksConnected()) await Promise.all([readTaskNodes(), readTaskPlans()]);
   paintTasks();
+  scheduleFiling();
   syncTasks(false);
 }
 
@@ -10057,6 +10124,7 @@ $('tasksSyncBtn').addEventListener('click', async function () {
  * take the sync_state feed down with it. A burst of rows is one re-read. */
 function watchTasks() {
   watchPlans();
+  watchFiling();
   if (!sb || !sbUser || tasksChannel) return;
   tasksChannel = sb.channel('probeing-tasks')
     .on('postgres_changes', { event: '*', schema: 'public', table: 'task_nodes' },
@@ -10070,8 +10138,10 @@ function watchTasks() {
 function stopTasks() {
   clearTimeout(taskNodesTimer);
   stopPlans();
+  stopFiling();
   taskNodes = [];
   googleSync = null;
+  googleSyncRead = false;
   lastTasksSyncAt = 0;
   lastTasksCheckAt = 0;
   paintPlan();
@@ -10305,6 +10375,7 @@ function paintTasksPage() {
   var on = tasksConnected() && typeof mirrorTree === 'function';
   $('tasksOff').hidden = on;
   ['tasksNowCard', 'tasksPlannedCard', 'tasksAllCard'].forEach(function (id) { $(id).hidden = !on; });
+  paintTray();
   if (!on) {
     ['tasksNow', 'tasksPlanned', 'tasksAll'].forEach(function (id) { $(id).textContent = ''; });
     if (taskDlg && taskDlg.open) closeTaskDlg();
@@ -10387,6 +10458,7 @@ function openTasksPage() {
   paintTasksPage();
   if (!tasksConnected()) return;
   readTaskPlans().then(function (ok) { if (ok) paintTasks(); });
+  scheduleFiling(0);
 }
 
 // ------------------------------------------------------------ the task box
@@ -10592,6 +10664,278 @@ document.addEventListener('visibilitychange', function () {
   if (Date.now() - lastTasksCheckAt < TASKS_SYNC_EVERY_MS) return;
   tasksOnOpen();
 });
+
+// ------------------------------------------- filing and the tray (14a)
+
+/* With Google connected, the classify function files each typed entry under a
+ * task; entry_filing says how far it got. What it cannot place waits in the
+ * Unsorted tray on the Tasks page. Filing from the tray is a press, so it goes
+ * through api() and the outbox as `file`. Entry text and titles are his (rule 5). */
+var SERVER_FILES_KEY = 'probeing.serverfiles';
+var filingByRid = userMap();     // entry rid -> its entry_filing row, for today's blank entries
+var filingAsked = userMap();     // rids a read has asked about: no row means not being filed
+var trayEntries = [];            // [{rid, text, at, reason, items}], Unsorted, newest first
+var trayPick = userMap();        // entry rid -> google_id of the project picked, choosing a task
+var filingTimer = 0;
+var filingChannel = null;
+
+/** The trigger's rule (docs/classify.sql): connected, with a list. */
+function googleFiles(sync) {
+  return Boolean(sync && sync.connected && sync.list_id && sync.list_title);
+}
+
+/** Does the server file typed entries? Before sync_state is read this visit,
+ *  the last answer this device had for this account: an offline launch must
+ *  not start naming entries the server will name when they land. */
+function serverFiles() {
+  if (googleSyncRead) return googleFiles(googleSync);
+  try {
+    var who = currentUserId();
+    return Boolean(who) && localStorage.getItem(SERVER_FILES_KEY) === who;
+  } catch (e) { return false; }
+}
+
+function rememberServerFiles() {
+  try {
+    if (googleFiles(googleSync) && sbUser) localStorage.setItem(SERVER_FILES_KEY, sbUser.id);
+    else localStorage.removeItem(SERVER_FILES_KEY);
+  } catch (e) { /* full disk: the next read decides */ }
+}
+
+/** Typed entries not named yet: the ones the server may still file. */
+function blankEntries(rows) {
+  return (rows || []).filter(function (r) {
+    return (r.type === 'work' || r.type === 'voice') && r.rid && !r.project && !r.node_id;
+  });
+}
+
+/** A `file` press this device still holds for that entry, or null. */
+function queuedFile(rid) {
+  return outboxMine().filter(function (it) {
+    return it.action === 'file' && (it.payload || {}).entry_rid === rid;
+  })[0] || null;
+}
+
+/** "NeuraVue › fix login" for a task node, from the mirror; '' when unknown. */
+function nodePath(id) {
+  var node = taskNodes.filter(function (n) { return n.id === id; })[0];
+  if (!node) return '';
+  var up = node.kind === 'subtask' ? taskNodes.filter(function (n) {
+    return n.google_id === node.parent_google_id && n.list_id === node.list_id;
+  })[0] : null;
+  return (up ? (up.title || '(untitled)') + ' › ' : '') + (node.title || '(untitled)');
+}
+
+/** The quiet line under a typed entry in Today: where it was filed, or how far
+ *  filing got. '' for other rows, v1 labels, and anything while not connected. */
+function filingNote(entry) {
+  if (entry.type !== 'work' && entry.type !== 'voice') return '';
+  if (entry.node_id) {
+    return nodePath(entry.node_id) ||
+           [entry.project, entry.detail].filter(Boolean).join(' › ');
+  }
+  if (entry.project || !entry.rid || !serverFiles()) return '';
+  var held = queuedFile(entry.rid);
+  if (held) return (nodePath(held.payload.node_id) || held.payload.project || 'Filed') + ' · sending';
+  var st = filingByRid[entry.rid];
+  if (st) return st.state === 'pending' ? 'filing…' : st.state === 'unsorted' ? 'Unsorted' : '';
+  return filingAsked[entry.rid] ? '' : 'filing…';
+}
+
+/** Tile names that are still a sentence only because filing has not landed. */
+function filingKeys() {
+  var out = userMap();
+  blankEntries(sessionLog()).forEach(function (r) {
+    if (filingNote(r) === 'filing…') out[String(r.raw_text || '').trim()] = 1;
+  });
+  return out;
+}
+
+/** Read again shortly: today's filing and the tray. One read for a burst. */
+function scheduleFiling(ms) {
+  clearTimeout(filingTimer);
+  filingTimer = setTimeout(refreshFiling, typeof ms === 'number' ? ms : 400);
+}
+
+async function refreshFiling() {
+  if (!supabaseReady() || !serverFiles()) {
+    trayEntries = [];
+    paintFiling();
+    return;
+  }
+  await Promise.all([readFiling(), readTray()]);
+  paintFiling();
+}
+
+/** How far today's blank entries got. A failed read keeps the last. */
+async function readFiling() {
+  var rids = blankEntries(sessionLog()).map(function (r) { return r.rid; }).slice(0, 200);
+  if (!rids.length) return;
+  try {
+    var res = await sb.from('entry_filing').select('entry_rid,state,reason').in('entry_rid', rids);
+    if (res.error) return;
+    var map = userMap();
+    (res.data || []).forEach(function (r) { map[r.entry_rid] = r; });
+    filingByRid = map;
+    rids.forEach(function (rid) { filingAsked[rid] = 1; });
+  } catch (e) { /* the last read stands */ }
+}
+
+/** The Unsorted entries, with Gemini's proposed items. A failed read keeps the last. */
+async function readTray() {
+  try {
+    var f = await sb.from('entry_filing').select('entry_rid,reason,updated_at')
+      .eq('state', 'unsorted').order('updated_at', { ascending: false }).limit(50);
+    if (f.error) return;
+    var rids = (f.data || []).map(function (r) { return r.entry_rid; });
+    if (!rids.length) { trayEntries = []; return; }
+    var ev = await sb.from('events').select('rid,at,raw_text,project,node_id').in('rid', rids);
+    if (ev.error) return;
+    var it = await sb.from('items').select('rid,source_rid,title').in('source_rid', rids).limit(500);
+    var byRid = userMap();
+    (ev.data || []).forEach(function (e) { byRid[e.rid] = e; });
+    var items = userMap();
+    if (!it.error) {
+      (it.data || []).slice().sort(function (a, b) { return a.rid < b.rid ? -1 : 1; }).forEach(function (x) {
+        (items[x.source_rid] = items[x.source_rid] || []).push(String(x.title || ''));
+      });
+    }
+    // An entry named meanwhile (by hand on the other device, say) has left the tray.
+    trayEntries = (f.data || []).map(function (r) {
+      var e = byRid[r.entry_rid];
+      if (!e || e.project || e.node_id) return null;
+      return { rid: e.rid, text: String(e.raw_text || ''), at: e.at, reason: r.reason || '',
+               items: items[e.rid] || [] };
+    }).filter(Boolean);
+  } catch (e) { /* the last read stands */ }
+}
+
+function paintFiling() {
+  renderLogList();
+  renderDaySummary();
+  paintTray();
+}
+
+/** Why an entry is Unsorted, keyed by entry_filing.reason. */
+var TRAY_REASONS = {
+  'no-match': 'No task matched it.',
+  'no-sub-task': 'Gemini found the project, not the task.',
+  budget: 'Gemini’s calls for today were used up.',
+  'too-old': 'It waited too long to be filed.',
+  'no-tasks': 'Your Tasks list had nothing open.',
+  'no-answer': 'Gemini did not give a usable answer.'
+};
+
+function trayChip(text, onTap) {
+  var b = document.createElement('button');
+  b.type = 'button';
+  b.className = 'chip';
+  b.textContent = text;
+  b.addEventListener('click', onTap);
+  return b;
+}
+
+/** The tray: each entry, then its projects; a project with open tasks, then its tasks. */
+function paintTray() {
+  var card = $('tasksTrayCard');
+  var list = $('tasksTray');
+  var on = tasksConnected() && serverFiles() && typeof mirrorTree === 'function';
+  var shown = on ? trayEntries.filter(function (e) { return !queuedFile(e.rid); }) : [];
+  list.textContent = '';
+  card.hidden = !shown.length;
+  if (!shown.length) return;
+  var projects = mirrorTree(currentNodes()).filter(function (p) { return p.node && p.state === 'open'; });
+  shown.forEach(function (e) {
+    var li = document.createElement('li');
+    li.setAttribute('data-rid', e.rid);
+    var text = document.createElement('div');
+    text.textContent = e.text;
+    li.appendChild(text);
+    var meta = document.createElement('div');
+    meta.className = 'plan-meta';
+    var t = instantOf(e.at);
+    meta.textContent = [isFinite(t) ? taskWhenLabel(t) : '', TRAY_REASONS[e.reason] || '']
+      .filter(Boolean).join(' · ');
+    li.appendChild(meta);
+    if (e.items.length) {
+      var ul = document.createElement('ul');
+      ul.className = 'tray-items';
+      e.items.forEach(function (title) {
+        var item = document.createElement('li');
+        item.textContent = title;
+        ul.appendChild(item);
+      });
+      li.appendChild(ul);
+    }
+    var pick = document.createElement('div');
+    pick.className = 'tray-pick';
+    var chosen = projects.filter(function (p) { return p.node.google_id === trayPick[e.rid]; })[0];
+    if (chosen) {
+      pick.appendChild(trayChip('‹ ' + (chosen.node.title || '(untitled)'), function () {
+        delete trayPick[e.rid];
+        paintTray();
+      }));
+      chosen.children.filter(function (c) { return c.state === 'open'; }).forEach(function (c) {
+        pick.appendChild(trayChip(c.node.title || '(untitled)', function () {
+          fileFromTray(e, { node: c.node, up: chosen.node });
+        }));
+      });
+    } else {
+      projects.forEach(function (p) {
+        var open = p.children.some(function (c) { return c.state === 'open'; });
+        pick.appendChild(trayChip(p.node.title || '(untitled)', function () {
+          if (!open) { fileFromTray(e, { node: p.node, up: null }); return; }
+          trayPick[e.rid] = p.node.google_id;
+          paintTray();
+        }));
+      });
+    }
+    li.appendChild(pick);
+    list.appendChild(li);
+  });
+}
+
+/** File one Unsorted entry under `leaf` ({node, up}). The titles go on the entry
+ *  only when renaming its tile is safe, the server's own rule (day.js). */
+function fileFromTray(entry, leaf) {
+  var named = taskEntry(leaf);
+  var payload = { entry_rid: entry.rid, node_id: leaf.node.id, entry_at: entry.at, raw_text: entry.text };
+  if (canRename(sessionLog(), entry.rid, entry.text.trim(), named.project)) {
+    payload.project = named.project;
+    payload.detail = named.detail;
+  }
+  delete trayPick[entry.rid];
+  api('file', payload).then(function () {
+    scheduleFiling();
+    scheduleRefresh(400);
+  }, function (err) {
+    flash(String((err && err.message) || err), 'err');
+    scheduleFiling();
+  });
+  paintFiling();                            // the held press takes it out of the tray now
+  flash('Filed under ' + (named.detail ? named.project + ' › ' + named.detail : named.project), 'ok');
+}
+
+/* Its own channel, like the others: a missing entry_filing table must not take
+ * another feed down. The announcement is only a nudge; the rows are read again. */
+function watchFiling() {
+  if (!sb || !sbUser || filingChannel) return;
+  filingChannel = sb.channel('probeing-filing')
+    .on('postgres_changes', { event: '*', schema: 'public', table: 'entry_filing' },
+        function () { scheduleFiling(); })
+    .subscribe();
+}
+
+function stopFiling() {
+  clearTimeout(filingTimer);
+  filingByRid = userMap();
+  filingAsked = userMap();
+  trayEntries = [];
+  trayPick = userMap();
+  if (!filingChannel) return;
+  try { sb.removeChannel(filingChannel); } catch (e) { /* already gone */ }
+  filingChannel = null;
+}
 
 // ------------------------------------------------- prayer reminders (29 Sep)
 /* The prayer-remind function's on/off, in user_settings so the server reads it.
