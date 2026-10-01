@@ -56,7 +56,7 @@ shipped in `f733804`; `CLAUDE.md` carries the full reasoning.
 > | ✅ | (added) Prayer reminders | live 1 Oct — at each prayer's start, then 60/30/15 min before it ends while unlogged |
 > | ✅ | (added) Tasks page | live 1 Oct — Working on, Planned, All tasks |
 > | ✅ | 14a Gemini files his entries; Unsorted tray | live 1 Oct 13:46 — entries filed in batches (wait up to ~35 min) under one shared daily budget of 18 calls; first real filing still to be seen |
-> | ⬜ | 14b Done/Drop items, time per sub-task, widget shows the sub-task | waiting for Saad's go |
+> | 🟡 | 14b Done/Drop items, time per sub-task, widget shows the sub-task | building — Saad said go, 1 Oct ~18:00 |
 > | ⬜ | 15 Finishing a task flows back to Google | waiting |
 > | ⬜ | 16 "What's done" page | waiting |
 > | ⬜ | 17 Morning push: "Today: N due" | waiting |
