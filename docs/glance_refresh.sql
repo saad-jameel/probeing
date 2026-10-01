@@ -55,6 +55,19 @@ create trigger glance_refresh_after_write
   for each statement
   execute function public.glance_refresh_after_insert();
 
+-- Stage 14b: the widget lists the current sub-task's open items, so a Done, a
+-- Drop or a new item refreshes it too. Needs supabase_schema.sql's item_marks.
+drop trigger if exists glance_refresh_after_mark on public.item_marks;
+create trigger glance_refresh_after_mark
+  after insert on public.item_marks
+  for each statement
+  execute function public.glance_refresh_after_insert();
+drop trigger if exists glance_refresh_after_item on public.items;
+create trigger glance_refresh_after_item
+  after insert or update on public.items
+  for each statement
+  execute function public.glance_refresh_after_insert();
+
 -- The schedule. UTC, but every 10 minutes all day, so the zone does not matter.
 select cron.unschedule(jobid) from cron.job where jobname = 'probeing-glance-refresh';
 select cron.schedule('probeing-glance-refresh', '*/10 * * * *',

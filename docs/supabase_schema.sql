@@ -1110,6 +1110,62 @@ create trigger entry_filed_by_hand
   when (old.node_id is null and new.node_id is not null and new.rid is not null)
   execute function public.entry_filed_by_hand();
 
+-- ====================================================== items (14b)
+-- Stage 14b. Done and Drop on an item, and items added by hand.
+
+-- A hand-added item: his own, under a task of his own, never pretending to be
+-- Gemini's or to come from an entry. classify keeps writing with the service
+-- role. Column grant: the browser cannot set id, created_at or user_id.
+do $$ begin
+  create policy "insert own hand items" on public.items
+    for insert with check (auth.uid() = user_id and made_by = 'hand' and source_rid is null and
+      node_id is not null and exists (
+        select 1 from public.task_nodes n where n.id = node_id and n.user_id = auth.uid()));
+exception when duplicate_object then null; end $$;
+grant insert (rid, node_id, title, made_by, at) on public.items to authenticated;
+
+-- item_marks: every Done, Drop and Undo ('open'), append-only. An item's state
+-- is its newest mark by `at`, ties by created_at; no mark is open.
+-- item_rid, not the item's id: an item added offline has no id until it lands,
+-- and a mark made on it meanwhile must still name it. A rid is only unique per
+-- user, so a mark can only ever name the marker's own items. No check that the
+-- item exists: a mark may reach the table before its item does, and a refusal
+-- is never retried (money's voids_rid, for the same reason).
+create table if not exists public.item_marks (
+  id          uuid        primary key default gen_random_uuid(),
+  user_id     uuid        not null default auth.uid() references auth.users on delete cascade,
+  rid         text        not null,
+  item_rid    text        not null check (char_length(item_rid) between 1 and 200),
+  mark        text        not null check (mark in ('done', 'drop', 'open')),
+  at          timestamptz not null default now(),
+  local_time  text        not null default '',
+  created_at  timestamptz not null default now(),
+  constraint item_marks_user_rid_key unique (user_id, rid)
+);
+
+create index if not exists item_marks_user_item_idx on public.item_marks (user_id, item_rid, at desc);
+
+alter table public.item_marks enable row level security;
+
+do $$ begin
+  create policy "read own marks" on public.item_marks
+    for select using (auth.uid() = user_id);
+exception when duplicate_object then null; end $$;
+
+do $$ begin
+  create policy "insert own marks" on public.item_marks
+    for insert with check (auth.uid() = user_id);
+exception when duplicate_object then null; end $$;
+
+-- No update or delete: Undo is another mark.
+revoke insert, update, delete, truncate on table public.item_marks from anon, authenticated;
+grant insert (rid, item_rid, mark, at, local_time) on public.item_marks to authenticated;
+
+-- So a Done on one device redraws the other.
+do $$ begin
+  alter publication supabase_realtime add table public.item_marks;
+exception when duplicate_object then null; end $$;
+
 -- ================================================== the schedule (pg_cron)
 -- NOT RUN BY THIS FILE. It is commented out on purpose, because it carries two
 -- values that must never be committed — paste it into the SQL editor with your

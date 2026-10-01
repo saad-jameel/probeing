@@ -421,9 +421,20 @@ function store(sb: any, owner: string) {
     nodes: async (listId: string) => must(await sb.from('task_nodes')
       .select('id,google_id,list_id,parent_google_id,kind,title,position,g_status,gone_at')
       .eq('user_id', owner).eq('list_id', listId).limit(1000)) || [],
-    items: async (nodeIds: string[]) => nodeIds.length ? must(await sb.from('items')
-      .select('rid,node_id,title').eq('user_id', owner).in('node_id', nodeIds)
-      .order('created_at', { ascending: false }).limit(500)) || [] : [],
+    // Open items only (14b): one Done or Dropped is not offered to Gemini as a match.
+    // Marks unreadable: all of them, as before item_marks existed.
+    items: async (nodeIds: string[]) => {
+      if (!nodeIds.length) return [];
+      const rows = must(await sb.from('items')
+        .select('rid,node_id,title').eq('user_id', owner).in('node_id', nodeIds)
+        .order('created_at', { ascending: false }).limit(500)) || [];
+      if (!rows.length) return rows;
+      const marks = await sb.from('item_marks').select('rid,item_rid,mark,at,created_at')
+        .eq('user_id', owner).order('at', { ascending: false }).limit(5000);
+      if (marks.error) return rows;
+      const state = Day.itemStates(marks.data || []);
+      return rows.filter((r: { rid: string }) => (state[r.rid] || 'open') === 'open');
+    },
     // Fill-once, as the browser's label: only a row still blank.
     file: async (rid: string, fields: Record<string, unknown>) => (must(await sb.from('events')
       .update(fields).eq('user_id', owner).eq('rid', rid).eq('project', '').is('node_id', null)
