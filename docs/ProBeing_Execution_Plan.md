@@ -55,7 +55,7 @@ shipped in `f733804`; `CLAUDE.md` carries the full reasoning.
 > | ✅ | 13b (added) Strict prayers, End-day prayer check, Lend/Borrow, "?" help | live 1 Oct — a prayer logs once a day; Isha counts until Fajr |
 > | ✅ | (added) Prayer reminders | live 1 Oct — at each prayer's start, then 60/30/15 min before it ends while unlogged |
 > | ✅ | (added) Tasks page | live 1 Oct — Working on, Planned, All tasks |
-> | 🟡 | 14a Gemini files his entries; Unsorted tray | built; fix round in progress |
+> | ✅ | 14a Gemini files his entries; Unsorted tray | live 1 Oct 13:46 — entries filed in batches (wait up to ~35 min) under one shared daily budget of 18 calls; first real filing still to be seen |
 > | ⬜ | 14b Done/Drop items, time per sub-task, widget shows the sub-task | waiting for Saad's go |
 > | ⬜ | 15 Finishing a task flows back to Google | waiting |
 > | ⬜ | 16 "What's done" page | waiting |
