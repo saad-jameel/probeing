@@ -413,8 +413,8 @@ function prayersOn(prayers, ymd, offsetMin) {
 var LEAD_MAX_MS = 48 * 3600000;
 
 /** Rows that move the work clock or name a project, plus `awake` for the idle
- *  cap. No M, prayer or wake. */
-var LEAD_TYPES = ['work', 'voice', 'done', 'break', 'resume', 'off', 'sleep', 'awake'];
+ *  cap and `subdone` for the sub-task clock. No M, prayer or wake. */
+var LEAD_TYPES = ['work', 'voice', 'done', 'break', 'resume', 'off', 'sleep', 'awake', 'subdone'];
 
 /** An open clock stops counting this long after the last work-session row: the
  *  night checks span 23:30 to 11:00 (11.5 h), so anything longer was forgotten. */
@@ -423,7 +423,7 @@ var IDLE_MAX_MS = 12 * 3600000;
 /** Rows that show the session is still being tended. `awake` is a Yes to the
  *  night check (wrapup writes it). Not M, prayer or wake: they say he is up, not
  *  that the clock left running is still work. */
-var IDLE_RESET_TYPES = ['work', 'voice', 'done', 'break', 'resume', 'awake'];
+var IDLE_RESET_TYPES = ['work', 'voice', 'done', 'break', 'resume', 'awake', 'subdone'];
 
 /**
  * The lead-in for a day starting at `beforeMs`: rows of LEAD_TYPES earlier than
@@ -556,6 +556,12 @@ function replayDay(log, endMs, fromMs) {
   var dayClosed = false;                    // ended for the night, or asleep
   var lastT = 0;
   var order = [];                           // projects, most recently started last
+  /* Stage 14b: the one sub-task being worked on (a task_nodes id), and the
+   * project key of the row that named it. Credited only while the clock runs,
+   * so a break pauses it and resume carries on (C2). */
+  var curSub = '';
+  var curSubKey = '';
+  var bySubtask = userMap();
 
   /* Never credit past this instant. A device clock running behind the server
    * makes real rows look like the future, and the day would inflate until the
@@ -583,6 +589,7 @@ function replayDay(log, endMs, fromMs) {
       var span = until - from;
       if (clock) {
         worked += span;
+        if (curSub) bySubtask[curSub] = (bySubtask[curSub] || 0) + span;
         var names = Object.keys(active);
         if (!names.length) unattributed += span;
         names.forEach(function (p) {
@@ -615,6 +622,9 @@ function replayDay(log, endMs, fromMs) {
       // Adds, never replaces — that is the whole point of multitasking.
       var name = String(row.project || text).trim();
       if (name) { active[name] = 1; remember(name); }
+      // A filed entry names its sub-task; one that is not filed ends it.
+      curSub = row.node_id ? String(row.node_id) : '';
+      curSubKey = curSub ? name : '';
       clock = true;
       underWay = true;
       dayClosed = false;
@@ -622,6 +632,7 @@ function replayDay(log, endMs, fromMs) {
     } else if (row.type === 'done') {
       var finished = String(row.project || text).trim();
       delete active[finished];
+      if (curSub && finished === curSubKey) curSub = '';   // Stop on its project
       var idx = order.indexOf(finished);
       if (idx !== -1) order.splice(idx, 1);
     } else if (row.type === 'resume') {
@@ -659,6 +670,7 @@ function replayDay(log, endMs, fromMs) {
       reasons = userMap();
       underWay = false;
       dayClosed = true;
+      curSub = '';
       /* `off` ends the session, so its projects close with it and the next one
        * starts empty. Every Sleep that ends the day writes `off` too; a lone
        * `sleep` is a nap on a break, which keeps them (Saad, 29 Sep). */
@@ -666,6 +678,9 @@ function replayDay(log, endMs, fromMs) {
         active = userMap();
         order = [];
       }
+    } else if (row.type === 'subdone') {
+      // The last item under it was closed. Only that sub-task stops.
+      if (row.node_id && String(row.node_id) === curSub) curSub = '';
     }
     // wake / awake / M / prayer do not move the work clock
   });
@@ -687,7 +702,10 @@ function replayDay(log, endMs, fromMs) {
     paused: paused,
     breakReason: Object.keys(reasons).join(REASON_SEP),
     activeReasons: Object.keys(reasons),
-    byReason: byReason
+    byReason: byReason,
+    bySubtask: bySubtask,                   // task_nodes id -> ms; sum <= worked
+    currentSubtask: curSub,                 // '' when none
+    subtaskProject: curSub ? curSubKey : '' // the project key it was named under
   };
 }
 
@@ -711,10 +729,15 @@ function replayDay(log, endMs, fromMs) {
  *               passes it; without it `notStarted` stays false.
  * @param lead   the session's rows from before the rollover (sessionLead()).
  *               Replayed for hours and "working on"; never counted. */
-function dayFigures(log, prayers, endMs, carry, lead) {
+function dayFigures(log, prayers, endMs, carry, lead, tree) {
   log = log || [];
   prayers = prayers || [];
-  var day = replayDay(log.concat(lead || []), endMs);
+  // No tree (or an empty one), no new code on the path: v1 figures exactly as before 14b.
+  var nodes = tree && tree.nodes && tree.nodes.length ? tree.nodes : null;
+  var rows = log.concat(lead || []);
+  var day = replayDay(nodes ? namedRows(rows, nodes) : rows, endMs);
+  var sub = nodes && day.currentSubtask && day.subtaskProject === day.project
+          ? nodeIndex(nodes).byId[day.currentSubtask] : null;
 
   return {
     day: day,                               // the whole replay, for the card's list
@@ -732,8 +755,114 @@ function dayFigures(log, prayers, endMs, carry, lead) {
     // prayer or a wake at 5 AM does not start the work day.
     notStarted: Array.isArray(carry) &&
                 !log.some(function (r) { return movesWorkClock(r.type); }) &&
-                !openBeforeToday(carry)
+                !openBeforeToday(carry),
+    // The sub-task under `project` being worked on, when the tree is given.
+    subtask: sub ? sub.id : '',
+    subtaskTitle: sub ? String(sub.title || '').trim() || '(untitled)' : ''
   };
+}
+
+/* ── Task names and items (Stage 14b) ──────────────────────────────────────
+ * `nodes` are task_nodes rows; `items` and `marks` the items and item_marks
+ * rows. A tree is {nodes, items, marks}; every part may be missing. */
+
+/** Nodes by id, and by list + google_id for finding a sub-task's project. */
+function nodeIndex(nodes) {
+  var byId = userMap();
+  var byGoogle = userMap();
+  (nodes || []).forEach(function (n) {
+    if (!n || !n.id) return;
+    byId[n.id] = n;
+    byGoogle[(n.list_id || '') + '|' + n.google_id] = n;
+  });
+  return { byId: byId, byGoogle: byGoogle };
+}
+
+/** {project, detail} as the tree names node `id` now; null when unknown. */
+function nodeNames(index, id) {
+  var n = index.byId[id];
+  if (!n) return null;
+  var title = String(n.title || '').trim() || '(untitled)';
+  if (n.kind !== 'subtask') return { project: title, detail: '' };
+  var up = index.byGoogle[(n.list_id || '') + '|' + n.parent_google_id];
+  if (!up) return null;
+  return { project: String(up.title || '').trim() || '(untitled)', detail: title };
+}
+
+/**
+ * Rows with each named task's CURRENT titles, so a rename in Google does not
+ * split a project in two. Work, voice and done rows only, and only ones that
+ * already carry a name: a blank one is keyed on its sentence, and naming it
+ * here would reopen a tile its Stop closed (canRename). A row with no node
+ * whose name was some task's old name takes the new one too, when that is
+ * unambiguous. No nodes: the same array, untouched.
+ */
+function namedRows(rows, nodes) {
+  if (!nodes || !nodes.length || !rows || !rows.length) return rows || [];
+  var index = nodeIndex(nodes);
+  var alias = userMap();
+  var names = rows.map(function (r) {
+    if (!r || !r.node_id || !String(r.project || '').trim()) return null;
+    if (r.type !== 'work' && r.type !== 'voice' && r.type !== 'done') return null;
+    var now = nodeNames(index, r.node_id);
+    if (!now) return null;
+    var was = String(r.project).trim();
+    if (alias[was] === undefined) alias[was] = now.project;
+    else if (alias[was] !== now.project) alias[was] = null;      // two answers: use neither
+    return now;
+  });
+  return rows.map(function (r, i) {
+    if (names[i]) {
+      var out = Object.assign({}, r, { project: names[i].project });
+      if (r.type !== 'done') out.detail = names[i].detail;
+      return out;
+    }
+    var was = r && String(r.project || '').trim();
+    if (!was || r.node_id || (r.type !== 'work' && r.type !== 'voice' && r.type !== 'done')) return r;
+    var to = alias[was];
+    return to && to !== was ? Object.assign({}, r, { project: to }) : r;
+  });
+}
+
+/** When two marks agree on `at`, the one the table took later wins; one still
+ *  on this device (no created_at yet) is newer than any that landed. */
+function markNewer(a, b) {
+  var ta = instantOf(a.at);
+  var tb = instantOf(b.at);
+  if (ta !== tb) return ta > tb;
+  var ca = a.created_at ? instantOf(a.created_at) : Infinity;
+  var cb = b.created_at ? instantOf(b.created_at) : Infinity;
+  if (ca !== cb) return ca > cb;
+  return String(a.rid || '') > String(b.rid || '');
+}
+
+var ITEM_MARKS = { done: 1, drop: 1, open: 1 };
+
+/** item rid -> 'done' | 'drop' | 'open': its newest mark. No mark is open. */
+function itemStates(marks) {
+  var newest = userMap();
+  (marks || []).forEach(function (m) {
+    if (!m || !m.item_rid || ITEM_MARKS[m.mark] !== 1 || isNaN(instantOf(m.at))) return;
+    var have = newest[m.item_rid];
+    if (!have || markNewer(m, have)) newest[m.item_rid] = m;
+  });
+  var out = userMap();
+  Object.keys(newest).forEach(function (rid) { out[rid] = newest[rid].mark; });
+  return out;
+}
+
+/** The items under node `id`, in the order they were made, each with `state`. */
+function itemsOf(tree, id) {
+  if (!tree || !id) return [];
+  var states = itemStates(tree.marks);
+  return (tree.items || []).filter(function (it) {
+    return it && it.rid && it.node_id === id;
+  }).map(function (it) {
+    return Object.assign({}, it, { state: states[it.rid] || 'open' });
+  }).sort(function (a, b) {
+    return (instantOf(a.at) - instantOf(b.at)) ||
+           String(a.rid).localeCompare(String(b.rid), 'en', { numeric: true });
+  });
 }
 
 /** Is the tile keyed `key` still open in these rows (newest first)? */
@@ -830,7 +959,9 @@ function glanceText(figures, asOfMs, offsetMin) {
     title = figures.project ? 'Day done · ' + figures.project : 'Day done';
   } else {
     title = figures.project
-      ? 'Working on: ' + figures.project + (figures.running ? '' : ' · paused')
+      ? 'Working on: ' + figures.project +
+        (figures.subtaskTitle ? ' · ' + figures.subtaskTitle : '') +
+        (figures.running ? '' : ' · paused')
       : 'Working on: nothing open';
   }
 
@@ -886,9 +1017,12 @@ function projectTasks(rows, name) {
 }
 
 /* The widget's list is capped so it cannot outgrow the widget: at most
- * 1 + 4 x (1 + 3 + 1) + 1 = 22 lines, and each line short enough to stay one line. */
+ * 1 + 4 x (1 + 3 + 1) + 1 = 22 lines, and each line short enough to stay one line.
+ * The project holding the current sub-task spends the same five: itself, the
+ * sub-task, two open items and a "+n more". */
 var GLANCE_LIST_PROJECTS = 4;
 var GLANCE_LIST_TASKS = 3;
+var GLANCE_LIST_ITEMS = 2;
 var GLANCE_LIST_CHARS = 44;
 
 /** Shorten to `max` characters, at a word break where there is one, with "…". */
@@ -922,12 +1056,18 @@ function clipLine(text, max) {
  * @param log    today's rows, newest first, as replayDay() takes them.
  * @param endMs  where the day stops; omitted, it is now.
  * @param lead   the session's rows from before the rollover, as for dayFigures.
+ * @param tree   optional {nodes, items, marks}: names are the tree's, and the
+ *               current sub-task shows as "    ▸ title" with its open items.
  */
-function glanceList(log, endMs, lead) {
+function glanceList(log, endMs, lead, tree) {
   log = (log || []).concat(lead || []);
+  var nodes = tree && tree.nodes && tree.nodes.length ? tree.nodes : null;
+  if (nodes) log = namedRows(log, nodes);
   var day = replayDay(log, endMs);
   var open = day.activeProjects.slice().reverse();
   if (!open.length) return '';
+  var subNode = nodes && day.currentSubtask
+              ? nodeIndex(nodes).byId[day.currentSubtask] : null;
 
   var heading = day.dayClosed ? 'Day done · still open:'
               : day.running ? 'Working on:'
@@ -936,6 +1076,15 @@ function glanceList(log, endMs, lead) {
 
   open.slice(0, GLANCE_LIST_PROJECTS).forEach(function (name) {
     lines.push('- ' + clipLine(name, GLANCE_LIST_CHARS));
+    if (subNode && name === day.subtaskProject) {
+      lines.push('    ▸ ' + clipLine(String(subNode.title || '').trim() || '(untitled)', GLANCE_LIST_CHARS));
+      var items = itemsOf(tree, subNode.id).filter(function (it) { return it.state === 'open'; });
+      items.slice(0, GLANCE_LIST_ITEMS).forEach(function (it) {
+        lines.push('    - ' + clipLine(it.title, GLANCE_LIST_CHARS));
+      });
+      if (items.length > GLANCE_LIST_ITEMS) lines.push('    +' + (items.length - GLANCE_LIST_ITEMS) + ' more');
+      return;
+    }
     var tasks = projectTasks(log, name);
     tasks.slice(0, GLANCE_LIST_TASKS).forEach(function (task) {
       lines.push('    - ' + clipLine(task, GLANCE_LIST_CHARS));
@@ -968,5 +1117,8 @@ globalThis.ProBeingDay = {
   canRename: canRename,
   openBeforeToday: openBeforeToday,
   glanceText: glanceText,
-  glanceList: glanceList
+  glanceList: glanceList,
+  namedRows: namedRows,
+  itemStates: itemStates,
+  itemsOf: itemsOf
 };

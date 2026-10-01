@@ -30,10 +30,12 @@ const Day = (globalThis as unknown as { ProBeingDay: {
   LEAD_MAX_MS: number;
   LEAD_TYPES: string[];
   dayFigures: (log: unknown[], prayers: unknown[], endMs?: number, carry?: unknown[],
-               lead?: unknown[]) => unknown;
+               lead?: unknown[], tree?: Tree) => { subtask: string };
   glanceText: (figures: unknown, asOfMs: number, offsetMin?: number) => { title: string; body: string };
-  glanceList: (log: unknown[], endMs?: number, lead?: unknown[]) => string;
+  glanceList: (log: unknown[], endMs?: number, lead?: unknown[], tree?: Tree) => string;
 } }).ProBeingDay;
+
+type Tree = { nodes: unknown[]; items: unknown[]; marks: unknown[] };
 
 function reply(status: number, body: unknown): Response {
   return new Response(JSON.stringify(body), {
@@ -62,9 +64,11 @@ function splitToday(rows) {
       prayers.push({ at: r.at, local: r.local_time || '',
                      prayer: r.project || '', mode: r.detail || '' });
     } else {
-      log.push({ at: r.at, local: r.local_time || '', type: r.type,
-                 raw_text: r.raw_text || '', project: r.project || '',
-                 detail: r.detail || '' });
+      var row = { at: r.at, local: r.local_time || '', type: r.type,
+                  raw_text: r.raw_text || '', project: r.project || '',
+                  detail: r.detail || '' };
+      if (r.node_id) row.node_id = r.node_id;       // the task it was filed under (14b)
+      log.push(row);
     }
   });
   return { log: log, prayers: prayers };
@@ -94,6 +98,34 @@ async function useSavedPlace(sb: ReturnType<typeof admin>, owner: string, now: n
   const place = Day.setPrayerPlace(row ? { lat: row.lat, lng: row.lng, zone: row.time_zone,
                                            method: row.method, asr: row.asr_school } : null);
   return { zone: place.zone, offset: Day.zoneOffsetMin(place.zone, now, TZ_OFFSET_MIN) };
+}
+
+/** His task_nodes rows, for names; [] when they cannot be read. */
+async function taskNodes(sb: ReturnType<typeof admin>, owner: string): Promise<unknown[]> {
+  try {
+    const got = await sb.from('task_nodes')
+      .select('id, google_id, list_id, parent_google_id, kind, title')
+      .eq('user_id', owner).limit(2000);
+    return got.error ? [] : got.data || [];
+  } catch (_e) {
+    return [];
+  }
+}
+
+/** The items under one sub-task and their marks; none when either read fails,
+ *  so a missing mark can never show a closed item as open. */
+async function subtaskItems(sb: ReturnType<typeof admin>, owner: string, nodeId: string) {
+  try {
+    const items = await sb.from('items').select('rid, node_id, title, at')
+      .eq('user_id', owner).eq('node_id', nodeId).limit(200);
+    if (items.error || !(items.data || []).length) return { items: [], marks: [] };
+    const marks = await sb.from('item_marks').select('rid, item_rid, mark, at, created_at')
+      .eq('user_id', owner).in('item_rid', items.data.map((i: { rid: string }) => i.rid)).limit(2000);
+    if (marks.error) return { items: [], marks: [] };
+    return { items: items.data, marks: marks.data || [] };
+  } catch (_e) {
+    return { items: [], marks: [] };
+  }
 }
 
 /** The service client. It bypasses row level security, so writes name user_id. */
@@ -131,7 +163,7 @@ Deno.serve(async (req: Request): Promise<Response> => {
 
   // created_at breaks ties on `at`, so newest-first really is append order.
   const todayRes = await sb.from('events')
-    .select('at, local_time, type, raw_text, project, detail')
+    .select('at, local_time, type, raw_text, project, detail, node_id')
     .eq('user_id', owner).gte('at', dayStart)
     .order('at', { ascending: false }).order('created_at', { ascending: false })
     .limit(1000);
@@ -148,7 +180,7 @@ Deno.serve(async (req: Request): Promise<Response> => {
 
   // The session still running from before the rollover: replayed, never counted.
   const leadRes = await sb.from('events')
-    .select('at, local_time, type, raw_text, project, detail')
+    .select('at, local_time, type, raw_text, project, detail, node_id')
     .eq('user_id', owner).lt('at', dayStart)
     .gte('at', new Date(dayStartMs - Day.LEAD_MAX_MS).toISOString())
     .in('type', Day.LEAD_TYPES)
@@ -160,10 +192,14 @@ Deno.serve(async (req: Request): Promise<Response> => {
   const split = splitToday(todayRes.data || []);
   // An Isha logged in the minutes before Fajr is the day before's (prayerDate).
   const prayers = Day.prayersOn(split.prayers, Day.counterDate(now, place.offset), place.offset);
-  const figures = Day.dayFigures(split.log, prayers, now, carryRes.data || [], lead);
+  // His task names, then the current sub-task's items. Any of it unreadable: the
+  // words without them, as before Stage 14b.
+  const tree: Tree = { nodes: await taskNodes(sb, owner), items: [], marks: [] };
+  const figures = Day.dayFigures(split.log, prayers, now, carryRes.data || [], lead, tree);
+  if (figures.subtask) Object.assign(tree, await subtaskItems(sb, owner, figures.subtask));
   const text = Day.glanceText(figures, now, place.offset);
   // The widget's list of open projects; the notification shade keeps title and body.
-  const lines = Day.glanceList(split.log, now, lead);
+  const lines = Day.glanceList(split.log, now, lead, tree);
 
   const stamp = new Date(now).toISOString();
   const up = await sb.from('glance').upsert({
