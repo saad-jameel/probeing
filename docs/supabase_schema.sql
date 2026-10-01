@@ -1245,7 +1245,7 @@ grant select on public.item_mark_latest to authenticated;
 --   kind 'opening'  what the wallet held at `at`; dir 'set'; 0 is allowed.
 -- The new dirs are outside in/out on purpose: the app before Money 2 counts an
 -- in/out row that is not a loan as spending or income, and skips any other dir.
--- Every live row (cash and loan, in or out) passes all four checks below.
+-- Every live row (cash and loan, in or out) passes all five checks below.
 -- To see what is there first:
 --   select conname, pg_get_constraintdef(oid) from pg_constraint
 --    where conrelid = 'public.money'::regclass and contype = 'c';
