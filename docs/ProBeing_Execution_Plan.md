@@ -57,7 +57,7 @@ shipped in `f733804`; `CLAUDE.md` carries the full reasoning.
 > | ✅ | (added) Tasks page | live 1 Oct — Working on, Planned, All tasks |
 > | ✅ | 14a Gemini files his entries; Unsorted tray | live 1 Oct 13:46 — entries filed in batches (wait up to ~35 min) under one shared daily budget of 18 calls; first real filing still to be seen |
 > | ✅ | 14b Done/Drop items, time per sub-task, widget shows the sub-task | live 2 Oct 02:00 — items with Done/Drop/Undo and "+ item"; a sub-task ends when its last item is closed; a nap pauses it |
-> | 🟡 | (added) Money 2: "Dues", wallet balance, per day till the 1st, new Money screen | built; being checked |
+> | ✅ | (added) Money 2: "Dues", wallet balance, per day till the 1st, new Money screen | live 2 Oct 04:58 — Dues/Logs popups, Expense/Income calculator, running wallet |
 > | ⬜ | 15 Finishing a task flows back to Google | waiting |
 > | ⬜ | 16 "What's done" page | waiting |
 > | ⬜ | 17 Morning push: "Today: N due" | waiting |
