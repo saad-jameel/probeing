@@ -8,13 +8,17 @@
 // Called with the cron secret by an insert trigger on each new entry and by
 // pg_cron every 5 minutes (docs/classify.sql). A run calls Gemini only when a
 // batch is ready — FILE_BATCH_MIN entries waiting, or the oldest waiting
-// FILE_WAIT_MIN minutes — so 30-40 entries a day fit a budget of 18 calls.
-// Otherwise it answers "waiting" after one small read.
+// FILE_WAIT_MIN minutes (default 30) — else it answers "waiting" after one
+// small read. Simulated, 35-40 entries a day spread 08:00-23:00 take about 16
+// calls a day with almost nothing sent to Unsorted for budget, and an entry
+// waits at most about 35 minutes. At 15 minutes the same days used all 18
+// calls and left 5-7 entries a day in the tray.
 //
-// Budget: a gemini_usage slot is taken BEFORE each call (cap GEMINI_DAILY,
-// default 18; at most one call per GEMINI_PACE_MS). Past the cap, an entry
-// whose words name exactly one task is filed there without items; the rest go
-// to Unsorted with reason 'budget'. Google refusing for the day marks it spent.
+// Budget: a gemini_usage slot is taken BEFORE each request, on Google's quota
+// day (the Pacific date), cap GEMINI_DAILY, default 18; at most one call per
+// GEMINI_PACE_MS. Past the cap, an entry whose words name exactly one task is
+// filed there without items; the rest go to Unsorted with reason 'budget'.
+// Google refusing for the day marks it spent.
 //
 // Secrets: CRON_SECRET, ALLOWED_USER_ID, GEMINI_API_KEY and GEMINI_MODEL (all
 // already set for the other functions); GEMINI_DAILY and FILE_WAIT_MIN optional.
@@ -43,7 +47,7 @@ function reply(status: number, body: unknown): Response {
  *    claudeWorkingDocs/tests/classify_*.js can lift it. Day and Tree are
  *    day.js and tree.js. ─────────────────────────────────────────────────── */
 
-var FILE_WAIT_MIN_DEFAULT = 15;
+var FILE_WAIT_MIN_DEFAULT = 30;
 var FILE_BATCH_MIN = 8;              // this many waiting: no need to wait longer
 var FILE_BATCH_MAX = 20;             // entries in one prompt
 var FILE_MAX_AGE_MS = 48 * 3600000;  // a pending row older than this goes to Unsorted
@@ -336,8 +340,9 @@ function scrub(text: unknown): string {
 
 const GEMINI_URL = 'https://generativelanguage.googleapis.com/v1beta/models/';
 
-/** One call. {ok, text} or {ok:false, quota: 'day'|'minute'|'', error}. */
-async function askGemini(key: string, model: string, prompt: string) {
+/** One call. {ok, text} or {ok:false, quota: 'day'|'minute'|'', error}. `another()`
+ *  takes a budget slot for a second request; false means there is none. */
+async function askGemini(key: string, model: string, prompt: string, another: () => Promise<boolean>) {
   const ask: Record<string, unknown> = {
     contents: [{ parts: [{ text: prompt }] }],
     generationConfig: { responseMimeType: 'application/json', responseSchema: CLASSIFY_SCHEMA,
@@ -353,8 +358,9 @@ async function askGemini(key: string, model: string, prompt: string) {
   });
   try {
     let res = await call(ask);
-    // A model that will not take the thinking knob: drop it once, as the gemini function does.
-    if (res.status === 400) {
+    // A model that will not take the thinking knob: drop it once, as the gemini
+    // function does, but only with a slot of its own.
+    if (res.status === 400 && await another()) {
       const gen = { ...(ask.generationConfig as Record<string, unknown>) };
       delete gen.thinkingConfig;
       res = await call({ ...ask, generationConfig: gen });
@@ -486,8 +492,11 @@ async function classifyRun(d: any) {
     return out;
   }
 
+  // The rename check's rows, read just before deciding: a Stop pressed while
+  // Gemini was answering must be seen.
   const oldest = Math.min(...live.map((x) => ms(x.e.at)).filter(isFinite));
-  const rows = await db.rowsSince(new Date((isFinite(oldest) ? oldest : now) - Day.LEAD_MAX_MS).toISOString());
+  const since = new Date((isFinite(oldest) ? oldest : now) - Day.LEAD_MAX_MS).toISOString();
+  let rows: unknown[] = [];
 
   // Writes one entry's filing: the row first, then its items, then its state.
   const apply = async (x: { c: Claim; e: Entry }, place: Place, how: string) => {
@@ -510,6 +519,7 @@ async function classifyRun(d: any) {
   // No call possible: the free title match, else Unsorted 'budget'.
   const fallBack = async () => {
     out.act = 'local';
+    rows = await db.rowsSince(since);
     for (const x of live) {
       const hit = localMatch(x.e.raw_text, cands);
       await apply(x, hit || { project: null, sub: null, items: [], unsorted: 'budget' }, 'local');
@@ -529,7 +539,7 @@ async function classifyRun(d: any) {
     return out;
   };
 
-  const day = await usageDay(db.sb, d.owner, now);
+  const day = usageDay(now);
   const slot = await takeCall(db.sb, d.owner, day, d.cap, GEMINI_PACE_MS);
   if (slot === 0) return fallBack();
   if (slot < 0) {
@@ -546,7 +556,15 @@ async function classifyRun(d: any) {
 
   out.calls = 1;
   out.model = d.model;
-  const g = await askGemini(d.key, d.model, classifyPrompt(live.map((x) => x.e.raw_text), cands, itemsByNode));
+  const another = async () => {
+    try {
+      if ((await takeCall(db.sb, d.owner, day, d.cap, 0)) <= 0) return false;
+    } catch (_e) { return false; }
+    out.calls += 1;
+    return true;
+  };
+  const g = await askGemini(d.key, d.model, classifyPrompt(live.map((x) => x.e.raw_text), cands, itemsByNode),
+                            another);
   if (!g.ok) {
     if (g.quota === 'day') {
       await spendDay(db.sb, d.owner, day, d.cap);
@@ -557,6 +575,8 @@ async function classifyRun(d: any) {
   const got = parseAnswer(g.text);
   const wrong = misaligned(got, live.length);
   if (wrong) return later(wrong, true);
+
+  rows = await db.rowsSince(since);
 
   for (let i = 0; i < live.length; i++) await apply(live[i], readAnswer(got[i], cands), 'gemini');
   return out;
