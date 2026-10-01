@@ -26,7 +26,7 @@ const Day = (globalThis as unknown as { ProBeingDay: {
   zoneOffsetMin: (zone: string, ms: number, fallback: number) => number;
   prayerTimes: (date: unknown, offsetMin?: number) => Record<string, number>;
   counterDayStart: (t: number, offsetMin?: number) => number;
-  counterDate: (t: number, offsetMin?: number) => string;
+  prayerDate: (t: number, offsetMin?: number) => string;
 } }).ProBeingDay;
 
 function reply(status: number, body: unknown): Response {
@@ -159,16 +159,17 @@ function reminderPayload(r, offsetMin) {
            body: 'Its time ends at ' + clock12(r.end, offsetMin) + '.' };
 }
 
-/** Prayer rows -> {counter day: {name: true}}. */
-function loggedByDay(rows, offsetMin, counterDate) {
+/** Prayer rows -> {prayer day: {name: true}}. `day` is day.js (ProBeingDay). The
+ *  prayer day turns at Fajr, so an Isha logged just before Fajr is that night's. */
+function loggedByDay(rows, offsetMin, day) {
   var out = {};
   (rows || []).forEach(function (row) {
     var t = Date.parse(String(row.at));
     var name = String(row.project || '');
     if (!isFinite(t) || REMIND_PRAYERS.indexOf(name) === -1) return;
-    var day = counterDate(t, offsetMin);
-    out[day] = out[day] || {};
-    out[day][name] = true;
+    var ymd = day.prayerDate(t, offsetMin);
+    out[ymd] = out[ymd] || {};
+    out[ymd][name] = true;
   });
   return out;
 }
@@ -268,7 +269,7 @@ Deno.serve(async (req: Request): Promise<Response> => {
     .eq('user_id', owner).in('day', days).limit(500);
   if (sentRes.error) return reply(500, { ok: false, error: sentRes.error.message });
 
-  const done = loggedByDay(prayRes.data || [], place.offset, Day.counterDate);
+  const done = loggedByDay(prayRes.data || [], place.offset, Day);
   const already: Record<string, boolean> = {};
   (sentRes.data || []).forEach((r: { kind: string; day: string }) => {
     already[sentKey(r.kind, String(r.day).slice(0, 10))] = true;
