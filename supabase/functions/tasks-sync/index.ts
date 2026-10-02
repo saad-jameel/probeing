@@ -181,7 +181,8 @@ function mirrorStore(sb) {
     claim: async function (userId, n, nowIso, untilIso) {
       var q = sb.from('task_nodes').update({ push_claim_until: untilIso })
         .eq('user_id', userId).eq('id', n.id)
-        .or('push_claim_until.is.null,push_claim_until.lt.' + nowIso);
+        // Quoted: PostgREST reserves '.' and ':' inside an or=(...) value.
+        .or('push_claim_until.is.null,push_claim_until.lt."' + nowIso + '"');
       ['g_status', 'pb_pushed_at', 'pb_due_sent_at', 'pb_reopen_at', 'gone_at'].forEach(function (col) {
         q = n[col] == null ? q.is(col, null) : q.eq(col, n[col]);
       });
