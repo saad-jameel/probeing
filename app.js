@@ -2132,7 +2132,8 @@ function subtaskTimes(day) {
     var ms = day.bySubtask[id];
     var names = nodeNames(index, id);
     if (!(ms > 0) || !names || !names.detail) return;
-    (out[names.project] = out[names.project] || []).push({ title: names.detail, ms: ms });
+    var title = index.byId[id].gone_at ? names.detail + ' (deleted in Google)' : names.detail;
+    (out[names.project] = out[names.project] || []).push({ title: title, ms: ms });
   });
   Object.keys(out).forEach(function (p) { out[p].sort(function (a, b) { return b.ms - a.ms; }); });
   return out;
@@ -10571,15 +10572,29 @@ function tasksConnected() {
   return Boolean(googleSync && googleSync.connected && googleSync.list_title);
 }
 
+/* What was sent to Google (Stage 15) rides along; before those columns exist
+ * the Stage 13 set is read instead, so an app ahead of its SQL still shows the tree. */
+var TASK_NODE_COLS = 'id,google_id,list_id,parent_google_id,kind,title,position,due,g_status,gone_at';
+var TASK_NODE_SENT = ',g_completed_at,g_reopened_at,pb_pushed_at,pb_due,pb_due_sent_at';
+
 /** Open and done rows first, then the newest gone ones. A failed read keeps the last. */
 async function readTaskNodes() {
   if (!sb) return;
-  try {
-    var res = await sb.from('task_nodes')
-      .select('id,google_id,list_id,parent_google_id,kind,title,position,due,g_status,gone_at')
+  function read(cols) {
+    return sb.from('task_nodes').select(cols)
       .order('gone_at', { ascending: false, nullsFirst: true }).limit(1000);
+  }
+  try {
+    var res = await read(TASK_NODE_COLS + TASK_NODE_SENT);
+    if (res.error && res.error.code === '42703') res = await read(TASK_NODE_COLS);
     if (!res.error) taskNodes = res.data || [];
   } catch (e) { /* the last read stands */ }
+}
+
+/** A task's title, marked when Google no longer has it (Stage 15). */
+function nodeTitle(n) {
+  var t = String((n && n.title) || '').trim() || '(untitled)';
+  return n && n.gone_at ? t + ' (deleted in Google)' : t;
 }
 
 /* A list picked before stays in the table; only the list tasks-sync last read is shown. */
@@ -10690,7 +10705,7 @@ function paintTasksSettings(v) {
     var name = document.createElement('span');
     name.className = 'task-project task-' + p.state;
     // node null: the group of sub-tasks whose project is not in the list.
-    name.textContent = p.node ? p.node.title || '(untitled)' : '(no project)';
+    name.textContent = p.node ? nodeTitle(p.node) : '(no project)';
     li.appendChild(name);
     if (p.children.length) {
       var sub = document.createElement('ul');
@@ -10698,7 +10713,7 @@ function paintTasksSettings(v) {
         var cli = document.createElement('li');
         cli.className = 'task-' + c.state;
         var due = dueOf(c.node.due);
-        cli.textContent = (c.node.title || '(untitled)') + (due ? ' · due ' + humanYmd(due) : '');
+        cli.textContent = nodeTitle(c.node) + (due ? ' · due ' + humanYmd(due) : '');
         sub.appendChild(cli);
       });
       li.appendChild(sub);
@@ -10789,6 +10804,12 @@ function expectedMs(id) {
   return plan && plan.expected_at ? Date.parse(plan.expected_at) : NaN;
 }
 
+/** The finish shown for a task: his, unless Google's due date was changed
+ *  after ProBeing sent it; then Google's date wins (Stage 15). */
+function shownFinishMs(node) {
+  return typeof dueMovedInGoogle === 'function' && dueMovedInGoogle(node) ? NaN : expectedMs(node.id);
+}
+
 /** When the counter day holding `now` ends. 30 hours after its start is always the next day. */
 function counterDayEnd(now) {
   return counterDayStart(counterDayStart(now) + 30 * 3600000);
@@ -10822,7 +10843,7 @@ function openLeafById(id) {
 
 /** Sort key: his expected finish, else the end of Google's due date, else never. */
 function taskWhenMs(leaf) {
-  var t = expectedMs(leaf.node.id);
+  var t = shownFinishMs(leaf.node);
   if (isFinite(t)) return t;
   var due = dueOf(leaf.node.due);
   if (!due) return Infinity;
@@ -10861,7 +10882,7 @@ function homePlanLeaves(nodes, today, endMs) {
   var picked = open.filter(function (l) {
     var plan = planOf(l.node.id);
     var due = dueOf(l.node.due);
-    return Boolean(plan && plan.planned) || Boolean(due && due <= today) || expectedMs(l.node.id) < endMs;
+    return Boolean(plan && plan.planned) || Boolean(due && due <= today) || shownFinishMs(l.node) < endMs;
   }).sort(byTaskWhen);
   if (picked.length) return picked;
   var byId = userMap();
@@ -10924,11 +10945,15 @@ function taskMeta(leaf, today, withProject) {
   var parts = [];
   var late = false;
   if (withProject && leaf.up) parts.push(leaf.up.title || '(untitled)');
-  var t = expectedMs(leaf.node.id);
+  var t = shownFinishMs(leaf.node);
   var due = dueOf(leaf.node.due);
   if (isFinite(t)) {
     late = t < Date.now();
     parts.push('finish ' + taskWhenLabel(t));
+  } else if (isFinite(expectedMs(leaf.node.id))) {
+    // His finish was sent, then the date was changed in Google: Google's stands.
+    late = Boolean(due && due < today);
+    parts.push(due ? 'due ' + humanYmd(due) + ' (set in Google)' : 'no date in Google');
   } else if (due && due < today) {
     late = true;
     parts.push('due ' + humanYmd(due));
@@ -11028,8 +11053,16 @@ function paintTasksPage() {
     } else {
       var name = document.createElement('span');
       name.className = 'task-project task-' + p.state;
-      name.textContent = p.node ? p.node.title || '(untitled)' : '(no project)';
+      name.textContent = p.node ? nodeTitle(p.node) : '(no project)';
       li.appendChild(name);
+      var said = p.node ? shutMeta(p.node) : '';
+      if (said) {
+        var pm = document.createElement('div');
+        pm.className = 'plan-meta';
+        pm.textContent = said;
+        li.appendChild(pm);
+      }
+      if (p.node && !p.children.length && hasItems(p.node.id)) li.appendChild(itemsBlock(p.node.id));
     }
     if (p.children.length) {
       var sub = document.createElement('ul');
@@ -11042,8 +11075,10 @@ function paintTasksPage() {
           sub.appendChild(cli);
         } else {
           // Done, gone, or open under a deleted project: dimmed, not a button.
-          sub.appendChild(taskLine(c.node.title || '(untitled)', '',
-                                   'task-' + (c.state === 'open' ? 'gone' : c.state)));
+          var shut = taskLine(nodeTitle(c.node), shutMeta(c.node),
+                              'task-' + (c.state === 'open' ? 'gone' : c.state));
+          if (hasItems(c.node.id)) shut.appendChild(itemsBlock(c.node.id));
+          sub.appendChild(shut);
         }
       });
       li.appendChild(sub);
@@ -11054,6 +11089,15 @@ function paintTasksPage() {
   $('tasksAllEmpty').hidden = projects.length > 0;
 
   if (taskDlg && taskDlg.open) paintTaskDlg();
+}
+
+/** Under a finished task: "sent to Google" when ProBeing completed it there. */
+function shutMeta(node) {
+  return typeof sentToGoogle === 'function' && sentToGoogle(node) ? 'Sent to Google ✓' : '';
+}
+
+function hasItems(nodeId) {
+  return itemsRead && itemsOf(taskTree(), nodeId).length > 0;
 }
 
 /** Arriving on the page: draw what is held, then read the plans again. */
@@ -11724,7 +11768,12 @@ function itemsBlock(nodeId, max) {
   var box = document.createElement('div');
   box.className = 'items';
   if (!itemsRead) return box;
-  var all = itemsOf(taskTree(), nodeId);
+  // Completed or deleted in Google: Google wins, and its open items close with it.
+  var node = nodeIndex(taskNodes).byId[nodeId];
+  var shut = node && node.gone_at ? 'gone' : node && node.g_status === 'completed' ? 'done' : '';
+  var all = itemsOf(taskTree(), nodeId).map(function (it) {
+    return shut && it.state === 'open' ? Object.assign({}, it, { state: 'shut', shutBy: shut }) : it;
+  });
   var open = all.filter(function (it) { return it.state === 'open'; });
   var closed = all.filter(function (it) { return it.state !== 'open'; });
   var ul = document.createElement('ul');
@@ -11741,7 +11790,7 @@ function itemsBlock(nodeId, max) {
     more.textContent = '+' + (open.length - max) + ' more on Tasks';
     foot.appendChild(more);
   }
-  foot.appendChild(itemLink('+ item', 'Add an item', function () { openItemDlg(nodeId); }));
+  if (!shut) foot.appendChild(itemLink('+ item', 'Add an item', function () { openItemDlg(nodeId); }));
   if (closed.length) {
     foot.appendChild(itemLink(showClosed[nodeId] ? 'Hide closed' : closed.length + ' closed',
                               showClosed[nodeId] ? 'Hide done and dropped items' : 'Show done and dropped items',
@@ -11773,6 +11822,13 @@ function itemLine(it) {
   title.className = 'item-title';
   title.textContent = it.title;
   li.appendChild(title);
+  if (it.state === 'shut') {
+    var why = document.createElement('span');
+    why.className = 'plan-meta';
+    why.textContent = it.shutBy === 'gone' ? 'dropped: deleted in Google' : 'closed with sub-task';
+    li.appendChild(why);
+    return li;
+  }
   var acts = it.state === 'open' ? ['done', 'drop'] : ['open'];
   acts.forEach(function (mark) {
     var b = document.createElement('button');
@@ -11793,7 +11849,7 @@ function currentSubtaskBlock(node, title) {
   if (node.kind === 'subtask') {               // a project's own items need no second heading
     var head = document.createElement('div');
     head.className = 'proj-sub-title';
-    head.textContent = '▸ ' + title;
+    head.textContent = '▸ ' + (node.gone_at ? title + ' (deleted in Google)' : title);
     box.appendChild(head);
   }
   box.appendChild(itemsBlock(node.id, HOME_ITEMS_MAX));

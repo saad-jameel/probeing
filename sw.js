@@ -35,8 +35,10 @@
  * v15 (Stage 14b): items with Done and Drop, the `mark` and `item` outbox actions,
  * and time per sub-task.
  * v16 (Money 2): Dues and Logs dialogs, the wallet, and the `due` and `wallet`
- * outbox actions. */
-var CACHE = 'probeing-shell-v16';
+ * outbox actions.
+ * v17 (Stage 15): tree.js's write-back helpers; items closed with their task in
+ * Google, deleted tasks named so, and "Sent to Google". */
+var CACHE = 'probeing-shell-v17';
 var SHELL = [
   './',
   'index.html',

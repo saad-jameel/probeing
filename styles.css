@@ -825,6 +825,7 @@ body {
 .item-title { flex: 1; min-width: 0; overflow-wrap: anywhere; }
 .item-done .item-title { text-decoration: line-through; opacity: .55; }
 .item-drop .item-title { opacity: .45; font-style: italic; }
+.item-shut .item-title { opacity: .55; }   /* closed with its task in Google (Stage 15) */
 .item-btn {
   flex: 0 0 auto; padding: 4px 10px; background: none; color: var(--fg);
   border: 1px solid var(--line); border-radius: 999px; font-size: 12.5px; cursor: pointer;
