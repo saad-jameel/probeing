@@ -106,6 +106,27 @@ select cron.schedule('probeing-tasks-sync', '*/15 * * * *',
 -- To check:  select * from cron.job where jobname = 'probeing-tasks-sync';
 --            select created, status_code, content from net._http_response order by created desc limit 10;
 --            select * from public.tasks_sync_wants;
+-- Before the first Stage 15 run, what it will complete in Google (tasks already
+-- finished in ProBeing, and projects whose sub-tasks are all completed):
+--   with latest as (select distinct on (item_rid) item_rid, mark from public.item_marks
+--                   order by item_rid, at desc, created_at desc, rid desc)
+--   select n.kind, n.title from public.task_nodes n
+--    where n.gone_at is null and n.g_status = 'needsAction'
+--      and n.list_id = (select list_id from public.google_grants limit 1)
+--      and ((exists (select 1 from public.items i where i.node_id = n.id)
+--            and not exists (select 1 from public.items i left join latest l on l.item_rid = i.rid
+--                             where i.node_id = n.id and coalesce(l.mark, 'open') = 'open')
+--            and exists (select 1 from public.items i join latest l on l.item_rid = i.rid
+--                         where i.node_id = n.id and l.mark = 'done')
+--            and not exists (select 1 from public.task_nodes s where s.parent_google_id = n.google_id
+--                             and s.list_id = n.list_id and s.gone_at is null))
+--        or (n.kind = 'project'
+--            and exists (select 1 from public.task_nodes s where s.parent_google_id = n.google_id
+--                         and s.list_id = n.list_id and s.gone_at is null)
+--            and not exists (select 1 from public.task_nodes s where s.parent_google_id = n.google_id
+--                             and s.list_id = n.list_id and s.gone_at is null and s.g_status <> 'completed')));
+--   (A project listed here is sent only after its sub-tasks; one whose last sub-task
+--   is on the first half of this list is completed in the same run.)
 -- To stop the write-back pokes (the 15-minute sync still sends):
 --            drop trigger if exists tasks_sync_after_mark on public.item_marks;
 --            drop trigger if exists tasks_sync_after_plan_insert on public.task_plans;
