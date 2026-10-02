@@ -48,6 +48,19 @@ function kindOf(task, byId) {
   return up.parent ? 'deep' : 'subtask';
 }
 
+/** When an untick in Google happened, as near as the pull can tell: Google's
+ *  own `updated` (it is the untick or a later edit), never after the run's
+ *  start, and never before ProBeing's own completion of it (Google's clock may
+ *  run behind ours; Stage 15 compares the two). */
+function reopenedAt(task, nowIso, old) {
+  var now = Date.parse(nowIso);
+  var t = Date.parse(task.updated || '');
+  var at = isFinite(t) && t < now ? t : now;
+  var sent = Date.parse((old && old.pb_pushed_at) || '');
+  if (isFinite(sent) && sent > at) at = Math.min(sent, now);
+  return at === now ? nowIso : new Date(at).toISOString();
+}
+
 /** Later than the run's start: another run saw this row more recently. */
 function newerThan(iso, nowIso) {
   var t = Date.parse(iso || '');
@@ -125,7 +138,7 @@ function diffPull(mirror, pulled, nowIso, listId) {
       g_completed_at: done ? (t.completed || null) : null,
       g_updated: t.updated || null,
       // Unticked in Google since the last pull: Stage 15 must not tick it straight back.
-      g_reopened_at: old && old.g_status === 'completed' && !done ? nowIso
+      g_reopened_at: old && old.g_status === 'completed' && !done ? reopenedAt(t, nowIso, old)
                    : (old && old.g_reopened_at) || null,
       missing_since: null,                      // it is here, so any first strike is cleared
       gone_at: t.deleted ? (old && old.gone_at) || nowIso : null,
@@ -255,6 +268,180 @@ function mirrorTree(nodes) {
   return out;
 }
 
+/* ── Stage 15: what finishing in ProBeing sends to Google ──────────────────
+ * `items` are items rows ({rid, node_id}); `newest` maps an item rid to its
+ * newest mark ({mark, at}), as the item_mark_latest view or day.js itemNewest
+ * gives it. Times are compared as instants, never as strings. */
+
+function msOf(iso) {
+  var t = Date.parse(iso || '');
+  return isFinite(t) ? t : NaN;
+}
+
+/** item rids by node id. */
+function itemsByNode(items) {
+  var out = {};
+  (items || []).forEach(function (it) {
+    if (it && it.rid && it.node_id) (out[it.node_id] = out[it.node_id] || []).push(it.rid);
+  });
+  return out;
+}
+
+/** After an untick in Google, only something newer counts. */
+function afterReopen(n, t) {
+  var re = msOf(n.g_reopened_at);
+  return !isFinite(re) || t > re;
+}
+
+/** When a task with items finished in ProBeing: at least one item, every one
+ *  Done or Dropped, at least one Done (all dropped finished nothing), and the
+ *  newest mark after any untick in Google. null when it has not. */
+function leafDoneAt(n, rids, newest) {
+  if (!rids || !rids.length) return null;
+  var last = -Infinity;
+  var anyDone = false;
+  for (var i = 0; i < rids.length; i++) {
+    var m = newest[rids[i]];
+    if (!m || (m.mark !== 'done' && m.mark !== 'drop')) return null;
+    if (m.mark === 'done') anyDone = true;
+    var t = msOf(m.at);
+    if (t > last) last = t;
+  }
+  if (!anyDone || !isFinite(last) || !afterReopen(n, last)) return null;
+  return last;
+}
+
+/** When a project with sub-tasks finished: every live sub-task completed in
+ *  Google (this run's own pushes included), none of its own items open, and
+ *  the last completion after any untick of the project. null when it has not. */
+function projectDoneAt(p, subs, ownRids, newest) {
+  if (!subs || !subs.length) return null;
+  var open = (ownRids || []).some(function (rid) { return !newest[rid] || newest[rid].mark === 'open'; });
+  if (open) return null;
+  var last = -Infinity;
+  for (var i = 0; i < subs.length; i++) {
+    if (subs[i].g_status !== 'completed') return null;
+    var t = msOf(subs[i].g_completed_at);
+    if (t > last) last = t;
+  }
+  if (!isFinite(last)) return isFinite(msOf(p.g_reopened_at)) ? null : 0;
+  return afterReopen(p, last) ? last : null;
+}
+
+/** Sent to Google already, and not unticked there since. An untick is never
+ *  stamped before the send (diffPull), so equal means unticked. */
+function pushedSinceReopen(n) {
+  var sent = msOf(n.pb_pushed_at);
+  if (!isFinite(sent)) return false;
+  var re = msOf(n.g_reopened_at);
+  return !isFinite(re) || sent > re;
+}
+
+/**
+ * Tasks of one list that finished in ProBeing and are still open in Google:
+ * [{node, at}], `at` the ISO instant it finished (null when unknown). Edge-
+ * triggered: one already sent is not listed again until Google unticks it AND
+ * a newer mark finishes it again. A sub-task, or a project with no live
+ * sub-task, finishes by its items; a project with sub-tasks once all are
+ * completed in Google. Nothing deleted, or under a deleted project, is listed.
+ */
+function rollUp(nodes, items, newest) {
+  nodes = nodes || [];
+  newest = newest || {};
+  var rids = itemsByNode(items);
+  var byGoogle = {};
+  var kids = {};
+  nodes.forEach(function (n) {
+    byGoogle[n.google_id] = n;
+    if (n.kind === 'subtask' && !n.gone_at) (kids[n.parent_google_id] = kids[n.parent_google_id] || []).push(n);
+  });
+  var out = [];
+  nodes.forEach(function (n) {
+    if (n.gone_at || n.g_status === 'completed' || pushedSinceReopen(n)) return;
+    var up = n.kind === 'subtask' ? byGoogle[n.parent_google_id] : null;
+    if (up && up.gone_at) return;
+    var subs = n.kind === 'project' ? kids[n.google_id] : null;
+    var at = subs ? projectDoneAt(n, subs, rids[n.id], newest) : leafDoneAt(n, rids[n.id], newest);
+    if (at === null) return;
+    out.push({ node: n, at: at > 0 ? new Date(at).toISOString() : null });
+  });
+  return out;
+}
+
+/**
+ * Projects to untick in Google (correction C6): completed there, with a live
+ * open sub-task that was not open under it at the last pull (new, moved in,
+ * unticked or back from deleted), or one asked for before and not yet sent
+ * (pb_reopen_at). `before` is the mirror as read before this pull, `after` one
+ * list's rows after it. A project completed in this same pull is left alone.
+ */
+function reopenWanted(before, after) {
+  var was = {};
+  (before || []).forEach(function (n) { was[n.google_id] = n; });
+  var byGoogle = {};
+  (after || []).forEach(function (n) { byGoogle[n.google_id] = n; });
+  var hit = {};
+  var out = [];
+  (after || []).forEach(function (s) {
+    if (s.kind !== 'subtask' || s.gone_at || s.g_status === 'completed') return;
+    var p = byGoogle[s.parent_google_id];
+    if (!p || p.gone_at || p.g_status !== 'completed' || hit[p.id]) return;
+    var pWas = was[p.google_id];
+    var o = was[s.google_id];
+    var openBefore = o && !o.gone_at && o.g_status !== 'completed' && o.parent_google_id === s.parent_google_id;
+    var gained = pWas && !pWas.gone_at && pWas.g_status === 'completed' && !openBefore;
+    if (!gained && !p.pb_reopen_at) return;
+    hit[p.id] = true;
+    out.push(p);
+  });
+  return out;
+}
+
+/** 'YYYY-MM-DD' of instant `ms` on the clock of `zone`; Karachi's if the zone is unknown. */
+function zoneDate(ms, zone) {
+  var f;
+  try {
+    f = new Intl.DateTimeFormat('en-CA', { timeZone: zone || 'Asia/Karachi', year: 'numeric',
+                                           month: '2-digit', day: '2-digit' });
+  } catch (_e) {
+    f = new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Karachi', year: 'numeric',
+                                           month: '2-digit', day: '2-digit' });
+  }
+  var p = {};
+  f.formatToParts(new Date(ms)).forEach(function (x) { p[x.type] = x.value; });
+  return p.year + '-' + p.month + '-' + p.day;
+}
+
+/**
+ * The due date to send for task `n`, from his plan: {due, already} or null for
+ * nothing to send. `due` is 'YYYY-MM-DD', or null to clear the one ProBeing
+ * set; `already` means Google has it, so only the record changes. Sent only
+ * when the finish DATE changed in ProBeing since it was last sent, so a date
+ * changed in Google afterwards stands (Google wins) and nothing loops. A task
+ * ProBeing never dated keeps Google's own date until a finish is set.
+ */
+function duePush(n, plan, zone) {
+  if (!n || n.gone_at) return null;
+  var t = msOf(plan && plan.expected_at);
+  var want = isFinite(t) ? zoneDate(t, zone) : null;
+  if (n.pb_due_sent_at) {
+    if (want === dueOf(n.pb_due)) return null;
+  } else if (want === null) {
+    return null;
+  }
+  return { due: want, already: dueOf(n.due) === want };
+}
+
+/** Google's due date is no longer the one ProBeing sent: changed in Google, so it is the one shown. */
+function dueMovedInGoogle(n) {
+  return Boolean(n && n.pb_due_sent_at) && dueOf(n.due) !== dueOf(n.pb_due);
+}
+
+/** Completed in Google by ProBeing, and not unticked there since. */
+function sentToGoogle(n) {
+  return Boolean(n) && n.g_status === 'completed' && !n.gone_at && pushedSinceReopen(n);
+}
+
 // What tasks-sync uses. The browser reads the globals directly.
 globalThis.ProBeingTree = {
   EMPTY_PULL_TRUST: EMPTY_PULL_TRUST,
@@ -262,5 +449,11 @@ globalThis.ProBeingTree = {
   nodeState: nodeState,
   diffPull: diffPull,
   todaysPlan: todaysPlan,
-  mirrorTree: mirrorTree
+  mirrorTree: mirrorTree,
+  rollUp: rollUp,
+  reopenWanted: reopenWanted,
+  zoneDate: zoneDate,
+  duePush: duePush,
+  dueMovedInGoogle: dueMovedInGoogle,
+  sentToGoogle: sentToGoogle
 };

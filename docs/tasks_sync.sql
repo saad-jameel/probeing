@@ -5,11 +5,16 @@
 -- the app closed. Until Google is connected and a list is picked, each run
 -- answers "skipped" and writes nothing. Needs pg_cron and pg_net, which the
 -- `probeing-wrapup` job already uses, and task_nodes from supabase_schema.sql.
--- Safe to re-run.
+-- Stage 15: a Done/Drop/Undo or a changed finish date asks for a sync at once,
+-- so it reaches Google within seconds. Run the "write-back (15)" part of
+-- supabase_schema.sql first. Safe to re-run.
 
--- One place holds the URL and headers, as glance_refresh_request() does.
--- pg_net only queues the request and returns.
-create or replace function public.tasks_sync_request()
+-- One place holds the URL and headers; the cron job and the triggers call it.
+-- pg_net only queues the request, and sends it after the insert commits.
+-- Stage 13's version took no payload; the old one is dropped so a call with
+-- none is not ambiguous.
+drop function if exists public.tasks_sync_request();
+create or replace function public.tasks_sync_request(payload jsonb default '{}'::jsonb)
 returns bigint
 language sql
 security definer
@@ -22,12 +27,76 @@ as $fn$
       -- Satisfies Supabase's Verify JWT gate; the secret below is the real gate.
       'Authorization', 'Bearer __BEARER__',
       'x-cron-secret', '__CRON_SECRET__'),
-    body := '{}'::jsonb,
+    body := payload,
     timeout_milliseconds := 30000);
 $fn$;
 
 -- Public schema functions are callable over the REST API; this one must not be.
-revoke all on function public.tasks_sync_request() from public, anon, authenticated;
+revoke all on function public.tasks_sync_request(jsonb) from public, anon, authenticated;
+
+-- A change ProBeing may have to send. Counted in tasks_sync_wants; a request
+-- goes out only when none is out already (or the last is over 2 minutes old,
+-- a run that died), so a burst of taps is one sync: the run goes round again
+-- for taps that came in while it worked. Only while Google is connected with a
+-- list. Never fails the insert or update that fired it.
+create or replace function public.tasks_sync_after_change()
+returns trigger
+language plpgsql
+security definer
+set search_path = ''
+as $fn$
+declare
+  go boolean;
+begin
+  begin
+    if exists (select 1 from public.sync_state s
+                where s.user_id = new.user_id and s.connected
+                  and s.list_id is not null and s.list_title is not null) then
+      insert into public.tasks_sync_wants as w (user_id, wanted_n, wanted_at)
+        values (new.user_id, 1, now())
+        on conflict (user_id) do update set wanted_n = w.wanted_n + 1, wanted_at = now();
+      update public.tasks_sync_wants set sent_at = now()
+       where user_id = new.user_id and (sent_at is null or sent_at < now() - interval '2 minutes')
+      returning true into go;
+      if go then
+        -- Its own block: a request that cannot be queued leaves the next tap free to try.
+        begin
+          perform public.tasks_sync_request('{"poke": true}'::jsonb);
+        exception when others then
+          update public.tasks_sync_wants set sent_at = null where user_id = new.user_id;
+        end;
+      end if;
+    end if;
+  exception when others then
+    null;
+  end;
+  return null;
+end;
+$fn$;
+
+revoke all on function public.tasks_sync_after_change() from public, anon, authenticated;
+
+-- Every mark: the last Done under a task may finish it.
+drop trigger if exists tasks_sync_after_mark on public.item_marks;
+create trigger tasks_sync_after_mark
+  after insert on public.item_marks
+  for each row
+  execute function public.tasks_sync_after_change();
+
+-- A finish date set, changed or cleared becomes Google's due date. Planned
+-- on or off sends nothing.
+drop trigger if exists tasks_sync_after_plan_insert on public.task_plans;
+create trigger tasks_sync_after_plan_insert
+  after insert on public.task_plans
+  for each row
+  when (new.expected_at is not null)
+  execute function public.tasks_sync_after_change();
+drop trigger if exists tasks_sync_after_plan_update on public.task_plans;
+create trigger tasks_sync_after_plan_update
+  after update of expected_at on public.task_plans
+  for each row
+  when (old.expected_at is distinct from new.expected_at)
+  execute function public.tasks_sync_after_change();
 
 -- The schedule. UTC, but every 15 minutes all day, so the zone does not matter.
 select cron.unschedule(jobid) from cron.job where jobname = 'probeing-tasks-sync';
@@ -36,3 +105,8 @@ select cron.schedule('probeing-tasks-sync', '*/15 * * * *',
 
 -- To check:  select * from cron.job where jobname = 'probeing-tasks-sync';
 --            select created, status_code, content from net._http_response order by created desc limit 10;
+--            select * from public.tasks_sync_wants;
+-- To stop the write-back pokes (the 15-minute sync still sends):
+--            drop trigger if exists tasks_sync_after_mark on public.item_marks;
+--            drop trigger if exists tasks_sync_after_plan_insert on public.task_plans;
+--            drop trigger if exists tasks_sync_after_plan_update on public.task_plans;

@@ -1,8 +1,10 @@
-// ProBeing — the `tasks-sync` Edge Function. Stage 13.
+// ProBeing — the `tasks-sync` Edge Function. Stages 13 and 15.
 //
-// Copies his chosen Google Tasks list into task_nodes. Read-only: nothing is
-// ever written to Google here. pg_cron calls it every 15 minutes with the cron
-// secret (docs/tasks_sync.sql); the app calls it on open with his JWT.
+// Copies his chosen Google Tasks list into task_nodes, then sends back what
+// finished in ProBeing: pull -> compute -> push. pg_cron calls it every 15
+// minutes with the cron secret (docs/tasks_sync.sql), a Done/Drop or a changed
+// finish date pokes it through a trigger, and the app calls it on open with
+// his JWT.
 //
 // DORMANT until Google is connected and a list is picked: it answers
 // {ok:true, skipped} and writes nothing, not even an error.
@@ -11,11 +13,16 @@
 // missing list, or an empty answer against a full mirror marks NOTHING; the
 // reason goes to sync_state.last_error instead, which Settings shows. Even a
 // complete pull only marks an absent task missing; a second one in a row
-// marks it gone.
+// marks it gone. Nothing is sent to Google after a pull that failed.
+//
+// What it sends (Stage 15, tree.js rollUp / reopenWanted / duePush): a task
+// finished in ProBeing is completed, once per finish; a finished project that
+// gains an open sub-task is unticked (C6); a finish date set in ProBeing
+// becomes the due date. At most one PATCH per task per run.
 //
 // Secrets: the Stage 12 three (GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET,
-// GOOGLE_TOKEN_KEY), CRON_SECRET and ALLOWED_USER_ID. Needs task_nodes from
-// docs/supabase_schema.sql.
+// GOOGLE_TOKEN_KEY), CRON_SECRET and ALLOWED_USER_ID. Needs task_nodes and
+// tasks_sync_wants from docs/supabase_schema.sql.
 //
 // Deployed by hand, like the others:
 //   npx supabase functions deploy tasks-sync --project-ref <ref> --use-api
@@ -25,9 +32,10 @@ import '../_shared/google.js';
 import '../_shared/tree.js';
 
 // Classic scripts, so they hand their functions over on globalThis.
-const { RECONNECT, googleConfig, importTokenKey, scrub, markReconnect, tasksGet } =
+const { RECONNECT, googleConfig, importTokenKey, scrub, markReconnect, tasksGet, accessToken, reconnectError } =
   (globalThis as unknown as { ProBeingGoogle: Record<string, any> }).ProBeingGoogle;
-const { diffPull } = (globalThis as unknown as { ProBeingTree: Record<string, any> }).ProBeingTree;
+const { diffPull, rollUp, reopenWanted, duePush, dueOf } =
+  (globalThis as unknown as { ProBeingTree: Record<string, any> }).ProBeingTree;
 
 const CORS: Record<string, string> = {
   'Access-Control-Allow-Origin': '*',
@@ -135,8 +143,251 @@ function mirrorStore(sb) {
           .eq('user_id', userId).in('id', ids.slice(i, i + GONE_BATCH)).is('gone_at', null)
           .lte('synced_at', nowIso));
       }
+    },
+
+    /* Stage 15. Every read is whole or throws: a short read of items could
+     * make a task look finished. */
+    items: function (userId) {
+      return paged(function () {
+        return sb.from('items').select('rid,node_id').eq('user_id', userId)
+          .not('node_id', 'is', null).order('rid', { ascending: true });
+      });
+    },
+    // item rid -> its newest mark, through the same view the app reads.
+    latestMarks: async function (userId) {
+      var rows = await paged(function () {
+        return sb.from('item_mark_latest').select('item_rid,mark,at').eq('user_id', userId)
+          .order('item_rid', { ascending: true });
+      });
+      var out = {};
+      rows.forEach(function (m) { out[m.item_rid] = m; });
+      return out;
+    },
+    plans: async function (userId) {
+      var rows = await paged(function () {
+        return sb.from('task_plans').select('node_id,expected_at').eq('user_id', userId)
+          .order('node_id', { ascending: true });
+      });
+      var out = {};
+      rows.forEach(function (p) { out[p.node_id] = p; });
+      return out;
+    },
+    zone: async function (userId) {
+      var rows = must(await sb.from('user_settings').select('time_zone').eq('user_id', userId).limit(1));
+      return ((rows || [])[0] || {}).time_zone || '';
+    },
+    /* Take task `n` for one PATCH: only while no other run holds it and its
+     * sent-state is still what this run read, so two runs at once send once. */
+    claim: async function (userId, n, nowIso, untilIso) {
+      var q = sb.from('task_nodes').update({ push_claim_until: untilIso })
+        .eq('user_id', userId).eq('id', n.id)
+        .or('push_claim_until.is.null,push_claim_until.lt.' + nowIso);
+      ['g_status', 'pb_pushed_at', 'pb_due_sent_at', 'pb_reopen_at', 'gone_at'].forEach(function (col) {
+        q = n[col] == null ? q.is(col, null) : q.eq(col, n[col]);
+      });
+      return (must(await q.select('id')) || []).length === 1;
+    },
+    forgetReopen: async function (userId, id) {
+      must(await sb.from('task_nodes').update({ pb_reopen_at: null }).eq('user_id', userId).eq('id', id));
+    },
+    settle: async function (userId, id, fields) {
+      must(await sb.from('task_nodes').update(Object.assign({ push_claim_until: null }, fields))
+        .eq('user_id', userId).eq('id', id));
+    },
+    /* The trigger's queue (docs/tasks_sync.sql): wanted_n counts taps, sent_at
+     * says a request is out. null when there is no row. */
+    wantsRead: async function (userId) {
+      var rows = must(await sb.from('tasks_sync_wants').select('wanted_n').eq('user_id', userId).limit(1));
+      return rows && rows[0] ? Number(rows[0].wanted_n) : null;
+    },
+    // Release the request, unless a tap came in since `n` was read.
+    wantsDone: async function (userId, n) {
+      if (n === null) return true;
+      var rows = must(await sb.from('tasks_sync_wants').update({ sent_at: null })
+        .eq('user_id', userId).eq('wanted_n', n).select('user_id'));
+      return (rows || []).length === 1;
+    },
+    wantsClear: async function (userId) {
+      must(await sb.from('tasks_sync_wants').update({ sent_at: null }).eq('user_id', userId));
     }
   };
+
+  // All pages of a query, 1000 rows at a time (PostgREST's cap).
+  async function paged(query) {
+    var out = [];
+    for (var from = 0; ; from += 1000) {
+      var rows = must(await query().range(from, from + 999)) || [];
+      out = out.concat(rows);
+      if (rows.length < 1000) return out;
+    }
+  }
+}
+
+/* ── Stage 15: the push ─────────────────────────────────────────────── */
+
+// A claim older than this is a run that died; another may take the task.
+var CLAIM_MS = 60 * 1000;
+// A project finishes once its sub-tasks are completed, so a second pass sends
+// a project whose last sub-task the first pass just completed.
+var PUSH_PASSES = 2;
+// A poked run goes round again while taps keep arriving, at most this often.
+var POKE_ROUNDS = 3;
+
+/** PATCH one task. A 401 gets one forced refresh, as tasksGet does; a lost
+ *  permission means reconnect. Other failures carry Google's status. */
+async function tasksPatch(d, grant, taskId, body) {
+  var url = TASKS_LISTS_URL + encodeURIComponent(grant.list_id) + '/tasks/' + encodeURIComponent(taskId);
+  function send(token) {
+    return d.fetch(url, { method: 'PATCH', body: JSON.stringify(body),
+                          headers: { Authorization: 'Bearer ' + token, 'Content-Type': 'application/json' } });
+  }
+  var res = await send(await accessToken(d, grant, false));
+  if (res.status === 401) res = await send(await accessToken(d, grant, true));
+  var got = await res.json().catch(function () { return null; });
+  if (res.ok) return got || {};
+  var said = JSON.stringify(got || {});
+  if (/rateLimit|RATE_LIMIT|quota/i.test(said)) {
+    var busy = new Error('Google Tasks is busy; it is sent on the next sync.');
+    busy.status = res.status;
+    throw busy;
+  }
+  if (res.status === 401 || res.status === 403) throw reconnectError('Google refused to change a task');
+  var e = new Error('Google Tasks answered ' + res.status + ': ' + scrub(got && got.error && got.error.message));
+  e.status = res.status;
+  throw e;
+}
+
+/** One task's PATCH, and what the mirror records once Google takes it.
+ *  'sent', 'gone' (Google says 404), 'busy' (another run has it), or a throw. */
+async function sendJob(d, grant, j, nowIso) {
+  var n = j.node;
+  var now = d.now();
+  var stamp = new Date(now).toISOString();
+  if (!(await d.store.claim(d.userId, n, stamp, new Date(now + CLAIM_MS).toISOString()))) return 'busy';
+  var task = null;
+  if (Object.keys(j.body).length) {
+    try {
+      task = await tasksPatch(d, grant, n.google_id, j.body);
+    } catch (e) {
+      var left = e && e.status === 404 ? { gone_at: nowIso }
+               : j.reopen && !n.pb_reopen_at ? { pb_reopen_at: nowIso } : {};   // asked again next run
+      try { await d.store.settle(d.userId, n.id, left); Object.assign(n, left); } catch (_e) { /* the claim lapses */ }
+      if (e && e.status === 404) return 'gone';
+      throw e;
+    }
+  }
+  var f = {};
+  if (task && task.updated) f.g_updated = task.updated;
+  if (j.body.status === 'completed') {
+    Object.assign(f, { g_status: 'completed', g_completed_at: (task && task.completed) || stamp,
+                       pb_done_at: j.doneAt, pb_pushed_at: stamp });
+  }
+  if (j.reopen) {
+    // His own untick would be stamped the same way, so the project finishes again only on newer news.
+    Object.assign(f, { g_status: 'needsAction', g_completed_at: null, g_reopened_at: stamp, pb_reopen_at: null });
+  }
+  if ('due' in j) {
+    Object.assign(f, { pb_due: j.due, pb_due_sent_at: stamp });
+    if ('due' in j.body) f.due = task && task.due ? dueOf(task.due) : null;
+  }
+  await d.store.settle(d.userId, n.id, f);
+  Object.assign(n, f);
+  return task ? 'sent' : 'recorded';
+}
+
+/**
+ * Pull is done; send what ProBeing finished. `before` is the mirror as read
+ * before the pull. Stops at the first failure that is not a 404: a 500 or a
+ * busy Google is tried again on the next run, as nothing was recorded.
+ */
+async function pushPhase(d, grant, before, nowIso) {
+  var out = { pushed: 0, failed: 0, gone: 0, error: '', reconnect: false };
+  var nodes = (await d.store.nodes(d.userId)).filter(function (n) {
+    return String(n.list_id) === String(grant.list_id);
+  });
+  var items = await d.store.items(d.userId);
+  var newest = await d.store.latestMarks(d.userId);
+  var plans = await d.store.plans(d.userId);
+  var zone = await d.store.zone(d.userId);
+
+  var jobs = {};
+  var order = [];
+  function job(n) {
+    if (!jobs[n.id]) { jobs[n.id] = { node: n, body: {} }; order.push(n.id); }
+    return jobs[n.id];
+  }
+  var reopen = reopenWanted(before, nodes);
+  reopen.forEach(function (p) {
+    var j = job(p);
+    j.reopen = true;
+    j.body.status = 'needsAction';
+    j.body.completed = null;                // not documented to clear by itself
+  });
+  // A retry no longer needed (he unticked it, or closed the sub-task) is
+  // forgotten, so it cannot overrule him later.
+  var stale = nodes.filter(function (n) { return n.pb_reopen_at && reopen.indexOf(n) === -1; });
+  for (var s = 0; s < stale.length; s++) {
+    await d.store.forgetReopen(d.userId, stale[s].id);
+    stale[s].pb_reopen_at = null;
+  }
+  nodes.forEach(function (n) {
+    if (!plans[n.id] && !n.pb_due_sent_at) return;
+    var want = duePush(n, plans[n.id], zone);
+    if (!want) return;
+    var j = job(n);
+    j.due = want.due;
+    if (!want.already) j.body.due = want.due ? want.due + 'T00:00:00.000Z' : null;
+  });
+
+  var tried = {};                           // node id -> its completion was tried this run
+  for (var pass = 0; pass < PUSH_PASSES; pass++) {
+    rollUp(nodes, items, newest).forEach(function (r) {
+      if (tried[r.node.id]) return;
+      tried[r.node.id] = true;
+      var j = job(r.node);
+      j.body.status = 'completed';
+      j.doneAt = r.at;
+    });
+    var batch = order.map(function (id) { return jobs[id]; });
+    jobs = {};
+    order = [];
+    for (var i = 0; i < batch.length; i++) {
+      try {
+        var got = await sendJob(d, grant, batch[i], nowIso);
+        if (got === 'sent') out.pushed += 1;
+        if (got === 'gone') out.gone += 1;
+      } catch (e) {
+        out.failed += 1;
+        if (e && e.reconnect) {
+          out.reconnect = true;
+          out.error = RECONNECT + ': ' + e.message;
+        } else {
+          out.error = 'Could not send a change to Google Tasks, so it is tried again on the next sync: ' +
+                      scrub((e && e.message) || e);
+        }
+        return out;
+      }
+    }
+  }
+  return out;
+}
+
+/** A poked run (a tap, through the trigger) goes round again while taps keep
+ *  coming, then lets the next tap send a new request. The queue table is only
+ *  a throttle: if it cannot be read, the run is a plain sync. */
+async function runSync(d, poke) {
+  if (!poke) return syncTasks(d);
+  var out = null;
+  for (var round = 0; round < POKE_ROUNDS; round++) {
+    var seen;
+    try { seen = await d.store.wantsRead(d.userId); } catch (_e) { return syncTasks(d); }
+    out = await syncTasks(d);
+    var settled = true;
+    try { settled = await d.store.wantsDone(d.userId, seen); } catch (_e) { /* settled */ }
+    if (settled) return out;
+  }
+  try { await d.store.wantsClear(d.userId); } catch (_e) { /* it goes stale by itself */ }
+  return out;
 }
 
 async function failSync(d, why, listId) {
@@ -168,8 +419,10 @@ async function syncTasks(d) {
   }
 
   var diff;
+  var before;
   try {
-    diff = diffPull(await d.store.nodes(d.userId), pull.tasks, nowIso, grant.list_id);
+    before = await d.store.nodes(d.userId);
+    diff = diffPull(before, pull.tasks, nowIso, grant.list_id);
     if (diff.refused) {
       await failSync(d, diff.refused, grant.list_id);
       return { ok: false, error: diff.refused };
@@ -183,12 +436,27 @@ async function syncTasks(d) {
     return { ok: false, error: said };
   }
 
+  // Only after a whole, saved pull: never send on a guess.
+  var push = { pushed: 0, failed: 0, gone: 0, error: '', reconnect: false };
+  try {
+    push = await pushPhase(d, grant, before, nowIso);
+  } catch (e) {
+    push.error = 'Could not work out what to send to Google Tasks: ' + scrub((e && e.message) || e);
+  }
+
   // list_id tells the browser which rows are the current list's.
-  await d.store.setSync({ user_id: d.userId, list_id: grant.list_id, last_pull_ok_at: nowIso,
-                          last_error: null, last_error_at: null, deep_ignored: diff.deep });
-  return { ok: true, tasks: pull.tasks.length, pages: pull.pages, added: diff.added,
-           changed: diff.changed, revived: diff.revived, missing: diff.missing.length,
-           gone: diff.gone.length, deep_ignored: diff.deep };
+  var state = { user_id: d.userId, list_id: grant.list_id, last_pull_ok_at: nowIso,
+                last_error: push.error || null,
+                last_error_at: push.error ? new Date(d.now()).toISOString() : null, deep_ignored: diff.deep };
+  if (push.pushed) state.last_push_ok_at = new Date(d.now()).toISOString();
+  await d.store.setSync(state);
+  var out = { ok: true, tasks: pull.tasks.length, pages: pull.pages, added: diff.added,
+              changed: diff.changed, revived: diff.revived, missing: diff.missing.length,
+              gone: diff.gone.length, deep_ignored: diff.deep,
+              pushed: push.pushed, push_failed: push.failed, push_gone: push.gone };
+  if (push.error) out.push_error = push.error;
+  if (push.reconnect) out.reconnect = true;
+  return out;
 }
 
 /* ─────────────────────────────────────────────────────────────────────── */
@@ -242,10 +510,16 @@ Deno.serve(async (req: Request): Promise<Response> => {
 
   // The scheduler proves itself with the cron secret; the app with his JWT.
   const cronSaid = req.headers.get('x-cron-secret');
+  // {poke:true} is the trigger's request after a tap (docs/tasks_sync.sql).
+  let poke = false;
   if (cronSaid !== null) {
     const secret = (Deno.env.get('CRON_SECRET') || '').trim();
     if (!secret) return reply(403, { ok: false, error: 'CRON_SECRET is not set on this function' });
     if (!sameSecret(cronSaid, secret)) return reply(401, { ok: false, error: 'not the scheduler' });
+    try {
+      const body = await req.json();
+      poke = Boolean(body && body.poke === true);
+    } catch (_e) { /* no body: a plain run */ }
   } else {
     const who = await jwtUser(req.headers.get('Authorization') || '');
     if (!who) return reply(401, { ok: false, error: 'sign in first' });
@@ -272,7 +546,7 @@ Deno.serve(async (req: Request): Promise<Response> => {
   };
 
   try {
-    const out = await syncTasks(d);
+    const out = await runSync(d, poke);
     return reply(out.ok ? 200 : 502, out);
   } catch (e) {
     return reply(500, { ok: false, error: scrub((e as Error)?.message || e) });

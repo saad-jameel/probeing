@@ -1269,3 +1269,31 @@ alter table public.money add constraint money_loan_person
 alter table public.money drop constraint if exists money_opening_person;
 alter table public.money add constraint money_opening_person
   check (kind <> 'opening' or person is null);
+
+-- ============================================================ write-back (15)
+-- Stage 15. tasks-sync sends what finished in ProBeing back to Google Tasks.
+-- task_nodes stays server-written; these record what was sent, so a change is
+-- sent once and a change made in Google afterwards is not sent over.
+--   pb_due / pb_due_sent_at  the due date last sent from his finish date (null
+--                            date + a time = it was cleared); null time = never sent
+--   pb_reopen_at             a C6 untick Google has not taken yet; tried again
+--   push_claim_until         one run at a time sends for a task; a dead run's lapses
+alter table public.task_nodes add column if not exists pb_due date;
+alter table public.task_nodes add column if not exists pb_due_sent_at timestamptz;
+alter table public.task_nodes add column if not exists pb_reopen_at timestamptz;
+alter table public.task_nodes add column if not exists push_claim_until timestamptz;
+
+-- tasks_sync_wants: the throttle for docs/tasks_sync.sql's triggers. wanted_n
+-- counts changes; sent_at is set while a request is out, so a burst of taps is
+-- one sync. tasks-sync clears it when no change came in during its run.
+-- Server-only: RLS on, no policies, nothing granted to the browser roles.
+create table if not exists public.tasks_sync_wants (
+  -- Written by a trigger and the service role, so user_id is always named.
+  user_id    uuid        primary key references auth.users on delete cascade,
+  wanted_n   bigint      not null default 0,
+  wanted_at  timestamptz,
+  sent_at    timestamptz
+);
+
+alter table public.tasks_sync_wants enable row level security;
+revoke all on table public.tasks_sync_wants from anon, authenticated;
