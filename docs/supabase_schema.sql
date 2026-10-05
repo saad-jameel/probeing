@@ -1276,11 +1276,12 @@ alter table public.money add constraint money_opening_person
 -- sent once and a change made in Google afterwards is not sent over.
 --   pb_due / pb_due_sent_at  the due date last sent from his finish date (null
 --                            date + a time = it was cleared); null time = never sent
---   pb_reopen_at             a C6 untick Google has not taken yet; tried again
+--   push_refused             {body, n, why}: a change Google refused (a 4xx); after
+--                            3 runs the same change is not sent again
 --   push_claim_until         one run at a time sends for a task; a dead run's lapses
 alter table public.task_nodes add column if not exists pb_due date;
 alter table public.task_nodes add column if not exists pb_due_sent_at timestamptz;
-alter table public.task_nodes add column if not exists pb_reopen_at timestamptz;
+alter table public.task_nodes add column if not exists push_refused jsonb;
 alter table public.task_nodes add column if not exists push_claim_until timestamptz;
 
 -- tasks_sync_wants: the throttle for docs/tasks_sync.sql's triggers. wanted_n

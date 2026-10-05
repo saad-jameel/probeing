@@ -15,10 +15,11 @@
 // complete pull only marks an absent task missing; a second one in a row
 // marks it gone. Nothing is sent to Google after a pull that failed.
 //
-// What it sends (Stage 15, tree.js rollUp / reopenWanted / duePush): a task
-// finished in ProBeing is completed, once per finish; a finished project that
-// gains an open sub-task is unticked (C6); a finish date set in ProBeing
-// becomes the due date. At most one PATCH per task per run.
+// What it sends (Stage 15, tree.js rollUp / unpushWanted / duePush): a
+// sub-task finished in ProBeing is completed, once per finish; an Undo under
+// one ProBeing completed unticks it again; a finish date set in ProBeing
+// becomes the due date. Projects are never touched (Saad, 2 Oct). At most one
+// PATCH per task per run; a PATCH Google refuses (a 4xx) is tried 3 runs, then left.
 //
 // Secrets: the Stage 12 three (GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET,
 // GOOGLE_TOKEN_KEY), CRON_SECRET and ALLOWED_USER_ID. Needs task_nodes and
@@ -34,7 +35,7 @@ import '../_shared/tree.js';
 // Classic scripts, so they hand their functions over on globalThis.
 const { RECONNECT, googleConfig, importTokenKey, scrub, markReconnect, tasksGet, accessToken, reconnectError } =
   (globalThis as unknown as { ProBeingGoogle: Record<string, any> }).ProBeingGoogle;
-const { diffPull, rollUp, reopenWanted, duePush, dueOf } =
+const { diffPull, rollUp, unpushWanted, duePush, dueOf } =
   (globalThis as unknown as { ProBeingTree: Record<string, any> }).ProBeingTree;
 
 const CORS: Record<string, string> = {
@@ -183,13 +184,10 @@ function mirrorStore(sb) {
         .eq('user_id', userId).eq('id', n.id)
         // Quoted: PostgREST reserves '.' and ':' inside an or=(...) value.
         .or('push_claim_until.is.null,push_claim_until.lt."' + nowIso + '"');
-      ['g_status', 'pb_pushed_at', 'pb_due_sent_at', 'pb_reopen_at', 'gone_at'].forEach(function (col) {
+      ['g_status', 'pb_pushed_at', 'pb_due_sent_at', 'gone_at'].forEach(function (col) {
         q = n[col] == null ? q.is(col, null) : q.eq(col, n[col]);
       });
       return (must(await q.select('id')) || []).length === 1;
-    },
-    forgetReopen: async function (userId, id) {
-      must(await sb.from('task_nodes').update({ pb_reopen_at: null }).eq('user_id', userId).eq('id', id));
     },
     settle: async function (userId, id, fields) {
       must(await sb.from('task_nodes').update(Object.assign({ push_claim_until: null }, fields))
@@ -228,9 +226,9 @@ function mirrorStore(sb) {
 
 // A claim older than this is a run that died; another may take the task.
 var CLAIM_MS = 60 * 1000;
-// A project finishes once its sub-tasks are completed, so a second pass sends
-// a project whose last sub-task the first pass just completed.
-var PUSH_PASSES = 2;
+// A change Google refuses (a 4xx that is not 401/403/404/429) is tried on this
+// many runs, then left until the change itself is different.
+var REFUSED_MAX = 3;
 // A poked run goes round again while taps keep arriving, at most this often.
 var POKE_ROUNDS = 3;
 
@@ -250,7 +248,14 @@ async function tasksPatch(d, grant, taskId, body) {
   if (/rateLimit|RATE_LIMIT|quota/i.test(said)) {
     var busy = new Error('Google Tasks is busy; it is sent on the next sync.');
     busy.status = res.status;
+    busy.busy = true;
     throw busy;
+  }
+  if (res.status === 429) {
+    var slow = new Error('Google Tasks is busy; it is sent on the next sync.');
+    slow.status = 429;
+    slow.busy = true;
+    throw slow;
   }
   if (res.status === 401 || res.status === 403) throw reconnectError('Google refused to change a task');
   var e = new Error('Google Tasks answered ' + res.status + ': ' + scrub(got && got.error && got.error.message));
@@ -258,8 +263,20 @@ async function tasksPatch(d, grant, taskId, body) {
   throw e;
 }
 
+/** Google said no to this change itself (a bad request), not to us or to the moment. */
+function refusedByGoogle(e) {
+  return Boolean(e) && !e.reconnect && !e.busy && e.status >= 400 && e.status < 500 && e.status !== 404;
+}
+
+/** How often Google has refused exactly this change to `n`. */
+function refusedCount(n, body) {
+  var r = n.push_refused;
+  return r && r.body === JSON.stringify(body) ? Number(r.n) || 0 : 0;
+}
+
 /** One task's PATCH, and what the mirror records once Google takes it.
- *  'sent', 'gone' (Google says 404), 'busy' (another run has it), or a throw. */
+ *  'sent', 'recorded', 'gone' (Google says 404), 'refused' (a 4xx, counted),
+ *  'busy' (another run has it), or a throw. */
 async function sendJob(d, grant, j, nowIso) {
   var n = j.node;
   var now = d.now();
@@ -270,22 +287,27 @@ async function sendJob(d, grant, j, nowIso) {
     try {
       task = await tasksPatch(d, grant, n.google_id, j.body);
     } catch (e) {
-      var left = e && e.status === 404 ? { gone_at: nowIso }
-               : j.reopen && !n.pb_reopen_at ? { pb_reopen_at: nowIso } : {};   // asked again next run
+      var left = {};
+      if (e && e.status === 404) left = { gone_at: nowIso };
+      else if (refusedByGoogle(e)) {
+        left = { push_refused: { body: JSON.stringify(j.body), n: refusedCount(n, j.body) + 1,
+                                 why: scrub((e && e.message) || e) } };
+      }
       try { await d.store.settle(d.userId, n.id, left); Object.assign(n, left); } catch (_e) { /* the claim lapses */ }
       if (e && e.status === 404) return 'gone';
+      if (refusedByGoogle(e)) return 'refused';
       throw e;
     }
   }
-  var f = {};
+  var f = { push_refused: null };
   if (task && task.updated) f.g_updated = task.updated;
   if (j.body.status === 'completed') {
     Object.assign(f, { g_status: 'completed', g_completed_at: (task && task.completed) || stamp,
                        pb_done_at: j.doneAt, pb_pushed_at: stamp });
   }
-  if (j.reopen) {
-    // His own untick would be stamped the same way, so the project finishes again only on newer news.
-    Object.assign(f, { g_status: 'needsAction', g_completed_at: null, g_reopened_at: stamp, pb_reopen_at: null });
+  if (j.undo) {
+    // Ours to take back; cleared, so the next close is sent again, once.
+    Object.assign(f, { g_status: 'needsAction', g_completed_at: null, pb_done_at: null, pb_pushed_at: null });
   }
   if ('due' in j) {
     Object.assign(f, { pb_due: j.due, pb_due_sent_at: stamp });
@@ -297,11 +319,12 @@ async function sendJob(d, grant, j, nowIso) {
 }
 
 /**
- * Pull is done; send what ProBeing finished. `before` is the mirror as read
- * before the pull. Stops at the first failure that is not a 404: a 500 or a
- * busy Google is tried again on the next run, as nothing was recorded.
+ * Pull is done; send what ProBeing finished or undid. Stops at the first
+ * failure that is not about one task (a 500, a busy Google, a lost
+ * permission): nothing was recorded, so the next run tries again. A 404 marks
+ * the task gone; a refusal is counted against that change and the run goes on.
  */
-async function pushPhase(d, grant, before, nowIso) {
+async function pushPhase(d, grant, nowIso) {
   var out = { pushed: 0, failed: 0, gone: 0, error: '', reconnect: false };
   var nodes = (await d.store.nodes(d.userId)).filter(function (n) {
     return String(n.list_id) === String(grant.list_id);
@@ -317,20 +340,17 @@ async function pushPhase(d, grant, before, nowIso) {
     if (!jobs[n.id]) { jobs[n.id] = { node: n, body: {} }; order.push(n.id); }
     return jobs[n.id];
   }
-  var reopen = reopenWanted(before, nodes);
-  reopen.forEach(function (p) {
-    var j = job(p);
-    j.reopen = true;
+  unpushWanted(nodes, items, newest).forEach(function (n) {
+    var j = job(n);
+    j.undo = true;
     j.body.status = 'needsAction';
     j.body.completed = null;                // not documented to clear by itself
   });
-  // A retry no longer needed (he unticked it, or closed the sub-task) is
-  // forgotten, so it cannot overrule him later.
-  var stale = nodes.filter(function (n) { return n.pb_reopen_at && reopen.indexOf(n) === -1; });
-  for (var s = 0; s < stale.length; s++) {
-    await d.store.forgetReopen(d.userId, stale[s].id);
-    stale[s].pb_reopen_at = null;
-  }
+  rollUp(nodes, items, newest).forEach(function (r) {
+    var j = job(r.node);
+    j.body.status = 'completed';
+    j.doneAt = r.at;
+  });
   nodes.forEach(function (n) {
     if (!plans[n.id] && !n.pb_due_sent_at) return;
     var want = duePush(n, plans[n.id], zone);
@@ -340,35 +360,38 @@ async function pushPhase(d, grant, before, nowIso) {
     if (!want.already) j.body.due = want.due ? want.due + 'T00:00:00.000Z' : null;
   });
 
-  var tried = {};                           // node id -> its completion was tried this run
-  for (var pass = 0; pass < PUSH_PASSES; pass++) {
-    rollUp(nodes, items, newest).forEach(function (r) {
-      if (tried[r.node.id]) return;
-      tried[r.node.id] = true;
-      var j = job(r.node);
-      j.body.status = 'completed';
-      j.doneAt = r.at;
-    });
-    var batch = order.map(function (id) { return jobs[id]; });
-    jobs = {};
-    order = [];
-    for (var i = 0; i < batch.length; i++) {
-      try {
-        var got = await sendJob(d, grant, batch[i], nowIso);
-        if (got === 'sent') out.pushed += 1;
-        if (got === 'gone') out.gone += 1;
-      } catch (e) {
-        out.failed += 1;
-        if (e && e.reconnect) {
-          out.reconnect = true;
-          out.error = RECONNECT + ': ' + e.message;
-        } else {
-          out.error = 'Could not send a change to Google Tasks, so it is tried again on the next sync: ' +
-                      scrub((e && e.message) || e);
-        }
-        return out;
-      }
+  var refused = [];
+  for (var i = 0; i < order.length; i++) {
+    var j = jobs[order[i]];
+    if (Object.keys(j.body).length && refusedCount(j.node, j.body) >= REFUSED_MAX) {
+      refused.push(j.node);                 // given up on: said below, never sent again as it is
+      continue;
     }
+    try {
+      var got = await sendJob(d, grant, j, nowIso);
+      if (got === 'sent') out.pushed += 1;
+      if (got === 'gone') out.gone += 1;
+      if (got === 'refused') { out.failed += 1; refused.push(j.node); }
+    } catch (e) {
+      out.failed += 1;
+      if (e && e.reconnect) {
+        out.reconnect = true;
+        out.error = RECONNECT + ': ' + e.message;
+      } else {
+        out.error = 'Could not send a change to Google Tasks, so it is tried again on the next sync: ' +
+                    scrub((e && e.message) || e);
+      }
+      return out;
+    }
+  }
+  if (refused.length) {
+    var r = refused[0];
+    var tries = Math.min(Number(r.push_refused && r.push_refused.n) || 0, REFUSED_MAX);
+    out.error = 'Google Tasks refused a change to "' + String(r.title || '').slice(0, 60) + '"' +
+                (refused.length > 1 ? ' and ' + (refused.length - 1) + ' more' : '') +
+                (tries >= REFUSED_MAX ? '; ProBeing stopped trying after ' + REFUSED_MAX + ' runs'
+                                      : '; tried ' + tries + ' of ' + REFUSED_MAX + ' runs') +
+                ': ' + String((r.push_refused && r.push_refused.why) || '');
   }
   return out;
 }
@@ -420,10 +443,8 @@ async function syncTasks(d) {
   }
 
   var diff;
-  var before;
   try {
-    before = await d.store.nodes(d.userId);
-    diff = diffPull(before, pull.tasks, nowIso, grant.list_id);
+    diff = diffPull(await d.store.nodes(d.userId), pull.tasks, nowIso, grant.list_id);
     if (diff.refused) {
       await failSync(d, diff.refused, grant.list_id);
       return { ok: false, error: diff.refused };
@@ -440,7 +461,7 @@ async function syncTasks(d) {
   // Only after a whole, saved pull: never send on a guess.
   var push = { pushed: 0, failed: 0, gone: 0, error: '', reconnect: false };
   try {
-    push = await pushPhase(d, grant, before, nowIso);
+    push = await pushPhase(d, grant, nowIso);
   } catch (e) {
     push.error = 'Could not work out what to send to Google Tasks: ' + scrub((e && e.message) || e);
   }

@@ -11768,9 +11768,12 @@ function itemsBlock(nodeId, max) {
   var box = document.createElement('div');
   box.className = 'items';
   if (!itemsRead) return box;
-  // Completed or deleted in Google: Google wins, and its open items close with it.
+  // Completed (by him or Google) or deleted in Google: Google wins, and its open
+  // items close with it. One ProBeing ticked stays live: an Undo unticks it there.
   var node = nodeIndex(taskNodes).byId[nodeId];
-  var shut = node && node.gone_at ? 'gone' : node && node.g_status === 'completed' ? 'done' : '';
+  var finished = Boolean(node && (node.gone_at || node.g_status === 'completed'));
+  var shut = node && node.gone_at ? 'gone'
+           : finished && !(typeof sentToGoogle === 'function' && sentToGoogle(node)) ? 'done' : '';
   var all = itemsOf(taskTree(), nodeId).map(function (it) {
     return shut && it.state === 'open' ? Object.assign({}, it, { state: 'shut', shutBy: shut }) : it;
   });
@@ -11790,7 +11793,7 @@ function itemsBlock(nodeId, max) {
     more.textContent = '+' + (open.length - max) + ' more on Tasks';
     foot.appendChild(more);
   }
-  if (!shut) foot.appendChild(itemLink('+ item', 'Add an item', function () { openItemDlg(nodeId); }));
+  if (!finished) foot.appendChild(itemLink('+ item', 'Add an item', function () { openItemDlg(nodeId); }));
   if (closed.length) {
     foot.appendChild(itemLink(showClosed[nodeId] ? 'Hide closed' : closed.length + ' closed',
                               showClosed[nodeId] ? 'Hide done and dropped items' : 'Show done and dropped items',
