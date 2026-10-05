@@ -268,10 +268,16 @@ function refusedByGoogle(e) {
   return Boolean(e) && !e.reconnect && !e.busy && e.status >= 400 && e.status < 500 && e.status !== 404;
 }
 
+/** What makes a change THIS change: its body, and the close or the tick it is
+ *  about, so an Undo and a new Done later is a new change with fresh tries. */
+function changeKey(j) {
+  return JSON.stringify(j.body) + '|' + (j.doneAt || '') + '|' + (j.undo ? String(j.node.pb_pushed_at || '') : '');
+}
+
 /** How often Google has refused exactly this change to `n`. */
-function refusedCount(n, body) {
+function refusedCount(n, j) {
   var r = n.push_refused;
-  return r && r.body === JSON.stringify(body) ? Number(r.n) || 0 : 0;
+  return r && r.body === changeKey(j) ? Number(r.n) || 0 : 0;
 }
 
 /** One task's PATCH, and what the mirror records once Google takes it.
@@ -290,7 +296,7 @@ async function sendJob(d, grant, j, nowIso) {
       var left = {};
       if (e && e.status === 404) left = { gone_at: nowIso };
       else if (refusedByGoogle(e)) {
-        left = { push_refused: { body: JSON.stringify(j.body), n: refusedCount(n, j.body) + 1,
+        left = { push_refused: { body: changeKey(j), n: refusedCount(n, j) + 1,
                                  why: scrub((e && e.message) || e) } };
       }
       try { await d.store.settle(d.userId, n.id, left); Object.assign(n, left); } catch (_e) { /* the claim lapses */ }
@@ -302,15 +308,17 @@ async function sendJob(d, grant, j, nowIso) {
   var f = { push_refused: null };
   if (task && task.updated) f.g_updated = task.updated;
   if (j.body.status === 'completed') {
+    // Google's own completed time for this tick: while it is unchanged, the tick is ours.
     Object.assign(f, { g_status: 'completed', g_completed_at: (task && task.completed) || stamp,
-                       pb_done_at: j.doneAt, pb_pushed_at: stamp });
+                       pb_completed_at: (task && task.completed) || null, pb_done_at: j.doneAt, pb_pushed_at: stamp });
   }
   if (j.undo) {
     // Ours to take back; cleared, so the next close is sent again, once.
-    Object.assign(f, { g_status: 'needsAction', g_completed_at: null, pb_done_at: null, pb_pushed_at: null });
+    Object.assign(f, { g_status: 'needsAction', g_completed_at: null, pb_completed_at: null, pb_done_at: null,
+                       pb_pushed_at: null });
   }
   if ('due' in j) {
-    Object.assign(f, { pb_due: j.due, pb_due_sent_at: stamp });
+    Object.assign(f, { pb_due: j.due, pb_due_for: j.dueFor, pb_due_sent_at: stamp });
     if ('due' in j.body) f.due = task && task.due ? dueOf(task.due) : null;
   }
   await d.store.settle(d.userId, n.id, f);
@@ -357,13 +365,14 @@ async function pushPhase(d, grant, nowIso) {
     if (!want) return;
     var j = job(n);
     j.due = want.due;
+    j.dueFor = want.for;
     if (!want.already) j.body.due = want.due ? want.due + 'T00:00:00.000Z' : null;
   });
 
   var refused = [];
   for (var i = 0; i < order.length; i++) {
     var j = jobs[order[i]];
-    if (Object.keys(j.body).length && refusedCount(j.node, j.body) >= REFUSED_MAX) {
+    if (Object.keys(j.body).length && refusedCount(j.node, j) >= REFUSED_MAX) {
       refused.push(j.node);                 // given up on: said below, never sent again as it is
       continue;
     }

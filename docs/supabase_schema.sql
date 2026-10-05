@@ -1276,13 +1276,19 @@ alter table public.money add constraint money_opening_person
 -- sent once and a change made in Google afterwards is not sent over.
 --   pb_due / pb_due_sent_at  the due date last sent from his finish date (null
 --                            date + a time = it was cleared); null time = never sent
+--   pb_due_for               the finish that date came from, so a zone change alone
+--                            sends nothing
 --   push_refused             {body, n, why}: a change Google refused (a 4xx); after
 --                            3 runs the same change is not sent again
 --   push_claim_until         one run at a time sends for a task; a dead run's lapses
+--   pb_completed_at          Google's `completed` time for ProBeing's tick; while it
+--                            is unchanged the tick is ProBeing's, so an Undo may untick
 alter table public.task_nodes add column if not exists pb_due date;
 alter table public.task_nodes add column if not exists pb_due_sent_at timestamptz;
+alter table public.task_nodes add column if not exists pb_due_for timestamptz;
 alter table public.task_nodes add column if not exists push_refused jsonb;
 alter table public.task_nodes add column if not exists push_claim_until timestamptz;
+alter table public.task_nodes add column if not exists pb_completed_at timestamptz;
 
 -- tasks_sync_wants: the throttle for docs/tasks_sync.sql's triggers. wanted_n
 -- counts changes; sent_at is set while a request is out, so a burst of taps is

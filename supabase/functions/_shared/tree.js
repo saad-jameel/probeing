@@ -125,7 +125,11 @@ function diffPull(mirror, pulled, nowIso, listId) {
     if (old && newerThan(old.synced_at, nowIso)) return;   // a later run's copy wins
     if (!old && t.deleted) return;              // deleted before we ever saw it
 
-    var done = t.status === 'completed';
+    // A run that read Google before ProBeing's own tick landed: its "open" is
+    // older than the tick (both on Google's clock), so the tick stands.
+    var stale = Boolean(old && old.g_status === 'completed' && t.status !== 'completed' && old.pb_completed_at &&
+                        Date.parse(t.updated || '') < Date.parse(old.pb_completed_at));
+    var done = t.status === 'completed' || stale;
     var row = {
       google_id: String(t.id),
       list_id: list,
@@ -135,8 +139,8 @@ function diffPull(mirror, pulled, nowIso, listId) {
       position: String(t.position || ''),
       due: dueOf(t.due),
       g_status: done ? 'completed' : 'needsAction',
-      g_completed_at: done ? (t.completed || null) : null,
-      g_updated: t.updated || null,
+      g_completed_at: stale ? old.g_completed_at : done ? (t.completed || null) : null,
+      g_updated: stale ? old.g_updated : t.updated || null,
       // Unticked in Google since the last pull: Stage 15 must not tick it straight back.
       g_reopened_at: old && old.g_status === 'completed' && !done ? reopenedAt(t, nowIso, old)
                    : (old && old.g_reopened_at) || null,
@@ -313,6 +317,14 @@ function leafDoneAt(n, rids, newest) {
   return last;
 }
 
+/** Completed in Google by ProBeing's own PATCH, still: Google's `completed`
+ *  is the one it returned to that PATCH. An untick and re-tick by him, even
+ *  between two pulls, gives a new completed time, and makes it his. */
+function oursInGoogle(n) {
+  return n.g_status === 'completed' && Boolean(n.pb_completed_at) && pushedSinceReopen(n) &&
+         msOf(n.g_completed_at) === msOf(n.pb_completed_at);
+}
+
 /** Sent to Google already, and not unticked there since. An untick is never
  *  stamped before the send (diffPull), so equal means unticked. */
 function pushedSinceReopen(n) {
@@ -352,7 +364,7 @@ function rollUp(nodes, items, newest) {
 
 /**
  * Sub-tasks to untick in Google because an item under them was undone: ticked
- * by ProBeing (and not unticked or re-ticked in Google since), with an item
+ * by ProBeing and still ours (oursInGoogle), with an item
  * whose newest mark is 'open' and later than the finish that was sent. One
  * he or Google completed is never touched.
  */
@@ -360,7 +372,7 @@ function unpushWanted(nodes, items, newest) {
   newest = newest || {};
   var rids = itemsByNode(items);
   return liveSubtasks(nodes || []).filter(function (n) {
-    if (n.g_status !== 'completed' || !pushedSinceReopen(n)) return false;
+    if (!oursInGoogle(n)) return false;
     var since = msOf(n.pb_done_at);
     if (!isFinite(since)) since = msOf(n.pb_pushed_at);
     return (rids[n.id] || []).some(function (rid) {
@@ -386,23 +398,28 @@ function zoneDate(ms, zone) {
 }
 
 /**
- * The due date to send for task `n`, from his plan: {due, already} or null for
+ * The due date to send for task `n`, from his plan: {due, for, already} or null for
  * nothing to send. `due` is 'YYYY-MM-DD', or null to clear the one ProBeing
  * set; `already` means Google has it, so only the record changes. Sent only
- * when the finish DATE changed in ProBeing since it was last sent, so a date
- * changed in Google afterwards stands (Google wins) and nothing loops. A task
- * ProBeing never dated keeps Google's own date until a finish is set.
+ * when the finish itself changed since it was last sent (`for`, the finish
+ * sent; a zone change alone sends nothing) to another date, and only while
+ * Google still has the date ProBeing sent: once he sets one in Google, his
+ * date stands (cleared or changed in ProBeing, or a zone change, never
+ * overwrites it). A task ProBeing never dated keeps Google's own date until a
+ * finish is set.
  */
 function duePush(n, plan, zone) {
   if (!n || n.gone_at) return null;
   var t = msOf(plan && plan.expected_at);
   var want = isFinite(t) ? zoneDate(t, zone) : null;
   if (n.pb_due_sent_at) {
-    if (want === dueOf(n.pb_due)) return null;
+    if (dueMovedInGoogle(n) || want === dueOf(n.pb_due)) return null;
+    var was = msOf(n.pb_due_for);
+    if (was === t || (!isFinite(was) && !isFinite(t))) return null;
   } else if (want === null) {
     return null;
   }
-  return { due: want, already: dueOf(n.due) === want };
+  return { due: want, for: isFinite(t) ? new Date(t).toISOString() : null, already: dueOf(n.due) === want };
 }
 
 /** Google's due date is no longer the one ProBeing sent: changed in Google, so it is the one shown. */
@@ -410,9 +427,9 @@ function dueMovedInGoogle(n) {
   return Boolean(n && n.pb_due_sent_at) && dueOf(n.due) !== dueOf(n.pb_due);
 }
 
-/** Completed in Google by ProBeing, and not unticked there since. */
+/** Completed in Google by ProBeing, and not unticked or re-ticked there since. */
 function sentToGoogle(n) {
-  return Boolean(n) && n.g_status === 'completed' && !n.gone_at && pushedSinceReopen(n);
+  return Boolean(n) && !n.gone_at && oursInGoogle(n);
 }
 
 // What tasks-sync uses. The browser reads the globals directly.

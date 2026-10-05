@@ -108,7 +108,7 @@ select cron.schedule('probeing-tasks-sync', '*/15 * * * *',
 --            select * from public.tasks_sync_wants;
 -- Before the first Stage 15 run, the sub-tasks it will tick in Google (finished
 -- in ProBeing: every item closed, at least one Done). Projects are never ticked:
---   with latest as (select distinct on (item_rid) item_rid, mark from public.item_marks
+--   with latest as (select distinct on (item_rid) item_rid, mark, at from public.item_marks
 --                   order by item_rid, at desc, created_at desc, rid desc)
 --   select n.title from public.task_nodes n
 --    where n.kind = 'subtask' and n.gone_at is null and n.g_status = 'needsAction'
@@ -118,7 +118,9 @@ select cron.schedule('probeing-tasks-sync', '*/15 * * * *',
 --      and exists (select 1 from public.items i join latest l on l.item_rid = i.rid
 --                   where i.node_id = n.id and l.mark = 'done')
 --      and not exists (select 1 from public.items i left join latest l on l.item_rid = i.rid
---                       where i.node_id = n.id and coalesce(l.mark, 'open') = 'open');
+--                       where i.node_id = n.id and coalesce(l.mark, 'open') = 'open')
+--      and (n.g_reopened_at is null or (select max(l.at) from public.items i join latest l
+--                                       on l.item_rid = i.rid where i.node_id = n.id) > n.g_reopened_at);
 -- To stop the write-back pokes (the 15-minute sync still sends):
 --            drop trigger if exists tasks_sync_after_mark on public.item_marks;
 --            drop trigger if exists tasks_sync_after_plan_insert on public.task_plans;

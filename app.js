@@ -10575,7 +10575,7 @@ function tasksConnected() {
 /* What was sent to Google (Stage 15) rides along; before those columns exist
  * the Stage 13 set is read instead, so an app ahead of its SQL still shows the tree. */
 var TASK_NODE_COLS = 'id,google_id,list_id,parent_google_id,kind,title,position,due,g_status,gone_at';
-var TASK_NODE_SENT = ',g_completed_at,g_reopened_at,pb_pushed_at,pb_due,pb_due_sent_at';
+var TASK_NODE_SENT = ',g_completed_at,g_reopened_at,pb_pushed_at,pb_completed_at,pb_due,pb_due_sent_at';
 
 /** Open and done rows first, then the newest gone ones. A failed read keeps the last. */
 async function readTaskNodes() {
