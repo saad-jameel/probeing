@@ -37,8 +37,9 @@
  * v16 (Money 2): Dues and Logs dialogs, the wallet, and the `due` and `wallet`
  * outbox actions.
  * v17 (Stage 15): tree.js's write-back helpers; items closed with their task in
- * Google, deleted tasks named so, and "Sent to Google". */
-var CACHE = 'probeing-shell-v17';
+ * Google, deleted tasks named so, and "Sent to Google".
+ * v18: Home's "Upcoming tasks", grouped under projects. */
+var CACHE = 'probeing-shell-v18';
 var SHELL = [
   './',
   'index.html',

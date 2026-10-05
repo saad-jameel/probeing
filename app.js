@@ -10646,8 +10646,9 @@ function paintTasks() {
   renderDaySummary();
 }
 
-/** Home's Today's plan: Planned and due tasks, soonest first; when there are
- *  none, every open task (13b). Hidden until a list is connected. */
+/** Home's Upcoming tasks: Planned and due tasks, soonest first; when there are
+ *  none, every open task (13b). Grouped under their projects. Hidden until a
+ *  list is connected. */
 function paintPlan() {
   var card = $('planCard');
   if (!tasksConnected() || typeof todaysPlan !== 'function') { card.hidden = true; return; }
@@ -10656,14 +10657,44 @@ function paintPlan() {
   var plan = homePlanLeaves(currentNodes(), today, counterDayEnd(now));
   var list = $('planList');
   list.textContent = '';
-  plan.forEach(function (leaf) {
+  planGroups(plan).forEach(function (g) {
     var li = document.createElement('li');
-    li.appendChild(taskButton(leaf, 'planList', taskMeta(leaf, today, true)));
+    if (!g.up) {
+      // A childless project, or a sub-task whose project is not in the list.
+      li.appendChild(taskButton(g.leaves[0], 'planList', taskMeta(g.leaves[0], today, true)));
+    } else {
+      li.className = 'plan-group';
+      var head = document.createElement('div');
+      head.className = 'plan-project';
+      head.textContent = nodeTitle(g.up);
+      li.appendChild(head);
+      var sub = document.createElement('ul');
+      g.leaves.forEach(function (leaf) {
+        var sli = document.createElement('li');
+        sli.appendChild(taskButton(leaf, 'planList', taskMeta(leaf, today, false)));
+        sub.appendChild(sli);
+      });
+      li.appendChild(sub);
+    }
     list.appendChild(li);
   });
   list.hidden = !plan.length;
   $('planEmpty').hidden = plan.length > 0;
   card.hidden = false;
+}
+
+/** Leaves grouped by project, in the order each project first appears:
+ *  [{up, leaves}]. A leaf with no project is a group of its own, up null. */
+function planGroups(leaves) {
+  var out = [];
+  var byUp = userMap();
+  (leaves || []).forEach(function (l) {
+    if (!l.up) { out.push({ up: null, leaves: [l] }); return; }
+    var g = byUp[l.up.id];
+    if (!g) { g = byUp[l.up.id] = { up: l.up, leaves: [] }; out.push(g); }
+    g.leaves.push(l);
+  });
+  return out;
 }
 
 /** When it last pulled, and why the last try failed. A reconnect is said above it. */

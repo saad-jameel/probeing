@@ -733,7 +733,7 @@ body {
 .dlg label.check input[type="checkbox"] {
   width: 20px; height: 20px; flex: none; padding: 0; margin: 0; accent-color: var(--accent);
 }
-/* Stage 13: the Google Tasks copy. Today's plan on Home, the whole tree in
+/* Stage 13: the Google Tasks copy. Upcoming tasks on Home, the whole tree in
    Settings. Done and gone tasks stay visible, dimmed. */
 .plan-list, .task-tree, .task-tree ul { list-style: none; margin: 0; padding: 0; display: grid; gap: 6px; }
 /* Rule 6: both set `display`, so both declare their [hidden] pair. */
@@ -744,6 +744,10 @@ body {
 /* A <div> under the title, so it needs no `display` of its own. */
 .plan-meta { color: var(--muted); font-size: 12.5px; }
 .plan-meta.overdue { color: var(--warn, #c98a00); }
+/* Upcoming tasks: a project heading, its sub-tasks indented under it. */
+.plan-project { font-weight: 600; padding-top: 4px; }
+.plan-list .plan-group ul { list-style: none; margin: 0; padding: 0 0 0 16px; display: grid; gap: 0; }
+.plan-list .plan-group ul[hidden] { display: none; }
 .task-tree { margin-top: 10px; font-size: 14px; }
 .task-tree ul { margin: 4px 0 0; padding-left: 16px; gap: 3px; }
 .task-tree li { overflow-wrap: anywhere; }
@@ -751,7 +755,7 @@ body {
 .task-tree .task-done { opacity: .55; text-decoration: line-through; }
 .task-tree .task-gone { opacity: .4; font-style: italic; }
 
-/* The Tasks page and Today's plan: each open task is a button that opens its box.
+/* The Tasks page and Upcoming tasks: each open task is a button that opens its box.
    Rule 6: these set `display`, so each declares its [hidden] pair. */
 .task-item {
   display: block; width: 100%; padding: 6px 0; text-align: left;
