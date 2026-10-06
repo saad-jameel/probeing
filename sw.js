@@ -42,8 +42,9 @@
  * v19 (feedback 1): Done on a sub-task, deadlines, the deadline push (opens
  * Tasks), Dues in spent/got, fixed money tags.
  * v20 (Stage 18, live first): the Google Sheet link and Export now in Settings.
- * v21 (Stage 16): the What's done page on Tasks. */
-var CACHE = 'probeing-shell-v21';
+ * v21 (Stage 16): the What's done page on Tasks.
+ * v22 (Stage 17): the morning plan push (opens Home) and its Settings time. */
+var CACHE = 'probeing-shell-v22';
 var SHELL = [
   './',
   'index.html',
@@ -127,6 +128,7 @@ function pushData(event) {
 var PRAYER_TAG = /^probeing-prayer-[A-Za-z]+$/;
 // Deadline reminders (prayer-remind's task part): one line per task.
 var TASK_TAG = /^probeing-task-[A-Za-z0-9-]{1,64}$/;
+var PLAN_TAG = 'probeing-plan';
 
 self.addEventListener('push', function (event) {
   var data = pushData(event);
@@ -150,6 +152,18 @@ self.addEventListener('push', function (event) {
       icon: 'icons/icon-192.png',
       badge: 'icons/favicon-32.png',
       tag: TASK_TAG.test(String(data.tag || '')) ? data.tag : 'probeing-task-reminder',
+      renotify: true
+    }));
+    return;
+  }
+
+  // Stage 17: the morning "Today: N due, M carried over"; each day's replaces the last.
+  if (data.kind === 'plan') {
+    event.waitUntil(self.registration.showNotification(String(data.title || 'ProBeing'), {
+      body: String(data.body || ''),
+      icon: 'icons/icon-192.png',
+      badge: 'icons/favicon-32.png',
+      tag: PLAN_TAG,
       renotify: true
     }));
     return;
@@ -275,8 +289,9 @@ self.addEventListener('notificationclick', function (event) {
     return;
   }
 
-  // A prayer reminder: open ProBeing on Home (app.js listens for the message).
-  if (event.notification && /^probeing-prayer-/.test(String(event.notification.tag))) {
+  // A prayer reminder, or the morning plan push: open ProBeing on Home (app.js listens for the message).
+  if (event.notification && (/^probeing-prayer-/.test(String(event.notification.tag)) ||
+                             event.notification.tag === PLAN_TAG)) {
     event.notification.close();
     event.waitUntil(showApp().then(function (client) {
       if (client && typeof client.postMessage === 'function') client.postMessage({ goto: 'home' });

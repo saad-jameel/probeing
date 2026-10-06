@@ -9038,6 +9038,7 @@ $('settingsBtn').addEventListener('click', function () {
   loadGoogle();                      // likewise
   loadPrayerRemind();                // likewise
   loadTaskRemind();                  // likewise
+  loadPlanPush();                    // likewise
   dlg.showModal();
 });
 
@@ -12716,6 +12717,71 @@ $('taskRemindOn').addEventListener('change', async function () {
     out.textContent = 'Not saved: ' + ((e && e.message) || e);
   }
   box.disabled = false;
+});
+
+/* Stage 17: the morning push's on/off and time, user_settings.plan_push and
+ * plan_push_time. The server reads the time on the saved place's clock. */
+async function loadPlanPush() {
+  var box = $('planPushOn');
+  var at = $('planPushTime');
+  var out = $('planPushResult');
+  box.disabled = true;
+  at.disabled = true;
+  out.textContent = '';
+  try {
+    if (!supabaseReady()) { out.textContent = 'Sign in to change this.'; return; }
+    var got = await sb.from('user_settings').select('plan_push,plan_push_time').eq('user_id', sbUser.id).limit(1);
+    if (got.error) throw errorFrom(got.error);
+    var row = (got.data || [])[0];
+    box.checked = !(row && row.plan_push === false);              // no row: on, the default
+    at.value = String((row && row.plan_push_time) || '09:00').slice(0, 5);
+    at.dataset.saved = at.value;
+    box.disabled = false;
+    at.disabled = false;
+  } catch (e) {
+    out.textContent = 'Could not read this setting: ' + ((e && e.message) || e);
+  }
+}
+
+/** Saves one column of the morning push; false when it was not saved. */
+async function savePlanPush(patch, okText) {
+  var out = $('planPushResult');
+  out.textContent = 'Saving…';
+  try {
+    if (!supabaseReady()) throw new Error('Sign in first.');
+    var res = await sb.from('user_settings').upsert(Object.assign({ user_id: sbUser.id }, patch),
+                                                     { onConflict: 'user_id' });
+    if (res.error) throw errorFrom(res.error);
+    out.textContent = okText;
+    return true;
+  } catch (e) {
+    out.textContent = 'Not saved: ' + ((e && e.message) || e);
+    return false;
+  }
+}
+
+$('planPushOn').addEventListener('change', async function () {
+  var box = this;
+  var want = box.checked;
+  box.disabled = true;
+  if (!await savePlanPush({ plan_push: want }, want ? 'On, for every device.' : 'Off, for every device.')) {
+    box.checked = !want;
+  }
+  box.disabled = false;
+});
+
+$('planPushTime').addEventListener('change', async function () {
+  var at = this;
+  var want = at.value;
+  if (!/^\d{2}:\d{2}$/.test(want)) {
+    at.value = at.dataset.saved || '09:00';
+    $('planPushResult').textContent = 'Pick a time.';
+    return;
+  }
+  at.disabled = true;
+  if (await savePlanPush({ plan_push_time: want }, 'Saved: ' + want + ' each day.')) at.dataset.saved = want;
+  else at.value = at.dataset.saved || '09:00';
+  at.disabled = false;
 });
 
 // -------------------------------------------------------------------- boot
