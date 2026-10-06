@@ -164,7 +164,10 @@
   </section>
 
   <section id="tasksAllCard" class="card" hidden>
-    <h2 class="card-head">All tasks</h2>
+    <div class="log-head">
+      <h2 class="card-head">All tasks</h2>
+      <button type="button" id="doneOpenBtn" class="link-btn">What's done</button>
+    </div>
     <ul id="tasksAll" class="task-tree"></ul>
     <p id="tasksAllEmpty" class="pending" hidden>Your list is empty.</p>
   </section>
@@ -807,6 +810,21 @@
     <div class="dlg-actions">
       <button type="button" id="taskCloseBtn" class="link-btn">Close</button>
     </div>
+  </div>
+</dialog>
+
+<!-- Stage 16: finished sub-tasks and items, per project, by counter day.
+     Titles are his text, so app.js fills them with textContent. -->
+<dialog id="doneDlg" class="dlg done-dlg" aria-labelledby="doneDlgTitle">
+  <div>
+    <div class="dlg-top">
+      <h2 id="doneDlgTitle">What's done</h2>
+      <button type="button" id="doneCloseBtn" class="link-btn">Close</button>
+    </div>
+    <div id="doneRanges" class="pick-grid done-ranges" aria-label="Show"></div>
+    <div id="doneProjects" class="pick-grid done-projects" aria-label="Project"></div>
+    <p id="doneNote" class="hint" role="status" hidden></p>
+    <ul id="doneList" class="log-list logs-list done-list"></ul>
   </div>
 </dialog>
 

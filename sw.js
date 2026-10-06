@@ -41,9 +41,9 @@
  * v18: Home's "Upcoming tasks", grouped under projects.
  * v19 (feedback 1): Done on a sub-task, deadlines, the deadline push (opens
  * Tasks), Dues in spent/got, fixed money tags.
- * v22 (Stage 18): the Google Sheet link and Export now in Settings. v20 and
- * v21 are Stages 16 and 17's, built alongside. */
-var CACHE = 'probeing-shell-v20';
+ * v20 (Stage 18, live first): the Google Sheet link and Export now in Settings.
+ * v21 (Stage 16): the What's done page on Tasks. */
+var CACHE = 'probeing-shell-v21';
 var SHELL = [
   './',
   'index.html',

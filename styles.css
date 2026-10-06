@@ -869,3 +869,11 @@ body {
 .proj-sub-head > .proj-sub-title { flex: 1; min-width: 0; }
 /* Rule 6: .btn-wide sets `display`, and the task box's Done can be hidden. */
 .btn-wide[hidden] { display: none; }
+
+/* Stage 16: What's done. A fixed height, so switching project does not resize it.
+   Only #doneProjects (.pick-grid, which has its pair) and #doneNote are ever hidden (rule 6). */
+.done-dlg { height: min(85vh, 85dvh); }
+.done-ranges .pick { flex: 1 1 25%; padding: 8px 4px; font-size: 14px; }
+.done-projects .pick { flex: 1 1 40%; padding: 8px 6px; font-size: 14px; }
+.done-list .when { white-space: normal; text-align: right; max-width: 45%; overflow-wrap: anywhere; }
+.done-list li.done-item .what { color: var(--muted); }

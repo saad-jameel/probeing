@@ -5416,6 +5416,7 @@ function summariseRange(rows, windows) {
     // Keyed by what was typed, so they carry no prototype — see userMap().
     byProject: userMap(),
     byReason: userMap(),
+    bySubtask: userMap(),                 // Stage 16: task_nodes id -> ms
     m: 0,
     prayers: 0,
     byMode: userMap(),
@@ -5447,6 +5448,9 @@ function summariseRange(rows, windows) {
     });
     Object.keys(day.byReason).forEach(function (r) {
       sum.byReason[r] = (sum.byReason[r] || 0) + day.byReason[r];
+    });
+    Object.keys(day.bySubtask).forEach(function (id) {
+      sum.bySubtask[id] = (sum.bySubtask[id] || 0) + day.bySubtask[id];
     });
 
     /* Counted per day, not over the raw range, and that is what makes them
@@ -11997,6 +12001,7 @@ function paintItems() {
   renderProject();
   paintTasksPage();
   closeFinishedTasks();
+  if (typeof doneDlg !== 'undefined' && doneDlg && doneDlg.open) renderDone();   // Stage 16
 }
 
 /**
@@ -12338,7 +12343,273 @@ function stopItems() {
   });
   itemsChannel = null;
   marksChannel = null;
+  stopDone();
 }
+
+// ------------------------------------------------- What's done (Stage 16)
+
+/* Finished sub-tasks and items, per project, by counter day. Titles only, from
+ * the mirror and the items table (rule 5): never a description or raw_text.
+ * Read-only, so nothing here is on the M or prayer path (rule 4). */
+
+/** When sub-task `n` finished, or null: in ProBeing (tree.js finishedAt), else
+ *  completed in Google by him. One ProBeing ticked counts only while its own
+ *  finish stands, so an Undo takes it off at once. */
+function subtaskDoneMs(n, rids, newest, d) {
+  var at = finishedAt(n, rids, newest, d);
+  if (at !== null) return at;
+  if (n.g_status !== 'completed' || oursInGoogle(n)) return null;
+  var t = msOf(n.g_completed_at);
+  if (!isFinite(t)) t = msOf(n.g_updated);
+  return isFinite(t) ? t : null;
+}
+
+/**
+ * Everything finished, any day: [{project, kind, id, title, under, ms}].
+ * `project` is the project's node id; `under` is an item's sub-task title ('' for
+ * an item filed on the project itself). An item counts on its newest mark, only
+ * when that is Done. Anything under a deleted task or project is dropped.
+ * `tree` is {nodes, items, marks, direct}; `direct` are subdone/subopen rows.
+ */
+function doneEntries(tree) {
+  tree = tree || {};
+  var nodes = tree.nodes || [];
+  var index = nodeIndex(nodes);
+  var newest = itemNewest(tree.marks);
+  var direct = directMarks(tree.direct);
+  var rids = itemsByNode(tree.items);
+  function up(n) {
+    return n.kind === 'subtask' ? index.byGoogle[(n.list_id || '') + '|' + n.parent_google_id] || null : n;
+  }
+  function title(n) { return String(n.title || '').trim() || '(untitled)'; }
+  var out = [];
+  nodes.forEach(function (n) {
+    if (!n || !n.id || n.kind !== 'subtask' || n.gone_at) return;
+    var p = up(n);
+    if (!p || p.gone_at) return;
+    var ms = subtaskDoneMs(n, rids[n.id], newest, direct[n.id]);
+    if (ms !== null) out.push({ project: p.id, kind: 'subtask', id: n.id, title: title(n), under: '', ms: ms });
+  });
+  (tree.items || []).forEach(function (it) {
+    var m = it && it.rid ? newest[it.rid] : null;
+    var n = m && m.mark === 'done' ? index.byId[it.node_id] : null;
+    if (!n || n.gone_at) return;
+    var p = up(n);
+    if (!p || p.gone_at) return;
+    out.push({ project: p.id, kind: 'item', id: it.rid, title: String(it.title || '').trim() || '(untitled)',
+               under: n.kind === 'subtask' ? title(n) : '', ms: instantOf(m.at) });
+  });
+  return out.filter(function (e) { return isFinite(e.ms); });
+}
+
+/**
+ * The page: one entry per live project, in Google's order, each with the
+ * counter days in `windows` it finished something on, newest first:
+ * [{id, title, count, days: [{ymd, lines}]}]. A line is a doneEntries() entry;
+ * a sub-task's also carries `time`, its bySubtask figure over the range.
+ */
+function whatsDone(tree, windows, bySubtask) {
+  if (!windows || !windows.length) return [];
+  var first = windows[0].ymd;
+  var last = windows[windows.length - 1].ymd;
+  var times = bySubtask || {};
+  var byProject = userMap();
+  doneEntries(tree).forEach(function (e) {
+    var ymd = counterDate(e.ms);
+    if (ymd < first || ymd > last) return;
+    var line = Object.assign({ ymd: ymd }, e);
+    if (e.kind === 'subtask') line.time = times[e.id] || 0;
+    (byProject[e.project] = byProject[e.project] || []).push(line);
+  });
+  return mirrorTree((tree || {}).nodes || []).filter(function (p) {
+    return p.node && !p.node.gone_at;
+  }).map(function (p) {
+    var lines = (byProject[p.node.id] || []).sort(function (a, b) {
+      return (b.ms - a.ms) || (a.kind === b.kind ? 0 : a.kind === 'subtask' ? -1 : 1);
+    });
+    var days = [];
+    lines.forEach(function (l) {
+      if (!days.length || days[days.length - 1].ymd !== l.ymd) days.push({ ymd: l.ymd, lines: [] });
+      days[days.length - 1].lines.push(l);
+    });
+    return { id: p.node.id, title: String(p.node.title || '').trim() || '(untitled)',
+             count: lines.length, days: days };
+  });
+}
+
+/** The counter days a filter covers, as {start, end} local dates: this week
+ *  from Monday, this month from the 1st, or All from `firstMs`'s day. */
+function doneRangeOf(range, now, firstMs) {
+  var today = counterToday(now);
+  if (range === 'month') return { start: new Date(today.getFullYear(), today.getMonth(), 1), end: today };
+  if (range === 'all') {
+    var from = isFinite(firstMs) ? counterToday(new Date(firstMs)) : today;
+    return { start: from < today ? from : today, end: today };
+  }
+  var wk = reviewRangeOf('wk', now);
+  return { start: wk.start, end: wk.end };
+}
+
+/* The time read pages past PostgREST's 1000-row cap. Only rows that move the
+ * work clock (LEAD_TYPES): replayDay ignores the rest, so bySubtask is unchanged. */
+var DONE_PAGE = 1000;
+var DONE_PAGES_MAX = 20;
+var DONE_COLS = 'id,at,type,raw_text,project,detail,node_id,rid,created_at';
+var DONE_RANGES = [['week', 'Week'], ['month', 'Month'], ['all', 'All']];
+var DONE_EMPTY = { week: 'this week', month: 'this month', all: 'yet' };
+var doneDlg = $('doneDlg');
+var doneView = { range: 'week', project: '', sum: null, firstMs: NaN, read: 0, note: '' };
+
+/** Work-clock rows from `startIso` (null: from the first) to before `endIso`,
+ *  oldest first. {rows, partial}: partial when the page cap stopped it. */
+async function doneRows(startIso, endIso) {
+  var rows = [];
+  var seen = userMap();
+  for (var page = 0; page < DONE_PAGES_MAX; page++) {
+    var q = sb.from('events').select(DONE_COLS).in('type', LEAD_TYPES).lt('at', endIso);
+    if (startIso) q = q.gte('at', startIso);
+    var res = await q.order('at', { ascending: true }).order('created_at', { ascending: true })
+      .order('id', { ascending: true }).range(page * DONE_PAGE, page * DONE_PAGE + DONE_PAGE - 1);
+    if (res.error) throw errorFrom(res.error);
+    var got = res.data || [];
+    got.forEach(function (r) { if (!seen[r.id]) { seen[r.id] = 1; rows.push(sbRow(r)); } });
+    if (got.length < DONE_PAGE) return { rows: rows, partial: false };
+  }
+  return { rows: rows, partial: true };
+}
+
+/** The current list's mirror, items and marks with held presses, and every direct Done/Reopen. */
+function doneTree() {
+  var tree = taskTree();
+  return { nodes: currentNodes(), items: tree.items, marks: tree.marks, direct: directAll() };
+}
+
+/** The filter's span; All starts at the first row read or the oldest finish. */
+function doneSpan(tree) {
+  var first = doneView.firstMs;
+  if (doneView.range === 'all') {
+    doneEntries(tree).forEach(function (e) { if (!(first <= e.ms)) first = e.ms; });
+  }
+  return doneRangeOf(doneView.range, new Date(), first);
+}
+
+function renderDone() {
+  var tree = doneTree();
+  var span = doneSpan(tree);
+  var projects = whatsDone(tree, dayWindows(span.start, span.end), doneView.sum ? doneView.sum.bySubtask : null);
+  Array.prototype.forEach.call($('doneRanges').querySelectorAll('button'), function (b) {
+    b.setAttribute('aria-pressed', String(b.dataset.range === doneView.range));
+  });
+  if (!projects.some(function (p) { return p.id === doneView.project; })) {
+    var busy = projects.filter(function (p) { return p.count; })[0] || projects[0];
+    doneView.project = busy ? busy.id : '';
+  }
+  var grid = $('doneProjects');
+  grid.textContent = '';
+  projects.forEach(function (p) {
+    grid.appendChild(pickButton(p.title + ' (' + p.count + ')', p.id === doneView.project, false, function () {
+      doneView.project = p.id;
+      renderDone();
+    }));
+  });
+  grid.hidden = !projects.length;
+
+  var list = $('doneList');
+  list.textContent = '';
+  var shown = projects.filter(function (p) { return p.id === doneView.project; })[0];
+  var todayYmd = counterDate(Date.now());
+  (shown ? shown.days : []).forEach(function (d) {
+    var head = document.createElement('li');
+    head.className = 'day-head';
+    head.textContent = moneyDayName(d.ymd, ymdBack(d.ymd, todayYmd));
+    list.appendChild(head);
+    d.lines.forEach(function (l) { list.appendChild(doneLine(l)); });
+  });
+  if (!shown || !shown.count) {
+    var empty = document.createElement('li');
+    empty.className = 'empty';
+    empty.textContent = projects.length ? 'Nothing finished ' + DONE_EMPTY[doneView.range] + '.'
+                                        : 'No projects in your Tasks list.';
+    list.appendChild(empty);
+  }
+  $('doneNote').textContent = doneView.note;
+  $('doneNote').hidden = !doneView.note;
+}
+
+/** A sub-task with its time in the range, or an item with the sub-task it was under. */
+function doneLine(l) {
+  var li = document.createElement('li');
+  li.className = 'done-' + l.kind;
+  var what = document.createElement('span');
+  what.className = 'what';
+  what.textContent = (l.kind === 'subtask' ? '✓ ' : '• ') + l.title;
+  li.appendChild(what);
+  var meta = l.kind === 'subtask' ? (l.time > 0 ? humanDuration(l.time) : '') : l.under;
+  if (meta) {
+    var m = document.createElement('span');
+    m.className = 'when';
+    m.textContent = meta;
+    li.appendChild(m);
+  }
+  return li;
+}
+
+/** Read the span's work rows for the sub-task times, then draw. The newest read wins. */
+async function readDone() {
+  var ticket = ++doneView.read;
+  doneView.note = 'Reading time…';
+  renderDone();
+  try {
+    if (!supabaseReady()) throw new Error('Sign in to read your time.');
+    if (!itemsRead) await readItems();
+    var all = doneView.range === 'all';
+    var span = doneSpan(doneTree());
+    var bounds = rangeReadBounds(span.start, span.end);
+    var got = await doneRows(all ? null : bounds.startIso, bounds.endIso);
+    if (ticket !== doneView.read) return;
+    if (all && got.rows.length) {
+      doneView.firstMs = instantOf(got.rows[0].at);
+      span = doneSpan(doneTree());
+    }
+    doneView.sum = summariseRange(got.rows, dayWindows(span.start, span.end));
+    doneView.note = got.partial ? 'Too many rows to read at once, so times may be short.' : '';
+  } catch (e) {
+    if (ticket !== doneView.read) return;
+    doneView.sum = null;
+    doneView.note = 'Time could not be read: ' + ((e && e.message) || e);
+  }
+  renderDone();
+}
+
+function openDone() {
+  doneView.sum = null;
+  doneView.firstMs = NaN;
+  if (!doneDlg.open) doneDlg.showModal();
+  readDone();
+  $('doneCloseBtn').focus();
+}
+
+function stopDone() {
+  if (!doneDlg) return;                  // signed out before this block ran
+  doneView = { range: 'week', project: '', sum: null, firstMs: NaN, read: doneView.read + 1, note: '' };
+  if (doneDlg.open) doneDlg.close();
+}
+
+DONE_RANGES.forEach(function (r) {
+  var b = pickButton(r[1], r[0] === doneView.range, false, function () {
+    if (doneView.range === r[0]) return;
+    doneView.range = r[0];
+    doneView.sum = null;
+    readDone();
+  });
+  b.dataset.range = r[0];
+  $('doneRanges').appendChild(b);
+});
+$('doneOpenBtn').addEventListener('click', openDone);
+$('doneCloseBtn').addEventListener('click', function () {
+  doneDlg.close();
+  $('doneOpenBtn').focus();
+});
 
 // ------------------------------------------------- prayer reminders (29 Sep)
 /* The prayer-remind function's on/off, in user_settings so the server reads it.
