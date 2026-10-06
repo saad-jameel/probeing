@@ -1351,3 +1351,10 @@ alter table public.sync_state add column if not exists export_error text;
 alter table public.sync_state add column if not exists sheet_note text;
 -- Held by a running export, so two at once cannot each make a sheet. Server-only, like the table.
 alter table public.google_grants add column if not exists export_claim_until timestamptz;
+
+-- ======================================================== stage 17 (7 Oct)
+-- The morning push: prayer-remind sends "Today: N due, M carried over, P planned" once per
+-- counter day at plan_push_time, read on the clock of time_zone above. Its own
+-- toggle. Dedupe in reminders_sent, kind 'plan', day = the counter date.
+alter table public.user_settings add column if not exists plan_push boolean not null default true;
+alter table public.user_settings add column if not exists plan_push_time time not null default '09:00';

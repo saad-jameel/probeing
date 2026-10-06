@@ -15,6 +15,10 @@
 // task and expected finish (remindTasks), on its own toggle, user_settings.task_reminders.
 // With nothing due that costs one more small read, of task_plans.
 //
+// Stage 17 (7 Oct): the morning push, "Today: N due, M carried over" (remindPlan),
+// once per counter day at user_settings.plan_push_time, on its own toggle plan_push.
+// Idle, it reads nothing: the time is checked before any read.
+//
 // Deployed by hand:
 //   npx supabase functions deploy prayer-remind --project-ref <ref> --use-api
 // Secrets: none new — CRON_SECRET, ALLOWED_USER_ID and VAPID_PRIVATE_KEY are wrapup's.
@@ -34,6 +38,7 @@ const Day = (globalThis as unknown as { ProBeingDay: {
   zoneOffsetMin: (zone: string, ms: number, fallback: number) => number;
   prayerTimes: (date: unknown, offsetMin?: number) => Record<string, number>;
   counterDayStart: (t: number, offsetMin?: number) => number;
+  counterDate: (t: number, offsetMin?: number) => string;
   prayerDate: (t: number, offsetMin?: number) => string;
 } }).ProBeingDay;
 
@@ -243,6 +248,82 @@ function taskPayload(r, offsetMin) {
            body: r.up ? String(r.up.title || '').trim().slice(0, 120) : '' };
 }
 
+/* ── Stage 17: the morning push, "Today: N due, M carried over", once per
+ *    counter day at user_settings.plan_push_time on his saved zone's clock. */
+
+var PLAN_DEFAULT_MIN = 9 * 60;
+
+/* Still sent this late: the counts are worked out when it is sent, so a late
+ * one is still true. Also how far back a time just changed to fires at once. */
+var PLAN_LATE_MS = 30 * 60000;
+
+/** Minutes after midnight of a 'HH:MM[:SS]' time; 09:00 when unreadable. */
+function planMinutes(text) {
+  var m = /^(\d{1,2}):(\d{2})/.exec(String(text || ''));
+  if (!m || Number(m[1]) > 23 || Number(m[2]) > 59) return PLAN_DEFAULT_MIN;
+  return Number(m[1]) * 60 + Number(m[2]);
+}
+
+/**
+ * The morning push due at `now`: {kind: 'plan', day, at} or null. `day` is the
+ * counter date (day.js's counterDate) of the push time, so a time before the
+ * Fajr - 10 turn belongs to the day before, as on Home. on: only `false` is off.
+ */
+function planDue(now, offsetMin, timeText, on, day) {
+  if (on === false) return null;
+  var mins = planMinutes(timeText);
+  for (var k = 0; k >= -1; k--) {            // yesterday's: a late window across midnight
+    var date = localDate(now, offsetMin, k);
+    var at = Date.UTC(date.y, date.m - 1, date.d, 0, mins) - offsetMin * 60000;
+    if (at > now + REMIND_GRACE_MS || now - at > PLAN_LATE_MS) continue;
+    return { kind: 'plan', day: day.counterDate(at, offsetMin), at: at };
+  }
+  return null;
+}
+
+/**
+ * Home's Upcoming tasks, counted by date. Leaves (sub-tasks, or projects with no
+ * sub-task left) of the shown list, open in Google, project not deleted, not
+ * finished by their own Done (done: id -> true). finish = his expected finish,
+ * unless Google's due date was moved there after ProBeing sent it. As the card
+ * dates a task: by the finish when it is set and before `end` (before `start`:
+ * carried, else due); otherwise by Google's due date (`today`: due, earlier:
+ * carried). Planned or undated tasks, and later dates, count in neither.
+ * nodes: task_nodes of the list; plans: node id -> task_plans row; tree: tree.js.
+ * Returns {due, carried, ids}: ids are the counted leaves.
+ */
+function planCounts(nodes, plans, done, today, start, end, tree) {
+  var byGoogle = {};
+  var hasKids = {};
+  (nodes || []).forEach(function (n) {
+    byGoogle[n.google_id] = n;
+    if (n.kind === 'subtask' && !n.gone_at) hasKids[n.parent_google_id] = true;
+  });
+  var out = { due: 0, carried: 0, ids: [] };
+  (nodes || []).forEach(function (n) {
+    if (!(n.kind === 'subtask' || (n.kind === 'project' && !hasKids[n.google_id]))) return;
+    var up = n.kind === 'subtask' ? byGoogle[n.parent_google_id] : null;
+    if (n.gone_at || n.g_status === 'completed' || (up && up.gone_at) || done[n.id]) return;
+    var p = plans[n.id];
+    var fin = p && p.expected_at && !tree.dueMovedInGoogle(n) ? Date.parse(String(p.expected_at)) : NaN;
+    var gdue = tree.dueOf(n.due);
+    // NaN (no finish) fails both tests and falls to Google's date.
+    var when = fin < start ? 'carried' : fin < end ? 'due'
+      : gdue === today ? 'due' : gdue && gdue < today ? 'carried' : '';
+    if (when === 'due') out.due++;
+    else if (when === 'carried') out.carried++;
+    else return;
+    out.ids.push(n.id);
+  });
+  return out;
+}
+
+/** The push's JSON. sw.js opens Home on a tap. */
+function planPayload(c) {
+  return { kind: 'plan', tag: 'probeing-plan', goto: 'home',
+           title: 'Today: ' + c.due + ' due, ' + c.carried + ' carried over', body: '' };
+}
+
 /* ─────────────────────────────────────────────────── end of the pure part */
 
 /** Constant-time compare, as in wrapup and glance-refresh. */
@@ -282,7 +363,9 @@ async function readSettings(sb: ReturnType<typeof admin>, owner: string, now: nu
   const off = Day.zoneOffsetMin(place.zone, now, NaN);
   return { zone: isNaN(off) ? 'Asia/Karachi' : place.zone, offset: isNaN(off) ? 300 : off,
            on: !(row && row.prayer_reminders === false),
-           tasksOn: !(row && row.task_reminders === false) };
+           tasksOn: !(row && row.task_reminders === false),
+           planOn: !(row && row.plan_push === false),
+           planTime: row ? row.plan_push_time : null };
 }
 
 /** Feedback 1: send any "30 min left" due now. One small read when none is. */
@@ -354,6 +437,66 @@ async function remindTasks(sb: ReturnType<typeof admin>, owner: string, now: num
   }
 }
 
+/** Stage 17: send the morning push if it is due now. Reads nothing outside its time. */
+async function remindPlan(sb: ReturnType<typeof admin>, owner: string, now: number, offset: number,
+                          on: boolean, time: unknown) {
+  const due = planDue(now, offset, time, on, Day);
+  if (!due) return { act: on ? 'nothing' : 'off' };
+  const must = (r: { data: unknown; error: { message?: string } | null }) => {
+    if (r.error) throw new Error(String(r.error.message || 'a read failed'));
+    return (r.data || []) as Record<string, any>[];
+  };
+  try {
+    if (must(await sb.from('reminders_sent').select('kind').eq('user_id', owner)
+      .eq('kind', due.kind).eq('day', due.day).limit(1)).length) return { act: 'nothing', day: due.day };
+
+    // Home's card: the list tasks-sync reads, and only while Google is connected.
+    const start = Day.counterDayStart(due.at, offset);
+    const end = Day.counterDayStart(start + 30 * 3600000, offset);
+    const sync = must(await sb.from('sync_state').select('*').eq('user_id', owner).limit(1))[0] || {};
+    let c = { due: 0, carried: 0, ids: [] as string[] };
+    if (sync.connected && sync.list_title && sync.list_id) {
+      const nodes = must(await sb.from('task_nodes').select('*').eq('user_id', owner)
+        .eq('list_id', sync.list_id).limit(1000));
+      const plans: Record<string, any> = {};
+      must(await sb.from('task_plans').select('node_id, expected_at').eq('user_id', owner)
+        .lte('expected_at', new Date(end).toISOString()).limit(1000))
+        .forEach((p) => { plans[p.node_id] = p; });
+      c = planCounts(nodes, plans, {}, due.day, start, end, Tree);
+      if (c.ids.length) {
+        // Finished by its own Done in ProBeing: off the card, so out of the count (doneHere).
+        const items = must(await sb.from('items').select('rid, node_id').eq('user_id', owner)
+          .in('node_id', c.ids).limit(1000));
+        const newest: Record<string, any> = {};
+        if (items.length) {
+          must(await sb.from('item_mark_latest').select('item_rid, mark, at').eq('user_id', owner)
+            .in('item_rid', items.map((i) => i.rid)).limit(1000)).forEach((m) => { newest[m.item_rid] = m; });
+        }
+        const direct = Tree.directMarks(must(await sb.from('events').select('type, rid, node_id, at')
+          .eq('user_id', owner).in('type', ['subdone', 'subopen']).in('node_id', c.ids).limit(1000)));
+        const done = Tree.directDone(nodes.filter((n) => c.ids.indexOf(n.id) !== -1), items, newest, direct);
+        c = planCounts(nodes, plans, done, due.day, start, end, Tree);
+      }
+    }
+
+    // Claimed even when there is nothing to say, so the rest of the window reads one row.
+    const claim = await sb.from('reminders_sent').insert({ user_id: owner, kind: due.kind, day: due.day });
+    if (claim.error) {
+      return { act: 'nothing', day: due.day,
+               skipped: claim.error.code === '23505' ? 'already sent' : claim.error.message };
+    }
+    if (!c.ids.length) return { act: 'empty', day: due.day };
+    const out = await pushAll(sb, owner, JSON.stringify(planPayload(c)), {
+      ttl: Math.max(60, Math.floor((end - now) / 1000)), topic: 'probeing-plan', urgency: 'normal'
+    });
+    // Delivered nowhere: release the claim so the next minute tries again.
+    if (!out.sent) await sb.from('reminders_sent').delete().eq('user_id', owner).eq('kind', due.kind).eq('day', due.day);
+    return { act: 'sent', day: due.day, due: c.due, carried: c.carried, ...out };
+  } catch (e) {
+    return { act: 'error', error: String((e && (e as Error).message) || e) };
+  }
+}
+
 type Reminder = { kind: string; day: string; prayer: string; left?: number; end: number };
 
 Deno.serve(async (req: Request): Promise<Response> => {
@@ -393,12 +536,15 @@ Deno.serve(async (req: Request): Promise<Response> => {
   // Deadlines first and on their own toggle; the prayer insert trigger's call skips them.
   const tasks = logged ? { act: 'skipped' } : place.tasksOn
     ? await remindTasks(sb, owner, now, place.offset) : { act: 'off' };
-  if (!place.on) return reply(200, { ok: true, act: 'off', why: 'prayer reminders are turned off', tasks });
+  // Stage 17: likewise on its own toggle and skipped by the insert trigger's call.
+  const plan = logged ? { act: 'skipped' }
+    : await remindPlan(sb, owner, now, place.offset, place.planOn, place.planTime);
+  if (!place.on) return reply(200, { ok: true, act: 'off', why: 'prayer reminders are turned off', tasks, plan });
 
   const list = remindersAround(now, place.offset, (d: unknown) => Day.prayerTimes(d, place.offset));
   // The cheap gate: nothing could be due, so nothing more is read.
   if (!logged && dueReminders(list, now, {}, {}, true).length === 0) {
-    return reply(200, { ok: true, act: 'nothing', zone: place.zone, tasks });
+    return reply(200, { ok: true, act: 'nothing', zone: place.zone, tasks, plan });
   }
 
   const days = [list[0].day, list[list.length - 1].day];
@@ -444,5 +590,5 @@ Deno.serve(async (req: Request): Promise<Response> => {
   }
 
   return reply(200, { ok: true, act: todo.length ? 'sent' : 'nothing', zone: place.zone,
-                      offset: place.offset, reminders: report, tasks });
+                      offset: place.offset, reminders: report, tasks, plan });
 });
