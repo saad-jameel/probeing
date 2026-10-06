@@ -10359,6 +10359,8 @@ var googleStatus = null;       // the last google-link status reply; null while 
 var googleSync = null;         // this user's sync_state row, or null
 var googleSyncRead = false;    // read this visit; until then serverFiles() remembers
 var googleChannel = null;
+// Stage 18's columns, read with the rest of the row.
+var SYNC_SHEET_COLS = ',sheet_url,last_export_at,export_error,sheet_note';
 
 var GOOGLE_TIMEOUT_MS = 30000;   // a cold function plus a call to Google
 
@@ -10404,10 +10406,12 @@ async function functionCall(name, body) {
 async function readGoogleSync() {
   googleSync = null;
   if (!sb) return;
+  function read(cols) { return sb.from('sync_state').select(cols).limit(1); }
   try {
-    var res = await sb.from('sync_state')
-      .select('connected,google_email,list_id,list_title,last_error,last_error_at,last_pull_ok_at,deep_ignored')
-      .limit(1);
+    var cols = 'connected,google_email,list_id,list_title,last_error,last_error_at,last_pull_ok_at,deep_ignored';
+    var res = await read(cols + SYNC_SHEET_COLS);
+    // Before Stage 18's columns exist, the rest of the row still reads.
+    if (res.error && res.error.code === '42703') res = await read(cols);
     if (!res.error) {
       googleSync = (res.data || [])[0] || null;
       await rememberServerFiles();
@@ -10440,7 +10444,7 @@ function googleView(status, sync) {
   return { state: 'on', email: email, list: list,
            text: 'Connected as ' + (email || 'your Google account') + '. ' +
                  (list ? 'List: ' + list + '.' : 'No list chosen yet.'),
-           note: status.drive === false ? 'Drive not allowed — the Google Sheets copy (later) won’t ' +
+           note: status.drive === false ? 'Drive not allowed — the Google Sheets copy won’t ' +
                                           'work. Reconnect and tick both boxes to fix.' : '' };
 }
 
@@ -10456,8 +10460,76 @@ function paintGoogle() {
   $('googleDisconnectBtn').hidden = v.state !== 'on' && v.state !== 'reconnect';
   if (v.state !== 'on') $('googleListPick').hidden = true;
   paintTasksSettings(v);
+  paintSheet(v);
   return v;
 }
+
+// ------------------------------------------------- google sheet copy (Stage 18)
+
+var sheetExporting = false;
+
+/** Only a Google Sheets address is ever a link; anything else is not shown. */
+function sheetHref(url) {
+  var u = String(url || '');
+  return /^https:\/\/docs\.google\.com\/spreadsheets\/d\/[A-Za-z0-9_-]+(\/[^\s"'<>]*)?$/.test(u) ? u : '';
+}
+
+/** When it last copied, and what went wrong or changed. */
+function sheetText(sync) {
+  var parts = [];
+  var t = Date.parse((sync && sync.last_export_at) || '');
+  if (sheetExporting) parts.push('Copying to your Google Sheet…');
+  else if (isFinite(t)) {
+    var day = ymdLocal(new Date(t));
+    parts.push('Copied to your Google Sheet ' + (day === ymdLocal(new Date()) ? 'today' : humanYmd(day)) +
+               ' at ' + clockOf({ at: sync.last_export_at }) + '. It is rewritten daily at 12:00 Karachi time.');
+  } else parts.push('Not copied to a Google Sheet yet. It is written daily at 12:00 Karachi time.');
+  if (sync && sync.sheet_note) parts.push(String(sync.sheet_note));
+  var err = String((sync && sync.export_error) || '');
+  if (err && err.indexOf('Reconnect Google') !== 0) parts.push('⚠ ' + err);
+  return parts.join(' ');
+}
+
+/** Settings: the Sheet link and Export now, while Google is connected. */
+function paintSheet(v) {
+  var on = v.state === 'on';
+  $('sheetBlock').hidden = !on;
+  if (!on) return;
+  $('sheetLine').textContent = sheetText(googleSync);   // rule 5: the note is server text
+  var href = sheetHref(googleSync && googleSync.sheet_url);
+  var link = $('sheetLink');
+  link.hidden = !href;
+  if (href) link.href = href; else link.removeAttribute('href');
+  var btn = $('sheetExportBtn');
+  btn.disabled = sheetExporting;
+  btn.textContent = sheetExporting ? 'Exporting…' : 'Export now';
+}
+
+$('sheetExportBtn').addEventListener('click', async function () {
+  if (sheetExporting) return;
+  var out = $('sheetResult');
+  out.textContent = '';
+  sheetExporting = true;
+  paintGoogle();
+  var r;
+  try {
+    r = await functionCall('sheets-export', {});
+    await readGoogleSync();
+  } finally {
+    sheetExporting = false;
+    paintGoogle();
+  }
+  if (r.reconnect && googleStatus) { googleStatus.reconnect = true; paintGoogle(); }
+  if (!r.ok) out.textContent = '❌ ' + (r.error || 'not exported');
+  else if (r.skipped) out.textContent = 'Nothing to export: ' + r.skipped + '.';
+  else {
+    var n = 0;
+    Object.keys(r.rows || {}).forEach(function (k) { n += Number(r.rows[k]) || 0; });
+    out.textContent = (r.replaced ? 'Made a new Sheet (the old one was in the bin or deleted) and copied '
+                       : r.created ? 'Made your Google Sheet and copied ' : 'Copied ') +
+                      n + (n === 1 ? ' row.' : ' rows.');
+  }
+});
 
 /** On opening Settings. Just connected with no list yet: the picker opens by itself. */
 async function loadGoogle() {

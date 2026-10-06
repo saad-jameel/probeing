@@ -585,6 +585,15 @@
         <!-- Stage 13: the read-only copy of the list, and when it was last pulled. -->
         <p id="tasksSyncLine" class="hint" hidden></p>
         <ul id="tasksTree" class="task-tree" hidden></ul>
+        <!-- Stage 18: the Google Sheet copy, written daily at 12:00 and on demand. -->
+        <div id="sheetBlock" hidden>
+          <p id="sheetLine" class="hint"></p>
+          <div class="dlg-actions" style="justify-content: flex-start">
+            <a id="sheetLink" class="btn" target="_blank" rel="noopener noreferrer" style="text-decoration: none" hidden>Your Google Sheet</a>
+            <button type="button" id="sheetExportBtn" class="btn">Export now</button>
+          </div>
+          <p id="sheetResult" class="hint"></p>
+        </div>
       </div>
 
     <div class="help-row">

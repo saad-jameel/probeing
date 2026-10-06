@@ -40,8 +40,10 @@
  * Google, deleted tasks named so, and "Sent to Google".
  * v18: Home's "Upcoming tasks", grouped under projects.
  * v19 (feedback 1): Done on a sub-task, deadlines, the deadline push (opens
- * Tasks), Dues in spent/got, fixed money tags. */
-var CACHE = 'probeing-shell-v19';
+ * Tasks), Dues in spent/got, fixed money tags.
+ * v22 (Stage 18): the Google Sheet link and Export now in Settings. v20 and
+ * v21 are Stages 16 and 17's, built alongside. */
+var CACHE = 'probeing-shell-v22';
 var SHELL = [
   './',
   'index.html',
