@@ -59,9 +59,9 @@ shipped in `f733804`; `CLAUDE.md` carries the full reasoning.
 > | ✅ | 14b Done/Drop items, time per sub-task, widget shows the sub-task | live 2 Oct 02:00 — items with Done/Drop/Undo and "+ item"; a sub-task ends when its last item is closed; a nap pauses it |
 > | ✅ | (added) Money 2: "Dues", wallet balance, per day till the 1st, new Money screen | live 2 Oct 04:58 — Dues/Logs popups, Expense/Income calculator, running wallet |
 > | ✅ | 15 Finishing a task flows back to Google | live 5 Oct 16:43 — sub-tasks only (never projects), Undo unticks what ProBeing ticked, finish date → Google due; a real-device test still owed |
-> | ⬜ | 16 "What's done" page | waiting |
-> | ⬜ | 17 Morning push: "Today: N due" | waiting |
-> | ⬜ | 18 A Google Sheet copy in his Drive, as a backup | waiting |
+> | 🟡 | 16 "What's done" page | building |
+> | 🟡 | 17 Morning push: "Today: N due" | building |
+> | ✅ | 18 A Google Sheet copy in his Drive, as a backup | live 7 Oct 04:19 — "ProBeing copy" sheet, rewritten nightly at 12:00 and on Export now; first live export row counts matched |
 >
 > **A great deal was built with no stage number.** Read *Built, but never planned*
 > at the end before assuming a gap is a gap.
