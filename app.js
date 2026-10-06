@@ -10395,7 +10395,8 @@ async function functionCall(name, body) {
     if (data && typeof data === 'object' && typeof data.ok === 'boolean') return data;
     return { ok: false, error: 'the server answered ' + res.status };
   } catch (e) {
-    if (e && e.name === 'AbortError') return { ok: false, error: 'no answer within 30 seconds' };
+    // timedOut: the server may still finish what it was asked.
+    if (e && e.name === 'AbortError') return { ok: false, timedOut: true, error: 'no answer within 30 seconds' };
     return { ok: false, error: (e && e.message) || String(e) };
   } finally {
     clearTimeout(timer);
@@ -10478,8 +10479,7 @@ function sheetHref(url) {
 function sheetText(sync) {
   var parts = [];
   var t = Date.parse((sync && sync.last_export_at) || '');
-  if (sheetExporting) parts.push('Copying to your Google Sheet…');
-  else if (isFinite(t)) {
+  if (isFinite(t)) {
     var day = ymdLocal(new Date(t));
     parts.push('Copied to your Google Sheet ' + (day === ymdLocal(new Date()) ? 'today' : humanYmd(day)) +
                ' at ' + clockOf({ at: sync.last_export_at }) + '. It is rewritten daily at 12:00 Karachi time.');
@@ -10511,9 +10511,15 @@ $('sheetExportBtn').addEventListener('click', async function () {
   out.textContent = '';
   sheetExporting = true;
   paintGoogle();
-  var r;
+  var r = await functionCall('sheets-export', {});
+  if (r.timedOut) {
+    // The export goes on without the page: look again later, and hold the button meanwhile.
+    out.textContent = 'Still working (no answer within 30 seconds yet) — check back in a minute.';
+    setTimeout(function () { readGoogleSync().then(paintGoogle); }, 60000);
+    setTimeout(function () { sheetExporting = false; readGoogleSync().then(paintGoogle); }, 120000);
+    return;
+  }
   try {
-    r = await functionCall('sheets-export', {});
     await readGoogleSync();
   } finally {
     sheetExporting = false;
@@ -10521,6 +10527,7 @@ $('sheetExportBtn').addEventListener('click', async function () {
   }
   if (r.reconnect && googleStatus) { googleStatus.reconnect = true; paintGoogle(); }
   if (!r.ok) out.textContent = '❌ ' + (r.error || 'not exported');
+  else if (r.busy) out.textContent = 'An export is already running; the line above updates when it finishes.';
   else if (r.skipped) out.textContent = 'Nothing to export: ' + r.skipped + '.';
   else {
     var n = 0;

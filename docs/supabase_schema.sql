@@ -1349,3 +1349,5 @@ create trigger task_plans_expected_set
 -- in the bin or deleted. Browser-readable through "read own sync state".
 alter table public.sync_state add column if not exists export_error text;
 alter table public.sync_state add column if not exists sheet_note text;
+-- Held by a running export, so two at once cannot each make a sheet. Server-only, like the table.
+alter table public.google_grants add column if not exists export_claim_until timestamptz;

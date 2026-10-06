@@ -53,7 +53,9 @@ var CELL_MAX = 49000;
 // Per values.update. Google advises payloads under 2 MB.
 var CHUNK_ROWS = 2000;
 var CHUNK_BYTES = 1000000;
-var READ_PAGE = 1000;           // PostgREST's cap; every read pages past it
+var UTF8 = new TextEncoder();   // request sizes are bytes, and Urdu is 2 bytes a letter
+var READ_PAGE = 1000;
+var CLAIM_MS = 5 * 60 * 1000;   // a run that died frees the next one after this           // PostgREST's cap; every read pages past it
 var NO_DRIVE = 'Drive not allowed: reconnect Google and tick both boxes to get the Sheet copy.';
 
 function sheetUrl(id) {
@@ -86,7 +88,17 @@ function cell(v) {
   if (v === null || v === undefined) return '';
   if (typeof v === 'number') return isFinite(v) ? v : String(v);
   var s = typeof v === 'string' ? v : JSON.stringify(v);
-  return s.length > CELL_MAX ? s.slice(0, CELL_MAX) + '… (cut)' : s;
+  if (s.length <= CELL_MAX) return s;
+  // Never end on the first half of a surrogate pair (an emoji cut in two).
+  var end = /[\uD800-\uDBFF]/.test(s.charAt(CELL_MAX - 1)) ? CELL_MAX - 1 : CELL_MAX;
+  return s.slice(0, end) + '… (cut)';
+}
+
+/** A cancelled row and the row that cancels it both say so; neither counts. */
+function moneyStatus(r, voidedBy) {
+  if (r.voids_rid) return 'cancels ' + r.voids_rid;
+  if (voidedBy[r.rid]) return 'cancelled by ' + voidedBy[r.rid];
+  return '';
 }
 
 /** item rid -> its newest mark, ordered as the item_mark_latest view orders them. */
@@ -122,6 +134,8 @@ function buildTabs(data, zone) {
   var itemTitle = {};
   items.forEach(function (i) { itemTitle[i.rid] = i.title; });
   var newest = latestMarks(data.item_marks);
+  var voidedBy = {};
+  (data.money || []).forEach(function (r) { if (r.voids_rid) voidedBy[r.voids_rid] = r.rid; });
 
   // Projects in Google's order, each followed by its sub-tasks; strays last.
   function byPos(a, b) {
@@ -167,11 +181,11 @@ function buildTabs(data, zone) {
         return [localStamp(m.at, zone), m.mark, itemTitle[m.item_rid] || '(item not in the copy)', m.item_rid, m.rid];
       }) },
     { title: 'Money',
-      header: [when, 'Kind', 'Direction', 'Amount', 'Currency', 'Tag', 'Person', 'Note', 'Cancels row', 'Row id'],
+      header: [when, 'Kind', 'Direction', 'Amount', 'Currency', 'Tag', 'Person', 'Note', 'Status', 'Row id'],
       rows: (data.money || []).map(function (r) {
         var n = Number(r.amount);
         return [localStamp(r.at, zone), r.kind || 'cash', r.dir, isFinite(n) ? n : String(r.amount), r.currency,
-                r.tag, r.person, r.note, r.voids_rid, r.rid];
+                r.tag, r.person, r.note, moneyStatus(r, voidedBy), r.rid];
       }) },
     { title: 'Reports',
       header: ['Period', 'From', 'To', 'Written (' + zone + ')', 'Model', 'Text', 'Figures'],
@@ -203,7 +217,7 @@ function chunkRows(matrix, maxRows, maxBytes) {
   var cur = null;
   var bytes = 0;
   matrix.forEach(function (row, i) {
-    var size = JSON.stringify(row).length + 1;
+    var size = UTF8.encode(JSON.stringify(row)).length + 1;
     if (!cur || cur.rows.length >= maxRows || (cur.rows.length && bytes + size > maxBytes)) {
       cur = { start: i, rows: [] };
       out.push(cur);
@@ -235,7 +249,7 @@ function googleError(what, r) {
   if (/SERVICE_DISABLED|accessNotConfigured|has not been used/.test(said)) {
     return new Error('The Google ' + what + ' API is not enabled in the Cloud project.');
   }
-  if (r.status === 429 || /rateLimit|RATE_LIMIT|quota/i.test(said)) {
+  if (r.status === 429 || /rateLimit|RATE_LIMIT|quota|dailyLimit|usageLimits/i.test(said)) {
     return new Error('Google ' + what + ' is busy; try again in a minute.');
   }
   if (/SCOPE_INSUFFICIENT|insufficient.*scope/i.test(said)) return new Error(NO_DRIVE);
@@ -251,9 +265,8 @@ async function sheetAlive(d, grant, id) {
   var r = await googleSend(d, grant, 'GET', DRIVE_FILES_URL + encodeURIComponent(id) +
                            '?fields=id%2Ctrashed&supportsAllDrives=false');
   if (r.ok) return Boolean(r.body && r.body.id) && r.body.trashed !== true;
-  var said = JSON.stringify(r.body || {});
-  // A 403 that is not a rate limit or a switched-off API: the file is out of our reach.
-  if (r.status === 404 || (r.status === 403 && !/rateLimit|RATE_LIMIT|quota|SERVICE_DISABLED|accessNotConfigured|SCOPE_INSUFFICIENT/i.test(said))) {
+  // Gone: a 404, or a 403 that names this file. Any other 403 (a quota, a scope) is an error.
+  if (r.status === 404 || (r.status === 403 && /appNotAuthorizedToFile|insufficientFilePermissions/.test(JSON.stringify(r.body || {})))) {
     return false;
   }
   throw googleError('Drive', r);
@@ -335,18 +348,32 @@ function exportStore(sb) {
   // Every page, newest first; a unique tie-break so paging neither skips nor repeats.
   async function all(table, cols, userId, first) {
     var out = [];
-    for (var from = 0; ; from += READ_PAGE) {
+    // The next page starts after what came back; only an empty page ends it,
+    // so a server cap below READ_PAGE cannot cut the read short.
+    for (;;) {
       var q = sb.from(table).select(cols).eq('user_id', userId);
       if (first) q = q.order(first, { ascending: false });
-      var rows = must(await q.order('id', { ascending: true }).range(from, from + READ_PAGE - 1)) || [];
+      var rows = must(await q.order('id', { ascending: true }).range(out.length, out.length + READ_PAGE - 1)) || [];
+      if (!rows.length) return out;
       out = out.concat(rows);
-      if (rows.length < READ_PAGE) return out;
     }
   }
   return {
     getGrant: async function (userId) {
       var rows = must(await sb.from('google_grants').select('*').eq('user_id', userId).limit(1));
       return (rows || [])[0] || null;
+    },
+    // Take the export: only while no other run holds it. True when this run has it.
+    claim: async function (userId, nowIso, untilIso) {
+      var rows = must(await sb.from('google_grants').update({ export_claim_until: untilIso })
+        .eq('user_id', userId)
+        // Quoted: PostgREST reserves '.' and ':' inside an or=(...) value.
+        .or('export_claim_until.is.null,export_claim_until.lt."' + nowIso + '"').select('user_id'));
+      return (rows || []).length === 1;
+    },
+    release: async function (userId, untilIso) {
+      must(await sb.from('google_grants').update({ export_claim_until: null })
+        .eq('user_id', userId).eq('export_claim_until', untilIso));
     },
     patchGrant: async function (userId, fields) {
       must(await sb.from('google_grants').update(fields).eq('user_id', userId));
@@ -388,6 +415,26 @@ async function exportSheet(d) {
     return { ok: false, error: NO_DRIVE };
   }
   var nowIso = new Date(d.now()).toISOString();
+  var until = new Date(d.now() + CLAIM_MS).toISOString();
+  // One export at a time: the noon run and Export now together must not make two sheets.
+  try {
+    if (!(await d.store.claim(d.userId, nowIso, until))) {
+      return { ok: true, busy: true, skipped: 'an export is already running' };
+    }
+  } catch (e) {
+    var why = 'Could not start the Google Sheet copy: ' + scrub((e && e.message) || e);
+    await failExport(d, why);
+    return { ok: false, error: why };
+  }
+  try {
+    // Read again under the claim: a run that just finished may have stored the sheet.
+    return await runExport(d, (await d.store.getGrant(d.userId)) || grant, nowIso);
+  } finally {
+    try { await d.store.release(d.userId, until); } catch (_e) { /* it lapses after CLAIM_MS */ }
+  }
+}
+
+async function runExport(d, grant, nowIso) {
   var made = '';
   try {
     var zone = zoneOr(await d.store.zone(d.userId));

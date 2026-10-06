@@ -355,7 +355,7 @@ async function disconnectGrant(d) {
     await d.store.deleteGrant(d.userId);
   }
   await d.store.setSync({ user_id: d.userId, connected: false, google_email: null, list_title: null,
-                          last_error: null, last_error_at: null });
+                          last_error: null, last_error_at: null, sheet_url: null, export_error: null, sheet_note: null });
   if (!grant || revoked) return { ok: true, revoked: revoked };
   return { ok: true, revoked: false,
            note: "Disconnected here, but Google didn't confirm. To be sure, remove ProBeing at " +
