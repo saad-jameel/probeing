@@ -208,7 +208,8 @@ function taskTopic(nodeId) {
  * plans: task_plans rows; nodes: id -> task_nodes row; ups: list|google_id ->
  * project row; finished: id -> true when finished in ProBeing; sent: {sentKey:
  * true}; on: the toggle (only `false` turns it off); listId: the list shown.
- * A plan set or moved after its 30-minute mark was never 30 minutes away: none.
+ * A finish set or moved after its 30-minute mark (expected_set_at; updated_at
+ * before that column exists) was never 30 minutes away: none.
  */
 function dueTaskReminders(plans, nodes, ups, finished, sent, now, on, listId, offsetMin) {
   if (on === false) return [];
@@ -218,7 +219,8 @@ function dueTaskReminders(plans, nodes, ups, finished, sent, now, on, listId, of
     if (!isFinite(t)) return;
     var at = t - TASK_LEFT_MIN * 60000;
     if (at > now + REMIND_GRACE_MS || now - at > REMIND_LATE_MS) return;
-    var set = Date.parse(String(p.updated_at || ''));
+    // When the finish itself was set (a trigger keeps it); updated_at moves on a Planned toggle too.
+    var set = Date.parse(String(p.expected_set_at || p.updated_at || ''));
     if (isFinite(set) && set > at) return;
     var n = nodes[p.node_id];
     if (!n || n.gone_at || n.g_status === 'completed' || finished[n.id]) return;
@@ -287,7 +289,8 @@ async function readSettings(sb: ReturnType<typeof admin>, owner: string, now: nu
 async function remindTasks(sb: ReturnType<typeof admin>, owner: string, now: number, offset: number) {
   const w = taskWindow(now);
   const iso = (ms: number) => new Date(ms).toISOString();
-  const plansRes = await sb.from('task_plans').select('node_id, expected_at, updated_at')
+  // `*`, so a database without expected_set_at still reads (and falls back to updated_at).
+  const plansRes = await sb.from('task_plans').select('*')
     .eq('user_id', owner).gte('expected_at', iso(w.from)).lte('expected_at', iso(w.to)).limit(50);
   if (plansRes.error) return { act: 'error', error: String(plansRes.error.message || 'the plans read failed') };
   const plans = plansRes.data || [];

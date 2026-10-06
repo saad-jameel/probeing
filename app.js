@@ -1151,6 +1151,14 @@ function forgetParked() {
   try { localStorage.removeItem(PARKED_KEY); } catch (e) { /* already gone */ }
 }
 
+/** Take `rid` off the parked list: a fixed-rid press (a direct Done) made again. */
+function unpark(rid) {
+  var list = parkedAll();
+  var kept = list.filter(function (x) { return !x || x.rid !== rid; });
+  if (kept.length === list.length) return;
+  try { localStorage.setItem(PARKED_KEY, JSON.stringify(kept)); } catch (e) { /* stays parked */ }
+}
+
 // ------------------------------------------- what a queued write looks like
 
 /** A queued write as a log row, so the Today screen can count it exactly like a
@@ -5705,6 +5713,7 @@ function moneyFigures(rows, windows) {
   out.net = (paisa['in'] - paisa.out) / 100;          // cash dues are inside in/out now
   out.loanIn = loan['in'] / 100;
   out.loanOut = loan.out / 100;
+  out.duesInOut = true;                // marks reports saved since: out/in include cash dues
   out.byTagIn = rupees(byTag['in']);
   out.byTagOut = rupees(byTag.out);
   return out;
@@ -7135,13 +7144,19 @@ function reportFigureLine(stats) {
   // Reports from before Stage 11 have no money, and a week with none says nothing.
   var money = stats.money;
   var loans = money && (Number(money.loanOut) || Number(money.loanIn));
+  // Saved since feedback 1 (duesInOut), out/in include cash dues; before, they did not.
+  // The words differ, so an old report and a new one cannot be read alike.
+  var incl = money && money.duesInOut === true;
+  function part(n, word, dues) {
+    return formatPkr(n) + ' ' + word + (incl && Number(dues) ? ' (incl. dues ' + formatPkr(dues) + ')' : '');
+  }
   if (money && (Number(money.out) || Number(money['in']) || loans)) {
-    bits.push('PKR ' + formatPkr(money.out) + ' out · ' + formatPkr(money['in']) + ' in · net ' +
+    bits.push('PKR ' + part(money.out, 'out', money.loanOut) + ' · ' + part(money['in'], 'in', money.loanIn) + ' · net ' +
               signedPkr(money.net) + (money.since ? ' since ' + moneySinceDay(money) : ''));
   }
-  // Cash dues: outside out/in in reports saved before feedback 1, inside since. Either way, how much.
-  if (loans) {
-    bits.push('dues ' + formatPkr(money.loanOut || 0) + ' out · ' + formatPkr(money.loanIn || 0) + ' in');
+  if (loans && !incl) {
+    bits.push('cash dues not in these: ' + formatPkr(money.loanOut || 0) + ' paid · ' +
+              formatPkr(money.loanIn || 0) + ' received');
   }
   return bits.join(' · ');
 }
@@ -12125,6 +12140,7 @@ function finishTask(id) {
   var at = new Date(Math.max(Date.now(), d ? instantOf(d.at) + 1 : 0)).toISOString();
   var e = taskEntry(leaf);
   var text = e.detail || e.project;
+  unpark(rid);                        // pressed again after a refusal: this press is the live one
   noteLocalRow('subdone', text, e.project, e.detail, id).rid = rid;
   directPressed.push({ type: 'subdone', rid: rid, node_id: id, at: at });
   runWrites([{ type: 'subdone', raw_text: text, project: e.project, detail: e.detail, node_id: id,
@@ -12143,6 +12159,7 @@ function reopenTask(id) {
   var rid = directRid(DIRECT_OPEN, id, d.gen);
   var at = new Date(Math.max(Date.now(), instantOf(d.at) + 1)).toISOString();
   var title = names.detail || names.project;
+  unpark(rid);
   noteLocalRow('subopen', 'Reopened: ' + title, names.project, names.detail, id).rid = rid;
   directPressed.push({ type: 'subopen', rid: rid, node_id: id, at: at });
   runWrites([{ type: 'subopen', raw_text: 'Reopened: ' + title, project: names.project, detail: names.detail,

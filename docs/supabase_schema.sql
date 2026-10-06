@@ -1310,3 +1310,34 @@ revoke all on table public.tasks_sync_wants from anon, authenticated;
 -- expected finish is near. Its own toggle, separate from prayer_reminders.
 -- Dedupe in reminders_sent, kind 'task-30-<node id>-<expected_at ms>'.
 alter table public.user_settings add column if not exists task_reminders boolean not null default true;
+
+-- When the expected finish itself was last set. updated_at moves on a Planned
+-- toggle too, which made a toggle look like a late finish and cancelled the
+-- "30 min left" push. A trigger keeps it on the server clock, so no device can
+-- forge it. Backfilled from updated_at (the best there is) before the trigger exists.
+alter table public.task_plans add column if not exists expected_set_at timestamptz;
+drop trigger if exists task_plans_expected_set on public.task_plans;
+update public.task_plans set expected_set_at = updated_at
+ where expected_set_at is null and expected_at is not null;
+
+create or replace function public.task_plans_expected_set()
+returns trigger
+language plpgsql
+set search_path = ''
+as $fn$
+begin
+  if tg_op = 'INSERT' or new.expected_at is distinct from old.expected_at then
+    new.expected_set_at := case when new.expected_at is null then null else now() end;
+  else
+    new.expected_set_at := old.expected_set_at;
+  end if;
+  return new;
+end;
+$fn$;
+
+revoke all on function public.task_plans_expected_set() from public, anon, authenticated;
+
+create trigger task_plans_expected_set
+  before insert or update on public.task_plans
+  for each row
+  execute function public.task_plans_expected_set();
