@@ -9,7 +9,11 @@
 //
 // Its own function rather than a branch of wrapup: wrapup is live and stays untouched.
 // pg_cron calls it every minute, and an insert trigger when a prayer is logged
-// (docs/prayer_remind.sql). A run with nothing due reads user_settings and stops.
+// (docs/prayer_remind.sql).
+//
+// Feedback 1 (6 Oct): it also pushes "<task>: 30 min left (by 4:30 PM)" once per
+// task and expected finish (remindTasks), on its own toggle, user_settings.task_reminders.
+// With nothing due that costs one more small read, of task_plans.
 //
 // Deployed by hand:
 //   npx supabase functions deploy prayer-remind --project-ref <ref> --use-api
@@ -18,7 +22,11 @@
 
 import { createClient } from 'jsr:@supabase/supabase-js@2';
 import '../_shared/day.js';
+import '../_shared/tree.js';
 import { pushAll } from '../_shared/push.ts';
+
+// tree.js, for "finished in ProBeing" exactly as tasks-sync reads it.
+const Tree = (globalThis as unknown as { ProBeingTree: Record<string, any> }).ProBeingTree;
 
 // day.js is a classic script, so it hands its functions over on globalThis.
 const Day = (globalThis as unknown as { ProBeingDay: {
@@ -174,6 +182,65 @@ function loggedByDay(rows, offsetMin, day) {
   return out;
 }
 
+/* ── Feedback 1: a task's deadline, 30 minutes ahead. Here and not in a
+ *    sibling function, so the one minute cron and one settings read serve both. */
+
+var TASK_LEFT_MIN = 30;
+
+/** expected_at values that could be due at `now`, as [from, to] in ms. */
+function taskWindow(now) {
+  var at = now + TASK_LEFT_MIN * 60000;
+  return { from: at - REMIND_LATE_MS, to: at + REMIND_GRACE_MS };
+}
+
+/** One reminder per task and expected_at: a moved deadline is a new kind. */
+function taskKind(nodeId, expectedMs) {
+  return 'task-30-' + nodeId + '-' + expectedMs;
+}
+
+/** A Web Push Topic is at most 32 URL-safe characters. */
+function taskTopic(nodeId) {
+  return ('task' + String(nodeId).replace(/[^A-Za-z0-9]/g, '')).slice(0, 32);
+}
+
+/**
+ * Deadline reminders to send at `now`: [{kind, day, node, up, expected}].
+ * plans: task_plans rows; nodes: id -> task_nodes row; ups: list|google_id ->
+ * project row; finished: id -> true when finished in ProBeing; sent: {sentKey:
+ * true}; on: the toggle (only `false` turns it off); listId: the list shown.
+ * A plan set or moved after its 30-minute mark was never 30 minutes away: none.
+ */
+function dueTaskReminders(plans, nodes, ups, finished, sent, now, on, listId, offsetMin) {
+  if (on === false) return [];
+  var out = [];
+  (plans || []).forEach(function (p) {
+    var t = Date.parse(String((p && p.expected_at) || ''));
+    if (!isFinite(t)) return;
+    var at = t - TASK_LEFT_MIN * 60000;
+    if (at > now + REMIND_GRACE_MS || now - at > REMIND_LATE_MS) return;
+    var set = Date.parse(String(p.updated_at || ''));
+    if (isFinite(set) && set > at) return;
+    var n = nodes[p.node_id];
+    if (!n || n.gone_at || n.g_status === 'completed' || finished[n.id]) return;
+    if (listId && String(n.list_id) !== String(listId)) return;
+    var up = n.kind === 'subtask' ? ups[(n.list_id || '') + '|' + n.parent_google_id] || null : null;
+    if (up && up.gone_at) return;
+    var kind = taskKind(n.id, t);
+    var day = ymd(localDate(t, offsetMin, 0));
+    if (sent[sentKey(kind, day)]) return;
+    out.push({ kind: kind, day: day, node: n, up: up, expected: t });
+  });
+  return out;
+}
+
+/** The push's JSON for a deadline. sw.js opens the Tasks tab on a tap. */
+function taskPayload(r, offsetMin) {
+  var title = Array.from(String(r.node.title || '').trim() || '(untitled)').slice(0, 120).join('');
+  return { kind: 'task', tag: 'probeing-task-' + r.node.id, goto: 'tasks',
+           title: title + ': 30 min left (by ' + clock12(r.expected, offsetMin).toUpperCase() + ')',
+           body: r.up ? String(r.up.title || '').trim().slice(0, 120) : '' };
+}
+
 /* ─────────────────────────────────────────────────── end of the pure part */
 
 /** Constant-time compare, as in wrapup and glance-refresh. */
@@ -212,7 +279,76 @@ async function readSettings(sb: ReturnType<typeof admin>, owner: string, now: nu
                                            method: row.method, asr: row.asr_school } : null);
   const off = Day.zoneOffsetMin(place.zone, now, NaN);
   return { zone: isNaN(off) ? 'Asia/Karachi' : place.zone, offset: isNaN(off) ? 300 : off,
-           on: !(row && row.prayer_reminders === false) };
+           on: !(row && row.prayer_reminders === false),
+           tasksOn: !(row && row.task_reminders === false) };
+}
+
+/** Feedback 1: send any "30 min left" due now. One small read when none is. */
+async function remindTasks(sb: ReturnType<typeof admin>, owner: string, now: number, offset: number) {
+  const w = taskWindow(now);
+  const iso = (ms: number) => new Date(ms).toISOString();
+  const plansRes = await sb.from('task_plans').select('node_id, expected_at, updated_at')
+    .eq('user_id', owner).gte('expected_at', iso(w.from)).lte('expected_at', iso(w.to)).limit(50);
+  if (plansRes.error) return { act: 'error', error: String(plansRes.error.message || 'the plans read failed') };
+  const plans = plansRes.data || [];
+  if (!plans.length) return { act: 'nothing' };
+
+  const ids = plans.map((p: { node_id: string }) => p.node_id);
+  const must = (r: { data: unknown; error: { message?: string } | null }) => {
+    if (r.error) throw new Error(String(r.error.message || 'a read failed'));
+    return (r.data || []) as Record<string, any>[];
+  };
+  try {
+    const nodeRows = must(await sb.from('task_nodes').select('*').eq('user_id', owner).in('id', ids).limit(100));
+    const nodes: Record<string, any> = {};
+    nodeRows.forEach((n) => { nodes[n.id] = n; });
+    const parents = nodeRows.filter((n) => n.kind === 'subtask').map((n) => String(n.parent_google_id));
+    const ups: Record<string, any> = {};
+    if (parents.length) {
+      must(await sb.from('task_nodes').select('*').eq('user_id', owner).in('google_id', parents).limit(200))
+        .forEach((u) => { ups[(u.list_id || '') + '|' + u.google_id] = u; });
+    }
+    const sync = must(await sb.from('sync_state').select('list_id').eq('user_id', owner).limit(1));
+    const listId = (sync[0] || {}).list_id || '';
+    // Finished in ProBeing (items, or its own Done) counts as done, as tasks-sync reads it.
+    const items = must(await sb.from('items').select('rid, node_id').eq('user_id', owner).in('node_id', ids).limit(1000));
+    const newest: Record<string, any> = {};
+    if (items.length) {
+      must(await sb.from('item_mark_latest').select('item_rid, mark, at').eq('user_id', owner)
+        .in('item_rid', items.map((i) => i.rid)).limit(1000)).forEach((m) => { newest[m.item_rid] = m; });
+    }
+    const direct = Tree.directMarks(must(await sb.from('events').select('type, rid, node_id, at')
+      .eq('user_id', owner).in('type', ['subdone', 'subopen']).in('node_id', ids).limit(1000)));
+    const ridsOf: Record<string, string[]> = {};
+    items.forEach((i) => { (ridsOf[i.node_id] = ridsOf[i.node_id] || []).push(i.rid); });
+    const finished: Record<string, boolean> = {};
+    nodeRows.forEach((n) => {
+      if (Tree.finishedAt(n, ridsOf[n.id] || [], newest, direct[n.id]) !== null) finished[n.id] = true;
+    });
+    const kinds = plans.map((p: { node_id: string; expected_at: string }) => taskKind(p.node_id, Date.parse(p.expected_at)));
+    const already: Record<string, boolean> = {};
+    must(await sb.from('reminders_sent').select('kind, day').eq('user_id', owner).in('kind', kinds).limit(500))
+      .forEach((r) => { already[sentKey(r.kind, String(r.day).slice(0, 10))] = true; });
+
+    const todo = dueTaskReminders(plans, nodes, ups, finished, already, now, true, listId, offset);
+    const report: Record<string, unknown>[] = [];
+    for (const r of todo) {
+      const claim = await sb.from('reminders_sent').insert({ user_id: owner, kind: r.kind, day: r.day });
+      if (claim.error) {
+        report.push({ kind: r.kind, skipped: claim.error.code === '23505' ? 'already sent' : claim.error.message });
+        continue;
+      }
+      const out = await pushAll(sb, owner, JSON.stringify(taskPayload(r, offset)), {
+        ttl: Math.max(60, Math.floor((r.expected - now) / 1000)), topic: taskTopic(r.node.id), urgency: 'high'
+      });
+      // Delivered nowhere: release the claim so the next minute tries again.
+      if (!out.sent) await sb.from('reminders_sent').delete().eq('user_id', owner).eq('kind', r.kind).eq('day', r.day);
+      report.push({ kind: r.kind, ...out });
+    }
+    return { act: todo.length ? 'sent' : 'nothing', reminders: report };
+  } catch (e) {
+    return { act: 'error', error: String((e && (e as Error).message) || e) };
+  }
 }
 
 type Reminder = { kind: string; day: string; prayer: string; left?: number; end: number };
@@ -251,12 +387,15 @@ Deno.serve(async (req: Request): Promise<Response> => {
   const place = await readSettings(sb, owner, now);
   // Settings unreadable: skip this minute; the next run tries again.
   if ('error' in place) return reply(503, { ok: false, act: 'skipped', error: place.error });
-  if (!place.on) return reply(200, { ok: true, act: 'off', why: 'prayer reminders are turned off' });
+  // Deadlines first and on their own toggle; the prayer insert trigger's call skips them.
+  const tasks = logged ? { act: 'skipped' } : place.tasksOn
+    ? await remindTasks(sb, owner, now, place.offset) : { act: 'off' };
+  if (!place.on) return reply(200, { ok: true, act: 'off', why: 'prayer reminders are turned off', tasks });
 
   const list = remindersAround(now, place.offset, (d: unknown) => Day.prayerTimes(d, place.offset));
   // The cheap gate: nothing could be due, so nothing more is read.
   if (!logged && dueReminders(list, now, {}, {}, true).length === 0) {
-    return reply(200, { ok: true, act: 'nothing', zone: place.zone });
+    return reply(200, { ok: true, act: 'nothing', zone: place.zone, tasks });
   }
 
   const days = [list[0].day, list[list.length - 1].day];
@@ -302,5 +441,5 @@ Deno.serve(async (req: Request): Promise<Response> => {
   }
 
   return reply(200, { ok: true, act: todo.length ? 'sent' : 'nothing', zone: place.zone,
-                      offset: place.offset, reminders: report });
+                      offset: place.offset, reminders: report, tasks });
 });

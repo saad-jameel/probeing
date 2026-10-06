@@ -1304,3 +1304,9 @@ create table if not exists public.tasks_sync_wants (
 
 alter table public.tasks_sync_wants enable row level security;
 revoke all on table public.tasks_sync_wants from anon, authenticated;
+
+-- ======================================================== feedback 1 (6 Oct)
+-- Deadline reminders: prayer-remind also pushes "30 min left" for a task whose
+-- expected finish is near. Its own toggle, separate from prayer_reminders.
+-- Dedupe in reminders_sent, kind 'task-30-<node id>-<expected_at ms>'.
+alter table public.user_settings add column if not exists task_reminders boolean not null default true;
