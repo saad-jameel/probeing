@@ -43,7 +43,7 @@
  * Tasks), Dues in spent/got, fixed money tags.
  * v22 (Stage 18): the Google Sheet link and Export now in Settings. v20 and
  * v21 are Stages 16 and 17's, built alongside. */
-var CACHE = 'probeing-shell-v22';
+var CACHE = 'probeing-shell-v20';
 var SHELL = [
   './',
   'index.html',
