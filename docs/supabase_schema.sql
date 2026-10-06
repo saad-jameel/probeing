@@ -1341,3 +1341,11 @@ create trigger task_plans_expected_set
   before insert or update on public.task_plans
   for each row
   execute function public.task_plans_expected_set();
+
+-- ============================================================ sheets copy (18)
+-- The sheets-export function's own messages, kept apart from last_error, which
+-- every clean tasks-sync pull clears. export_error: the last export's failure,
+-- null after a good one. sheet_note: set when a new sheet replaced one that was
+-- in the bin or deleted. Browser-readable through "read own sync state".
+alter table public.sync_state add column if not exists export_error text;
+alter table public.sync_state add column if not exists sheet_note text;
