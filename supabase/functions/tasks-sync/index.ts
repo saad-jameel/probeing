@@ -16,8 +16,9 @@
 // marks it gone. Nothing is sent to Google after a pull that failed.
 //
 // What it sends (Stage 15, tree.js rollUp / unpushWanted / duePush): a
-// sub-task finished in ProBeing is completed, once per finish; an Undo under
-// one ProBeing completed unticks it again; a finish date set in ProBeing
+// sub-task finished in ProBeing (its items, or its own Done button) is
+// completed, once per finish; an Undo or Reopen under one ProBeing completed
+// unticks it again; a finish date set in ProBeing
 // becomes the due date. Projects are never touched (Saad, 2 Oct). At most one
 // PATCH per task per run; a PATCH Google refuses (a 4xx) is tried 3 runs, then left.
 //
@@ -35,7 +36,7 @@ import '../_shared/tree.js';
 // Classic scripts, so they hand their functions over on globalThis.
 const { RECONNECT, googleConfig, importTokenKey, scrub, markReconnect, tasksGet, accessToken, reconnectError } =
   (globalThis as unknown as { ProBeingGoogle: Record<string, any> }).ProBeingGoogle;
-const { diffPull, rollUp, unpushWanted, duePush, dueOf } =
+const { diffPull, rollUp, unpushWanted, duePush, dueOf, directMarks } =
   (globalThis as unknown as { ProBeingTree: Record<string, any> }).ProBeingTree;
 
 const CORS: Record<string, string> = {
@@ -163,6 +164,14 @@ function mirrorStore(sb) {
       var out = {};
       rows.forEach(function (m) { out[m.item_rid] = m; });
       return out;
+    },
+    // Feedback 1: Done and Reopen pressed on a sub-task itself (tree.js directMarks).
+    direct: async function (userId) {
+      var rows = await paged(function () {
+        return sb.from('events').select('type,rid,node_id,at').eq('user_id', userId)
+          .in('type', ['subdone', 'subopen']).not('node_id', 'is', null).order('rid', { ascending: true });
+      });
+      return directMarks(rows);
     },
     plans: async function (userId) {
       var rows = await paged(function () {
@@ -339,6 +348,7 @@ async function pushPhase(d, grant, nowIso) {
   });
   var items = await d.store.items(d.userId);
   var newest = await d.store.latestMarks(d.userId);
+  var direct = await d.store.direct(d.userId);
   var plans = await d.store.plans(d.userId);
   var zone = await d.store.zone(d.userId);
 
@@ -348,13 +358,13 @@ async function pushPhase(d, grant, nowIso) {
     if (!jobs[n.id]) { jobs[n.id] = { node: n, body: {} }; order.push(n.id); }
     return jobs[n.id];
   }
-  unpushWanted(nodes, items, newest).forEach(function (n) {
+  unpushWanted(nodes, items, newest, direct).forEach(function (n) {
     var j = job(n);
     j.undo = true;
     j.body.status = 'needsAction';
     j.body.completed = null;                // not documented to clear by itself
   });
-  rollUp(nodes, items, newest).forEach(function (r) {
+  rollUp(nodes, items, newest, direct).forEach(function (r) {
     var j = job(r.node);
     j.body.status = 'completed';
     j.doneAt = r.at;

@@ -317,6 +317,95 @@ function leafDoneAt(n, rids, newest) {
   return last;
 }
 
+/* ── Feedback 1: Done pressed on the sub-task itself ──────────────────────
+ * A `subdone` row whose rid starts DIRECT_DONE, undone by a `subopen` row
+ * whose rid starts DIRECT_OPEN. rid = prefix + node id + '-' + gen: a Done
+ * after a reopen takes the next gen, so a second tap, or the other device,
+ * makes the same rid and the unique index keeps one row. */
+var DIRECT_DONE = 'sdd-';
+var DIRECT_OPEN = 'sdo-';
+
+/** The rid of a direct Done or Reopen of node `nodeId`, generation `gen`. */
+function directRid(prefix, nodeId, gen) {
+  return prefix + String(nodeId) + '-' + gen;
+}
+
+/** {mark, gen} from a direct row's type and rid, or null when it is not one. */
+function directParse(type, rid, nodeId) {
+  var prefix = type === 'subdone' ? DIRECT_DONE : type === 'subopen' ? DIRECT_OPEN : '';
+  var head = prefix + String(nodeId || '') + '-';
+  rid = String(rid || '');
+  if (!prefix || !nodeId || rid.indexOf(head) !== 0) return null;
+  var tail = rid.slice(head.length);
+  if (!/^\d{1,6}$/.test(tail)) return null;
+  return { mark: type === 'subdone' ? 'done' : 'open', gen: Number(tail) };
+}
+
+/** Later in the direct order: generation, then a Reopen after its Done, then time. */
+function directNewer(a, b) {
+  if (a.gen !== b.gen) return a.gen > b.gen;
+  if (a.mark !== b.mark) return a.mark === 'open';
+  var ta = msOf(a.at);
+  var tb = msOf(b.at);
+  if (ta !== tb) return ta > tb;
+  return String(a.rid) > String(b.rid);
+}
+
+/** node id -> its newest direct row as {mark, gen, at, rid}, from events rows
+ *  ({type, rid, node_id, at}). Other rows are ignored. */
+function directMarks(rows) {
+  var out = {};
+  (rows || []).forEach(function (r) {
+    if (!r || !r.node_id) return;
+    var p = directParse(r.type, r.rid, r.node_id);
+    if (!p || !isFinite(msOf(r.at))) return;
+    var d = { mark: p.mark, gen: p.gen, at: r.at, rid: String(r.rid) };
+    var have = out[r.node_id];
+    if (!have || directNewer(d, have)) out[r.node_id] = d;
+  });
+  return out;
+}
+
+/** When an item under the node was last reopened (Undo), or -Infinity. */
+function itemOpenAt(rids, newest) {
+  var last = -Infinity;
+  (rids || []).forEach(function (rid) {
+    var m = newest[rid];
+    if (m && m.mark === 'open' && msOf(m.at) > last) last = msOf(m.at);
+  });
+  return last;
+}
+
+/** When node `n` was finished by its own Done button, or null: its newest
+ *  direct row is a Done, after any untick in Google and any Undo on an item. */
+function directDoneAt(n, d, rids, newest) {
+  if (!d || d.mark !== 'done') return null;
+  var t = msOf(d.at);
+  if (!isFinite(t) || !afterReopen(n, t) || itemOpenAt(rids, newest || {}) > t) return null;
+  return t;
+}
+
+/** When node `n` finished in ProBeing, by its items or its own Done, or null.
+ *  A Reopen newer than the items' close undoes that close too. */
+function finishedAt(n, rids, newest, d) {
+  newest = newest || {};
+  var a = directDoneAt(n, d, rids, newest);
+  var b = leafDoneAt(n, rids, newest);
+  if (b !== null && d && d.mark === 'open' && msOf(d.at) > b) b = null;
+  if (a === null) return b;
+  return b === null ? a : Math.max(a, b);
+}
+
+/** node id -> true for every node finished by its own Done button. */
+function directDone(nodes, items, newest, direct) {
+  var rids = itemsByNode(items);
+  var out = {};
+  (nodes || []).forEach(function (n) {
+    if (n && directDoneAt(n, (direct || {})[n.id], rids[n.id], newest || {}) !== null) out[n.id] = true;
+  });
+  return out;
+}
+
 /** Completed in Google by ProBeing's own PATCH, still: Google's `completed`
  *  is the one it returned to that PATCH. An untick and re-tick by him, even
  *  between two pulls, gives a new completed time, and makes it his. */
@@ -346,35 +435,40 @@ function liveSubtasks(nodes) {
 }
 
 /**
- * Sub-tasks of one list that finished in ProBeing and are still open in
- * Google: [{node, at}], `at` the ISO instant of the closing mark. Edge-
- * triggered: one already sent is not listed again until it is unticked (by
- * him in Google, after a newer mark; or by ProBeing on an Undo).
+ * Sub-tasks of one list that finished in ProBeing (finishedAt: by their items,
+ * or their own Done in `direct`, from directMarks) and are still open in
+ * Google: [{node, at}], `at` the ISO instant of the closing mark or the Done.
+ * Edge-triggered: one already sent is not listed again until it is unticked
+ * (by him in Google, after a newer mark; or by ProBeing on an Undo).
  */
-function rollUp(nodes, items, newest) {
+function rollUp(nodes, items, newest, direct) {
   newest = newest || {};
+  direct = direct || {};
   var rids = itemsByNode(items);
   return liveSubtasks(nodes || []).filter(function (n) {
     return n.g_status !== 'completed' && !pushedSinceReopen(n);
   }).map(function (n) {
-    var at = leafDoneAt(n, rids[n.id], newest);
+    var at = finishedAt(n, rids[n.id], newest, direct[n.id]);
     return at === null ? null : { node: n, at: new Date(at).toISOString() };
   }).filter(Boolean);
 }
 
 /**
- * Sub-tasks to untick in Google because an item under them was undone: ticked
- * by ProBeing and still ours (oursInGoogle), with an item
- * whose newest mark is 'open' and later than the finish that was sent. One
+ * Sub-tasks to untick in Google because an item under them was undone, or the
+ * sub-task itself was reopened (`direct`): ticked by ProBeing and still ours
+ * (oursInGoogle), the Undo or Reopen later than the finish that was sent. One
  * he or Google completed is never touched.
  */
-function unpushWanted(nodes, items, newest) {
+function unpushWanted(nodes, items, newest, direct) {
   newest = newest || {};
+  direct = direct || {};
   var rids = itemsByNode(items);
   return liveSubtasks(nodes || []).filter(function (n) {
     if (!oursInGoogle(n)) return false;
     var since = msOf(n.pb_done_at);
     if (!isFinite(since)) since = msOf(n.pb_pushed_at);
+    var d = direct[n.id];
+    if (d && d.mark === 'open' && msOf(d.at) > since) return true;
     return (rids[n.id] || []).some(function (rid) {
       var m = newest[rid];
       return m && m.mark === 'open' && msOf(m.at) > since;
@@ -442,6 +536,12 @@ globalThis.ProBeingTree = {
   mirrorTree: mirrorTree,
   rollUp: rollUp,
   unpushWanted: unpushWanted,
+  DIRECT_DONE: DIRECT_DONE,
+  DIRECT_OPEN: DIRECT_OPEN,
+  directRid: directRid,
+  directMarks: directMarks,
+  finishedAt: finishedAt,
+  directDone: directDone,
   zoneDate: zoneDate,
   duePush: duePush,
   dueMovedInGoogle: dueMovedInGoogle,

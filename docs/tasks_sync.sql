@@ -83,6 +83,15 @@ create trigger tasks_sync_after_mark
   for each row
   execute function public.tasks_sync_after_change();
 
+-- Feedback 1: Done or Reopen pressed on a sub-task itself (rid sdd-/sdo-, see tree.js).
+drop trigger if exists tasks_sync_after_direct on public.events;
+create trigger tasks_sync_after_direct
+  after insert on public.events
+  for each row
+  when (new.type in ('subdone', 'subopen') and new.node_id is not null
+        and (new.rid like 'sdd-%' or new.rid like 'sdo-%'))
+  execute function public.tasks_sync_after_change();
+
 -- A finish date set, changed or cleared becomes Google's due date. Planned
 -- on or off sends nothing.
 drop trigger if exists tasks_sync_after_plan_insert on public.task_plans;
@@ -123,5 +132,6 @@ select cron.schedule('probeing-tasks-sync', '*/15 * * * *',
 --                                       on l.item_rid = i.rid where i.node_id = n.id) > n.g_reopened_at);
 -- To stop the write-back pokes (the 15-minute sync still sends):
 --            drop trigger if exists tasks_sync_after_mark on public.item_marks;
+--            drop trigger if exists tasks_sync_after_direct on public.events;
 --            drop trigger if exists tasks_sync_after_plan_insert on public.task_plans;
 --            drop trigger if exists tasks_sync_after_plan_update on public.task_plans;
