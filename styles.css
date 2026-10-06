@@ -843,3 +843,29 @@ body {
 .proj-sub { margin-top: 6px; }
 .proj-sub-title { font-size: 14px; font-weight: 600; overflow-wrap: anywhere; }
 .sum-projects .p-sub { padding-left: 14px; color: var(--muted); }
+
+/* Feedback 1: a task's deadline. Orange with over an hour left, red in the last
+   hour, a blinking red dot once past. The app has one dark palette (the state
+   tints); these read on all four backgrounds. */
+.deadline { font-weight: 600; white-space: nowrap; }
+.deadline.dl-soon { color: #ffa94d; }
+.deadline.dl-near, .deadline.dl-past { color: #ff6b6b; }
+.dl-dot { display: none; width: 8px; height: 8px; margin-right: 5px; border-radius: 50%;
+  background: #ff6b6b; vertical-align: middle; }
+/* Rule 6: .dl-dot sets `display`, so it declares its [hidden] pair. */
+.dl-dot[hidden] { display: none; }
+/* Opacity only, so the blink costs the compositor and no layout. */
+.dl-past .dl-dot { display: inline-block; animation: dl-blink 1.2s ease-in-out infinite; }
+@keyframes dl-blink { 50% { opacity: .15; } }
+@media (prefers-reduced-motion: reduce) { .dl-past .dl-dot { animation: none; } }
+
+/* Done on a sub-task itself, and Reopen on one finished that way. */
+.task-row { display: flex; align-items: center; gap: 8px; }
+.task-row[hidden] { display: none; }
+.task-row > .task-item, .task-row > .task-row-title { flex: 1; min-width: 0; }
+.task-row-title { overflow-wrap: anywhere; }
+.proj-sub-head { display: flex; align-items: center; gap: 8px; }
+.proj-sub-head[hidden] { display: none; }
+.proj-sub-head > .proj-sub-title { flex: 1; min-width: 0; }
+/* Rule 6: .btn-wide sets `display`, and the task box's Done can be hidden. */
+.btn-wide[hidden] { display: none; }

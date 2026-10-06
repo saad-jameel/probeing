@@ -38,8 +38,10 @@
  * outbox actions.
  * v17 (Stage 15): tree.js's write-back helpers; items closed with their task in
  * Google, deleted tasks named so, and "Sent to Google".
- * v18: Home's "Upcoming tasks", grouped under projects. */
-var CACHE = 'probeing-shell-v18';
+ * v18: Home's "Upcoming tasks", grouped under projects.
+ * v19 (feedback 1): Done on a sub-task, deadlines, the deadline push (opens
+ * Tasks), Dues in spent/got, fixed money tags. */
+var CACHE = 'probeing-shell-v19';
 var SHELL = [
   './',
   'index.html',
@@ -121,6 +123,8 @@ function pushData(event) {
 /* Prayer reminders (prayer-remind): one line per prayer, each replacing the last.
  * 'prayer-logged' is the quiet replacement once that prayer is logged. */
 var PRAYER_TAG = /^probeing-prayer-[A-Za-z]+$/;
+// Deadline reminders (prayer-remind's task part): one line per task.
+var TASK_TAG = /^probeing-task-[A-Za-z0-9-]{1,64}$/;
 
 self.addEventListener('push', function (event) {
   var data = pushData(event);
@@ -134,6 +138,17 @@ self.addEventListener('push', function (event) {
       tag: PRAYER_TAG.test(String(data.tag || '')) ? data.tag : 'probeing-prayer-reminder',
       renotify: !logged,
       silent: logged
+    }));
+    return;
+  }
+
+  if (data.kind === 'task') {
+    event.waitUntil(self.registration.showNotification(String(data.title || 'ProBeing'), {
+      body: String(data.body || ''),
+      icon: 'icons/icon-192.png',
+      badge: 'icons/favicon-32.png',
+      tag: TASK_TAG.test(String(data.tag || '')) ? data.tag : 'probeing-task-reminder',
+      renotify: true
     }));
     return;
   }
@@ -236,7 +251,7 @@ var GLANCE_TAG = 'probeing-glance';
  *  every Pages site under one account shares an origin, so "the first window"
  *  can be a different site. The 7a body-tap branch below still takes the first
  *  window; it is left exactly as Stage 7a shipped it. */
-function showApp() {
+function showApp(openUrl) {
   var scope = self.registration.scope;
   return self.clients.matchAll({ type: 'window', includeUncontrolled: true })
     .then(function (list) {
@@ -245,7 +260,7 @@ function showApp() {
           return list[i].focus();
         }
       }
-      return self.clients.openWindow('./');
+      return self.clients.openWindow(openUrl || './');
     });
 }
 
@@ -263,6 +278,15 @@ self.addEventListener('notificationclick', function (event) {
     event.notification.close();
     event.waitUntil(showApp().then(function (client) {
       if (client && typeof client.postMessage === 'function') client.postMessage({ goto: 'home' });
+    }));
+    return;
+  }
+
+  // A deadline reminder: open ProBeing on Tasks. A window opened fresh reads #tasks.
+  if (event.notification && /^probeing-task-/.test(String(event.notification.tag))) {
+    event.notification.close();
+    event.waitUntil(showApp('./#tasks').then(function (client) {
+      if (client && typeof client.postMessage === 'function') client.postMessage({ goto: 'tasks' });
     }));
     return;
   }

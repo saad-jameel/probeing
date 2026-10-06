@@ -2172,6 +2172,14 @@ function renderProject() {
     return;
   }
 
+  // Sub-tasks finished by their own Done leave the list: "project\ntitle" -> 1.
+  var finished = userMap();
+  var index = nodeIndex(taskNodes);
+  Object.keys(doneHere()).forEach(function (id) {
+    var names = nodeNames(index, id);
+    if (names && names.detail) finished[names.project + '\n' + names.detail.replace(/\s+/g, ' ').trim().toLowerCase()] = 1;
+  });
+
   // Most recently started first: that is the one you are most likely to finish.
   day.activeProjects.slice().reverse().forEach(function (name) {
     var li = document.createElement('li');
@@ -2195,7 +2203,10 @@ function renderProject() {
      * being worked on is drawn below with its items instead (14b). */
     var sub = name === day.subtaskProject ? nodeIndex(taskNodes).byId[day.currentSubtask] : null;
     var subTitle = sub ? String(sub.title || '').trim() || '(untitled)' : '';
-    var tasks = projectTasks(rows, name).filter(function (t) { return !sub || sub.kind !== 'subtask' || !sameTitle(t, subTitle); });
+    var tasks = projectTasks(rows, name).filter(function (t) {
+      return (!sub || sub.kind !== 'subtask' || !sameTitle(t, subTitle)) &&
+             !finished[name + '\n' + t.replace(/\s+/g, ' ').trim().toLowerCase()];
+    });
     if (tasks.length) {
       var ul = document.createElement('ul');
       ul.className = 'proj-tasks';
@@ -2282,6 +2293,7 @@ function finishProject(btn, name) {
 setInterval(function () {
   if (currentScreen === 'home') renderProject();
   if (currentScreen === 'today') renderDaySummary();
+  paintDeadlines();                  // orange to red to the dot, without a redraw
   // A prayer's time arriving, or the day turning, opens or closes its button.
   if (prayerGateKey(Date.now()) !== prayerGates) {
     renderPrayerTicks();
@@ -5572,6 +5584,7 @@ function missedDueTimes(w) {
  * 0.30000000000000004. numeric(14,2) allows 12 digits before the point. */
 var MONEY_INT_DIGITS = 12;
 var MONEY_UNTAGGED = 'Untagged';
+var MONEY_DUES_TAG = 'Dues';    // cash dues in spent/got and in Review's tags (feedback 1)
 // The first counter day with money. A range starting earlier is labelled, not read as whole.
 var MONEY_SINCE = '2026-09-29';
 
@@ -5646,8 +5659,9 @@ function moneySinceDay(figs) {
  * mistake can be voided the next day. Tags go through userMap(), so a tag
  * called __proto__ is counted like any other.
  *
- * Loans (Stage 13b) moved cash, so they are in `net`, but they are not spending
- * or income: they stay out of `in`, `out` and the tags, and go in loanIn/loanOut.
+ * Cash dues ('loan': a Settle, or a due with cash moved now) count as spent or
+ * got, under the tag MONEY_DUES_TAG (feedback 1, Saad: "if I am paying it now,
+ * it should also add to my today spent"), and also in loanIn/loanOut.
  * Record-only dues and the wallet's count (Money 2) have no in/out dir, so they
  * count for nothing here.
  *
@@ -5668,15 +5682,16 @@ function moneyFigures(rows, windows) {
       if (r.rid && cancelled[r.rid] === 1) { out.voided += 1; return; }
       var p = moneyPaisa(r.amount);
       if (!(p > 0)) return;
+      var tag = String(r.tag || '').trim() || MONEY_UNTAGGED;
       if (r.kind === 'loan') {
         loan[r.dir] += p;
         out.loans += 1;
-        return;
+        tag = MONEY_DUES_TAG;
+      } else {
+        out.entries += 1;
       }
-      var tag = String(r.tag || '').trim() || MONEY_UNTAGGED;
       paisa[r.dir] += p;
       byTag[r.dir][tag] = (byTag[r.dir][tag] || 0) + p;
-      out.entries += 1;
     });
   });
 
@@ -5687,7 +5702,7 @@ function moneyFigures(rows, windows) {
   }
   out['in'] = paisa['in'] / 100;
   out.out = paisa.out / 100;
-  out.net = (paisa['in'] + loan['in'] - paisa.out - loan.out) / 100;
+  out.net = (paisa['in'] - paisa.out) / 100;          // cash dues are inside in/out now
   out.loanIn = loan['in'] / 100;
   out.loanOut = loan.out / 100;
   out.byTagIn = rupees(byTag['in']);
@@ -7124,7 +7139,7 @@ function reportFigureLine(stats) {
     bits.push('PKR ' + formatPkr(money.out) + ' out · ' + formatPkr(money['in']) + ' in · net ' +
               signedPkr(money.net) + (money.since ? ' since ' + moneySinceDay(money) : ''));
   }
-  // Stage 13b: cash dues (saved as loans) are in the net but not in out/in, so say how much.
+  // Cash dues: outside out/in in reports saved before feedback 1, inside since. Either way, how much.
   if (loans) {
     bits.push('dues ' + formatPkr(money.loanOut || 0) + ' out · ' + formatPkr(money.loanIn || 0) + ' in');
   }
@@ -7816,15 +7831,17 @@ function redrawForgotten(droppedKey) {
  * The history is in the Logs dialog, so nothing on the screen grows with it. */
 
 var MONEY_TAGS_KEY = 'probeing.moneytags';
+// Saad's list (feedback 1), shown in this order. A typed tag is never added to it.
 var MONEY_DEFAULT_TAGS = {
-  out: ['Food', 'Groceries', 'Transport', 'Bills', 'Health', 'Family', 'Shopping', 'Other'],
-  'in': ['Salary', 'Freelance', 'Gift', 'Other']
+  out: ['Food', 'Laundry', 'Groceries', 'Transport', 'Shopping', 'Family', 'Health'],
+  'in': ['Salary']
 };
+// A saved list without this version is replaced by the defaults once, on both copies.
+var MONEY_TAGS_VERSION = 2;
 // The same limits as the checks in docs/supabase_schema.sql.
 var MONEY_TAG_MAX = 40;
 var MONEY_NOTE_MAX = 200;
 var MONEY_TAGS_MAX = 30;
-var MONEY_LEARN_DAYS = 90;      // a typed tag is offered for this long after its last use
 var MONEY_PAGE = 1000;          // rows per request: Supabase hands back at most 1000 at once
 
 var moneyRows = [];             // every money row, from the last read
@@ -7855,13 +7872,17 @@ function cleanTags(list) {
   return out;
 }
 
+/** This device's copy. One saved before MONEY_TAGS_VERSION becomes the defaults;
+ *  the next sync then adopts the server's list if it is migrated, or sends these. */
 function loadMoneyTags() {
   var saved = null;
   try { saved = JSON.parse(localStorage.getItem(MONEY_TAGS_KEY)); } catch (e) { /* the defaults */ }
-  return (saved && typeof saved === 'object' && !Array.isArray(saved)) ? saved : {};
+  if (saved && typeof saved === 'object' && !Array.isArray(saved) && saved.v === MONEY_TAGS_VERSION) return saved;
+  return { out: MONEY_DEFAULT_TAGS.out.slice(), 'in': MONEY_DEFAULT_TAGS['in'].slice(),
+           v: MONEY_TAGS_VERSION, synced: true };
 }
 
-// {out, in, synced}: this device's copy of user_settings.money_tags, so the
+// {out, in, v, synced}: this device's copy of user_settings.money_tags, so the
 // chips work offline. `synced` false means the server has not got it yet.
 var moneyTags = loadMoneyTags();
 
@@ -7880,7 +7901,7 @@ function fixedTags(dir) {
 async function pushMoneyTags() {
   if (!supabaseReady()) throw new Error('Sign in first.');
   var res = await sb.from('user_settings').upsert({
-    user_id: sbUser.id, money_tags: { out: fixedTags('out'), 'in': fixedTags('in') }
+    user_id: sbUser.id, money_tags: { v: MONEY_TAGS_VERSION, out: fixedTags('out'), 'in': fixedTags('in') }
   }, { onConflict: 'user_id' });
   if (res.error) throw errorFrom(res.error);
   moneyTags.synced = true;
@@ -7891,8 +7912,12 @@ async function pullMoneyTags() {
   var got = await sb.from('user_settings').select('money_tags').eq('user_id', sbUser.id).limit(1);
   if (got.error) throw errorFrom(got.error);
   var t = ((got.data || [])[0] || {}).money_tags;
-  if (!t || typeof t !== 'object' || Array.isArray(t)) return;     // none saved: keep ours
-  moneyTags = { out: cleanTags(t.out), 'in': cleanTags(t['in']), synced: true };
+  // None saved, or a list from before MONEY_TAGS_VERSION: the server takes ours (the defaults, once).
+  if (!t || typeof t !== 'object' || Array.isArray(t) || t.v !== MONEY_TAGS_VERSION) {
+    await pushMoneyTags();
+    return;
+  }
+  moneyTags = { out: cleanTags(t.out), 'in': cleanTags(t['in']), v: MONEY_TAGS_VERSION, synced: true };
   saveMoneyTags();
   if (moneyTagsIdle()) renderMoneyTags();                          // never under a finger
 }
@@ -7913,7 +7938,7 @@ function changeMoneyTags(outTags, inTags) {
                'in': inTags.length ? inTags : MONEY_DEFAULT_TAGS['in'].slice() };
   if (next.out.join('\n') === fixedTags('out').join('\n') &&
       next['in'].join('\n') === fixedTags('in').join('\n')) return;
-  moneyTags = { out: next.out, 'in': next['in'], synced: false };
+  moneyTags = { out: next.out, 'in': next['in'], v: MONEY_TAGS_VERSION, synced: false };
   saveMoneyTags();
   renderMoneyTags();
   if (!supabaseReady()) return;
@@ -7921,31 +7946,6 @@ function changeMoneyTags(outTags, inTags) {
     flash('Money tags saved on this device, but not on the server (' +
       String((err && err.message) || err) + '). Sent again next time the app opens.', 'warn');
   });
-}
-
-/** Tags to offer for a direction: the fixed list plus any tag used in the last
- *  MONEY_LEARN_DAYS, most used first; ties keep the fixed order. */
-function moneyTagOrder(dir, rows, fixed) {
-  var cancelled = userMap();
-  rows.forEach(function (r) { if (r.voids_rid) cancelled[r.voids_rid] = 1; });
-  var count = userMap();
-  var names = fixed.slice();
-  var since = Date.now() - MONEY_LEARN_DAYS * 86400000;
-  rows.forEach(function (r) {
-    if (r.dir !== dir || r.voids_rid || (r.rid && cancelled[r.rid] === 1)) return;
-    if (r.kind && r.kind !== 'cash') return;     // "Lent" is not a spending tag
-    if (!(instantOf(r.at) >= since)) return;
-    var tag = String(r.tag || '').trim();
-    if (!tag) return;
-    if (count[tag] === undefined) {
-      count[tag] = 0;
-      if (names.indexOf(tag) === -1) names.push(tag);
-    }
-    count[tag] += 1;
-  });
-  return names.map(function (t, i) { return { t: t, i: i, n: count[t] || 0 }; })
-    .sort(function (a, b) { return (b.n - a.n) || (a.i - b.i); })
-    .map(function (x) { return x.t; });
 }
 
 /** The read's rows, rows saved since, and what the outbox holds; newest first. */
@@ -7988,10 +7988,7 @@ function moneyLines(figs) {
                signedPkr(figs.net) + (figs.since ? ' since ' + moneySinceDay(figs) : '')];
   if (Object.keys(figs.byTagOut).length) lines.push('Spent on: ' + byAmount(figs.byTagOut));
   if (Object.keys(figs.byTagIn).length) lines.push('In from: ' + byAmount(figs.byTagIn));
-  if (figs.loans) {
-    lines.push('Dues paid in cash: ' + formatPkr(figs.loanOut) + ' out · ' + formatPkr(figs.loanIn) +
-               ' in. They move cash but aren’t spending: they are in the net only.');
-  }
+  // Cash dues are already in the lines above, as their own tag (MONEY_DUES_TAG).
   if (figs.voided) {
     lines.push(figs.voided + (figs.voided === 1 ? ' voided entry is' : ' voided entries are') +
                ' left out.');
@@ -8022,7 +8019,8 @@ var MONEY_TAG_ICONS = {
   phone: '📱', mobile: '📱', internet: '🌐', clothes: '👕', travel: '✈️', taxi: '🚕',
   medicine: '💊', doctor: '🩺', car: '🚗', bike: '🏍️', electricity: '💡', utilities: '💡',
   gas: '🔥', water: '💧', entertainment: '🎬', gym: '🏋️', charity: '🤲', sadqa: '🤲',
-  zakat: '🤲', investment: '📈', profit: '📈', bonus: '🎉', refund: '↩️', fees: '🧾', kids: '🧸'
+  zakat: '🤲', investment: '📈', profit: '📈', bonus: '🎉', refund: '↩️', fees: '🧾', kids: '🧸',
+  laundry: '🧺'
 };
 var MONEY_TAG_ICON_NONE = '🏷️';
 
@@ -8057,7 +8055,7 @@ function renderMoneyTags() {
   var box = $('moneyTags');
   box.textContent = '';
   var dir = moneyForm.dir;
-  moneyTagOrder(dir, moneyMerged(), fixedTags(dir)).forEach(function (tag) {
+  fixedTags(dir).forEach(function (tag) {
     var cell = tagCell(moneyTagIcon(tag), tag, tag === moneyForm.tag, function () { pickMoneyTag(tag); });
     cell.dataset.tag = tag;
     box.appendChild(cell);
@@ -8111,13 +8109,13 @@ function openNewTag() {
   paintMoneySave();
 }
 
-/** The tag Save will use: the cell, or what was typed, spelled like a tag it
- *  already matches so "chai" does not become a second "Chai". */
+/** The tag Save will use: the cell, or what was typed (for this entry only),
+ *  spelled like a saved tag it matches so "food" does not become a second "Food". */
 function moneyTagNow() {
   if ($('moneyNewTag').hidden) return moneyForm.tag;
   var typed = cleanTags([$('moneyNewTag').value])[0] || '';
   if (!typed || !moneyForm.dir) return typed;
-  var same = moneyTagOrder(moneyForm.dir, moneyMerged(), fixedTags(moneyForm.dir))
+  var same = fixedTags(moneyForm.dir)
     .filter(function (t) { return t.toLowerCase() === typed.toLowerCase(); })[0];
   return same || typed;
 }
@@ -8481,11 +8479,14 @@ function renderLogs() {
   });
   groups.sort(function (a, b) { return a.ymd < b.ymd ? 1 : -1; });
   groups.forEach(function (g) {
-    // The day's spending and income among the entries shown; dues and the wallet are neither.
+    // The day's spending and income among the entries shown, cash dues included
+    // (as moneyFigures counts them); record-only dues and the wallet are neither.
     var sum = { 'in': 0, out: 0 };
     g.rows.forEach(function (r) {
       var p = moneyPaisa(r.amount);
-      if ((r.kind || 'cash') === 'cash' && !(r.rid && cancelled[r.rid] === 1) && p > 0 && sum[r.dir] !== undefined) sum[r.dir] += p;
+      var kind = r.kind || 'cash';
+      if ((kind === 'cash' || kind === 'loan') && !(r.rid && cancelled[r.rid] === 1) && p > 0 &&
+          sum[r.dir] !== undefined) sum[r.dir] += p;
     });
     var head = document.createElement('li');
     head.className = 'day-head';
@@ -8540,7 +8541,7 @@ moneyDlgKeys(logsDlg, null);
 
 /* Was Lend / Borrow (Stage 13b). A due is either a record only ('due', no cash
  * moved, the wallet untouched) or cash moved now ('loan', which moves the
- * wallet and is never spending). Settling is cash moved too. The fixed tags
+ * wallet and counts as spent or got, tag Dues). Settling is cash moved too. The fixed tags
  * of the cash ones are 13b's, so its rows keep their meaning. */
 var DUE_CHOICES = [
   { action: 'due', dir: 'they_owe', tag: 'Owes me',
@@ -9017,6 +9018,7 @@ $('settingsBtn').addEventListener('click', function () {
   loadDeviceKeys();                  // not awaited: the dialog opens now
   loadGoogle();                      // likewise
   loadPrayerRemind();                // likewise
+  loadTaskRemind();                  // likewise
   dlg.showModal();
 });
 
@@ -10867,8 +10869,14 @@ function leafOpen(leaf) {
   return nodeOpen(leaf.node) && !(leaf.up && leaf.up.gone_at);
 }
 
+/** Open, and not finished here by its own Done (`done`: doneHere()). */
+function leafLive(leaf, done) {
+  return leafOpen(leaf) && !done[leaf.node.id];
+}
+
 function openLeafById(id) {
-  var hit = taskLeaves(currentNodes()).filter(function (l) { return l.node.id === id && leafOpen(l); });
+  var done = doneHere();
+  var hit = taskLeaves(currentNodes()).filter(function (l) { return l.node.id === id && leafLive(l, done); });
   return hit[0] || null;
 }
 
@@ -10899,9 +10907,10 @@ function byTaskWhen(a, b) {
 
 /** Open tasks on Planned, soonest finish first, unset last. */
 function plannedLeaves(nodes) {
+  var done = doneHere();
   return taskLeaves(nodes).filter(function (l) {
     var plan = planOf(l.node.id);
-    return leafOpen(l) && Boolean(plan && plan.planned);
+    return leafLive(l, done) && Boolean(plan && plan.planned);
   }).sort(byTaskWhen);
 }
 
@@ -10909,7 +10918,8 @@ function plannedLeaves(nodes) {
  *  to finish before `endMs`; soonest first. None of those: every open task, as
  *  todaysPlan lists them (13b). */
 function homePlanLeaves(nodes, today, endMs) {
-  var open = taskLeaves(nodes).filter(leafOpen);
+  var done = doneHere();
+  var open = taskLeaves(nodes).filter(function (l) { return leafLive(l, done); });
   var picked = open.filter(function (l) {
     var plan = planOf(l.node.id);
     var due = dueOf(l.node.due);
@@ -10934,6 +10944,7 @@ function sameTitle(a, b) {
  */
 function workingOnLeaves(nodes, rows) {
   var day = replayDay(rows);
+  var done = doneHere();
   var open = taskLeaves(nodes).filter(leafOpen);
   var byId = userMap();
   open.forEach(function (l) { byId[l.node.id] = l; });
@@ -10953,7 +10964,10 @@ function workingOnLeaves(nodes, rows) {
     });
     if (!hits.length) open.forEach(function (l) { if (sameTitle(l.node.title, name)) add(l); });
     if (!hits.length) { items.push({ name: name, leaf: null }); return; }
-    hits.forEach(function (l) {
+    // Finished by its own Done: off the list. All of them: the project says so.
+    var live = hits.filter(function (l) { return !done[l.node.id]; });
+    if (!live.length) { items.push({ name: name, leaf: null, finished: true }); return; }
+    live.forEach(function (l) {
       if (seen[l.node.id]) return;
       seen[l.node.id] = 1;
       items.push({ name: name, leaf: l });
@@ -10970,8 +10984,8 @@ function taskWhenLabel(ms) {
   return day + ', ' + clockOf({ at: d.toISOString() });
 }
 
-/** The line under a task: its project (when asked) and when it is expected.
- *  Google's due is named only once it has passed, as the Home card did. */
+/** The line under a task: its project (when asked), and `due`, his expected
+ *  finish (drawn by deadlineChip), else Google's due once it has passed. */
 function taskMeta(leaf, today, withProject) {
   var parts = [];
   var late = false;
@@ -10979,8 +10993,7 @@ function taskMeta(leaf, today, withProject) {
   var t = shownFinishMs(leaf.node);
   var due = dueOf(leaf.node.due);
   if (isFinite(t)) {
-    late = t < Date.now();
-    parts.push('finish ' + taskWhenLabel(t));
+    return { text: parts.join(' · '), late: false, due: t };
   } else if (isFinite(expectedMs(leaf.node.id))) {
     // His finish was sent, then the date was changed in Google: Google's stands.
     late = Boolean(due && due < today);
@@ -11002,14 +11015,78 @@ function taskButton(leaf, listId, meta) {
   title.className = 'plan-title';
   title.textContent = leaf.node.title || '(untitled)';
   b.appendChild(title);
-  if (meta && meta.text) {
+  var dated = meta && isFinite(meta.due);
+  if (meta && (meta.text || dated)) {
     var m = document.createElement('div');
     m.className = 'plan-meta' + (meta.late ? ' overdue' : '');
     m.textContent = meta.text;
+    if (dated) m.appendChild(deadlineChip(meta.due, meta.text ? ' · ' : ''));
     b.appendChild(m);
   }
   b.addEventListener('click', function () { openTaskDlg(leaf.node.id, b, listId); });
   return b;
+}
+
+/* ── Deadlines (feedback 1): "by 4:30 PM" on a task with an expected finish.
+ * Orange while more than an hour is left, red in the last hour, and a blinking
+ * red dot once it has passed. paintDeadlines() keeps them current. */
+var DEADLINE_NEAR_MS = 3600000;
+var WEEKDAYS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+
+/** 'soon' (orange), 'near' (red, the last hour) or 'past' (red, with the dot). */
+function deadlineLevel(ms, now) {
+  var left = ms - now;
+  if (left <= 0) return 'past';
+  return left <= DEADLINE_NEAR_MS ? 'near' : 'soon';
+}
+
+/** "4:30 PM" on this device's clock. */
+function clockAmPm(d) {
+  var h = d.getHours();
+  return ((h % 12) || 12) + ':' + pad2(d.getMinutes()) + (h < 12 ? ' AM' : ' PM');
+}
+
+/** "by 4:30 PM" today (the counter day), "by Thu 4:30 PM" within a week, else "by 12 Oct 4:30 PM". */
+function deadlineLabel(ms, now) {
+  var d = new Date(ms);
+  if (counterDate(ms) === counterDate(now)) return 'by ' + clockAmPm(d);
+  if (Math.abs(ms - now) < 6 * 86400000) return 'by ' + WEEKDAYS[d.getDay()] + ' ' + clockAmPm(d);
+  var p = ymdLocal(d).split('-');
+  return 'by ' + Number(p[2]) + ' ' + 'Jan Feb Mar Apr May Jun Jul Aug Sep Oct Nov Dec'.split(' ')[Number(p[1]) - 1] +
+         ' ' + clockAmPm(d);
+}
+
+/** The deadline as a span, after `sep`. Text only: nothing here is markup. */
+function deadlineChip(ms, sep) {
+  var wrap = document.createElement('span');
+  if (sep) wrap.appendChild(document.createTextNode(sep));
+  var s = document.createElement('span');
+  s.setAttribute('data-due', String(ms));
+  var dot = document.createElement('span');
+  dot.className = 'dl-dot';
+  dot.setAttribute('aria-hidden', 'true');
+  var text = document.createElement('span');
+  text.className = 'dl-text';
+  s.append(dot, text);
+  wrap.appendChild(s);
+  paintDeadline(s, Date.now());
+  return wrap;
+}
+
+function paintDeadline(s, now) {
+  var ms = Number(s.getAttribute('data-due'));
+  if (!isFinite(ms)) return;
+  var level = deadlineLevel(ms, now);
+  s.className = 'deadline dl-' + level;
+  s.lastChild.textContent = deadlineLabel(ms, now);
+  if (level === 'past') s.setAttribute('aria-label', 'Past due, ' + deadlineLabel(ms, now));
+  else s.removeAttribute('aria-label');
+}
+
+/** Every deadline on the page, to the minute. Cheap: no read, no redraw of the lists. */
+function paintDeadlines() {
+  var now = Date.now();
+  Array.prototype.forEach.call(document.querySelectorAll('[data-due]'), function (s) { paintDeadline(s, now); });
 }
 
 /** A line that is not a button: an unmatched project, or a done or gone task. */
@@ -11046,13 +11123,17 @@ function paintTasksPage() {
   nowList.textContent = '';
   now.items.forEach(function (it) {
     if (!it.leaf) {
-      nowList.appendChild(taskLine(it.name, 'not in your Tasks list' + (now.running ? '' : ' · paused')));
+      nowList.appendChild(taskLine(it.name, (it.finished ? 'its task is done' : 'not in your Tasks list') +
+                                            (now.running ? '' : ' · paused')));
       return;
     }
     var meta = taskMeta(it.leaf, today, true);
     if (!now.running) meta.text = (meta.text ? meta.text + ' · ' : '') + 'paused';
     var li = document.createElement('li');
+    li.className = 'task-row';
     li.appendChild(taskButton(it.leaf, 'tasksNow', meta));
+    var done = taskDoneButton(it.leaf.node);
+    if (done) li.appendChild(done);
     nowList.appendChild(li);
   });
   nowList.hidden = !now.items.length;
@@ -11070,8 +11151,9 @@ function paintTasksPage() {
   $('tasksPlannedEmpty').hidden = planned.length > 0;
 
   // All tasks: the tree, open tasks as buttons, done and gone ones dimmed.
+  var doneIds = doneHere();
   var openIds = userMap();
-  taskLeaves(nodes).forEach(function (l) { if (leafOpen(l)) openIds[l.node.id] = l; });
+  taskLeaves(nodes).forEach(function (l) { if (leafLive(l, doneIds)) openIds[l.node.id] = l; });
   var all = $('tasksAll');
   all.textContent = '';
   var projects = mirrorTree(nodes);
@@ -11104,6 +11186,8 @@ function paintTasksPage() {
           cli.appendChild(taskButton(leaf, 'tasksAll', taskMeta(leaf, today, false)));
           cli.appendChild(itemsBlock(leaf.node.id));
           sub.appendChild(cli);
+        } else if (doneIds[c.node.id] && !c.node.gone_at) {
+          sub.appendChild(doneHereLine(c.node));
         } else {
           // Done, gone, or open under a deleted project: dimmed, not a button.
           var shut = taskLine(nodeTitle(c.node), shutMeta(c.node),
@@ -11120,6 +11204,34 @@ function paintTasksPage() {
   $('tasksAllEmpty').hidden = projects.length > 0;
 
   if (taskDlg && taskDlg.open) paintTaskDlg();
+}
+
+/** A sub-task finished by its own Done: dimmed, with Reopen while the tick in
+ *  Google is ProBeing's or not sent yet. One he completed in Google stays his. */
+function doneHereLine(node) {
+  var li = document.createElement('li');
+  li.className = 'task-row';
+  var box = document.createElement('div');
+  box.className = 'task-row-title';
+  var title = document.createElement('div');
+  title.className = 'task-done';
+  title.textContent = nodeTitle(node);
+  box.appendChild(title);
+  var meta = document.createElement('div');
+  meta.className = 'plan-meta';
+  meta.textContent = shutMeta(node) || (node.g_status === 'completed' ? '' : 'Done in ProBeing');
+  box.appendChild(meta);
+  if (hasItems(node.id)) box.appendChild(itemsBlock(node.id));
+  li.appendChild(box);
+  if (node.g_status !== 'completed' || shutMeta(node)) {
+    var b = itemLink('Reopen', 'Reopen: ' + nodeTitle(node), function () {
+      if (b.disabled) return;
+      coolDown(b);
+      reopenTask(node.id);
+    });
+    li.appendChild(b);
+  }
+  return li;
 }
 
 /** Under a finished task: "sent to Google" when ProBeing completed it there. */
@@ -11185,6 +11297,7 @@ function openTaskDlg(id, opener, listId) {
                                             : 'A task of its own, with no project above it.';
   fillTaskWhen(id);
   $('taskDlgNote').textContent = '';
+  $('taskDoneBtn').hidden = leaf.node.kind !== 'subtask';     // never a project (Stage 15)
   paintTaskDlg();
   taskDlg.showModal();
   $('taskStartBtn').focus();                // not the date box: on a phone that opens a picker
@@ -11290,6 +11403,13 @@ function startTask(id) {
   var leaf = openLeafById(id);
   if (!leaf) return false;
   var e = taskEntry(leaf);
+  // Already the running sub-task: nothing to write (feedback 1). Paused, it starts again.
+  var day = replayDay(named(sessionLog()));
+  if (day.running && day.currentSubtask === id && toggles.work.state === 'working' &&
+      toggles.sleep.state !== 'asleep') {
+    flash('Already working on ' + (e.detail ? e.project + ': ' + e.detail : e.project), 'ok');
+    return true;
+  }
   var undo = beginToggleWrite();
   var steps = wakeSteps(true);
   if (toggles.work.state !== 'working') setToggle('work', 'working');
@@ -11305,6 +11425,14 @@ function startTask(id) {
 $('taskStartBtn').addEventListener('click', function () {
   if (!startTask(taskDlgNode)) {
     $('taskDlgNote').textContent = 'This task is no longer open in Google Tasks.';
+    return;
+  }
+  closeTaskDlg();
+});
+
+$('taskDoneBtn').addEventListener('click', function () {
+  if (!finishTask(taskDlgNode)) {
+    $('taskDlgNote').textContent = 'This task is no longer open.';
     return;
   }
   closeTaskDlg();
@@ -11650,6 +11778,8 @@ var itemRows = [];                        // items filed under a task, as last r
 var markRows = [];                        // item_marks, as last read
 var itemsPressed = [];                    // pressed on this page, not yet seen in a read
 var marksPressed = [];
+var directRows = [];                      // Done/Reopen pressed on a sub-task itself, as last read
+var directPressed = [];                   // ... and pressed on this page, not yet seen in a read
 var itemsRead = false;                    // both read this visit; until then only held presses
 var itemsTimer = 0;
 var itemsChannel = null;
@@ -11670,13 +11800,24 @@ function cleanItemTitle(text) {
  */
 function taskTree() {
   var have = userMap();
-  itemRows.concat(markRows).forEach(function (r) { have[r.rid] = 1; });
+  itemRows.concat(markRows, directRows).forEach(function (r) { have[r.rid] = 1; });
   adopt(itemsPressed, queuedItems(have));
   adopt(marksPressed, queuedMarks(have));
+  adopt(directPressed, queuedDirect(have));
   parkedAll().forEach(function (r) { if (r && r.rid) have[r.rid] = 1; });
   function unseen(r) { return !have[r.rid]; }
   return { nodes: taskNodes, items: itemRows.concat(itemsPressed.filter(unseen)),
-           marks: markRows.concat(marksPressed.filter(unseen)) };
+           marks: markRows.concat(marksPressed.filter(unseen)),
+           direct: directRows.concat(directPressed.filter(unseen)) };
+}
+
+/** Held Done/Reopen presses on a sub-task (`log` rows with a direct rid). */
+function queuedDirect(have) {
+  return outboxOurs().filter(function (it) {
+    var p = it.payload || {};
+    return it.action === 'log' && (p.type === 'subdone' || p.type === 'subopen') && p.node_id &&
+           /^sd[do]-/.test(it.rid) && !(have && have[it.rid]);
+  }).map(queuedRow);
 }
 
 /** Add the held rows `list` does not have yet. */
@@ -11710,16 +11851,24 @@ async function readItems() {
         .order('at', { ascending: false }).limit(5000);
     }
     if (mk.error) return false;
+    // Feedback 1: Done and Reopen on a sub-task itself; tree.js directMarks keeps only those.
+    var dr = await readPages(function () {
+      return sb.from('events').select('type,rid,node_id,at').in('type', ['subdone', 'subopen'])
+        .not('node_id', 'is', null).order('at', { ascending: false }).order('rid');
+    });
+    if (dr.error) return false;
     itemRows = it.data || [];
     markRows = mk.data || [];
+    directRows = (dr.data || []).filter(function (r) { return /^sd[do]-/.test(String(r.rid || '')); });
     itemsRead = true;
     /* A press the read returned is the table's now. One that had already left
      * the device before the read set out, and is not in it, was refused. */
     var seen = userMap();
-    itemRows.concat(markRows).forEach(function (r) { seen[r.rid] = 1; });
+    itemRows.concat(markRows, directRows).forEach(function (r) { seen[r.rid] = 1; });
     function pending(r) { return !seen[r.rid] && (held[r.rid] === 1 || !(instantOf(r.at) < startedAt)); }
     itemsPressed = itemsPressed.filter(pending);
     marksPressed = marksPressed.filter(pending);
+    directPressed = directPressed.filter(pending);
     return true;
   } catch (e) { return false; }
 }
@@ -11881,10 +12030,19 @@ function currentSubtaskBlock(node, title) {
   var box = document.createElement('div');
   box.className = 'proj-sub';
   if (node.kind === 'subtask') {               // a project's own items need no second heading
+    var row = document.createElement('div');
+    row.className = 'proj-sub-head';
     var head = document.createElement('div');
     head.className = 'proj-sub-title';
     head.textContent = '▸ ' + (node.gone_at ? title + ' (deleted in Google)' : title);
-    box.appendChild(head);
+    var finish = shownFinishMs(node);
+    if (isFinite(finish)) head.appendChild(deadlineChip(finish, ' · '));
+    row.appendChild(head);
+    // Feedback 1: finish a small task (no items) right here.
+    var live = !node.gone_at && node.g_status !== 'completed';
+    var done = live ? taskDoneButton(node) : null;
+    if (done) row.appendChild(done);
+    box.appendChild(row);
   }
   box.appendChild(itemsBlock(node.id, HOME_ITEMS_MAX));
   return box;
@@ -11924,6 +12082,90 @@ function subtaskDone(nodeId, mark) {
   runWrites([{ type: 'subdone', raw_text: text, project: project, detail: detail, node_id: nodeId,
                rid: 'sd-' + mark.rid, at: mark.at, local_time: mark.local_time || '',
                closing_rid: mark.rid }]);
+}
+
+/* ── Done on a sub-task itself (feedback 1) ─────────────────────────────
+ * A small task has no items, so it can be finished directly: a `subdone` row
+ * through the outbox, its rid from tree.js directRid, so a second tap or the
+ * other device writes the same rid and the table keeps one. tasks-sync then
+ * ticks it in Google. Reopen writes `subopen`, which unticks only ProBeing's tick. */
+
+/** Every direct Done/Reopen known here: the items read's, presses held or made
+ *  on this page, and today's rows (so the other device's press shows on its read). */
+function directAll() {
+  var rows = taskTree().direct.slice();
+  var have = userMap();
+  rows.forEach(function (r) { have[r.rid] = 1; });
+  parkedAll().forEach(function (x) { if (x && x.rid) have[x.rid] = 1; });   // refused: not a press
+  sessionLog().forEach(function (r) {
+    if ((r.type !== 'subdone' && r.type !== 'subopen') || !r.node_id || !/^sd[do]-/.test(String(r.rid || ''))) return;
+    if (have[r.rid]) return;
+    have[r.rid] = 1;
+    rows.push(r);
+  });
+  return rows;
+}
+
+/** node id -> true: finished by its own Done (tree.js directDone). */
+function doneHere() {
+  // Before tree.js, or before this part of the file has run (an early paint): none.
+  if (typeof directDone !== 'function' || !Array.isArray(directRows)) return userMap();
+  var tree = taskTree();
+  return directDone(taskNodes, tree.items, itemNewest(tree.marks), directMarks(directAll()));
+}
+
+/** Done on sub-task `id`. False when it is not an open sub-task, or is done already. */
+function finishTask(id) {
+  if (typeof directRid !== 'function') return false;
+  var leaf = openLeafById(id);
+  if (!leaf || leaf.node.kind !== 'subtask') return false;
+  var d = directMarks(directAll())[id];
+  var rid = directRid(DIRECT_DONE, id, d ? d.gen + 1 : 0);
+  // Never older than the Reopen it follows, whatever this device's clock says.
+  var at = new Date(Math.max(Date.now(), d ? instantOf(d.at) + 1 : 0)).toISOString();
+  var e = taskEntry(leaf);
+  var text = e.detail || e.project;
+  noteLocalRow('subdone', text, e.project, e.detail, id).rid = rid;
+  directPressed.push({ type: 'subdone', rid: rid, node_id: id, at: at });
+  runWrites([{ type: 'subdone', raw_text: text, project: e.project, detail: e.detail, node_id: id,
+               rid: rid, at: at, local_time: humanLocal() }]);
+  paintTasks();
+  flash('Done: ' + text + '. Reopen it under All tasks on Tasks.', 'ok');
+  return true;
+}
+
+/** Reopen a sub-task finished by its own Done. Only one ProBeing finished. */
+function reopenTask(id) {
+  if (typeof directRid !== 'function' || !doneHere()[id]) return false;
+  var d = directMarks(directAll())[id];
+  var names = nodeNames(nodeIndex(taskNodes), id);
+  if (!d || !names) return false;
+  var rid = directRid(DIRECT_OPEN, id, d.gen);
+  var at = new Date(Math.max(Date.now(), instantOf(d.at) + 1)).toISOString();
+  var title = names.detail || names.project;
+  noteLocalRow('subopen', 'Reopened: ' + title, names.project, names.detail, id).rid = rid;
+  directPressed.push({ type: 'subopen', rid: rid, node_id: id, at: at });
+  runWrites([{ type: 'subopen', raw_text: 'Reopened: ' + title, project: names.project, detail: names.detail,
+               node_id: id, rid: rid, at: at, local_time: humanLocal() }]);
+  paintTasks();
+  flash('Reopened: ' + title, 'ok');
+  return true;
+}
+
+/** A small Done button for sub-task `id`; nothing for a project. */
+function taskDoneButton(node) {
+  if (!node || node.kind !== 'subtask') return null;
+  var b = document.createElement('button');
+  b.type = 'button';
+  b.className = 'item-btn item-done-btn';
+  b.textContent = 'Done';
+  b.setAttribute('aria-label', 'Done: ' + (node.title || '(untitled)'));
+  b.addEventListener('click', function () {
+    if (b.disabled) return;
+    coolDown(b);
+    finishTask(node.id);
+  });
+  return b;
 }
 
 function openItemDlg(nodeId) {
@@ -11988,6 +12230,8 @@ function stopItems() {
   markRows = [];
   itemsPressed = [];
   marksPressed = [];
+  directRows = [];
+  directPressed = [];
   subdoneTried = userMap();
   itemsRead = false;
   showClosed = userMap();
@@ -12041,15 +12285,53 @@ $('prayerRemindOn').addEventListener('change', async function () {
   box.disabled = false;
 });
 
+/* Feedback 1: the deadline push's own on/off, user_settings.task_reminders.
+ * Its own read, so a database without the column leaves the prayer toggle working. */
+async function loadTaskRemind() {
+  var box = $('taskRemindOn');
+  var out = $('taskRemindResult');
+  box.disabled = true;
+  out.textContent = '';
+  try {
+    if (!supabaseReady()) { out.textContent = 'Sign in to change this.'; return; }
+    var got = await sb.from('user_settings').select('task_reminders').eq('user_id', sbUser.id).limit(1);
+    if (got.error) throw errorFrom(got.error);
+    var row = (got.data || [])[0];
+    box.checked = !(row && row.task_reminders === false);       // no row: on, the default
+    box.disabled = false;
+  } catch (e) {
+    out.textContent = 'Could not read this setting: ' + ((e && e.message) || e);
+  }
+}
+
+$('taskRemindOn').addEventListener('change', async function () {
+  var box = this;
+  var out = $('taskRemindResult');
+  var want = box.checked;
+  box.disabled = true;
+  out.textContent = 'Saving…';
+  try {
+    if (!supabaseReady()) throw new Error('Sign in first.');
+    var res = await sb.from('user_settings').upsert({ user_id: sbUser.id, task_reminders: want },
+                                                     { onConflict: 'user_id' });
+    if (res.error) throw errorFrom(res.error);
+    out.textContent = want ? 'On, for every device.' : 'Off, for every device.';
+  } catch (e) {
+    box.checked = !want;
+    out.textContent = 'Not saved: ' + ((e && e.message) || e);
+  }
+  box.disabled = false;
+});
+
 // -------------------------------------------------------------------- boot
 
 if ('serviceWorker' in navigator) {
   window.addEventListener('load', function () {
     navigator.serviceWorker.register('sw.js').catch(function () { /* offline shell is optional */ });
   });
-  // A tapped prayer reminder (sw.js) brings the app forward on Home.
+  // A tapped prayer reminder (sw.js) brings the app forward on Home; a deadline one on Tasks.
   navigator.serviceWorker.addEventListener('message', function (e) {
-    if (e.data && e.data.goto === 'home') showScreen('home');
+    if (e.data && (e.data.goto === 'home' || e.data.goto === 'tasks')) showScreen(e.data.goto);
   });
 }
 
@@ -12121,4 +12403,9 @@ if (!cfg.supaUrl || !cfg.supaKey) dlg.showModal();
 if (location.hash === '#google') {
   try { history.replaceState(null, '', location.pathname + location.search); } catch (e) { /* stays */ }
   $('settingsBtn').click();
+}
+// A deadline reminder that had to open a fresh window (sw.js) asks for Tasks.
+if (location.hash === '#tasks') {
+  try { history.replaceState(null, '', location.pathname + location.search); } catch (e) { /* stays */ }
+  showScreen('tasks');
 }

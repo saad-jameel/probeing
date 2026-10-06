@@ -389,7 +389,7 @@
   </form>
 </dialog>
 
-<!-- A record only moves no cash; cash moved now moves the wallet, never as spending. -->
+<!-- A record only moves no cash; cash moved now moves the wallet and counts as spent or got (Dues). -->
 <dialog id="dueDlg" class="dlg">
   <form method="dialog">
     <h2>Add a due</h2>
@@ -557,6 +557,12 @@
         </label>
         <p class="hint">A push as each prayer begins, then 60/30/15 min before it ends, until logged. Needs notifications on (above).</p>
         <p id="prayerRemindResult" class="hint"></p>
+        <label class="check">
+          <input id="taskRemindOn" type="checkbox" checked>
+          <span>Task deadline reminders (all devices)</span>
+        </label>
+        <p class="hint">A push 30 min before a task's expected finish, unless it is done.</p>
+        <p id="taskRemindResult" class="hint"></p>
       </div>
 
       <div class="dlg-block">
@@ -668,13 +674,13 @@
       <button type="button" class="help-btn" data-help="helpMoneyTags"
         data-title="Money tags" aria-label="About money tags">?</button>
     </div>
-    <input id="moneyOutTags" type="text" placeholder="Food, Groceries, Transport">
+    <input id="moneyOutTags" type="text" placeholder="Food, Laundry, Groceries">
     <label for="moneyInTags">Money tags for income (comma separated)</label>
-    <input id="moneyInTags" type="text" placeholder="Salary, Freelance, Gift">
+    <input id="moneyInTags" type="text" placeholder="Salary">
     <template id="helpMoneyTags">
-    <p class="hint">Shared by your phone and laptop. A tag you type with + on the Money
-      screen is offered too, for 90 days after you last use it; the ones you use most sit
-      first. Leave a box empty for the starting list.</p>
+    <p class="hint">Shared by your phone and laptop, in this order. A tag you type with +
+      on the Money screen is used for that entry only and is not added here. Leave a box
+      empty for the starting list.</p>
     </template>
 
     <p id="supaWho" class="hint"></p>
@@ -785,6 +791,7 @@
 
     <div class="task-dlg-main">
       <button type="button" id="taskStartBtn" class="btn btn-accent btn-wide">Start working on it</button>
+      <button type="button" id="taskDoneBtn" class="btn btn-wide" hidden>Done</button>
       <button type="button" id="taskPlanBtn" class="btn btn-wide">Add to Planned</button>
     </div>
 
