@@ -1358,3 +1358,14 @@ alter table public.google_grants add column if not exists export_claim_until tim
 -- toggle. Dedupe in reminders_sent, kind 'plan', day = the counter date.
 alter table public.user_settings add column if not exists plan_push boolean not null default true;
 alter table public.user_settings add column if not exists plan_push_time time not null default '09:00';
+
+-- ===================================================== edit queue 2 (7 Oct)
+-- classify's plan for a new sub-task (Gemini knew the project, not the task):
+-- the title and the project's google_id, saved BEFORE tasks.insert, then the
+-- new task's id once Google answers. A run that finds a plan without an id
+-- looks in Google before inserting again, so an entry makes at most one.
+-- Server-written like the rest of entry_filing; cleared when it ends Unsorted.
+alter table public.entry_filing add column if not exists new_title text;
+alter table public.entry_filing add column if not exists new_parent text;
+alter table public.entry_filing add column if not exists new_google_id text;
+alter table public.entry_filing add column if not exists new_at timestamptz;

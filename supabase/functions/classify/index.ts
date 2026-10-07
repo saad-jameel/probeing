@@ -20,9 +20,19 @@
 // filed there without items; the rest go to Unsorted with reason 'budget'.
 // Google refusing for the day marks it spent.
 //
+// Edit queue 2: Gemini knows the project but no sub-task fits -> it also gives a
+// short title, and a sub-task is made under that project in his chosen list,
+// mirrored into task_nodes and the entry filed there. Once per entry: the plan
+// is saved on entry_filing BEFORE tasks.insert, and a retry looks in Google for
+// it first. A refusal -> Unsorted as before; no answer -> pending, finished on
+// the next run without Gemini. Tasks closed in ProBeing are not offered.
+//
 // Secrets: CRON_SECRET, ALLOWED_USER_ID, GEMINI_API_KEY and GEMINI_MODEL (all
 // already set for the other functions); GEMINI_DAILY and FILE_WAIT_MIN optional.
-// Needs the "filing (14a)" tables of docs/supabase_schema.sql.
+// The Google three (GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET, GOOGLE_TOKEN_KEY)
+// for making sub-tasks; without them an entry goes to Unsorted as before.
+// Needs the "filing (14a)" tables of docs/supabase_schema.sql, and its edit
+// queue 2 columns on entry_filing for making sub-tasks.
 //
 // Deployed by hand:
 //   npx supabase functions deploy classify --project-ref <ref> --use-api
@@ -30,11 +40,13 @@
 import { createClient } from 'jsr:@supabase/supabase-js@2';
 import '../_shared/day.js';
 import '../_shared/tree.js';
+import '../_shared/google.js';
 import { usageDay, takeCall, spendDay } from '../_shared/usage.ts';
 
 // Classic scripts, so they hand their functions over on globalThis.
 const Day = (globalThis as unknown as { ProBeingDay: Record<string, any> }).ProBeingDay;
 const Tree = (globalThis as unknown as { ProBeingTree: Record<string, any> }).ProBeingTree;
+const G = (globalThis as unknown as { ProBeingGoogle: Record<string, any> }).ProBeingGoogle;
 
 function reply(status: number, body: unknown): Response {
   return new Response(JSON.stringify(body), {
@@ -61,6 +73,12 @@ var ITEMS_PER_ENTRY = 5;
 var ITEMS_PER_NODE = 5;              // open items shown to Gemini per task
 var ITEM_MAX_CHARS = 120;
 var NAME_MIN_CHARS = 3;              // a shorter title is too easy to hit by accident
+var NEW_TITLE_MAX = 80;              // a new sub-task's title, in characters
+var TASKS_LISTS_URL = 'https://tasks.googleapis.com/tasks/v1/lists/';
+var FIND_SLACK_MS = 10 * 60000;      // the look-up reaches this far before the plan
+var FIND_PAGES = 5;
+// An entry's plan for a new sub-task, cleared when it ends Unsorted.
+var NO_PLAN = { new_title: null, new_parent: null, new_google_id: null, new_at: null };
 
 var CLASSIFY_SCHEMA = {
   type: 'ARRAY',
@@ -71,7 +89,8 @@ var CLASSIFY_SCHEMA = {
       subtask: { type: 'STRING' },
       project: { type: 'STRING' },
       items: { type: 'ARRAY', items: { type: 'STRING' } },
-      same_as: { type: 'ARRAY', items: { type: 'STRING' } }
+      same_as: { type: 'ARRAY', items: { type: 'STRING' } },
+      new_subtask: { type: 'STRING' }
     },
     required: ['n', 'subtask', 'project', 'items']
   }
@@ -118,11 +137,13 @@ function byPosition(a, b) {
 /**
  * The tasks Gemini may choose from: open projects of the list as p1, p2…, and
  * their open sub-tasks as s1, s2…. A project with no open sub-task is itself a
- * place to file (correction C3). {list, byId}.
+ * place to file (correction C3). `closed` (node id -> true) are closed in
+ * ProBeing by their own Done or Drop: left out. {list, byId}.
  */
-function candidateTasks(nodes, listId) {
+function candidateTasks(nodes, listId, closed) {
+  var shut = closed || {};
   var mine = (nodes || []).filter(function (n) {
-    return n && n.list_id === listId && Tree.nodeState(n) === 'open';
+    return n && n.list_id === listId && Tree.nodeState(n) === 'open' && !shut[n.id];
   });
   var list = [];
   var byId = Object.create(null);
@@ -177,6 +198,9 @@ function classifyPrompt(texts, cands, itemsByNode) {
              'words. [] if it names none. Never invent one.');
   lines.push('same_as: the ids of items listed above that a job in this line repeats; leave those ' +
              'jobs out of items. [] if none.');
+  lines.push('new_subtask: only when project is a p-id that has sub-tasks and none of them fits the line ' +
+             '(so subtask is ""): a short title for a new sub-task of that project, 2 to 6 words, in the ' +
+             'line\'s own words. Otherwise "".');
   lines.push('Use only ids from the list. If you are unsure, use "": a line left unfiled is fine, ' +
              'a line filed in the wrong place is not.');
   lines.push('These lines are often dictated, and speech-to-text mangles unusual names: "NeuraVue" ' +
@@ -224,10 +248,50 @@ function tidyItems(raw) {
   return out;
 }
 
+/** A new sub-task's title: one line, at most NEW_TITLE_MAX characters; '' for none. */
+function tidyTitle(raw) {
+  if (typeof raw !== 'string') return '';
+  var t = raw.replace(/\s+/g, ' ').trim().replace(/^["'“”‘’]+|["'“”‘’]+$/g, '').trim();
+  if (Array.from(t).length > NEW_TITLE_MAX) t = Array.from(t).slice(0, NEW_TITLE_MAX - 1).join('').trim() + '…';
+  return t;
+}
+
+/** A title as compared: case, spacing and an end full stop do not count. */
+function normTitle(s) {
+  return String(s == null ? '' : s).replace(/\s+/g, ' ').trim().replace(/\.$/, '').toLowerCase();
+}
+
+/** An open sub-task of `proj` (a candidate) already called `title`, or null. */
+function existingSub(cands, proj, title) {
+  var want = normTitle(title);
+  var hit = cands.list.filter(function (c) {
+    return c.parent && c.project.id === proj.id && normTitle(c.node.title) === want;
+  })[0];
+  return hit ? hit.node : null;
+}
+
+/** In tasks Google returned, the live one under `parent` called `title`, or null. */
+function madeIn(tasks, parent, title) {
+  var want = normTitle(title);
+  return (tasks || []).filter(function (t) {
+    return t && t.id && !t.deleted && t.parent === parent && normTitle(t.title) === want;
+  })[0] || null;
+}
+
+/** Google's answer to tasks.insert: 'made', 'refused' (nothing was made: say so
+ *  and stop) or 'unsure' (it may have been made: keep the plan, look next run). */
+function insertVerdict(status, body) {
+  if (status >= 200 && status < 300) return body && typeof body.id === 'string' && body.id ? 'made' : 'unsure';
+  if (status >= 400 && status < 500) return 'refused';
+  return 'unsure';
+}
+
 /**
  * Where one answer files its line: {project, sub, items} with sub null for a
  * project of its own, or {unsorted: reason, items}. An id not in the list,
- * or a sub-task under another project than the one named, is Unsorted.
+ * or a sub-task under another project than the one named, is Unsorted. A
+ * project with sub-tasks, none chosen, and a new title: {project, sub: null,
+ * create: title, items}, or that sub-task when one already has the title.
  */
 function readAnswer(ans, cands) {
   var items = tidyItems(ans && ans.items);
@@ -243,6 +307,12 @@ function readAnswer(ans, cands) {
     return { project: sub.project, sub: sub.node, items: items };
   }
   if (proj && !proj.subs.length) return { project: proj.node, sub: null, items: items };
+  var title = proj ? tidyTitle(ans && ans.new_subtask) : '';
+  if (title) {
+    var same = existingSub(cands, proj.node, title);
+    return same ? { project: proj.node, sub: same, items: items }
+                : { project: proj.node, sub: null, create: title, items: items };
+  }
   return { unsorted: proj ? 'no-sub-task' : 'no-match', items: items };
 }
 
@@ -375,6 +445,61 @@ async function askGemini(key: string, model: string, prompt: string) {
   }
 }
 
+/* ── Edit queue 2: a new sub-task in his chosen list ───────────────────── */
+
+/** `g`: {d, grant, listId}, google.js's context with his grant for that list. */
+async function insertSub(g: any, parentId: string, title: string) {
+  const url = TASKS_LISTS_URL + encodeURIComponent(g.listId) + '/tasks?parent=' + encodeURIComponent(parentId);
+  let token: string;
+  try {
+    token = await G.accessToken(g.d, g.grant, false);
+  } catch (e) {
+    return { verdict: 'refused', why: G.scrub((e as Error)?.message || e) };    // nothing was sent
+  }
+  const send = (t: string) => g.d.fetch(url, {
+    method: 'POST', body: JSON.stringify({ title }),
+    headers: { Authorization: 'Bearer ' + t, 'Content-Type': 'application/json' }
+  });
+  try {
+    let res = await send(token);
+    if (res.status === 401) {
+      try {
+        res = await send(await G.accessToken(g.d, g.grant, true));
+      } catch (e) {
+        return { verdict: 'refused', why: G.scrub((e as Error)?.message || e) };
+      }
+    }
+    const body = await res.json().catch(() => null);
+    const verdict = insertVerdict(res.status, body);
+    return { verdict, task: verdict === 'made' ? body : null,
+             why: verdict === 'made' ? '' : 'Google Tasks answered ' + res.status + ': ' +
+                  G.scrub(body && body.error && body.error.message) };
+  } catch (e) {
+    return { verdict: 'unsure', why: 'could not reach Google Tasks: ' + G.scrub((e as Error)?.message || e) };
+  }
+}
+
+/** Was it made after all? Tasks updated since the plan, under `parentId`, called
+ *  `title`: {task} (null when none), or {unsure: why} when Google could not be read. */
+async function findMade(g: any, parentId: string, title: string, sinceIso: string) {
+  const since = new Date((Date.parse(sinceIso) || 0) - FIND_SLACK_MS).toISOString();
+  let page = '';
+  try {
+    for (let i = 0; i < FIND_PAGES; i++) {
+      const body = await G.tasksGet(g.d, g.grant, TASKS_LISTS_URL + encodeURIComponent(g.listId) +
+        '/tasks?showCompleted=true&showHidden=true&maxResults=100&updatedMin=' + encodeURIComponent(since) +
+        (page ? '&pageToken=' + encodeURIComponent(page) : ''));
+      const hit = madeIn(body.items, parentId, title);
+      if (hit) return { task: hit };
+      page = body.nextPageToken || '';
+      if (!page) return { task: null };
+    }
+  } catch (e) {
+    return { unsure: G.scrub((e as Error)?.message || e) };
+  }
+  return { unsure: 'too many changed tasks to look through' };
+}
+
 /** The database side. `sb` is the service-role client, so every query names the user. */
 function store(sb: any, owner: string) {
   function must(r: { error?: { message?: string } | null; data?: any }) {
@@ -406,10 +531,48 @@ function store(sb: any, owner: string) {
       must(await sb.from('entry_filing').update({ claimed_until: null, claim_id: null, tries, updated_at: stamp() })
         .eq('user_id', owner).eq('entry_rid', rid).eq('claim_id', runId));
     },
-    finish: async (rid: string, runId: string, state: string, reason: string, tries: number) => {
-      must(await sb.from('entry_filing').update({ state, reason, tries, claimed_until: null, claim_id: null,
-                                                  updated_at: stamp() })
+    finish: async (rid: string, runId: string, state: string, reason: string, tries: number,
+                   extra?: Record<string, unknown>) => {
+      must(await sb.from('entry_filing').update(Object.assign({ state, reason, tries, claimed_until: null,
+                                                                claim_id: null, updated_at: stamp() }, extra || {}))
         .eq('user_id', owner).eq('entry_rid', rid).eq('claim_id', runId));
+    },
+    // Edit queue 2. The plans of these entries; null when the columns are not there yet.
+    plans: async (rids: string[]) => {
+      const r = await sb.from('entry_filing').select('entry_rid,new_title,new_parent,new_google_id,new_at')
+        .eq('user_id', owner).in('entry_rid', rids);
+      return r.error ? null : r.data || [];
+    },
+    // Save to the plan, only while this run holds the entry. False when it does not.
+    plan: async (rid: string, runId: string, fields: Record<string, unknown>) => (must(await sb.from('entry_filing')
+      .update(fields).eq('user_id', owner).eq('entry_rid', rid).eq('claim_id', runId).select('entry_rid')) || [])
+      .length === 1,
+    // Tasks closed by their own Done or Drop (tree.js directMarks). Unreadable: none.
+    closed: async () => {
+      const r = await sb.from('events').select('type,rid,node_id,at').eq('user_id', owner)
+        .in('type', Tree.DIRECT_TYPES).not('node_id', 'is', null).order('at', { ascending: false }).limit(5000);
+      const out: Record<string, boolean> = {};
+      if (r.error) return out;
+      const marks = Tree.directMarks(r.data || []);
+      Object.keys(marks).forEach((id) => { if (marks[id].mark !== 'open') out[id] = true; });
+      return out;
+    },
+    // A new sub-task's mirror row, kept if a sync wrote it first; then read back.
+    putNode: async (row: Record<string, unknown>) => {
+      must(await sb.from('task_nodes').upsert(Object.assign({ user_id: owner }, row),
+        { onConflict: 'user_id,google_id', ignoreDuplicates: true }));
+      return (must(await sb.from('task_nodes')
+        .select('id,google_id,list_id,parent_google_id,kind,title,position,g_status,gone_at')
+        .eq('user_id', owner).eq('google_id', row.google_id).limit(1)) || [])[0] || null;
+    },
+    // The entry's items, kept unfiled while the sub-task was being made.
+    adoptItems: async (rid: string, nodeId: string) => {
+      must(await sb.from('items').update({ node_id: nodeId })
+        .eq('user_id', owner).eq('source_rid', rid).is('node_id', null));
+    },
+    grant: async () => (must(await sb.from('google_grants').select('*').eq('user_id', owner).limit(1)) || [])[0] || null,
+    patchGrant: async (userId: string, fields: Record<string, unknown>) => {
+      must(await sb.from('google_grants').update(fields).eq('user_id', userId));
     },
     entries: async (rids: string[]) => must(await sb.from('events')
       .select('rid,at,type,raw_text,project,detail,node_id').eq('user_id', owner).in('rid', rids)) || [],
@@ -459,9 +622,9 @@ function store(sb: any, owner: string) {
   };
 }
 
-type Claim = { entry_rid: string; tries: number; created_at: string };
+type Claim = { entry_rid: string; tries: number; created_at: string; plan?: any };
 type Entry = { rid: string; at: string; raw_text: string; project: string; node_id: string | null };
-type Place = { project: any; sub: any; items: string[]; unsorted?: string };
+type Place = { project: any; sub: any; items: string[]; unsorted?: string; create?: string };
 
 /** One run. `d`: {db, owner, now, key, model, cap, waitMin, runId}. */
 async function classifyRun(d: any) {
@@ -484,11 +647,19 @@ async function classifyRun(d: any) {
   if (!claimed.length) return { ok: true, act: 'busy' };
   claimed.sort((a, b) => ms(a.created_at) - ms(b.created_at));     // oldest first in the prompt
 
-  const out = { ok: true, act: 'filed', filed: 0, unsorted: 0, retry: 0, calls: 0 } as Record<string, any>;
-  const finish = async (c: Claim, state: string, reason: string, tries?: number) => {
-    await db.finish(c.entry_rid, d.runId, state, reason, tries === undefined ? c.tries : tries);
+  const out = { ok: true, act: 'filed', filed: 0, unsorted: 0, retry: 0, calls: 0, made: 0 } as Record<string, any>;
+  const finish = async (c: Claim, state: string, reason: string, tries?: number, extra?: Record<string, unknown>) => {
+    await db.finish(c.entry_rid, d.runId, state, reason, tries === undefined ? c.tries : tries, extra);
     out[state === 'filed' ? 'filed' : 'unsorted'] += 1;
   };
+
+  // Edit queue 2: plans for a new sub-task. Unreadable (no columns yet): none is made.
+  const plans = await db.plans(claimed.map((c) => c.entry_rid));
+  const canMake = Array.isArray(plans);
+  (plans || []).forEach((p: any) => {
+    const c = claimed.filter((x) => x.entry_rid === p.entry_rid)[0];
+    if (c && p.new_title && p.new_parent) c.plan = p;
+  });
 
   const byRid: Record<string, Entry> = {};
   (await db.entries(claimed.map((c) => c.entry_rid))).forEach((e: Entry) => { byRid[e.rid] = e; });
@@ -501,9 +672,10 @@ async function classifyRun(d: any) {
   }
   if (!live.length) return out;
 
-  const cands = candidateTasks(await db.nodes(sync.list_id), sync.list_id);
+  const nodes = await db.nodes(sync.list_id);
+  const cands = candidateTasks(nodes, sync.list_id, await db.closed());
   if (!cands.list.length) {
-    for (const x of live) await finish(x.c, 'unsorted', 'no-tasks');
+    for (const x of live) await finish(x.c, 'unsorted', 'no-tasks', undefined, x.c.plan ? NO_PLAN : undefined);
     return out;
   }
 
@@ -513,8 +685,94 @@ async function classifyRun(d: any) {
   const since = new Date((isFinite(oldest) ? oldest : now) - Day.LEAD_MAX_MS).toISOString();
   let rows: unknown[] = [];
 
+  // His grant for this list, read once; null when a sub-task cannot be made.
+  let google: any;
+  const googleFor = async () => {
+    if (google === undefined) {
+      google = null;
+      try { google = canMake && d.google ? await d.google(db, sync.list_id) : null; } catch (_e) { google = null; }
+    }
+    return google;
+  };
+
+  // Not answered this time: back to waiting with its plan, or Unsorted after the last try.
+  const hold = async (x: { c: Claim; e: Entry }, why: string) => {
+    out.why = why;
+    const tries = x.c.tries + 1;
+    if (tries >= FILE_MAX_TRIES) await finish(x.c, 'unsorted', 'no-sub-task', tries, x.c.plan ? NO_PLAN : undefined);
+    else { await db.release(x.c.entry_rid, d.runId, tries); out.retry += 1; }
+  };
+
+  /* A new sub-task called `title` under project `proj`, made at most once per
+   * entry: this run's own, an open one already so called, the one an earlier
+   * run made (its plan), or a new insert with the plan saved first.
+   * {node} | {refused: why} | {unsure: why} | {lost: true}. */
+  const made: Record<string, any> = {};
+  const makeSub = async (x: { c: Claim; e: Entry }, proj: any, title: string) => {
+    const key = proj.google_id + '|' + normTitle(title);
+    if (made[key]) return { node: made[key] };
+    const same = existingSub(cands, proj, title);
+    if (same) return { node: same };
+    if (!proj.google_id || proj.kind !== 'project' || proj.list_id !== sync.list_id || proj.gone_at) {
+      return { refused: 'not a project of this list' };              // never a project, never another list
+    }
+    const g = await googleFor();
+    if (!g) return { refused: 'Google Tasks cannot be written' };
+    const plan = x.c.plan;
+    let task: any = null;
+    if (plan && plan.new_google_id) {
+      task = { id: plan.new_google_id, title: plan.new_title, position: '' };
+    } else if (plan) {
+      const found = await findMade(g, proj.google_id, title, plan.new_at);
+      if (found.unsure) return { unsure: found.unsure };
+      task = found.task;
+    }
+    if (!task) {
+      const planned = { new_title: title, new_parent: proj.google_id, new_at: new Date(d.now()).toISOString() };
+      if (!(await db.plan(x.c.entry_rid, d.runId, planned))) return { lost: true };
+      x.c.plan = planned;
+      const ins = await insertSub(g, proj.google_id, title);
+      if (ins.verdict === 'refused') return { refused: ins.why };
+      if (ins.verdict !== 'made') return { unsure: ins.why };
+      task = ins.task;
+      out.made += 1;
+      await db.plan(x.c.entry_rid, d.runId, { new_google_id: String(task.id) });
+    }
+    const node = await db.putNode({
+      google_id: String(task.id), list_id: sync.list_id, parent_google_id: proj.google_id, kind: 'subtask',
+      title: String(task.title || title), position: String(task.position || ''), g_status: 'needsAction',
+      g_updated: task.updated || null, synced_at: new Date(d.now()).toISOString()
+    });
+    if (!node || node.list_id !== sync.list_id) return { unsure: 'the new sub-task was not saved' };
+    made[key] = node;
+    return { node };
+  };
+
+  // Files an entry under a new sub-task, its items with it.
+  const fileNew = async (x: { c: Claim; e: Entry }, proj: any, title: string, items: string[]) => {
+    if (items.length) {
+      await db.putItems(items.map((t, k) => ({ user_id: d.owner, rid: itemRid(x.e.rid, k + 1),
+        node_id: null, source_rid: x.e.rid, title: t, made_by: 'gemini', at: x.e.at })));
+    }
+    const got = await makeSub(x, proj, title);
+    if (got.lost) return;                                    // another run holds it now
+    if (got.unsure) return hold(x, got.unsure);
+    if (got.refused) {
+      await finish(x.c, 'unsorted', 'no-sub-task', undefined, x.c.plan ? NO_PLAN : undefined);
+      return;
+    }
+    const fields = filingFields(rows, x.e, { project: proj, sub: got.node }) as { node_id: string };
+    if (!(await db.file(x.e.rid, fields)) && (await db.nodeOf(x.e.rid)) !== fields.node_id) {
+      await finish(x.c, 'filed', 'labelled');
+      return;
+    }
+    await db.adoptItems(x.e.rid, fields.node_id);
+    await finish(x.c, 'filed', 'new-sub-task');
+  };
+
   // Writes one entry's filing: the row first, then its items, then its state.
   const apply = async (x: { c: Claim; e: Entry }, place: Place, how: string) => {
+    if (place.create) return fileNew(x, place.project, place.create, place.items);
     if (place.unsorted) {
       await db.putItems(place.items.map((t, k) => ({ user_id: d.owner, rid: itemRid(x.e.rid, k + 1),
         node_id: null, source_rid: x.e.rid, title: t, made_by: 'gemini', at: x.e.at })));
@@ -553,6 +811,19 @@ async function classifyRun(d: any) {
     }
     return out;
   };
+
+  // An entry whose sub-task an earlier run began making is finished first, without Gemini.
+  const owed = live.filter((x) => x.c.plan);
+  if (owed.length) {
+    rows = await db.rowsSince(since);
+    for (const x of owed) {
+      const proj = nodes.filter((n: any) => n.google_id === x.c.plan.new_parent)[0];
+      if (!proj) await finish(x.c, 'unsorted', 'no-sub-task', undefined, NO_PLAN);
+      else await fileNew(x, proj, x.c.plan.new_title, []);
+    }
+    for (let i = live.length - 1; i >= 0; i--) if (live[i].c.plan) live.splice(i, 1);
+    if (!live.length) return out;
+  }
 
   const day = usageDay(now);
   const slot = await takeCall(db.sb, d.owner, day, d.cap, GEMINI_PACE_MS);
@@ -604,9 +875,19 @@ Deno.serve(async (req: Request): Promise<Response> => {
 
   const sb = createClient(Deno.env.get('SUPABASE_URL') || '', Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') || '',
                           { auth: { persistSession: false } });
+  // His Google grant, when the list it names is the one being filed into.
+  const google = async (db: any, listId: string) => {
+    const cfg = G.googleConfig((name: string) => Deno.env.get(name));
+    if (!cfg.configured) return null;
+    const grant = await db.grant();
+    if (!grant || !grant.list_id || grant.list_id !== listId) return null;
+    const tokenKey = await G.importTokenKey(cfg.tokenKey);
+    return { grant, listId, d: { cfg, key: tokenKey, userId: owner, fetch, now: Date.now,
+                                 store: { patchGrant: db.patchGrant, setSync: async () => {} } } };
+  };
   try {
     const out = await classifyRun({
-      db: store(sb, owner), owner, now: Date.now, key,
+      db: store(sb, owner), owner, now: Date.now, key, google,
       model: Deno.env.get('GEMINI_MODEL') || 'gemini-flash-lite-latest',
       cap: envCount(Deno.env.get('GEMINI_DAILY'), GEMINI_DAILY_DEFAULT),
       waitMin: envCount(Deno.env.get('FILE_WAIT_MIN'), FILE_WAIT_MIN_DEFAULT),
