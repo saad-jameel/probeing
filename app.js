@@ -459,6 +459,11 @@ async function callSupabase(action, payload) {
         parkedAll().some(function (x) { return x && x.rid === payload.closing_rid; })) {
       return { ok: true, withdrawn: true };
     }
+    // Edit queue 3: so is a note whose closing row was refused.
+    if (payload.type === 'note' && payload.closing_rid &&
+        parkedAll().some(function (x) { return x && x.rid === payload.closing_rid; })) {
+      return { ok: true, withdrawn: true };
+    }
     if (!String(payload.raw_text || '').trim() && payload.type !== 'M') {
       var empty = new Error('empty_text');
       empty.fatal = true;
@@ -2484,7 +2489,7 @@ function finishProject(btn, name) {
 /* ── Edit queue 3: "What happened?" after Done, Drop or Stop ───────────────
  * Optional, and asked only once the closing row is already on its way. A note
  * is its own `note` row through the outbox, rid NOTE_PREFIX + the closing row's
- * rid, so a resend is a no-op. Not modal: a tap anywhere else closes it AND
+ * rid, so a resend is a no-op. Not modal: a tap anywhere else saves it AND
  * still lands, so it never costs the next M or prayer a tap (rule 4). */
 var NOTE_PREFIX = 'nt-';
 var NOTE_MAX = 200;                      // the input's maxlength
@@ -2530,7 +2535,7 @@ function askNote(link) {
   }, 0);
 }
 
-/** Close the box. Nothing is written. */
+/** Close the box without writing (Skip, Escape). */
 function closeNote() {
   clearTimeout(noteTimer);
   noteFor = null;
@@ -2543,8 +2548,14 @@ function saveNote() {
   var text = cleanNote($('noteText').value);
   closeNote();
   if (!link || !text) return false;
+  if (parkedAll().some(function (x) { return x && x.rid === link.rid; })) {
+    flash('Note not saved: that press was refused — see Settings.', 'err');
+    return false;
+  }
+  // closing_rid: withdrawn at send time if the closing row is refused meanwhile.
   var step = { type: 'note', raw_text: text, project: link.project || '', detail: link.detail || '',
-               rid: NOTE_PREFIX + link.rid, at: new Date().toISOString(), local_time: humanLocal() };
+               rid: NOTE_PREFIX + link.rid, at: new Date().toISOString(), local_time: humanLocal(),
+               closing_rid: link.rid };
   if (link.node_id) step.node_id = link.node_id;
   unpark(step.rid);
   noteLocalRow('note', text, step.project, step.detail, link.node_id).rid = step.rid;
@@ -2577,10 +2588,10 @@ $('noteSkipBtn').addEventListener('click', closeNote);
 document.addEventListener('keydown', function (e) {
   if (e.key === 'Escape' && !$('noteBox').hidden) closeNote();
 });
-// A tap outside closes it; the tap itself is not stopped.
+// A tap outside saves what is typed (an empty field just closes); the tap itself is not stopped.
 ['pointerdown', 'click'].forEach(function (kind) {
   document.addEventListener(kind, function (e) {
-    if (!$('noteBox').hidden && !$('noteBox').contains(e.target)) closeNote();
+    if (!$('noteBox').hidden && !$('noteBox').contains(e.target)) saveNote();
   }, true);
 });
 
