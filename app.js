@@ -2305,11 +2305,11 @@ function tileBtn(text, name, mark) {
 }
 
 /** What Done and Drop on tile `name` act on: {node: id} the running task, when
- *  they belong on it; {items: true} when it has open items; {entry} the tile's
+ *  they belong on it; {items: true} when it has open items or they are not read yet; {entry} the tile's
  *  newest entry otherwise; {} when there is none. `rows` newest first. */
 function tileTarget(name, day, rows) {
   var id = name === day.subtaskProject ? day.currentSubtask : '';
-  if (id && openLeafById(id)) return openItemCount(id) ? { items: true } : { node: id };
+  if (id && openLeafById(id)) return !itemsRead || openItemCount(id) ? { items: true } : { node: id };
   var ent = tileEntry(name, rows);
   return ent ? { entry: ent } : {};
 }
@@ -2331,7 +2331,8 @@ function tileClose(btn, name, mark) {
   var rows = named(sessionLog());
   var t = tileTarget(name, replayDay(rows), rows);       // as it is now, not as drawn
   if (!t.node && !(mark === 'done' && t.entry)) {
-    flash(t.items ? 'Mark its items Done or Drop instead.' : 'Nothing to mark ' + mark + ' here.', 'err');
+    flash(t.items ? (itemsRead ? 'Mark its items Done or Drop instead.' : 'Its items are still loading.')
+                  : 'Nothing to mark ' + mark + ' here.', 'err');
     return;
   }
   // The finish first, so it is the first press sent; then the Stop.
@@ -12602,9 +12603,10 @@ function openItemCount(id) {
   return itemsOf(taskTree(), id).filter(function (it) { return it.state === 'open'; }).length;
 }
 
-/** Do Done and Drop belong on task `id` itself? A live leaf with no open items. */
+/** Do Done and Drop belong on task `id` itself? A live leaf with no open items.
+ *  Until the items are read, none: any task might have some. */
 function leafActsHere(id) {
-  return Boolean(openLeafById(id)) && !openItemCount(id);
+  return itemsRead && Boolean(openLeafById(id)) && !openItemCount(id);
 }
 
 /** Drop on task `id`. False when it is not open here. */

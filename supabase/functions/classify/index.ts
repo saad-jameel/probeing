@@ -77,6 +77,11 @@ var NEW_TITLE_MAX = 80;              // a new sub-task's title, in characters
 var TASKS_LISTS_URL = 'https://tasks.googleapis.com/tasks/v1/lists/';
 var FIND_SLACK_MS = 10 * 60000;      // the look-up reaches this far before the plan
 var FIND_PAGES = 5;
+var SCAN_PAGES = 50;                 // the whole-list look-up: 5,000 tasks
+var INSERT_TIMEOUT_MS = 30000;
+// A plan younger than this may belong to a run still waiting on its insert
+// (lease, plus that insert's timeout): left alone, not inserted again.
+var PLAN_SETTLE_MS = CLAIM_LEASE_MS + 2 * 60000;
 // An entry's plan for a new sub-task, cleared when it ends Unsorted.
 var NO_PLAN = { new_title: null, new_parent: null, new_google_id: null, new_at: null };
 
@@ -248,12 +253,19 @@ function tidyItems(raw) {
   return out;
 }
 
-/** A new sub-task's title: one line, at most NEW_TITLE_MAX characters; '' for none. */
+/** A new sub-task's title: one line, at most NEW_TITLE_MAX characters; '' for
+ *  none, or for one with no letter or digit in it. */
 function tidyTitle(raw) {
   if (typeof raw !== 'string') return '';
   var t = raw.replace(/\s+/g, ' ').trim().replace(/^["'“”‘’]+|["'“”‘’]+$/g, '').trim();
+  if (!/[\p{L}\p{N}]/u.test(t)) return '';
   if (Array.from(t).length > NEW_TITLE_MAX) t = Array.from(t).slice(0, NEW_TITLE_MAX - 1).join('').trim() + '…';
   return t;
+}
+
+/** Gemini said something, but nothing usable as a title. */
+function junkTitle(raw) {
+  return typeof raw === 'string' && raw.trim() !== '' && !tidyTitle(raw);
 }
 
 /** A title as compared: case, spacing and an end full stop do not count. */
@@ -279,9 +291,11 @@ function madeIn(tasks, parent, title) {
 }
 
 /** Google's answer to tasks.insert: 'made', 'refused' (nothing was made: say so
- *  and stop) or 'unsure' (it may have been made: keep the plan, look next run). */
+ *  and stop) or 'unsure' (it may have been made, or Google asked to slow down:
+ *  keep the plan, look next run). */
 function insertVerdict(status, body) {
   if (status >= 200 && status < 300) return body && typeof body.id === 'string' && body.id ? 'made' : 'unsure';
+  if (status === 429 || /rateLimit|RATE_LIMIT|quota/i.test(JSON.stringify(body || {}))) return 'unsure';
   if (status >= 400 && status < 500) return 'refused';
   return 'unsure';
 }
@@ -307,6 +321,8 @@ function readAnswer(ans, cands) {
     return { project: sub.project, sub: sub.node, items: items };
   }
   if (proj && !proj.subs.length) return { project: proj.node, sub: null, items: items };
+  // A title with no letter or digit: filed on the project itself, nothing made.
+  if (proj && junkTitle(ans && ans.new_subtask)) return { project: proj.node, sub: null, items: items };
   var title = proj ? tidyTitle(ans && ans.new_subtask) : '';
   if (title) {
     var same = existingSub(cands, proj.node, title);
@@ -456,8 +472,10 @@ async function insertSub(g: any, parentId: string, title: string) {
   } catch (e) {
     return { verdict: 'refused', why: G.scrub((e as Error)?.message || e) };    // nothing was sent
   }
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), INSERT_TIMEOUT_MS);
   const send = (t: string) => g.d.fetch(url, {
-    method: 'POST', body: JSON.stringify({ title }),
+    method: 'POST', body: JSON.stringify({ title }), signal: ctrl.signal,
     headers: { Authorization: 'Bearer ' + t, 'Content-Type': 'application/json' }
   });
   try {
@@ -476,18 +494,18 @@ async function insertSub(g: any, parentId: string, title: string) {
                   G.scrub(body && body.error && body.error.message) };
   } catch (e) {
     return { verdict: 'unsure', why: 'could not reach Google Tasks: ' + G.scrub((e as Error)?.message || e) };
+  } finally {
+    clearTimeout(timer);
   }
 }
 
-/** Was it made after all? Tasks updated since the plan, under `parentId`, called
- *  `title`: {task} (null when none), or {unsure: why} when Google could not be read. */
-async function findMade(g: any, parentId: string, title: string, sinceIso: string) {
-  const since = new Date((Date.parse(sinceIso) || 0) - FIND_SLACK_MS).toISOString();
+/** One look-up: pages of `query` until `parentId`/`title` turns up. {task} (null
+ *  when none), or {unsure: why} when Google could not be read whole. */
+async function lookIn(g: any, query: string, pages: number, parentId: string, title: string) {
   let page = '';
   try {
-    for (let i = 0; i < FIND_PAGES; i++) {
-      const body = await G.tasksGet(g.d, g.grant, TASKS_LISTS_URL + encodeURIComponent(g.listId) +
-        '/tasks?showCompleted=true&showHidden=true&maxResults=100&updatedMin=' + encodeURIComponent(since) +
+    for (let i = 0; i < pages; i++) {
+      const body = await G.tasksGet(g.d, g.grant, TASKS_LISTS_URL + encodeURIComponent(g.listId) + '/tasks?' + query +
         (page ? '&pageToken=' + encodeURIComponent(page) : ''));
       const hit = madeIn(body.items, parentId, title);
       if (hit) return { task: hit };
@@ -497,7 +515,17 @@ async function findMade(g: any, parentId: string, title: string, sinceIso: strin
   } catch (e) {
     return { unsure: G.scrub((e as Error)?.message || e) };
   }
-  return { unsure: 'too many changed tasks to look through' };
+  return { unsure: 'too many tasks to look through' };
+}
+
+/** Was it made after all? First the tasks updated since the plan, then the whole
+ *  list (Google's change listing can lag behind a new task). */
+async function findMade(g: any, parentId: string, title: string, sinceIso: string) {
+  const since = new Date((Date.parse(sinceIso) || 0) - FIND_SLACK_MS).toISOString();
+  const all = 'showCompleted=true&showHidden=true&maxResults=100';
+  const recent = await lookIn(g, all + '&updatedMin=' + encodeURIComponent(since), FIND_PAGES, parentId, title);
+  if (recent.task || recent.unsure) return recent;
+  return lookIn(g, all, SCAN_PAGES, parentId, title);
 }
 
 /** The database side. `sb` is the service-role client, so every query names the user. */
@@ -706,10 +734,18 @@ async function classifyRun(d: any) {
   /* A new sub-task called `title` under project `proj`, made at most once per
    * entry: this run's own, an open one already so called, the one an earlier
    * run made (its plan), or a new insert with the plan saved first.
-   * {node} | {refused: why} | {unsure: why} | {lost: true}. */
+   * {node} | {refused: why} | {unsure: why} | {wait: true} | {lost: true}. */
+  // A key whose insert got no clear answer this run: others with it wait for the next run's look-up.
+  const UNSURE = 'unsure';
   const made: Record<string, any> = {};
   const makeSub = async (x: { c: Claim; e: Entry }, proj: any, title: string) => {
     const key = proj.google_id + '|' + normTitle(title);
+    if (made[key] === UNSURE) {
+      const planned = { new_title: title, new_parent: proj.google_id, new_at: new Date(d.now()).toISOString() };
+      if (!x.c.plan && !(await db.plan(x.c.entry_rid, d.runId, planned))) return { lost: true };
+      if (!x.c.plan) x.c.plan = planned;
+      return { unsure: 'the same title is waiting for Google' };
+    }
     if (made[key]) return { node: made[key] };
     const same = existingSub(cands, proj, title);
     if (same) return { node: same };
@@ -723,8 +759,9 @@ async function classifyRun(d: any) {
     if (plan && plan.new_google_id) {
       task = { id: plan.new_google_id, title: plan.new_title, position: '' };
     } else if (plan) {
+      if (d.now() - Date.parse(plan.new_at) < PLAN_SETTLE_MS) return { wait: true };
       const found = await findMade(g, proj.google_id, title, plan.new_at);
-      if (found.unsure) return { unsure: found.unsure };
+      if (found.unsure) { made[key] = UNSURE; return { unsure: found.unsure }; }
       task = found.task;
     }
     if (!task) {
@@ -733,7 +770,7 @@ async function classifyRun(d: any) {
       x.c.plan = planned;
       const ins = await insertSub(g, proj.google_id, title);
       if (ins.verdict === 'refused') return { refused: ins.why };
-      if (ins.verdict !== 'made') return { unsure: ins.why };
+      if (ins.verdict !== 'made') { made[key] = UNSURE; return { unsure: ins.why }; }
       task = ins.task;
       out.made += 1;
       await db.plan(x.c.entry_rid, d.runId, { new_google_id: String(task.id) });
@@ -756,6 +793,11 @@ async function classifyRun(d: any) {
     }
     const got = await makeSub(x, proj, title);
     if (got.lost) return;                                    // another run holds it now
+    if (got.wait) {                                          // not a try: nobody has asked Google yet
+      await db.release(x.c.entry_rid, d.runId, x.c.tries);
+      out.retry += 1;
+      return;
+    }
     if (got.unsure) return hold(x, got.unsure);
     if (got.refused) {
       await finish(x.c, 'unsorted', 'no-sub-task', undefined, x.c.plan ? NO_PLAN : undefined);

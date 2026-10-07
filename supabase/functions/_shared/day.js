@@ -413,8 +413,8 @@ function prayersOn(prayers, ymd, offsetMin) {
 var LEAD_MAX_MS = 48 * 3600000;
 
 /** Rows that move the work clock or name a project, plus `awake` for the idle
- *  cap and `subdone` for the sub-task clock. No M, prayer or wake. */
-var LEAD_TYPES = ['work', 'voice', 'done', 'break', 'resume', 'off', 'sleep', 'awake', 'subdone'];
+ *  cap and `subdone`/`subdrop` for the sub-task clock. No M, prayer or wake. */
+var LEAD_TYPES = ['work', 'voice', 'done', 'break', 'resume', 'off', 'sleep', 'awake', 'subdone', 'subdrop'];
 
 /** An open clock stops counting this long after the last work-session row: the
  *  night checks span 23:30 to 11:00 (11.5 h), so anything longer was forgotten. */
@@ -423,7 +423,7 @@ var IDLE_MAX_MS = 12 * 3600000;
 /** Rows that show the session is still being tended. `awake` is a Yes to the
  *  night check (wrapup writes it). Not M, prayer or wake: they say he is up, not
  *  that the clock left running is still work. */
-var IDLE_RESET_TYPES = ['work', 'voice', 'done', 'break', 'resume', 'awake', 'subdone'];
+var IDLE_RESET_TYPES = ['work', 'voice', 'done', 'break', 'resume', 'awake', 'subdone', 'subdrop'];
 
 /**
  * The lead-in for a day starting at `beforeMs`: rows of LEAD_TYPES earlier than
@@ -680,8 +680,8 @@ function replayDay(log, endMs, fromMs) {
         order = [];
         curSub = '';
       }
-    } else if (row.type === 'subdone') {
-      // The last item under it was closed. Only that sub-task stops.
+    } else if (row.type === 'subdone' || row.type === 'subdrop') {
+      // Finished (its Done, or its last item closed) or dropped: only that sub-task stops.
       if (row.node_id && String(row.node_id) === curSub) curSub = '';
     }
     // wake / awake / M / prayer do not move the work clock
