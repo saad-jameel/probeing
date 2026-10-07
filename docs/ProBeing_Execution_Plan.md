@@ -60,7 +60,7 @@ shipped in `f733804`; `CLAUDE.md` carries the full reasoning.
 > | ✅ | (added) Money 2: "Dues", wallet balance, per day till the 1st, new Money screen | live 2 Oct 04:58 — Dues/Logs popups, Expense/Income calculator, running wallet |
 > | ✅ | 15 Finishing a task flows back to Google | live 5 Oct 16:43 — sub-tasks only (never projects), Undo unticks what ProBeing ticked, finish date → Google due; a real-device test still owed |
 > | ✅ | 16 "What's done" page | live 7 Oct 06:1x — Tasks → What's done: finished tasks/items per project by Week/Month/All with time spent |
-> | 🟡 | 17 Morning push: "Today: N due" | building |
+> | ✅ | 17 Morning push: "Today: N due" | live 7 Oct 07:11 — 09:00 by default (Settings), "Today: N due, M carried over, P planned", only when something counts |
 > | ✅ | 18 A Google Sheet copy in his Drive, as a backup | live 7 Oct 04:19 — "ProBeing copy" sheet, rewritten nightly at 12:00 and on Export now; first live export row counts matched |
 >
 > **A great deal was built with no stage number.** Read *Built, but never planned*
