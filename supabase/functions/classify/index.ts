@@ -27,6 +27,12 @@
 // it first. A refusal -> Unsorted as before; no answer -> pending, finished on
 // the next run without Gemini. Tasks closed in ProBeing are not offered.
 //
+// Edit queue 4: one entry listing several pieces of work under a project may make
+// up to NEW_SUBS_MAX new sub-tasks (more_subtasks), each with its own items, in the
+// same one call per batch. The entry is filed under the main one (new_subtask, or
+// the sub-task it chose, else the first listed). Every one is in the plan
+// (new_more) before the first insert, so a retry makes none twice.
+//
 // Secrets: CRON_SECRET, ALLOWED_USER_ID, GEMINI_API_KEY and GEMINI_MODEL (all
 // already set for the other functions); GEMINI_DAILY and FILE_WAIT_MIN optional.
 // The Google three (GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET, GOOGLE_TOKEN_KEY)
@@ -74,6 +80,7 @@ var ITEMS_PER_NODE = 5;              // open items shown to Gemini per task
 var ITEM_MAX_CHARS = 120;
 var NAME_MIN_CHARS = 3;              // a shorter title is too easy to hit by accident
 var NEW_TITLE_MAX = 80;              // a new sub-task's title, in characters
+var NEW_SUBS_MAX = 5;                // new sub-tasks one entry may make (edit queue 4)
 var TASKS_LISTS_URL = 'https://tasks.googleapis.com/tasks/v1/lists/';
 var FIND_SLACK_MS = 10 * 60000;      // the look-up reaches this far before the plan
 var FIND_PAGES = 5;
@@ -95,7 +102,15 @@ var CLASSIFY_SCHEMA = {
       project: { type: 'STRING' },
       items: { type: 'ARRAY', items: { type: 'STRING' } },
       same_as: { type: 'ARRAY', items: { type: 'STRING' } },
-      new_subtask: { type: 'STRING' }
+      new_subtask: { type: 'STRING' },
+      more_subtasks: {
+        type: 'ARRAY',
+        items: {
+          type: 'OBJECT',
+          properties: { title: { type: 'STRING' }, items: { type: 'ARRAY', items: { type: 'STRING' } } },
+          required: ['title']
+        }
+      }
     },
     required: ['n', 'subtask', 'project', 'items']
   }
@@ -206,6 +221,11 @@ function classifyPrompt(texts, cands, itemsByNode) {
   lines.push('new_subtask: only when project is a p-id that has sub-tasks and none of them fits the line ' +
              '(so subtask is ""): a short title for a new sub-task of that project, 2 to 6 words, in the ' +
              'line\'s own words. Otherwise "".');
+  lines.push('more_subtasks: only when project is a p-id that has sub-tasks and the line lists OTHER, ' +
+             'separate pieces of work for that project that no sub-task above covers: one object per ' +
+             'piece, at most ' + (NEW_SUBS_MAX - 1) + ', each {"title": 2 to 6 words in the line\'s own ' +
+             'words, "items": that piece\'s small jobs}. The piece the line is mainly about goes in ' +
+             'subtask or new_subtask, never here. Otherwise [].');
   lines.push('Use only ids from the list. If you are unsure, use "": a line left unfiled is fine, ' +
              'a line filed in the wrong place is not.');
   lines.push('These lines are often dictated, and speech-to-text mangles unusual names: "NeuraVue" ' +
@@ -263,6 +283,40 @@ function tidyTitle(raw) {
   return t;
 }
 
+/** more_subtasks tidied: [{title, items}], distinct titles, none without a letter or digit. */
+function tidyMore(raw) {
+  if (!Array.isArray(raw)) return [];
+  var seen = Object.create(null);
+  var out = [];
+  raw.forEach(function (x) {
+    var t = tidyTitle(x && typeof x === 'object' ? x.title : x);
+    var k = normTitle(t);
+    if (!t || seen[k]) return;
+    seen[k] = 1;
+    out.push({ title: t, items: tidyItems(x && typeof x === 'object' ? x.items : []) });
+  });
+  return out;
+}
+
+/** The other places one answer names under project `proj` (a node): an open
+ *  sub-task already so called, else one to make. Never the main one
+ *  (`mainTitle`); at most NEW_SUBS_MAX made, the main one counted when it is
+ *  made (`making`). [{title, sub, items}]. */
+function extraPlaces(more, cands, proj, mainTitle, making) {
+  var out = [];
+  var made = making ? 1 : 0;
+  more.forEach(function (m) {
+    if (normTitle(m.title) === normTitle(mainTitle) || out.length >= NEW_SUBS_MAX) return;
+    var same = existingSub(cands, proj, m.title);
+    if (!same) {
+      if (made >= NEW_SUBS_MAX) return;
+      made += 1;
+    }
+    out.push({ title: same ? String(same.title || m.title) : m.title, sub: same, items: m.items });
+  });
+  return out;
+}
+
 /** Gemini said something, but nothing usable as a title. */
 function junkTitle(raw) {
   return typeof raw === 'string' && raw.trim() !== '' && !tidyTitle(raw);
@@ -306,6 +360,8 @@ function insertVerdict(status, body) {
  * or a sub-task under another project than the one named, is Unsorted. A
  * project with sub-tasks, none chosen, and a new title: {project, sub: null,
  * create: title, items}, or that sub-task when one already has the title.
+ * Edit queue 4: `more` lists the other pieces of work (extraPlaces); with no
+ * main title, the first of them is the main one.
  */
 function readAnswer(ans, cands) {
   var items = tidyItems(ans && ans.items);
@@ -316,18 +372,31 @@ function readAnswer(ans, cands) {
   if ((sid && !(sub && sub.parent)) || (pid && !(proj && !proj.parent))) {
     return { unsorted: 'no-match', items: items };
   }
+  var more = tidyMore(ans && ans.more_subtasks);
+  var place;
   if (sub) {
     if (proj && proj.id !== sub.parent) return { unsorted: 'no-match', items: items };
-    return { project: sub.project, sub: sub.node, items: items };
+    place = { project: sub.project, sub: sub.node, items: items };
+    var also = extraPlaces(more, cands, sub.project, sub.node.title, false);
+    if (also.length) place.more = also;
+    return place;
   }
   if (proj && !proj.subs.length) return { project: proj.node, sub: null, items: items };
-  // A title with no letter or digit: filed on the project itself, nothing made.
-  if (proj && junkTitle(ans && ans.new_subtask)) return { project: proj.node, sub: null, items: items };
   var title = proj ? tidyTitle(ans && ans.new_subtask) : '';
+  if (proj && !title && more.length) {
+    var first = more.shift();
+    title = first.title;
+    items = tidyItems(items.concat(first.items));
+  }
+  // A title with no letter or digit: filed on the project itself, nothing made.
+  if (proj && !title && junkTitle(ans && ans.new_subtask)) return { project: proj.node, sub: null, items: items };
   if (title) {
     var same = existingSub(cands, proj.node, title);
-    return same ? { project: proj.node, sub: same, items: items }
-                : { project: proj.node, sub: null, create: title, items: items };
+    place = same ? { project: proj.node, sub: same, items: items }
+                 : { project: proj.node, sub: null, create: title, items: items };
+    var extra = extraPlaces(more, cands, proj.node, title, !same);
+    if (extra.length) place.more = extra;
+    return place;
   }
   return { unsorted: proj ? 'no-sub-task' : 'no-match', items: items };
 }
@@ -391,6 +460,11 @@ function isQuota(status, msg) {
 /** Deterministic, so filing the same entry twice inserts one set. */
 function itemRid(entryRid, k) {
   return entryRid + '-i' + k;
+}
+
+/** An item of the entry's j-th other new sub-task (edit queue 4): as fixed as itemRid. */
+function moreItemRid(entryRid, j, k) {
+  return entryRid + '-n' + j + '-i' + k;
 }
 
 /**
@@ -566,10 +640,13 @@ function store(sb: any, owner: string) {
         .eq('user_id', owner).eq('entry_rid', rid).eq('claim_id', runId));
     },
     // Edit queue 2. The plans of these entries; null when the columns are not there yet.
+    // Edit queue 4: with new_more, the other new sub-tasks; `more` false before that column.
     plans: async (rids: string[]) => {
-      const r = await sb.from('entry_filing').select('entry_rid,new_title,new_parent,new_google_id,new_at')
-        .eq('user_id', owner).in('entry_rid', rids);
-      return r.error ? null : r.data || [];
+      const cols = 'entry_rid,new_title,new_parent,new_google_id,new_at';
+      let r = await sb.from('entry_filing').select(cols + ',new_more').eq('user_id', owner).in('entry_rid', rids);
+      if (!r.error) return { rows: r.data || [], more: true };
+      r = await sb.from('entry_filing').select(cols).eq('user_id', owner).in('entry_rid', rids);
+      return r.error ? null : { rows: r.data || [], more: false };
     },
     // Save to the plan, only while this run holds the entry. False when it does not.
     plan: async (rid: string, runId: string, fields: Record<string, unknown>) => (must(await sb.from('entry_filing')
@@ -652,7 +729,11 @@ function store(sb: any, owner: string) {
 
 type Claim = { entry_rid: string; tries: number; created_at: string; plan?: any };
 type Entry = { rid: string; at: string; raw_text: string; project: string; node_id: string | null };
-type Place = { project: any; sub: any; items: string[]; unsorted?: string; create?: string };
+type Place = { project: any; sub: any; items: string[]; unsorted?: string; create?: string;
+               more?: { title: string; sub: any; items: string[] }[] };
+// One sub-task an entry is filed or makes (edit queue 4): j 0 is the one the entry goes under.
+type Slot = { j: number; title: string; items: string[]; node: any; google_id: string | null;
+              at: string | null; skip?: boolean };
 
 /** One run. `d`: {db, owner, now, key, model, cap, waitMin, runId}. */
 async function classifyRun(d: any) {
@@ -683,8 +764,10 @@ async function classifyRun(d: any) {
 
   // Edit queue 2: plans for a new sub-task. Unreadable (no columns yet): none is made.
   const plans = await db.plans(claimed.map((c) => c.entry_rid));
-  const canMake = Array.isArray(plans);
-  (plans || []).forEach((p: any) => {
+  const canMake = Boolean(plans);
+  const canMore = Boolean(plans && plans.more);          // edit queue 4: several per entry
+  const noPlan = canMore ? Object.assign({ new_more: null }, NO_PLAN) : NO_PLAN;
+  ((plans && plans.rows) || []).forEach((p: any) => {
     const c = claimed.filter((x) => x.entry_rid === p.entry_rid)[0];
     if (c && p.new_title && p.new_parent) c.plan = p;
   });
@@ -703,7 +786,7 @@ async function classifyRun(d: any) {
   const nodes = await db.nodes(sync.list_id);
   const cands = candidateTasks(nodes, sync.list_id, await db.closed());
   if (!cands.list.length) {
-    for (const x of live) await finish(x.c, 'unsorted', 'no-tasks', undefined, x.c.plan ? NO_PLAN : undefined);
+    for (const x of live) await finish(x.c, 'unsorted', 'no-tasks', undefined, x.c.plan ? noPlan : undefined);
     return out;
   }
 
@@ -727,57 +810,57 @@ async function classifyRun(d: any) {
   const hold = async (x: { c: Claim; e: Entry }, why: string) => {
     out.why = why;
     const tries = x.c.tries + 1;
-    if (tries >= FILE_MAX_TRIES) await finish(x.c, 'unsorted', 'no-sub-task', tries, x.c.plan ? NO_PLAN : undefined);
+    if (tries >= FILE_MAX_TRIES) await finish(x.c, 'unsorted', 'no-sub-task', tries, x.c.plan ? noPlan : undefined);
     else { await db.release(x.c.entry_rid, d.runId, tries); out.retry += 1; }
   };
 
-  /* A new sub-task called `title` under project `proj`, made at most once per
-   * entry: this run's own, an open one already so called, the one an earlier
-   * run made (its plan), or a new insert with the plan saved first.
+  /* Sub-task `slot` under project `proj`, made at most once per entry: this
+   * run's own, an open one already so called, the one an earlier run made (its
+   * plan), or a new insert with the plan saved first. `save` writes the plan.
    * {node} | {refused: why} | {unsure: why} | {wait: true} | {lost: true}. */
   // A key whose insert got no clear answer this run: others with it wait for the next run's look-up.
   const UNSURE = 'unsure';
   const made: Record<string, any> = {};
-  const makeSub = async (x: { c: Claim; e: Entry }, proj: any, title: string) => {
-    const key = proj.google_id + '|' + normTitle(title);
+  const makeSub = async (proj: any, slot: Slot, save: () => Promise<boolean>) => {
+    const key = proj.google_id + '|' + normTitle(slot.title);
     if (made[key] === UNSURE) {
-      const planned = { new_title: title, new_parent: proj.google_id, new_at: new Date(d.now()).toISOString() };
-      if (!x.c.plan && !(await db.plan(x.c.entry_rid, d.runId, planned))) return { lost: true };
-      if (!x.c.plan) x.c.plan = planned;
+      if (!slot.at) {
+        slot.at = new Date(d.now()).toISOString();
+        if (!(await save())) return { lost: true };
+      }
       return { unsure: 'the same title is waiting for Google' };
     }
     if (made[key]) return { node: made[key] };
-    const same = existingSub(cands, proj, title);
+    const same = existingSub(cands, proj, slot.title);
     if (same) return { node: same };
     if (!proj.google_id || proj.kind !== 'project' || proj.list_id !== sync.list_id || proj.gone_at) {
       return { refused: 'not a project of this list' };              // never a project, never another list
     }
     const g = await googleFor();
     if (!g) return { refused: 'Google Tasks cannot be written' };
-    const plan = x.c.plan;
     let task: any = null;
-    if (plan && plan.new_google_id) {
-      task = { id: plan.new_google_id, title: plan.new_title, position: '' };
-    } else if (plan) {
-      if (d.now() - Date.parse(plan.new_at) < PLAN_SETTLE_MS) return { wait: true };
-      const found = await findMade(g, proj.google_id, title, plan.new_at);
+    if (slot.google_id) {
+      task = { id: slot.google_id, title: slot.title, position: '' };
+    } else if (slot.at) {
+      if (d.now() - Date.parse(slot.at) < PLAN_SETTLE_MS) return { wait: true };
+      const found = await findMade(g, proj.google_id, slot.title, slot.at);
       if (found.unsure) { made[key] = UNSURE; return { unsure: found.unsure }; }
       task = found.task;
     }
     if (!task) {
-      const planned = { new_title: title, new_parent: proj.google_id, new_at: new Date(d.now()).toISOString() };
-      if (!(await db.plan(x.c.entry_rid, d.runId, planned))) return { lost: true };
-      x.c.plan = planned;
-      const ins = await insertSub(g, proj.google_id, title);
+      slot.at = new Date(d.now()).toISOString();
+      if (!(await save())) return { lost: true };
+      const ins = await insertSub(g, proj.google_id, slot.title);
       if (ins.verdict === 'refused') return { refused: ins.why };
       if (ins.verdict !== 'made') { made[key] = UNSURE; return { unsure: ins.why }; }
       task = ins.task;
       out.made += 1;
-      await db.plan(x.c.entry_rid, d.runId, { new_google_id: String(task.id) });
+      slot.google_id = String(task.id);
+      await save();
     }
     const node = await db.putNode({
       google_id: String(task.id), list_id: sync.list_id, parent_google_id: proj.google_id, kind: 'subtask',
-      title: String(task.title || title), position: String(task.position || ''), g_status: 'needsAction',
+      title: String(task.title || slot.title), position: String(task.position || ''), g_status: 'needsAction',
       g_updated: task.updated || null, synced_at: new Date(d.now()).toISOString()
     });
     if (!node || node.list_id !== sync.list_id) return { unsure: 'the new sub-task was not saved' };
@@ -785,36 +868,97 @@ async function classifyRun(d: any) {
     return { node };
   };
 
-  // Files an entry under a new sub-task, its items with it.
-  const fileNew = async (x: { c: Claim; e: Entry }, proj: any, title: string, items: string[]) => {
-    if (items.length) {
-      await db.putItems(items.map((t, k) => ({ user_id: d.owner, rid: itemRid(x.e.rid, k + 1),
+  // The plan's columns for `slots` under `proj`. new_more only once that column exists.
+  const planFields = (proj: any, slots: Slot[]) => {
+    const f: Record<string, unknown> = { new_title: slots[0].title, new_parent: proj.google_id,
+                                         new_google_id: slots[0].google_id, new_at: slots[0].at };
+    if (canMore) {
+      f.new_more = slots.slice(1).map((s) => ({ j: s.j, title: s.title, items: s.items,
+                                                google_id: s.google_id, at: s.at }));
+    }
+    return f;
+  };
+
+  // The slots a saved plan holds: the main one, then the others (their items kept in the plan).
+  const planSlots = (plan: any): Slot[] => {
+    const slots: Slot[] = [{ j: 0, title: plan.new_title, items: [], node: null,
+                             google_id: plan.new_google_id || null, at: plan.new_at || null }];
+    (Array.isArray(plan.new_more) ? plan.new_more : []).forEach((m: any, i: number) => {
+      if (!m || !tidyTitle(m.title)) return;
+      slots.push({ j: Number(m.j) || i + 1, title: tidyTitle(m.title), items: tidyItems(m.items), node: null,
+                   google_id: m.google_id ? String(m.google_id) : null, at: m.at || null });
+    });
+    return slots;
+  };
+
+  /* Files an entry under slots[0], making whichever sub-tasks do not exist yet;
+   * the others get their own items. The main one refused: Unsorted, as before.
+   * Another refused, or still unclear on the last try: let go, the rest file. */
+  const fileMany = async (x: { c: Claim; e: Entry }, proj: any, slots: Slot[]) => {
+    const main = slots[0];
+    // Before the new_more column: only the main one is made, existing others still get items.
+    if (!canMore) slots.slice(1).forEach((s) => { if (!s.node) s.skip = true; });
+    const save = async () => {
+      const f = planFields(proj, slots);
+      if (!(await db.plan(x.c.entry_rid, d.runId, f))) return false;
+      x.c.plan = Object.assign({}, x.c.plan || {}, f);
+      return true;
+    };
+    if (main.items.length) {
+      await db.putItems(main.items.map((t, k) => ({ user_id: d.owner, rid: itemRid(x.e.rid, k + 1),
         node_id: null, source_rid: x.e.rid, title: t, made_by: 'gemini', at: x.e.at })));
     }
-    const got = await makeSub(x, proj, title);
-    if (got.lost) return;                                    // another run holds it now
-    if (got.wait) {                                          // not a try: nobody has asked Google yet
-      await db.release(x.c.entry_rid, d.runId, x.c.tries);
-      out.retry += 1;
-      return;
+    for (const s of slots) {
+      if (s.node || s.skip) continue;
+      const got: any = await makeSub(proj, s, save);
+      if (got.lost) return;                                  // another run holds it now
+      if (got.wait) {                                        // not a try: nobody has asked Google yet
+        await db.release(x.c.entry_rid, d.runId, x.c.tries);
+        out.retry += 1;
+        return;
+      }
+      if (s.j > 0 && (got.refused || (got.unsure && x.c.tries + 1 >= FILE_MAX_TRIES))) {
+        s.skip = true;
+        out.why = got.refused || got.unsure;
+        continue;
+      }
+      if (got.unsure) return hold(x, got.unsure);
+      if (got.refused) {
+        await finish(x.c, 'unsorted', 'no-sub-task', undefined, x.c.plan ? noPlan : undefined);
+        return;
+      }
+      s.node = got.node;
     }
-    if (got.unsure) return hold(x, got.unsure);
-    if (got.refused) {
-      await finish(x.c, 'unsorted', 'no-sub-task', undefined, x.c.plan ? NO_PLAN : undefined);
-      return;
-    }
-    const fields = filingFields(rows, x.e, { project: proj, sub: got.node }) as { node_id: string };
+    const fields = filingFields(rows, x.e, { project: proj, sub: main.node }) as { node_id: string };
     if (!(await db.file(x.e.rid, fields)) && (await db.nodeOf(x.e.rid)) !== fields.node_id) {
       await finish(x.c, 'filed', 'labelled');
       return;
     }
     await db.adoptItems(x.e.rid, fields.node_id);
+    for (const s of slots.slice(1)) {
+      if (!s.node || s.skip || !s.items.length) continue;
+      await db.putItems(s.items.map((t, k) => ({ user_id: d.owner, rid: moreItemRid(x.e.rid, s.j, k + 1),
+        node_id: s.node.id, source_rid: x.e.rid, title: t, made_by: 'gemini', at: x.e.at })));
+    }
     await finish(x.c, 'filed', 'new-sub-task');
+  };
+
+  // A Place with something to make, as slots: the main one, then the others.
+  const placeSlots = (place: Place): Slot[] => {
+    const main = place.sub;
+    const slots: Slot[] = [{ j: 0, title: main ? String(main.title || '') : String(place.create), items: place.items,
+                             node: main || null, google_id: main ? String(main.google_id) : null, at: null }];
+    (place.more || []).forEach((m, i) => {
+      slots.push({ j: i + 1, title: m.title, items: m.items, node: m.sub || null,
+                   google_id: m.sub ? String(m.sub.google_id) : null, at: null });
+    });
+    return slots;
   };
 
   // Writes one entry's filing: the row first, then its items, then its state.
   const apply = async (x: { c: Claim; e: Entry }, place: Place, how: string) => {
-    if (place.create) return fileNew(x, place.project, place.create, place.items);
+    // Something to make: a new sub-task, or others besides an existing one (edit queue 4).
+    if (place.create || (place.more && place.more.length)) return fileMany(x, place.project, placeSlots(place));
     if (place.unsorted) {
       await db.putItems(place.items.map((t, k) => ({ user_id: d.owner, rid: itemRid(x.e.rid, k + 1),
         node_id: null, source_rid: x.e.rid, title: t, made_by: 'gemini', at: x.e.at })));
@@ -860,8 +1004,8 @@ async function classifyRun(d: any) {
     rows = await db.rowsSince(since);
     for (const x of owed) {
       const proj = nodes.filter((n: any) => n.google_id === x.c.plan.new_parent)[0];
-      if (!proj) await finish(x.c, 'unsorted', 'no-sub-task', undefined, NO_PLAN);
-      else await fileNew(x, proj, x.c.plan.new_title, []);
+      if (!proj) await finish(x.c, 'unsorted', 'no-sub-task', undefined, noPlan);
+      else await fileMany(x, proj, planSlots(x.c.plan));
     }
     for (let i = live.length - 1; i >= 0; i--) if (live[i].c.plan) live.splice(i, 1);
     if (!live.length) return out;

@@ -17,7 +17,9 @@
 //
 // Stage 17 (7 Oct): the morning push, "Today: N due, M carried over, P planned" (remindPlan),
 // once per counter day at user_settings.plan_push_time, on its own toggle plan_push.
-// Idle, it reads nothing: the time is checked before any read.
+// Idle, it reads nothing: the time is checked before any read. Edit queue 4: plus
+// "S stopped", the stopped tasks Home's Upcoming card shows. A Qaza prayer row is a
+// prayer row, so it ends that prayer's reminders like any other.
 //
 // Deployed by hand:
 //   npx supabase functions deploy prayer-remind --project-ref <ref> --use-api
@@ -288,21 +290,23 @@ function planDue(now, offsetMin, timeText, on, day) {
  * unless Google's due date was moved there after ProBeing sent it. As the card
  * dates a task: by the finish when it is set and before `end` (before `start`:
  * carried, else due); otherwise by Google's due date (`today`: due, earlier:
- * carried). Any other task on Planned is `planned`; undated or later ones
- * not on Planned count nowhere. The counted set is the card's own pick.
+ * carried). Any other task on Planned is `planned`; any other stopped one
+ * (edit queue 4, tree.js stoppedTasks: id -> ms) is `stopped`, as the card shows
+ * it; the rest count nowhere. The counted set is the card's own pick.
  * nodes: task_nodes of the list; plans: node id -> task_plans row; tree: tree.js.
- * Returns {due, carried, planned, ids, names}: ids are the counted leaves, and
- * names their titles, due first, then carried, then planned.
+ * Returns {due, carried, planned, stopped, ids, names}: ids are the counted leaves,
+ * and names their titles, due first, then carried, planned and stopped.
  */
-function planCounts(nodes, plans, done, today, start, end, tree) {
+function planCounts(nodes, plans, done, today, start, end, tree, stopped) {
+  var paused = stopped || {};
   var byGoogle = {};
   var hasKids = {};
   (nodes || []).forEach(function (n) {
     byGoogle[n.google_id] = n;
     if (n.kind === 'subtask' && !n.gone_at) hasKids[n.parent_google_id] = true;
   });
-  var out = { due: 0, carried: 0, planned: 0, ids: [], names: [] };
-  var named = { due: [], carried: [], planned: [] };
+  var out = { due: 0, carried: 0, planned: 0, stopped: 0, ids: [], names: [] };
+  var named = { due: [], carried: [], planned: [], stopped: [] };
   (nodes || []).forEach(function (n) {
     if (!(n.kind === 'subtask' || (n.kind === 'project' && !hasKids[n.google_id]))) return;
     var up = n.kind === 'subtask' ? byGoogle[n.parent_google_id] : null;
@@ -312,13 +316,14 @@ function planCounts(nodes, plans, done, today, start, end, tree) {
     var gdue = tree.dueOf(n.due);
     // NaN (no finish) fails both tests and falls to Google's date.
     var when = fin < start ? 'carried' : fin < end ? 'due'
-      : gdue === today ? 'due' : gdue && gdue < today ? 'carried' : p && p.planned ? 'planned' : '';
+      : gdue === today ? 'due' : gdue && gdue < today ? 'carried' : p && p.planned ? 'planned'
+      : paused.hasOwnProperty(n.id) && isFinite(paused[n.id]) ? 'stopped' : '';
     if (!when) return;
     out[when]++;
     out.ids.push(n.id);
     named[when].push(String(n.title || '').trim() || '(untitled)');
   });
-  out.names = named.due.concat(named.carried, named.planned);
+  out.names = named.due.concat(named.carried, named.planned, named.stopped);
   return out;
 }
 
@@ -344,6 +349,7 @@ function planPayload(c) {
   if (c.due) parts.push(c.due + ' due');
   if (c.carried) parts.push(c.carried + ' carried over');
   if (c.planned) parts.push(c.planned + ' planned');
+  if (c.stopped) parts.push(c.stopped + ' stopped');
   return { kind: 'prayer', plan: true, tag: 'probeing-prayer-Plan', goto: 'home',
            title: 'Today: ' + parts.join(', '), body: planBody(c.names || []) };
 }
@@ -463,6 +469,25 @@ async function remindTasks(sb: ReturnType<typeof admin>, owner: string, now: num
   }
 }
 
+/** Edit queue 4: tasks stopped and not picked up since (tree.js stoppedTasks), as the
+ *  browser reads them: the Stops, then Done/Drop/Reopen and starts under those tasks. */
+async function stoppedNow(sb: ReturnType<typeof admin>, owner: string,
+                          must: (r: { data: unknown; error: { message?: string } | null }) => Record<string, any>[]) {
+  const stops = must(await sb.from('events').select('type, rid, node_id, at').eq('user_id', owner)
+    .eq('type', Tree.STOP_TYPE).order('at', { ascending: false }).limit(1000));
+  if (!stops.length) return {};
+  const ids = Object.keys(Tree.stoppedTasks(stops, [], {})).slice(0, 200);
+  const direct = Tree.directMarks(must(await sb.from('events').select('type, rid, node_id, at')
+    .eq('user_id', owner).in('type', Tree.DIRECT_TYPES).in('node_id', ids).limit(1000)));
+  const cand = Tree.stoppedTasks(stops, [], direct);
+  const left = Object.keys(cand);
+  if (!left.length) return {};
+  const starts = must(await sb.from('events').select('type, rid, node_id, at').eq('user_id', owner)
+    .in('type', Tree.START_TYPES).in('node_id', left).gte('at', Tree.stoppedSince(cand))
+    .order('at', { ascending: false }).limit(1000));
+  return Tree.stoppedTasks(stops, starts, direct);
+}
+
 /** Stage 17: send the morning push if it is due now. Reads nothing outside its time. */
 async function remindPlan(sb: ReturnType<typeof admin>, owner: string, now: number, offset: number,
                           on: boolean, time: unknown) {
@@ -488,7 +513,8 @@ async function remindPlan(sb: ReturnType<typeof admin>, owner: string, now: numb
       // Every plan: Planned counts whatever its date.
       must(await sb.from('task_plans').select('node_id, planned, expected_at').eq('user_id', owner).limit(2000))
         .forEach((p) => { plans[p.node_id] = p; });
-      c = planCounts(nodes, plans, {}, due.day, start, end, Tree);
+      const stopped = await stoppedNow(sb, owner, must);
+      c = planCounts(nodes, plans, {}, due.day, start, end, Tree, stopped);
       if (c.ids.length) {
         // Finished by its own Done in ProBeing: off the card, so out of the count (doneHere).
         const items = must(await sb.from('items').select('rid, node_id').eq('user_id', owner)
@@ -502,7 +528,7 @@ async function remindPlan(sb: ReturnType<typeof admin>, owner: string, now: numb
           .eq('user_id', owner).in('type', Tree.DIRECT_TYPES).in('node_id', c.ids).limit(1000)));
         const done = Object.assign(Tree.directDone(nodes.filter((n) => c.ids.indexOf(n.id) !== -1), items, newest, direct),
                                    Tree.directDropped(direct));    // a Drop leaves the card too (edit queue 2)
-        c = planCounts(nodes, plans, done, due.day, start, end, Tree);
+        c = planCounts(nodes, plans, done, due.day, start, end, Tree, stopped);
       }
     }
 
@@ -518,7 +544,8 @@ async function remindPlan(sb: ReturnType<typeof admin>, owner: string, now: numb
     });
     // Delivered nowhere: release the claim so the next minute tries again.
     if (!out.sent) await sb.from('reminders_sent').delete().eq('user_id', owner).eq('kind', due.kind).eq('day', due.day);
-    return { act: out.sent ? 'sent' : 'failed', day: due.day, due: c.due, carried: c.carried, planned: c.planned, ...out };
+    return { act: out.sent ? 'sent' : 'failed', day: due.day, due: c.due, carried: c.carried, planned: c.planned,
+             stopped: c.stopped, ...out };
   } catch (e) {
     return { act: 'error', error: String((e && (e as Error).message) || e) };
   }

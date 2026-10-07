@@ -404,6 +404,30 @@ function prayersOn(prayers, ymd, offsetMin) {
   });
 }
 
+/* Edit queue 4: a prayer logged after its time ended, same prayer day. */
+var PRAYER_QAZA = 'Qaza';
+
+/* Where each prayer's time ends, as prayer-remind reads it. Isha's is the next
+ * day's Fajr, which is also when its prayer day ends: it is never Qaza. */
+var PRAYER_END_AT = { Fajr: 'Sunrise', Dhuhr: 'Asr', Asr: 'Maghrib', Maghrib: 'Isha', Isha: 'nextFajr' };
+
+/** When `name`'s time ends in prayer day `ymd` ('YYYY-MM-DD'); NaN when unknown. */
+function prayerEndOf(name, ymd, offsetMin) {
+  var p = String(ymd || '').split('-');
+  var date = { y: Number(p[0]), m: Number(p[1]), d: Number(p[2]) };
+  var key = PRAYER_END_AT[name];
+  if (!key || !isFinite(date.y)) return NaN;
+  if (key !== 'nextFajr') return prayerTimes(date, offsetMin)[key];
+  var n = new Date(Date.UTC(date.y, date.m - 1, date.d + 1));
+  return prayerTimes({ y: n.getUTCFullYear(), m: n.getUTCMonth() + 1, d: n.getUTCDate() }, offsetMin).Fajr;
+}
+
+/** Past its time but still in its own prayer day: only Qaza may be logged. */
+function prayerIsQaza(name, t, offsetMin) {
+  var end = prayerEndOf(name, prayerDate(t, offsetMin), offsetMin);
+  return isFinite(end) && t >= end;
+}
+
 /* ── The lead-in ───────────────────────────────────────────────────────────
  * The work session does not reset at the rollover. The counter day's rows are
  * replayed together with this lead-in: the work-clock rows since the last
@@ -1121,6 +1145,8 @@ globalThis.ProBeingDay = {
   counterDate: counterDate,
   prayerDate: prayerDate,
   prayersOn: prayersOn,
+  prayerEndOf: prayerEndOf,
+  prayerIsQaza: prayerIsQaza,
   sessionLead: sessionLead,
   LEAD_MAX_MS: LEAD_MAX_MS,
   LEAD_TYPES: LEAD_TYPES,

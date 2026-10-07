@@ -422,6 +422,41 @@ function directDropped(direct) {
   return out;
 }
 
+/* ── Edit queue 4: Stop on a task is a pause ─────────────────────────────
+ * A `substop` row (node_id = the task) keeps it in Upcoming tasks until it is
+ * started again (a work or voice row under it, later than the Stop), or Done,
+ * Dropped or Reopened later than the Stop. The browser and the morning push
+ * both read it through stoppedTasks, so they pick the same tasks. */
+var STOP_TYPE = 'substop';
+var START_TYPES = ['work', 'voice'];
+
+/** node id -> its newest Stop (ms), for tasks stopped and not picked up since.
+ *  stops: substop rows; starts: work/voice rows with node_id; direct: directMarks(). */
+function stoppedTasks(stops, starts, direct) {
+  var last = {};
+  (stops || []).forEach(function (r) {
+    if (!r || r.type !== STOP_TYPE || !r.node_id) return;
+    var t = msOf(r.at);
+    if (isFinite(t) && !(last[r.node_id] >= t)) last[r.node_id] = t;
+  });
+  (starts || []).forEach(function (r) {
+    if (!r || START_TYPES.indexOf(r.type) === -1 || !r.node_id || !last.hasOwnProperty(r.node_id)) return;
+    if (msOf(r.at) > last[r.node_id]) delete last[r.node_id];
+  });
+  var d = direct || {};
+  Object.keys(last).forEach(function (id) {
+    if (d.hasOwnProperty(id) && d[id] && msOf(d[id].at) > last[id]) delete last[id];
+  });
+  return last;
+}
+
+/** The oldest Stop in `stopped` as an ISO stamp: where a read of starts begins. '' for none. */
+function stoppedSince(stopped) {
+  var min = Infinity;
+  Object.keys(stopped || {}).forEach(function (id) { if (stopped[id] < min) min = stopped[id]; });
+  return isFinite(min) ? new Date(min).toISOString() : '';
+}
+
 /** Completed in Google by ProBeing's own PATCH, still: Google's `completed`
  *  is the one it returned to that PATCH. An untick and re-tick by him, even
  *  between two pulls, gives a new completed time, and makes it his. */
@@ -564,5 +599,9 @@ globalThis.ProBeingTree = {
   zoneDate: zoneDate,
   duePush: duePush,
   dueMovedInGoogle: dueMovedInGoogle,
-  sentToGoogle: sentToGoogle
+  sentToGoogle: sentToGoogle,
+  STOP_TYPE: STOP_TYPE,
+  START_TYPES: START_TYPES,
+  stoppedTasks: stoppedTasks,
+  stoppedSince: stoppedSince
 };

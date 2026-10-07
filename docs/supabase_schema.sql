@@ -1369,3 +1369,11 @@ alter table public.entry_filing add column if not exists new_title text;
 alter table public.entry_filing add column if not exists new_parent text;
 alter table public.entry_filing add column if not exists new_google_id text;
 alter table public.entry_filing add column if not exists new_at timestamptz;
+
+-- ===================================================== edit queue 4 (8 Oct)
+-- classify's plan for the OTHER new sub-tasks one entry makes (up to 5 in all):
+-- [{j, title, items, google_id, at}], saved before the first insert, like the
+-- new_* columns above. Without it, classify makes only the main one.
+alter table public.entry_filing add column if not exists new_more jsonb;
+-- A Stop on a task is an events row of type 'substop' (node_id = the task): no
+-- schema change, as events.type is free text.

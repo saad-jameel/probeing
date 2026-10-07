@@ -43,7 +43,8 @@ var CHIP_STATS_KEY = 'probeing.chipstats';  // how often each status gets logged
 var PROJECT_NAMES_KEY = 'probeing.projects'; // project names seen lately, reused for free
 var GEMINI_DAY_KEY = 'probeing.geminiday';   // today's Gemini call count, against the free tier
 
-// callSupabase('prayer') refuses anything outside PRAYER_NAMES (in day.js) and this.
+// callSupabase('prayer') refuses anything outside PRAYER_NAMES (in day.js), this
+// and PRAYER_QAZA (day.js, edit queue 4: offered alone once a prayer's time has ended).
 var PRAYER_MODES = ['Takbeer-e-oola', 'Partial Jamat', 'Individual'];
 
 /* The chips are BREAK REASONS, not notes.
@@ -581,7 +582,7 @@ async function callSupabase(action, payload) {
   if (action === 'prayer') {
     var name = String(payload.prayer || '').trim();
     var mode = String(payload.mode || '').trim();
-    if (PRAYER_NAMES.indexOf(name) === -1 || PRAYER_MODES.indexOf(mode) === -1) {
+    if (PRAYER_NAMES.indexOf(name) === -1 || (PRAYER_MODES.indexOf(mode) === -1 && mode !== PRAYER_QAZA)) {
       var bad = new Error('bad_prayer');
       bad.fatal = true;
       throw bad;
@@ -2340,6 +2341,7 @@ function tileClose(btn, name, mark) {
                   : 'Nothing to mark ' + mark + ' here.', 'err');
     return;
   }
+  var paused = stopSteps(name, t.node || '');      // its other tasks are paused, not closed
   // The finish first, so it is the first press sent; then the Stop.
   if (t.node) {
     if (mark === 'drop') dropTask(t.node); else finishTask(t.node);
@@ -2347,6 +2349,8 @@ function tileClose(btn, name, mark) {
     finishEntry(name, t.entry);
   }
   closeProject(name);
+  if (paused.length) runWrites(paused);
+  paintPlan();
   paintTasksPage();
 }
 
@@ -2500,8 +2504,58 @@ var noteRows = [];                       // every note row, as last read (What's
 /** Stop tile `name`, then ask about it. */
 function stopAndAsk(name) {
   var link = stopLink(name);                 // before the Stop ends the sub-task
+  var paused = stopSteps(name, '');
   link.rid = closeProject(name);
+  if (paused.length) runWrites(paused);
+  paintPlan();                               // a stopped task joins Upcoming tasks at once
   askNote(link);
+}
+
+/* ── Edit queue 4: Stop is a pause ─────────────────────────────────────────
+ * A Stop writes a `substop` row per task the tile is on (tree.js stoppedTasks),
+ * through the outbox, so the task shows in Upcoming tasks until it is started
+ * again, done or dropped. Drop stays the cancel. */
+var stopRowsRead = [];                   // every substop row, as last read
+var startRowsRead = [];                  // work/voice rows under stopped tasks since the oldest Stop
+
+/** The substop rows for the tasks tile `name` is on, bar `except` (one just
+ *  done or dropped). Read before the Stop takes them off Working on. */
+function stopSteps(name, except) {
+  if (typeof STOP_TYPE !== 'string') return [];
+  var at = new Date().toISOString();
+  var out = [];
+  workingOnLeaves(currentNodes(), named(sessionLog())).items.forEach(function (it) {
+    if (it.name !== name || !it.leaf || it.leaf.node.id === except) return;
+    var e = taskEntry(it.leaf);
+    var text = 'Stopped: ' + (e.detail || e.project);
+    var step = { type: STOP_TYPE, raw_text: text, project: e.project, detail: e.detail,
+                 node_id: it.leaf.node.id, rid: newRid(), at: at, local_time: humanLocal() };
+    var row = noteLocalRow(STOP_TYPE, text, e.project, e.detail, it.leaf.node.id);
+    row.rid = step.rid;
+    row.at = at;
+    out.push(step);
+  });
+  return out;
+}
+
+/** node id -> when it was stopped, for tasks stopped and not picked up since:
+ *  the last read, this device's rows and held presses. A refused one is not a press. */
+function stoppedHere() {
+  if (typeof stoppedTasks !== 'function' || typeof directMarks !== 'function') return userMap();
+  var have = userMap();
+  parkedAll().forEach(function (x) { if (x && x.rid) have[x.rid] = 1; });
+  var stops = [];
+  var starts = startRowsRead.slice();
+  function add(r) {
+    if (!r || (r.rid && have[r.rid])) return;
+    if (r.rid) have[r.rid] = 1;          // a local row may have no rid yet: a repeat costs nothing here
+    if (r.type === STOP_TYPE) stops.push(r);
+    else if (START_TYPES.indexOf(r.type) !== -1 && r.node_id) starts.push(r);
+  }
+  stopRowsRead.forEach(add);
+  sessionLog().forEach(add);
+  outboxOurs().forEach(function (it) { if (it.action === 'log') add(queuedRow(it)); });
+  return Object.assign(userMap(), stoppedTasks(stops, starts, directMarks(directAll())));
 }
 
 /** What a Stop on tile `name` closes: its running sub-task, else its one project.
@@ -2604,7 +2658,7 @@ setInterval(function () {
   // A prayer's time arriving, or the day turning, opens or closes its button.
   if (prayerGateKey(Date.now()) !== prayerGates) {
     renderPrayerTicks();
-    if (prayerDlg.open) renderPrayerPicks();
+    if (prayerDlg.open) { renderPrayerPicks(); renderModePicks(); }
   }
 }, 30000);
 
@@ -3373,6 +3427,25 @@ function prayerWaitLabel(name, now) {
   return name + ' · ' + glanceClock(prayerOpensAt(name, now));
 }
 
+/** Edit queue 4: its time has ended, same prayer day; only Qaza is offered. */
+function prayerLate(name, now) {
+  return prayerIsQaza(name, now);
+}
+
+/** The modes `name` may be logged with at `now`. */
+function prayerModesFor(name, now) {
+  return name && prayerLate(name, now) ? [PRAYER_QAZA] : PRAYER_MODES;
+}
+
+/** Pick `name` and, when Qaza is its only mode, that too: one tap fewer. */
+function pickPrayer(name, now) {
+  pickedPrayer = name;
+  var modes = prayerModesFor(name, now);
+  pickedMode = modes.length === 1 ? modes[0] : null;
+  $('modeWrap').hidden = false;
+  $('prayerSaveBtn').disabled = !pickedMode;
+}
+
 /** Point 6: Home shows the five prayers as ticks, not as log lines. Read-only —
  *  logging still goes through the picker, so a tick cannot be set by a mis-tap.
  *  Each shows its start time under its name; one not yet begun is dimmed. */
@@ -3418,8 +3491,9 @@ function renderPrayerTicks() {
 /** Which prayers are waiting right now, so the 30 s tick repaints only on a change. */
 var prayerGates = '';
 function prayerGateKey(now) {
-  return PRAYER_NAMES.map(function (name) { return prayerWaiting(name, now) ? 1 : 0; }).join('') +
-         counterDate(now) + prayerDate(now);
+  return PRAYER_NAMES.map(function (name) {
+    return prayerWaiting(name, now) ? 1 : prayerLate(name, now) ? 2 : 0;
+  }).join('') + counterDate(now) + prayerDate(now);
 }
 
 /** One picker button. `done` adds the "already logged today" tick. */
@@ -3460,7 +3534,8 @@ function renderPrayerPicks() {
     var row = loggedRow(name);
     var waiting = !row && prayerWaiting(name, now);
     var label = row ? name + (row.mode ? ' · ' + row.mode : '')
-                    : waiting ? prayerWaitLabel(name, now) : name;
+                    : waiting ? prayerWaitLabel(name, now)
+                    : prayerLate(name, now) ? name + ' · ' + PRAYER_QAZA : name;
 
     var b = pickButton(label, pickedPrayer === name, Boolean(row), function () {
       if (row) { flash(name + ' is already logged today.', 'warn'); return; }
@@ -3468,10 +3543,7 @@ function renderPrayerPicks() {
         flash(name + ' begins at ' + glanceClock(prayerOpensAt(name, now)) + '.', 'warn');
         return;
       }
-      pickedPrayer = name;
-      pickedMode = null;
-      $('modeWrap').hidden = false;
-      $('prayerSaveBtn').disabled = true;
+      pickPrayer(name, now);
       renderPrayerPicks();
       renderModePicks();
     });
@@ -3487,7 +3559,13 @@ function renderModePicks() {
   var box = $('modeList');
   box.textContent = '';
 
-  PRAYER_MODES.forEach(function (mode) {
+  var modes = prayerModesFor(pickedPrayer, Date.now());
+  // The clock moved past the end since the pick: a mode no longer offered is not kept.
+  if (pickedMode && modes.indexOf(pickedMode) === -1) {
+    pickedMode = modes.length === 1 ? modes[0] : null;
+    $('prayerSaveBtn').disabled = !pickedMode;
+  }
+  modes.forEach(function (mode) {
     box.appendChild(pickButton(mode, pickedMode === mode, false, function () {
       pickedMode = mode;
       $('prayerSaveBtn').disabled = false;
@@ -3500,10 +3578,11 @@ function renderModePicks() {
  *  end-of-day prompt's buttons). */
 function openPrayerPicker(preset) {
   var ok = Boolean(preset) && !loggedToday(preset) && !prayerWaiting(preset, Date.now());
-  pickedPrayer = ok ? preset : null;
+  pickedPrayer = null;
   pickedMode = null;
-  $('modeWrap').hidden = !ok;
+  $('modeWrap').hidden = true;
   $('prayerSaveBtn').disabled = true;
+  if (ok) pickPrayer(preset, Date.now());
   renderPrayerPicks();
   renderModePicks();
   prayerDlg.showModal();
@@ -3524,7 +3603,9 @@ $('prayerSaveBtn').addEventListener('click', function () {
 
   // Checked again: a re-read or the clock may have moved since the pick.
   var refused = loggedToday(pickedPrayer) ? ' is already logged today.'
-    : prayerWaiting(pickedPrayer, Date.now()) ? ' has not begun yet.' : '';
+    : prayerWaiting(pickedPrayer, Date.now()) ? ' has not begun yet.'
+    : prayerModesFor(pickedPrayer, Date.now()).indexOf(pickedMode) === -1
+      ? (pickedMode === PRAYER_QAZA ? ' is still in its time.' : '\'s time has ended: log it as Qaza.') : '';
   if (refused) {
     flash(pickedPrayer + refused, 'warn');
     pickedPrayer = null;
@@ -5822,7 +5903,8 @@ function prayerStats(rows, windows, nowMs) {
   var now = typeof nowMs === 'number' ? nowMs : Date.now();
   var out = {
     byPrayer: [],
-    modes: PRAYER_MODES.slice(),
+    modes: PRAYER_MODES.concat([PRAYER_QAZA]),
+    qaza: [],                // edit queue 4: [{prayer, ymd}] logged as Qaza, oldest first
     logged: 0,
     other: 0,
     repeats: 0,              // a prayer's second row on one day: in neither `logged` nor `total`
@@ -5839,7 +5921,7 @@ function prayerStats(rows, windows, nowMs) {
     var one = { name: name, total: 0, missed: 0, noMode: 0, byMode: userMap() };
     // Every mode present at zero, so a month with no Takbeer-e-oola says so
     // rather than leaving the reader to notice a key that is not there.
-    PRAYER_MODES.forEach(function (mode) { one.byMode[mode] = 0; });
+    out.modes.forEach(function (mode) { one.byMode[mode] = 0; });
     index[name] = one;
     out.byPrayer.push(one);
   });
@@ -5875,6 +5957,7 @@ function prayerStats(rows, windows, nowMs) {
       var mode = String(day.names[name].detail || '').trim();
       if (one.byMode[mode] === undefined) one.noMode += 1;
       else one.byMode[mode] += 1;
+      if (mode === PRAYER_QAZA) out.qaza.push({ prayer: one.name, ymd: w.ymd });
     });
 
     var due = finished ? null : missedDueTimes(w);
@@ -6460,7 +6543,8 @@ function promptPeriod(heading, sum, cats, tasks) {
  *
  * Sleep, prayers, Ms and break reasons are deliberately absent. They were in
  * here to feed a prose paragraph that no longer exists; a model that is never
- * asked about sleep cannot state a figure for a night nobody recorded.
+ * asked about sleep cannot state a figure for a night nobody recorded. The one
+ * exception is the names of prayers made up late (Qaza, edit queue 4), never a count.
  *
  * @param win   the range being reviewed — only its label is used, never its dates.
  * @param now   {sum, tasks} for that range.
@@ -6536,6 +6620,16 @@ function reviewPrompt(win, now, prior, cats, pace) {
     });
   }
 
+  /* Edit queue 4: prayers made up late. Named, never counted by the model. */
+  var qaza = Array.isArray(now.qaza) ? now.qaza : [];
+  if (qaza.length) {
+    var late = [];
+    qaza.forEach(function (q) { if (late.indexOf(q.prayer) === -1) late.push(q.prayer); });
+    lines.push('');
+    lines.push('PRAYERS MADE UP LATE (Qaza: prayed after their time had ended, the same day) in this period: ' +
+               late.join(', ') + '.');
+  }
+
   /* NOT NUMBERED, and that is deliberate. This used to read "1. …  2. …", and a
    * model that echoes the shape it is shown wrote "2. Learning: MQTT" — which
    * splitProse() then failed to find, so the Learning card claimed nothing had
@@ -6561,6 +6655,10 @@ function reviewPrompt(win, now, prior, cats, pace) {
              'the sub-tasks say what was actually being done, some of it is ' +
              'inherently slower than the rest, and fewer hours on hard work is ' +
              'not less done. Say that only where the sub-tasks bear it out.');
+  if (qaza.length) {
+    lines.push('In those same lines, add one short clause saying which prayers were made up late ' +
+               '(Qaza), naming them as listed above. Do not count them.');
+  }
   if (notes.length) {
     lines.push('Where the notes above explain why something went as it did — a blocker, ' +
                'a change of plan, why a task was dropped — use them in those same lines ' +
@@ -7147,7 +7245,8 @@ async function runReview(force) {
   }
 
   renderReviewFigures(sum);
-  showPrayerTable($('reviewPrayers'), prayerStats(got.rows, got.windows));
+  var prayed = prayerStats(got.rows, got.windows);
+  showPrayerTable($('reviewPrayers'), prayed);
   /* Published for the dialog's Save to find later — see reviewRegroup. Called
    * immediately, because this IS the first draw. */
   reviewRegroup = function () { renderReviewProjects(sum, projectCategories, tasks); };
@@ -7170,7 +7269,7 @@ async function runReview(force) {
    * finished. addReviewProse() decides whether to SPEND a call; deciding what
    * would be in it is this function's job, and splitting them that way means the
    * prompt can never be built from a different set of numbers than the screen. */
-  await addReviewProse(win, reviewPrompt(win, { sum: sum, tasks: tasks, notes: got.notes }, got.earlier,
+  await addReviewProse(win, reviewPrompt(win, { sum: sum, tasks: tasks, notes: got.notes, qaza: prayed.qaza }, got.earlier,
                                          projectCategories, got.pace),
                        force, mine);
 }
@@ -7564,6 +7663,19 @@ function prayerTable(stats) {
     text += ' Today counts a prayer as missed once the next one has begun, and Isha once the day turns.';
   }
   if (Number(stats.repeats) > 0) text += ' A prayer logged twice in a day counts once.';
+  // Edit queue 4: which prayers were Qaza, and when. A report saved before has no list.
+  if (Array.isArray(stats.qaza) && stats.qaza.length) {
+    var late = userMap();
+    var lateOrder = [];
+    stats.qaza.forEach(function (q) {
+      var name = String((q && q.prayer) || '');
+      if (!late[name]) { late[name] = []; lateOrder.push(name); }
+      late[name].push(humanYmd(q && q.ymd));
+    });
+    text += ' Qaza (prayed after its time): ' + lateOrder.map(function (name) {
+      return name + ' on ' + late[name].join(', ');
+    }).join('; ') + '.';
+  }
   var other = Number(stats.other) || 0;
   if (other) text += other === 1 ? ' 1 prayer row had another name and is not in the table.'
                                   : ' ' + other + ' prayer rows had another name and are not in the table.';
@@ -7663,7 +7775,8 @@ async function generateReport(win) {
            ymdLocal(win.end) + ', so there is no report to write. No Gemini call was used.';
   }
 
-  var prompt = reviewPrompt(win, { sum: got.sum, tasks: got.tasks, notes: got.notes }, got.earlier,
+  var prayed = prayerStats(got.rows, got.windows);       // the saved breakdown, and Qaza for the prompt
+  var prompt = reviewPrompt(win, { sum: got.sum, tasks: got.tasks, notes: got.notes, qaza: prayed.qaza }, got.earlier,
                             projectCategories, got.pace);
 
   /* Money is read before the one call, so a failed read costs no call, and a
@@ -7702,7 +7815,7 @@ async function generateReport(win) {
   }
 
   await saveReport(win, answer,
-                   reportStats(got.sum, prayerStats(got.rows, got.windows), money),
+                   reportStats(got.sum, prayed, money),
                    lastGeminiModel);
   return '';
 }
@@ -11185,13 +11298,19 @@ function paintPlan() {
   var now = Date.now();
   var today = counterDate(now);
   var plan = homePlanLeaves(currentNodes(), today, counterDayEnd(now));
+  var stopped = stoppedHere();
+  function meta(leaf, withProject) {
+    var m = taskMeta(leaf, today, withProject);
+    if (isFinite(stopped[leaf.node.id])) m.text = (m.text ? m.text + ' · ' : '') + 'stopped';
+    return m;
+  }
   var list = $('planList');
   list.textContent = '';
   planGroups(plan).forEach(function (g) {
     var li = document.createElement('li');
     if (!g.up) {
       // A childless project, or a sub-task whose project is not in the list.
-      appendLeaf(li, g.leaves[0], 'planList', taskMeta(g.leaves[0], today, true));
+      appendLeaf(li, g.leaves[0], 'planList', meta(g.leaves[0], true));
     } else {
       li.className = 'plan-group';
       var head = document.createElement('div');
@@ -11201,7 +11320,7 @@ function paintPlan() {
       var sub = document.createElement('ul');
       g.leaves.forEach(function (leaf) {
         var sli = document.createElement('li');
-        appendLeaf(sli, leaf, 'planList', taskMeta(leaf, today, false));
+        appendLeaf(sli, leaf, 'planList', meta(leaf, false));
         sub.appendChild(sli);
       });
       li.appendChild(sub);
@@ -11424,11 +11543,13 @@ function plannedLeaves(nodes) {
  *  todaysPlan lists them (13b). */
 function homePlanLeaves(nodes, today, endMs) {
   var done = closedHere();
+  var stopped = stoppedHere();
   var open = taskLeaves(nodes).filter(function (l) { return leafLive(l, done); });
   var picked = open.filter(function (l) {
     var plan = planOf(l.node.id);
     var due = dueOf(l.node.due);
-    return Boolean(plan && plan.planned) || Boolean(due && due <= today) || shownFinishMs(l.node) < endMs;
+    return Boolean(plan && plan.planned) || Boolean(due && due <= today) || shownFinishMs(l.node) < endMs ||
+           isFinite(stopped[l.node.id]);           // edit queue 4: stopped, still to do
   }).sort(byTaskWhen);
   if (picked.length) return picked;
   var byId = userMap();
@@ -11515,6 +11636,14 @@ function taskMeta(leaf, today, withProject) {
 function appendLeaf(li, leaf, listId, meta) {
   li.appendChild(taskButton(leaf, listId, meta));
   var acts = taskActs(leaf.node);
+  // Edit queue 4: + item straight on an Upcoming tasks row.
+  if (listId === 'planList' && leafOpen(leaf)) {
+    if (!acts) {
+      acts = document.createElement('span');
+      acts.className = 'task-acts';
+    }
+    acts.insertBefore(addItemBtn(leaf.node), acts.firstChild);
+  }
   if (!acts) return;
   li.classList.add('task-leaf');
   li.appendChild(acts);
@@ -11977,6 +12106,7 @@ function startTask(id) {
                node_id: leaf.node.id, rid: newRid() });
   flash('Working on ' + (e.detail ? e.project + ': ' + e.detail : e.project), 'ok');
   runWrites(steps, undo);
+  paintPlan();                        // a stopped task leaves Upcoming tasks (edit queue 4)
   paintTasksPage();
   return true;
 }
@@ -12442,6 +12572,23 @@ async function readItems() {
         .order('at', { ascending: false }).order('rid');
     });
     if (!nr.error) noteRows = nr.data || [];
+    // Edit queue 4: Stops, then any start since under those tasks. A failed read keeps the last.
+    var sr = await readPages(function () {
+      return sb.from('events').select('type,rid,node_id,at').eq('type', STOP_TYPE)
+        .not('node_id', 'is', null).order('at', { ascending: false }).order('rid');
+    });
+    if (!sr.error) {
+      var cand = stoppedTasks(sr.data || [], [], directMarks(dr.data || []));
+      var ids = Object.keys(cand).slice(0, 200);
+      var st = ids.length ? await readPages(function () {
+        return sb.from('events').select('type,rid,node_id,at').in('type', START_TYPES).in('node_id', ids)
+          .gte('at', stoppedSince(cand)).order('at', { ascending: false }).order('rid');
+      }) : { data: [] };
+      if (!st.error) {
+        stopRowsRead = sr.data || [];
+        startRowsRead = st.data || [];
+      }
+    }
     itemRows = it.data || [];
     markRows = mk.data || [];
     directRows = (dr.data || []).filter(function (r) { return isDirectRow(r.type, r.rid); });
@@ -12830,24 +12977,37 @@ function nowActs(name, leaf, rows) {
     flash(name + ' — stopped', 'ok');
   }));
   var id = leaf ? leaf.node.id : '';
+  if (leaf && leafOpen(leaf)) box.appendChild(addItemBtn(leaf.node));      // edit queue 4
   var acts = id ? leafActsHere(id) : false;
   var ent = id ? null : tileEntry(name, rows);
   var title = leaf ? leaf.node.title || '(untitled)' : name;
   if (acts || ent) {
     box.appendChild(smallBtn('Done', 'item-done-btn', 'Done: ' + title, function () {
+      var paused = stopSteps(name, id);
       if (id) finishTask(id); else finishEntry(name, ent);
       closeProject(name);
+      if (paused.length) runWrites(paused);
+      paintPlan();
       paintTasksPage();
     }));
   }
   if (acts) {
     box.appendChild(smallBtn('Drop', 'item-drop-btn', 'Drop: ' + title, function () {
+      var paused = stopSteps(name, id);
       dropTask(id);
       closeProject(name);
+      if (paused.length) runWrites(paused);
+      paintPlan();
       paintTasksPage();
     }));
   }
   return box;
+}
+
+/** "+ item" on a task row: the task box's add-item flow, for that task. */
+function addItemBtn(node) {
+  return smallBtn('+ item', 'item-add-btn', 'Add an item to: ' + (node.title || '(untitled)'),
+                  function () { openItemDlg(node.id); });
 }
 
 /** Done and Drop for task `node`, or null when they belong on its items or it is not open. */
@@ -12927,6 +13087,8 @@ function stopItems() {
   directPressed = [];
   entryRows = [];
   noteRows = [];
+  stopRowsRead = [];
+  startRowsRead = [];
   closeNote();
   subdoneTried = userMap();
   itemsRead = false;

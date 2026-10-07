@@ -48,8 +48,9 @@
  * a shorter Settings, kinds of work in a popup.
  * v24 (edit queue 2): Done and Drop beside Stop and on the lowest level, the
  * Add a due buttons.
- * v25 (edit queue 3): the "What happened?" note after Done, Drop or Stop. */
-var CACHE = 'probeing-shell-v25';
+ * v25 (edit queue 3): the "What happened?" note after Done, Drop or Stop.
+ * v26 (edit queue 4): Qaza prayers, + item on task rows, Stop keeps a task in Upcoming. */
+var CACHE = 'probeing-shell-v26';
 var SHELL = [
   './',
   'index.html',
