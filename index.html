@@ -32,6 +32,19 @@
 </defs></svg>
 
 <div id="banner" class="banner" hidden></div>
+<!-- Edit queue 3: asked after Done, Drop or Stop. Not modal: a tap elsewhere closes
+     it and still lands. The task line is his text, filled with textContent. -->
+<div id="noteBox" class="note-box" role="dialog" aria-labelledby="noteBoxTitle" hidden>
+  <form id="noteForm">
+    <label id="noteBoxTitle" for="noteText">What happened?</label>
+    <p id="noteTask" class="hint"></p>
+    <input id="noteText" type="text" maxlength="200" autocomplete="off" placeholder="Optional">
+    <div class="note-acts">
+      <button type="button" id="noteSkipBtn" class="link-btn">Skip</button>
+      <button type="submit" id="noteSaveBtn" class="btn btn-accent btn-sm">Save</button>
+    </div>
+  </form>
+</div>
 
 <header class="top">
   <div class="brand">

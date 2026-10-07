@@ -1,8 +1,9 @@
 // ProBeing — the `sheets-export` Edge Function. Stage 18.
 //
 // Writes a readable copy of his tables into one Google Sheet in his Drive:
-// tabs Entries, Tasks, Items, Marks, Money and Reports. pg_cron calls it once
-// a day at 12:00 Karachi with the cron secret (docs/sheets_export.sql); Settings'
+// tabs Entries, Tasks, Items, Marks, Money and Reports. A "What happened?" note
+// is an Entries row like any event, and also sits in its task's Notes column.
+// pg_cron calls it once a day at 12:00 Karachi with the cron secret (docs/sheets_export.sql); Settings'
 // "Export now" calls it with his JWT. The database wins: the sheet is a copy,
 // rewritten whole every run, and nothing is ever read back from it.
 //
@@ -136,6 +137,13 @@ function buildTabs(data, zone) {
   var newest = latestMarks(data.item_marks);
   var voidedBy = {};
   (data.money || []).forEach(function (r) { if (r.voids_rid) voidedBy[r.voids_rid] = r.rid; });
+  // Edit queue 3: each task's "What happened?" notes, oldest first, one per line.
+  var notesOf = {};
+  (data.events || []).filter(function (e) { return e.type === 'note' && e.node_id; })
+    .sort(function (a, b) { return Date.parse(a.at) - Date.parse(b.at); })
+    .forEach(function (e) {
+      (notesOf[e.node_id] = notesOf[e.node_id] || []).push(localStamp(e.at, zone).slice(0, 16) + ' ' + e.raw_text);
+    });
 
   // Projects in Google's order, each followed by its sub-tasks; strays last.
   function byPos(a, b) {
@@ -149,7 +157,8 @@ function buildTabs(data, zone) {
     var up = n.parent_google_id ? byGoogle[n.parent_google_id] : null;
     taskRows.push([n.kind === 'project' ? n.title : (up ? up.title : ''), n.kind === 'project' ? '' : n.title,
                    n.kind, n.due || '', n.g_status, localStamp(n.g_completed_at, zone),
-                   localStamp(n.pb_done_at, zone), localStamp(n.gone_at, zone), n.list_id, n.google_id]);
+                   localStamp(n.pb_done_at, zone), localStamp(n.gone_at, zone), (notesOf[n.id] || []).join('\n'),
+                   n.list_id, n.google_id]);
   }
   nodes.filter(function (n) { return n.kind === 'project'; }).sort(byPos).forEach(function (p) {
     taskRow(p);
@@ -166,7 +175,7 @@ function buildTabs(data, zone) {
       }) },
     { title: 'Tasks',
       header: ['Project', 'Sub-task', 'Kind', 'Due', 'Google status', 'Completed in Google',
-               'Done in ProBeing', 'Deleted in Google', 'List id', 'Google id'],
+               'Done in ProBeing', 'Deleted in Google', 'Notes', 'List id', 'Google id'],
       rows: taskRows },
     { title: 'Items',
       header: [when, 'Item', 'Task', 'State', 'Made by', 'From entry', 'Row id'],

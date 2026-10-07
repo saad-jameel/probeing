@@ -47,8 +47,9 @@
  * v23 (edit queue 1): tab names, remaining tasks only, prayer times on Home,
  * a shorter Settings, kinds of work in a popup.
  * v24 (edit queue 2): Done and Drop beside Stop and on the lowest level, the
- * Add a due buttons. */
-var CACHE = 'probeing-shell-v24';
+ * Add a due buttons.
+ * v25 (edit queue 3): the "What happened?" note after Done, Drop or Stop. */
+var CACHE = 'probeing-shell-v25';
 var SHELL = [
   './',
   'index.html',

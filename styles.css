@@ -909,6 +909,32 @@ body {
 .due-kinds[hidden] { display: none; }
 .due-kinds .pick { padding: 16px 10px; font-size: 15px; font-weight: 600; min-height: 56px; }
 
+/* Edit queue 3: "What happened?", above the banner. Rule 6: each class that
+   sets `display` declares its [hidden] pair. */
+.note-box {
+  position: fixed; left: 50%; transform: translateX(-50%);
+  bottom: calc(var(--nav-h) + 66px + env(safe-area-inset-bottom));
+  z-index: 10; display: block;
+  width: min(440px, calc(100vw - 32px));
+  padding: 12px 14px;
+  background: var(--panel-2); color: var(--fg);
+  border: 1px solid var(--line); border-radius: var(--radius);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, .45);
+}
+.note-box[hidden] { display: none; }
+.note-box label { display: block; font-size: 14px; font-weight: 600; }
+.note-box .hint { margin: 2px 0 8px; overflow-wrap: anywhere; }
+.note-box input {
+  width: 100%; padding: 10px 12px;
+  background: var(--bg); color: var(--fg);
+  border: 1px solid var(--line); border-radius: 10px;
+  font-size: 16px; font-family: inherit;   /* 16px stops phones zooming on focus */
+}
+.note-acts { display: flex; justify-content: flex-end; align-items: center; gap: 8px; margin-top: 8px; }
+.note-acts[hidden] { display: none; }
+.done-list .done-note { display: block; margin-top: 2px; color: var(--muted); font-size: 13px; overflow-wrap: anywhere; }
+.done-list .done-note[hidden] { display: none; }
+
 /* Stage 16: What's done. A fixed height, so switching project does not resize it.
    Only #doneProjects (.pick-grid, which has its pair) and #doneNote are ever hidden (rule 6). */
 .done-dlg { height: min(85vh, 85dvh); }
