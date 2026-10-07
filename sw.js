@@ -43,8 +43,10 @@
  * Tasks), Dues in spent/got, fixed money tags.
  * v20 (Stage 18, live first): the Google Sheet link and Export now in Settings.
  * v21 (Stage 16): the What's done page on Tasks.
- * v22 (Stage 17): the morning plan push (opens Home) and its Settings time. */
-var CACHE = 'probeing-shell-v22';
+ * v22 (Stage 17): the morning plan push (opens Home) and its Settings time.
+ * v23 (edit queue 1): tab names, remaining tasks only, prayer times on Home,
+ * a shorter Settings, kinds of work in a popup. */
+var CACHE = 'probeing-shell-v23';
 var SHELL = [
   './',
   'index.html',

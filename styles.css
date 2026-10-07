@@ -42,6 +42,10 @@ body.state-asleep {
 
 * { box-sizing: border-box; }
 
+/* No scroll bars anywhere (edit queue 1); wheel, touch and keys still scroll. */
+* { scrollbar-width: none; }
+::-webkit-scrollbar { display: none; }
+
 .sprite { position: absolute; width: 0; height: 0; overflow: hidden; }
 svg use, .sprite g { fill: none; stroke: currentColor; stroke-width: 1.7;
   stroke-linecap: round; stroke-linejoin: round; }
@@ -414,7 +418,11 @@ body {
 }
 .tick.done { color: var(--accent); border-color: var(--accent); }
 .tick .mark { font-size: 13px; }
-/* Stage 10: a prayer whose time has not come, labelled with when it begins. */
+/* Each prayer's start time, small, under its name. Rule 6: sets display, so has its pair. */
+.tick-label { display: grid; line-height: 1.2; }
+.tick-label[hidden] { display: none; }
+.tick-time { font-size: 11.5px; opacity: .85; font-variant-numeric: tabular-nums; }
+/* Stage 10: a prayer whose time has not come, dimmed. */
 .tick.waiting { opacity: .6; }
 
 /* --------------------------------------------------------- prayer picker */
@@ -462,6 +470,7 @@ body {
 /* ------------------------------------------------------------------- log */
 
 .log-head { display: flex; align-items: center; justify-content: space-between; }
+.log-head-acts { white-space: nowrap; }
 
 .log-list { list-style: none; margin: 0; padding: 0; display: grid; gap: 8px; }
 .log-list li {
@@ -609,6 +618,14 @@ body {
 }
 .tab svg { width: 22px; height: 22px; display: block; }
 .tab.is-on { background: var(--accent); color: var(--accent-ink); }
+/* A long press shows the name, not the phone's own menu or a text selection. */
+.tab { -webkit-touch-callout: none; -webkit-user-select: none; user-select: none; }
+.tab-tip {
+  position: fixed; z-index: 10; transform: translateX(-50%);
+  padding: 4px 10px; border-radius: 8px;
+  background: var(--fg); color: var(--bg);
+  font-size: 13px; white-space: nowrap; pointer-events: none;
+}
 
 /* -------------------------------------------------------------- settings */
 
@@ -669,6 +686,9 @@ body {
 /* Set-once settings, folded away so the everyday ones stay short. */
 .dev-settings { margin-top: 18px; padding-top: 12px; border-top: 1px solid var(--line); }
 .dev-settings > summary { cursor: pointer; font-weight: 600; font-size: 14px; }
+/* A "Details" fold inside a Settings section. */
+.sub-details { margin-top: 12px; }
+.sub-details > summary { cursor: pointer; font-size: 13px; color: var(--muted); }
 
 /* One row per project: its name, and the kind of work it is. Drawn identically
    in the Review's dialog and in Settings, because they are one store. */

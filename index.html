@@ -166,7 +166,10 @@
   <section id="tasksAllCard" class="card" hidden>
     <div class="log-head">
       <h2 class="card-head">All tasks</h2>
-      <button type="button" id="doneOpenBtn" class="link-btn">What's done</button>
+      <span class="log-head-acts">
+        <button type="button" id="tasksShowDoneBtn" class="link-btn" aria-pressed="false" hidden>Show done</button>
+        <button type="button" id="doneOpenBtn" class="link-btn">What's done</button>
+      </span>
     </div>
     <ul id="tasksAll" class="task-tree"></ul>
     <p id="tasksAllEmpty" class="pending" hidden>Your list is empty.</p>
@@ -314,12 +317,14 @@
 <!-- Tasks sits between Today and Money. The taskboard link is in
      Settings → Developer settings. -->
 <nav class="tabs" aria-label="Sections">
-  <button class="tab is-on" data-goto="home" aria-label="Home"><svg aria-hidden="true"><use href="#i-home"></use></svg></button>
-  <button class="tab" data-goto="today" aria-label="Today"><svg aria-hidden="true"><use href="#i-history"></use></svg></button>
-  <button class="tab" data-goto="tasks" aria-label="Tasks"><svg aria-hidden="true"><use href="#i-tasks"></use></svg></button>
-  <button class="tab" data-goto="money" aria-label="Money"><svg aria-hidden="true"><use href="#i-money"></use></svg></button>
-  <button class="tab" data-goto="review" aria-label="Weekly review"><svg aria-hidden="true"><use href="#i-chart"></use></svg></button>
+  <button class="tab is-on" data-goto="home" aria-label="Home" title="Home"><svg aria-hidden="true"><use href="#i-home"></use></svg></button>
+  <button class="tab" data-goto="today" aria-label="Today" title="Today"><svg aria-hidden="true"><use href="#i-history"></use></svg></button>
+  <button class="tab" data-goto="tasks" aria-label="Tasks" title="Tasks"><svg aria-hidden="true"><use href="#i-tasks"></use></svg></button>
+  <button class="tab" data-goto="money" aria-label="Money" title="Money"><svg aria-hidden="true"><use href="#i-money"></use></svg></button>
+  <button class="tab" data-goto="review" aria-label="Weekly review" title="Weekly review"><svg aria-hidden="true"><use href="#i-chart"></use></svg></button>
 </nav>
+<!-- A tab's name while it is long-pressed: phones have no hover. -->
+<span id="tabTip" class="tab-tip" aria-hidden="true" hidden></span>
 
 <dialog id="prayerDlg" class="dlg">
   <form method="dialog">
@@ -545,15 +550,16 @@
           Fajr</strong>. The server uses the same place and time zone for the widget and the
           bedtime check.</p>
         </template>
-        <p id="placeNow" class="hint"></p>
         <div class="dlg-actions" style="justify-content: flex-start">
           <button type="button" id="placeBtn" class="btn">Use my location</button>
         </div>
+        <p id="placeResult" class="hint"></p>
+        <details id="placeDetails" class="sub-details">
+        <summary>Details</summary>
         <label class="hint" for="prayerMethod">Calculation method</label>
         <select id="prayerMethod" class="cat-pick place-pick"></select>
         <label class="hint" for="asrSchool">Asr</label>
         <select id="asrSchool" class="cat-pick place-pick"></select>
-        <p id="placeResult" class="hint"></p>
         <label class="check">
           <input id="prayerRemindOn" type="checkbox" checked>
           <span>Prayer reminders (all devices)</span>
@@ -574,6 +580,7 @@
         <input id="planPushTime" type="time" value="09:00" class="cat-pick">
         <p class="hint">"Today: 2 due, 1 planned" and their names, daily on your saved place's clock. Skipped when there are none.</p>
         <p id="planPushResult" class="hint"></p>
+        </details>
       </div>
 
       <div class="dlg-block">
@@ -593,9 +600,8 @@
         </div>
         <select id="googleListPick" class="cat-pick place-pick" aria-label="Your Tasks list" hidden></select>
         <p id="googleResult" class="hint"></p>
-        <!-- Stage 13: the read-only copy of the list, and when it was last pulled. -->
+        <!-- When the list was last pulled. The tree itself is on the Tasks page. -->
         <p id="tasksSyncLine" class="hint" hidden></p>
-        <ul id="tasksTree" class="task-tree" hidden></ul>
         <!-- Stage 18: the Google Sheet copy, written daily at 12:00 and on demand. -->
         <div id="sheetBlock" hidden>
           <p id="sheetLine" class="hint"></p>
@@ -640,6 +646,8 @@
     </template>
     <p id="glanceResult" class="hint"></p>
 
+    <details id="projectNamesDetails" class="sub-details">
+    <summary>Details: your project names</summary>
     <div class="help-row">
       <label for="projectNames">Your project names (one per line)</label>
       <button type="button" class="help-btn" data-help="helpProjects"
@@ -651,8 +659,10 @@
       Voice typing mishears unusual names &mdash; &ldquo;NeuraVue&rdquo; comes out as
       &ldquo;my review&rdquo;, &ldquo;OneNet&rdquo; as &ldquo;one night&rdquo; &mdash; and this
       list is what lets the app put the right name back. What you actually said is always
-      kept as well, so nothing is lost if it guesses wrong. Stored on this device only.</p>
+      kept as well, so nothing is lost if it guesses wrong. Stored on this device only.
+      Used only while Google Tasks is not connected; when it is, the server files your entries.</p>
     </template>
+    </details>
 
     <div class="dlg-block">
       <h3>Names the app has learned <button type="button" class="help-btn" data-help="helpLearned"
@@ -675,8 +685,9 @@
         &mdash; here, or in the Review the first time a new name turns up. Change one any
         time a project moves from one to the other. Stored on this device only.</p>
       </template>
-      <div id="catSettings" class="cat-list"></div>
-      <p id="catSettingsNote" class="hint"></p>
+      <div class="dlg-actions" style="justify-content: flex-start">
+        <button type="button" id="catsOpenBtn" class="btn">Choose kinds of work</button>
+      </div>
     </div>
 
     <div class="help-row">
@@ -834,6 +845,20 @@
     <div id="doneProjects" class="pick-grid done-projects" aria-label="Project"></div>
     <p id="doneNote" class="hint" role="status" hidden></p>
     <ul id="doneList" class="log-list logs-list done-list"></ul>
+  </div>
+</dialog>
+
+<!-- Settings: which kind of work each project is. Saved by its own Save. -->
+<dialog id="catsDlg" class="dlg" aria-labelledby="catsDlgTitle">
+  <div>
+    <h2 id="catsDlgTitle">Which kind of work each project is</h2>
+    <p id="catsDlgNote" class="hint" role="status" hidden></p>
+    <div id="catSettings" class="cat-list"></div>
+    <p id="catSettingsNote" class="hint"></p>
+    <div class="dlg-actions">
+      <button type="button" id="catsCancelBtn" class="link-btn">Cancel</button>
+      <button type="button" id="catsSaveBtn" class="btn btn-accent">Save</button>
+    </div>
   </div>
 </dialog>
 

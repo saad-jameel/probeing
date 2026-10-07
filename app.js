@@ -1652,6 +1652,44 @@ function showScreen(name) {
   }
 })();
 
+/* A long press shows a tab's name, since phones have no hover (the title covers
+ * laptops). The click is untouched, so a tap still switches at once (rule 4). */
+var TAB_TIP_MS = 500;
+var TAB_TIP_LINGER_MS = 600;     // after release, long enough to read
+
+(function wireTabTips() {
+  var tip = $('tabTip');
+  var timer = 0;
+  function hide() { clearTimeout(timer); timer = 0; tip.hidden = true; }
+  function show(tab) {
+    tip.textContent = tab.getAttribute('aria-label') || '';
+    tip.hidden = false;
+    var r = tab.getBoundingClientRect();
+    var half = tip.offsetWidth / 2;
+    // Kept on screen at 360px: a centred label over an outer tab would run off the edge.
+    var x = Math.min(Math.max(r.left + r.width / 2, half + 8), window.innerWidth - half - 8);
+    tip.style.left = x + 'px';
+    tip.style.bottom = (window.innerHeight - r.top + 8) + 'px';
+  }
+  function release() {
+    if (tip.hidden) { hide(); return; }
+    clearTimeout(timer);
+    timer = setTimeout(hide, TAB_TIP_LINGER_MS);
+  }
+  Array.prototype.forEach.call(document.querySelectorAll('.tab'), function (tab) {
+    tab.addEventListener('pointerdown', function (e) {
+      if (e.pointerType === 'mouse') return;
+      hide();
+      timer = setTimeout(function () { show(tab); }, TAB_TIP_MS);
+    });
+    tab.addEventListener('pointerup', release);
+    tab.addEventListener('pointercancel', hide);
+    tab.addEventListener('pointerleave', release);
+    // The phone's own long-press menu would cover the label.
+    tab.addEventListener('contextmenu', function (e) { e.preventDefault(); });
+  });
+})();
+
 /** The device's clock in the backend's own format, so a row we add locally
  *  sorts and displays exactly like the real one that replaces it. */
 function localIso(d) {
@@ -3076,7 +3114,7 @@ function prayerWaitLabel(name, now) {
 
 /** Point 6: Home shows the five prayers as ticks, not as log lines. Read-only —
  *  logging still goes through the picker, so a tick cannot be set by a mis-tap.
- *  One whose time has not come shows when it does. */
+ *  Each shows its start time under its name; one not yet begun is dimmed. */
 function renderPrayerTicks() {
   var box = $('prayerTicks');
   box.textContent = '';
@@ -3096,7 +3134,17 @@ function renderPrayerTicks() {
     mark.textContent = isDone ? '✓' : '○';
 
     var label = document.createElement('span');
-    label.textContent = waiting ? prayerWaitLabel(name, now) : name;
+    label.className = 'tick-label';
+    var title = document.createElement('span');
+    title.textContent = name;
+    label.appendChild(title);
+    var at = prayerOpensAt(name, now);
+    if (isFinite(at)) {
+      var time = document.createElement('span');
+      time.className = 'tick-time';
+      time.textContent = glanceClock(at);
+      label.appendChild(time);
+    }
 
     el.append(mark, label);
     box.appendChild(el);
@@ -7842,6 +7890,99 @@ function redrawForgotten(droppedKey) {
   renderLearnedNames();
 }
 
+/* The kinds of work open in their own box (edit queue 1), saved by its own Save. */
+var catsDlg = $('catsDlg');
+
+/* Once per device: drop kinds and learned names for projects that are not in his
+ * rows or his task list any more (the 6 Oct wipe left them). Both old lists are
+ * copied to the backup keys first, and a backup is never overwritten. */
+var KINDS_BACKUP_KEY = 'probeing.categories.backup-7oct';
+var NAMES_BACKUP_KEY = 'probeing.projects.backup-7oct';
+var KINDS_PRUNED_KEY = 'probeing.categories.pruned-7oct';
+var PRUNE_TYPES = ['work', 'voice', 'done', 'subdone', 'subopen'];
+var PRUNE_PAGE = 1000;           // Supabase hands back at most 1000 rows at once
+var PRUNE_PAGES_MAX = 50;
+
+/** Every project name in his rows. null when the read failed or was cut short.
+ *  Only an empty page ends it: a server cap below 1000 must not cut the list. */
+async function rowProjectNames() {
+  var out = userMap();
+  var from = 0;
+  for (var page = 0; page < PRUNE_PAGES_MAX; page++) {
+    var res = await sb.from('events').select('project').in('type', PRUNE_TYPES)
+      .order('id', { ascending: true }).range(from, from + PRUNE_PAGE - 1);
+    if (res.error) return null;
+    var rows = res.data || [];
+    if (!rows.length) return out;
+    rows.forEach(function (r) { if (r.project) out[catKey(r.project)] = 1; });
+    from += rows.length;
+  }
+  return null;
+}
+
+/** Clear the old entries, once. Resolves to how many kinds were dropped (0 when skipped). */
+async function pruneOldKinds() {
+  try { if (localStorage.getItem(KINDS_PRUNED_KEY)) return 0; } catch (e) { return 0; }
+  if (!supabaseReady()) return 0;
+  // With Google connected, wait for the task list: a project not logged yet is still his.
+  if (tasksConnected() && !taskNodes.length) return 0;
+  var keep;
+  try { keep = await rowProjectNames(); } catch (e) { keep = null; }
+  if (!keep) return 0;                     // tried again next time the box opens
+  taskNodes.forEach(function (n) { if (n.title) keep[catKey(n.title)] = 1; });
+  pinnedNames.forEach(function (n) { keep[catKey(n)] = 1; });
+  (lastLog || []).forEach(function (r) { if (r.project && r.type !== 'prayer') keep[catKey(r.project)] = 1; });
+
+  var kinds = loadProjectCategories();
+  var names = loadProjectNames();
+  var oldKinds = Object.keys(kinds).filter(function (k) { return keep[k] !== 1; });
+  var oldNames = names.filter(function (n) { return keep[catKey(n)] !== 1; });
+  try {
+    if (oldKinds.length && !localStorage.getItem(KINDS_BACKUP_KEY)) {
+      localStorage.setItem(KINDS_BACKUP_KEY, localStorage.getItem(PROJECT_CATEGORY_KEY) || '{}');
+    }
+    if (oldNames.length && !localStorage.getItem(NAMES_BACKUP_KEY)) {
+      localStorage.setItem(NAMES_BACKUP_KEY, localStorage.getItem(PROJECT_NAMES_KEY) || '[]');
+    }
+  } catch (e) { return 0; }                // no backup, no clearing
+
+  var next = userMap();
+  Object.keys(kinds).forEach(function (k) { if (keep[k] === 1) next[k] = kinds[k]; });
+  if (oldKinds.length) saveProjectCategories(next);
+  if (oldNames.length) {
+    recentProjects = names.filter(function (n) { return keep[catKey(n)] === 1; });
+    try { localStorage.setItem(PROJECT_NAMES_KEY, JSON.stringify(recentProjects)); } catch (e) { /* kept as was */ }
+  }
+  try { localStorage.setItem(KINDS_PRUNED_KEY, new Date().toISOString()); } catch (e) { /* tried again */ }
+  return oldKinds.length;
+}
+
+$('catsOpenBtn').addEventListener('click', async function () {
+  var note = $('catsDlgNote');
+  note.hidden = true;
+  catsDlg.showModal();
+  var dropped = await pruneOldKinds();
+  if (dropped) {
+    renderCategorySettings();
+    renderLearnedNames();
+    note.textContent = 'Cleared ' + dropped + (dropped === 1 ? ' old project' : ' old projects') +
+      ' from before 6 Oct.';
+    note.hidden = false;
+  }
+});
+
+function closeCats(save) {
+  if (save) saveProjectCategories(mergedCategories(settingsCategoryEdits()));
+  renderCategorySettings();               // Cancel drops unsaved picks
+  renderLearnedNames();                   // the learned list shows each kind
+  if (catsDlg.open) catsDlg.close();
+  $('catsOpenBtn').focus();
+}
+
+$('catsSaveBtn').addEventListener('click', function () { closeCats(true); flash('Saved', 'ok'); });
+$('catsCancelBtn').addEventListener('click', function () { closeCats(false); });
+catsDlg.addEventListener('cancel', function (e) { e.preventDefault(); closeCats(false); });
+
 // ------------------------------------------------------------ money screen
 
 /* Stage 11, reshaped by Money 2 (1 Oct). Expense is picked already, so spending
@@ -9025,7 +9166,6 @@ $('settingsBtn').addEventListener('click', function () {
   renderCategorySettings();
   renderLearnedNames();
   fillPlaceSelects();
-  paintPlace();
   $('placeResult').textContent = '';
   $('micHide').checked = Boolean(cfg.hideMic);
   $('glanceOn').checked = Boolean(cfg.glance);
@@ -9364,10 +9504,8 @@ $('saveBtn').addEventListener('click', function () {
   saveConfig(cfg);
   /* Kept out of `cfg` on purpose: that object is credentials and device
    * settings, rewritten wholesale on every save. The vocabulary
-   * has no business riding along with it, and neither has the grouping — a
-   * project is office work whichever database its rows are in. */
+   * has no business riding along with it. The kinds of work have their own Save. */
   savePinnedNames(parsePinned($('projectNames').value));
-  if (catSettingsRead) saveProjectCategories(mergedCategories(settingsCategoryEdits()));
   paintMic();
   renderChips();
   dlg.close();
@@ -9463,8 +9601,7 @@ function changePlace(fields, said) {
   placeSaved.synced = false;
   savePlace(placeSaved);
   setPrayerPlace(placeSaved);
-  paintPlace();
-  renderPrayerTicks();
+  renderPrayerTicks();                      // Home shows each prayer's start time
   refresh();                                // the day may now turn at another time
 
   var out = $('placeResult');
@@ -9479,20 +9616,6 @@ function changePlace(fields, said) {
     out.textContent = said + ' Saved on this device, but the server copy failed (' +
       String((err && err.message) || err) + '). It is sent again next time the app opens.';
   });
-}
-
-/** Where the times are for, today's five, and when the next day starts. */
-function paintPlace() {
-  var p = currentPlace();
-  var now = Date.now();
-  var where = p.known ? 'Your location: ' + p.lat.toFixed(3) + ', ' + p.lng.toFixed(3)
-                      : 'Karachi — the default until you use your location';
-  var times = PRAYER_NAMES.map(function (n) {
-    return n + ' ' + glanceClock(prayerOpensAt(n, now));
-  }).join(' · ');
-  var next = counterDayStart(counterDayStart(now) + 30 * 3600000);
-  $('placeNow').textContent = where + ' (time zone ' + p.zone + '). Today: ' + times +
-    '. The next day starts at ' + glanceClock(next) + '.';
 }
 
 function fillPlaceSelects() {
@@ -9516,7 +9639,6 @@ function fillPlaceSelects() {
 function placeRefused(why) {
   $('placeResult').textContent = why + (currentPlace().known
     ? ' Your saved location is still used.' : ' Using Karachi’s times.');
-  paintPlace();
 }
 
 $('placeBtn').addEventListener('click', function () {
@@ -10818,7 +10940,7 @@ function tasksSyncText(sync) {
   return parts.join(' ');
 }
 
-/** Settings: Sync now, the sync line and the whole tree, once a list is picked. */
+/** Settings: Sync now and the sync line, once a list is picked. The tree is on the Tasks page. */
 function paintTasksSettings(v) {
   v = v || googleView(googleStatus, googleSync);
   var on = v.state === 'on' && Boolean(v.list) && typeof mirrorTree === 'function';
@@ -10829,30 +10951,6 @@ function paintTasksSettings(v) {
   var line = $('tasksSyncLine');
   line.hidden = !on;
   line.textContent = on ? tasksSyncText(googleSync) : '';
-  var tree = $('tasksTree');
-  tree.textContent = '';
-  var projects = on ? mirrorTree(currentNodes()) : [];
-  projects.forEach(function (p) {
-    var li = document.createElement('li');
-    var name = document.createElement('span');
-    name.className = 'task-project task-' + p.state;
-    // node null: the group of sub-tasks whose project is not in the list.
-    name.textContent = p.node ? nodeTitle(p.node) : '(no project)';
-    li.appendChild(name);
-    if (p.children.length) {
-      var sub = document.createElement('ul');
-      p.children.forEach(function (c) {
-        var cli = document.createElement('li');
-        cli.className = 'task-' + c.state;
-        var due = dueOf(c.node.due);
-        cli.textContent = nodeTitle(c.node) + (due ? ' · due ' + humanYmd(due) : '');
-        sub.appendChild(cli);
-      });
-      li.appendChild(sub);
-    }
-    tree.appendChild(li);
-  });
-  tree.hidden = !projects.length;
 }
 
 $('tasksSyncBtn').addEventListener('click', async function () {
@@ -11249,13 +11347,20 @@ function paintTasksPage() {
   plist.hidden = !planned.length;
   $('tasksPlannedEmpty').hidden = planned.length > 0;
 
-  // All tasks: the tree, open tasks as buttons, done and gone ones dimmed.
+  // All tasks: the tree, open tasks as buttons. Done and gone ones only with Show done (dimmed).
   var doneIds = doneHere();
   var openIds = userMap();
   taskLeaves(nodes).forEach(function (l) { if (leafLive(l, doneIds)) openIds[l.node.id] = l; });
   var all = $('tasksAll');
   all.textContent = '';
-  var projects = mirrorTree(nodes);
+  var tree = mirrorTree(nodes);
+  var projects = tasksShowDone ? tree : remainingTree(tree, openIds);
+  var toggle = $('tasksShowDoneBtn');
+  toggle.hidden = !tasksShowDone && projects.length === tree.length && !tree.some(function (p, i) {
+    return p.children.length !== projects[i].children.length;
+  });
+  toggle.textContent = tasksShowDone ? 'Hide done' : 'Show done';
+  toggle.setAttribute('aria-pressed', tasksShowDone ? 'true' : 'false');
   projects.forEach(function (p) {
     var li = document.createElement('li');
     var own = p.node ? openIds[p.node.id] : null;
@@ -11274,7 +11379,7 @@ function paintTasksPage() {
         pm.textContent = said;
         li.appendChild(pm);
       }
-      if (p.node && !p.children.length && hasItems(p.node.id)) li.appendChild(itemsBlock(p.node.id));
+      if (p.node && !(p.had || p.children.length) && hasItems(p.node.id)) li.appendChild(itemsBlock(p.node.id));
     }
     if (p.children.length) {
       var sub = document.createElement('ul');
@@ -11301,9 +11406,32 @@ function paintTasksPage() {
   });
   all.hidden = !projects.length;
   $('tasksAllEmpty').hidden = projects.length > 0;
+  $('tasksAllEmpty').textContent = tree.length ? 'Nothing left to do.' : 'Your list is empty.';
 
   if (taskDlg && taskDlg.open) paintTaskDlg();
 }
+
+/* All tasks shows what is left, like the taskboard; Show done brings back the
+ * rest, which is where Reopen lives. Off on every load. */
+var tasksShowDone = false;
+
+/** mirrorTree() cut to what is left: open sub-tasks (`openIds`), and projects
+ *  still open in Google or with one left under them. */
+function remainingTree(tree, openIds) {
+  var out = [];
+  tree.forEach(function (p) {
+    var kids = p.children.filter(function (c) { return Boolean(openIds[c.node.id]); });
+    var open = p.node && p.state === 'open';
+    // `had`: it has sub-tasks, even if none is left, so it is never treated as a task itself.
+    if (kids.length || open) out.push({ node: p.node, state: p.state, children: kids, had: p.children.length });
+  });
+  return out;
+}
+
+$('tasksShowDoneBtn').addEventListener('click', function () {
+  tasksShowDone = !tasksShowDone;
+  paintTasksPage();
+});
 
 /** A sub-task finished by its own Done: dimmed, with Reopen while the tick in
  *  Google is ProBeing's or not sent yet. One he completed in Google stays his. */
@@ -12231,7 +12359,7 @@ function finishTask(id) {
   runWrites([{ type: 'subdone', raw_text: text, project: e.project, detail: e.detail, node_id: id,
                rid: rid, at: at, local_time: humanLocal() }]);
   paintTasks();
-  flash('Done: ' + text + '. Reopen it under All tasks on Tasks.', 'ok');
+  flash('Done: ' + text + '. Reopen it under Tasks, All tasks, Show done.', 'ok');
   return true;
 }
 
