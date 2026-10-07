@@ -15,7 +15,7 @@
 // task and expected finish (remindTasks), on its own toggle, user_settings.task_reminders.
 // With nothing due that costs one more small read, of task_plans.
 //
-// Stage 17 (7 Oct): the morning push, "Today: N due, M carried over" (remindPlan),
+// Stage 17 (7 Oct): the morning push, "Today: N due, M carried over, P planned" (remindPlan),
 // once per counter day at user_settings.plan_push_time, on its own toggle plan_push.
 // Idle, it reads nothing: the time is checked before any read.
 //
@@ -248,7 +248,7 @@ function taskPayload(r, offsetMin) {
            body: r.up ? String(r.up.title || '').trim().slice(0, 120) : '' };
 }
 
-/* ── Stage 17: the morning push, "Today: N due, M carried over", once per
+/* ── Stage 17: the morning push, "Today: N due, M carried over, P planned", once per
  *    counter day at user_settings.plan_push_time on his saved zone's clock. */
 
 var PLAN_DEFAULT_MIN = 9 * 60;
@@ -288,9 +288,11 @@ function planDue(now, offsetMin, timeText, on, day) {
  * unless Google's due date was moved there after ProBeing sent it. As the card
  * dates a task: by the finish when it is set and before `end` (before `start`:
  * carried, else due); otherwise by Google's due date (`today`: due, earlier:
- * carried). Planned or undated tasks, and later dates, count in neither.
+ * carried). Any other task on Planned is `planned`; undated or later ones
+ * not on Planned count nowhere. The counted set is the card's own pick.
  * nodes: task_nodes of the list; plans: node id -> task_plans row; tree: tree.js.
- * Returns {due, carried, ids}: ids are the counted leaves.
+ * Returns {due, carried, planned, ids, names}: ids are the counted leaves, and
+ * names their titles, due first, then carried, then planned.
  */
 function planCounts(nodes, plans, done, today, start, end, tree) {
   var byGoogle = {};
@@ -299,7 +301,8 @@ function planCounts(nodes, plans, done, today, start, end, tree) {
     byGoogle[n.google_id] = n;
     if (n.kind === 'subtask' && !n.gone_at) hasKids[n.parent_google_id] = true;
   });
-  var out = { due: 0, carried: 0, ids: [] };
+  var out = { due: 0, carried: 0, planned: 0, ids: [], names: [] };
+  var named = { due: [], carried: [], planned: [] };
   (nodes || []).forEach(function (n) {
     if (!(n.kind === 'subtask' || (n.kind === 'project' && !hasKids[n.google_id]))) return;
     var up = n.kind === 'subtask' ? byGoogle[n.parent_google_id] : null;
@@ -309,19 +312,40 @@ function planCounts(nodes, plans, done, today, start, end, tree) {
     var gdue = tree.dueOf(n.due);
     // NaN (no finish) fails both tests and falls to Google's date.
     var when = fin < start ? 'carried' : fin < end ? 'due'
-      : gdue === today ? 'due' : gdue && gdue < today ? 'carried' : '';
-    if (when === 'due') out.due++;
-    else if (when === 'carried') out.carried++;
-    else return;
+      : gdue === today ? 'due' : gdue && gdue < today ? 'carried' : p && p.planned ? 'planned' : '';
+    if (!when) return;
+    out[when]++;
     out.ids.push(n.id);
+    named[when].push(String(n.title || '').trim() || '(untitled)');
   });
+  out.names = named.due.concat(named.carried, named.planned);
   return out;
 }
 
-/** The push's JSON. sw.js opens Home on a tap. */
+/** Up to three task names, each clipped, then "+N more". Never empty: an empty
+ *  body reads as the night check's "Are you still awake?" on an old sw.js. */
+function planBody(names) {
+  var clip = function (t) {
+    var a = Array.from(String(t));
+    return a.length > 40 ? a.slice(0, 39).join('') + '…' : a.join('');
+  };
+  var out = names.slice(0, 3).map(clip).join(', ');
+  if (names.length > 3) out += ' +' + (names.length - 3) + ' more';
+  return out || 'Open ProBeing for the list.';
+}
+
+/**
+ * The push's JSON: "Today: 2 due, 1 planned", zero parts left out. kind 'prayer'
+ * and a probeing-prayer- tag so a v19/v20 sw.js shows it as a plain notification
+ * that opens Home; `plan` lets v21 show it under its own tag.
+ */
 function planPayload(c) {
-  return { kind: 'plan', tag: 'probeing-plan', goto: 'home',
-           title: 'Today: ' + c.due + ' due, ' + c.carried + ' carried over', body: '' };
+  var parts = [];
+  if (c.due) parts.push(c.due + ' due');
+  if (c.carried) parts.push(c.carried + ' carried over');
+  if (c.planned) parts.push(c.planned + ' planned');
+  return { kind: 'prayer', plan: true, tag: 'probeing-prayer-Plan', goto: 'home',
+           title: 'Today: ' + parts.join(', '), body: planBody(c.names || []) };
 }
 
 /* ─────────────────────────────────────────────────── end of the pure part */
@@ -454,13 +478,13 @@ async function remindPlan(sb: ReturnType<typeof admin>, owner: string, now: numb
     const start = Day.counterDayStart(due.at, offset);
     const end = Day.counterDayStart(start + 30 * 3600000, offset);
     const sync = must(await sb.from('sync_state').select('*').eq('user_id', owner).limit(1))[0] || {};
-    let c = { due: 0, carried: 0, ids: [] as string[] };
+    let c = { due: 0, carried: 0, planned: 0, ids: [] as string[], names: [] as string[] };
     if (sync.connected && sync.list_title && sync.list_id) {
       const nodes = must(await sb.from('task_nodes').select('*').eq('user_id', owner)
         .eq('list_id', sync.list_id).limit(1000));
       const plans: Record<string, any> = {};
-      must(await sb.from('task_plans').select('node_id, expected_at').eq('user_id', owner)
-        .lte('expected_at', new Date(end).toISOString()).limit(1000))
+      // Every plan: Planned counts whatever its date.
+      must(await sb.from('task_plans').select('node_id, planned, expected_at').eq('user_id', owner).limit(2000))
         .forEach((p) => { plans[p.node_id] = p; });
       c = planCounts(nodes, plans, {}, due.day, start, end, Tree);
       if (c.ids.length) {
@@ -491,7 +515,7 @@ async function remindPlan(sb: ReturnType<typeof admin>, owner: string, now: numb
     });
     // Delivered nowhere: release the claim so the next minute tries again.
     if (!out.sent) await sb.from('reminders_sent').delete().eq('user_id', owner).eq('kind', due.kind).eq('day', due.day);
-    return { act: 'sent', day: due.day, due: c.due, carried: c.carried, ...out };
+    return { act: out.sent ? 'sent' : 'failed', day: due.day, due: c.due, carried: c.carried, planned: c.planned, ...out };
   } catch (e) {
     return { act: 'error', error: String((e && (e as Error).message) || e) };
   }

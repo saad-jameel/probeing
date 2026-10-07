@@ -133,6 +133,19 @@ var PLAN_TAG = 'probeing-plan';
 self.addEventListener('push', function (event) {
   var data = pushData(event);
 
+  /* Stage 17: the morning "Today: 2 due, 1 planned"; each day's replaces the last.
+   * It arrives as kind 'prayer' with plan: true, so an older sw.js still shows it plainly. */
+  if (data.kind === 'plan' || data.plan === true) {
+    event.waitUntil(self.registration.showNotification(String(data.title || 'ProBeing'), {
+      body: String(data.body || ''),
+      icon: 'icons/icon-192.png',
+      badge: 'icons/favicon-32.png',
+      tag: PLAN_TAG,
+      renotify: true
+    }));
+    return;
+  }
+
   if (data.kind === 'prayer' || data.kind === 'prayer-logged') {
     var logged = data.kind === 'prayer-logged';
     event.waitUntil(self.registration.showNotification(String(data.title || 'ProBeing'), {
@@ -152,18 +165,6 @@ self.addEventListener('push', function (event) {
       icon: 'icons/icon-192.png',
       badge: 'icons/favicon-32.png',
       tag: TASK_TAG.test(String(data.tag || '')) ? data.tag : 'probeing-task-reminder',
-      renotify: true
-    }));
-    return;
-  }
-
-  // Stage 17: the morning "Today: N due, M carried over"; each day's replaces the last.
-  if (data.kind === 'plan') {
-    event.waitUntil(self.registration.showNotification(String(data.title || 'ProBeing'), {
-      body: String(data.body || ''),
-      icon: 'icons/icon-192.png',
-      badge: 'icons/favicon-32.png',
-      tag: PLAN_TAG,
       renotify: true
     }));
     return;
