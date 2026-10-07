@@ -7924,8 +7924,14 @@ async function rowProjectNames() {
 async function pruneOldKinds() {
   try { if (localStorage.getItem(KINDS_PRUNED_KEY)) return 0; } catch (e) { return 0; }
   if (!supabaseReady()) return 0;
-  // With Google connected, wait for the task list: a project not logged yet is still his.
-  if (tasksConnected() && !taskNodes.length) return 0;
+  /* Only once Google's status has been read this visit (googleSync is null while a
+   * read is in flight or after one fails), and, when connected, the task list has
+   * loaded: a project not logged yet is still his. */
+  if (googleSyncGood === undefined) await readGoogleSync();
+  if (googleSyncGood === undefined) return 0;
+  var g = googleSyncGood;
+  if (g && g.connected && g.list_title && !taskNodes.length) await readTaskNodes();
+  if (g && g.connected && g.list_title && !taskNodes.length) return 0;
   var keep;
   try { keep = await rowProjectNames(); } catch (e) { keep = null; }
   if (!keep) return 0;                     // tried again next time the box opens
@@ -10485,6 +10491,7 @@ tidyGlance();
 var googleStatus = null;       // the last google-link status reply; null while checking
 var googleSync = null;         // this user's sync_state row, or null
 var googleSyncRead = false;    // read this visit; until then serverFiles() remembers
+var googleSyncGood = undefined; // the row from the last read that worked; undefined until one has
 var googleChannel = null;
 // Stage 18's columns, read with the rest of the row.
 var SYNC_SHEET_COLS = ',sheet_url,last_export_at,export_error,sheet_note';
@@ -10542,6 +10549,7 @@ async function readGoogleSync() {
     if (res.error && res.error.code === '42703') res = await read(cols);
     if (!res.error) {
       googleSync = (res.data || [])[0] || null;
+      googleSyncGood = googleSync;
       await rememberServerFiles();
       googleSyncRead = true;
     }
@@ -10988,6 +10996,7 @@ function stopTasks() {
   taskNodes = [];
   googleSync = null;
   googleSyncRead = false;
+  googleSyncGood = undefined;
   lastTasksSyncAt = 0;
   lastTasksCheckAt = 0;
   paintPlan();
@@ -11362,6 +11371,11 @@ function paintTasksPage() {
   toggle.textContent = tasksShowDone ? 'Hide done' : 'Show done';
   toggle.setAttribute('aria-pressed', tasksShowDone ? 'true' : 'false');
   projects.forEach(function (p) {
+    // Show done: a childless task finished here gets the same line, with Reopen, as a sub-task.
+    if (p.node && !p.children.length && !p.had && doneIds[p.node.id] && !p.node.gone_at) {
+      all.appendChild(doneHereLine(p.node));
+      return;
+    }
     var li = document.createElement('li');
     var own = p.node ? openIds[p.node.id] : null;
     if (own) {
@@ -11421,7 +11435,7 @@ function remainingTree(tree, openIds) {
   var out = [];
   tree.forEach(function (p) {
     var kids = p.children.filter(function (c) { return Boolean(openIds[c.node.id]); });
-    var open = p.node && p.state === 'open';
+    var open = p.node && p.state === 'open' && (p.children.length > 0 || Boolean(openIds[p.node.id]));
     // `had`: it has sub-tasks, even if none is left, so it is never treated as a task itself.
     if (kids.length || open) out.push({ node: p.node, state: p.state, children: kids, had: p.children.length });
   });
