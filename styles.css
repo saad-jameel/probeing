@@ -890,6 +890,25 @@ body {
 /* Rule 6: .btn-wide sets `display`, and the task box's Done can be hidden. */
 .btn-wide[hidden] { display: none; }
 
+/* Edit queue 2: Stop, Done and Drop on the Working-on tile, stacked; Done and
+   Drop beside a task. Rule 6: both set `display`, so both declare their pair. */
+.tile-acts { display: flex; flex-direction: column; gap: 6px; flex: 0 0 auto; }
+.tile-acts[hidden] { display: none; }
+.tile-acts .done-btn { padding: 5px 12px; }
+.tile-acts .tile-drop { color: var(--fg); border-color: var(--line); }
+.task-acts { display: flex; gap: 6px; flex: 0 0 auto; }
+.task-acts[hidden] { display: none; }
+.task-leaf { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; column-gap: 8px; }
+.task-leaf[hidden] { display: none; }
+.task-leaf > :not(.task-item):not(.task-acts) { grid-column: 1 / -1; }
+.task-tree .task-dropped { text-decoration: none; font-style: italic; }
+
+/* The Add a due choices: the big two-column buttons of the first Lend or borrow
+   box (13b), every cell the same size. Rule 6: the grid declares its pair. */
+.due-kinds { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-top: 8px; }
+.due-kinds[hidden] { display: none; }
+.due-kinds .pick { padding: 16px 10px; font-size: 15px; font-weight: 600; min-height: 56px; }
+
 /* Stage 16: What's done. A fixed height, so switching project does not resize it.
    Only #doneProjects (.pick-grid, which has its pair) and #doneNote are ever hidden (rule 6). */
 .done-dlg { height: min(85vh, 85dvh); }

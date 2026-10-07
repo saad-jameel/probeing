@@ -402,9 +402,9 @@
   <form method="dialog">
     <h2>Add a due</h2>
     <p class="pick-head">Record only &mdash; no cash moves</p>
-    <div id="dueRecordKinds" class="pick-grid"></div>
+    <div id="dueRecordKinds" class="due-kinds"></div>
     <p class="pick-head">Cash moved now</p>
-    <div id="dueCashKinds" class="pick-grid"></div>
+    <div id="dueCashKinds" class="due-kinds"></div>
 
     <label for="duePerson">Person</label>
     <input id="duePerson" type="text" maxlength="40" autocomplete="off" placeholder="Ali">
@@ -823,6 +823,7 @@
     <div class="task-dlg-main">
       <button type="button" id="taskStartBtn" class="btn btn-accent btn-wide">Start working on it</button>
       <button type="button" id="taskDoneBtn" class="btn btn-wide" hidden>Done</button>
+      <button type="button" id="taskDropBtn" class="btn btn-wide" hidden>Drop</button>
       <button type="button" id="taskPlanBtn" class="btn btn-wide">Add to Planned</button>
     </div>
 

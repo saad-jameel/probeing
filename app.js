@@ -2218,10 +2218,10 @@ function renderProject() {
     return;
   }
 
-  // Sub-tasks finished by their own Done leave the list: "project\ntitle" -> 1.
+  // Tasks closed by their own Done or Drop leave the list: "project\ntitle" -> 1.
   var finished = userMap();
   var index = nodeIndex(taskNodes);
-  Object.keys(doneHere()).forEach(function (id) {
+  Object.keys(closedHere()).forEach(function (id) {
     var names = nodeNames(index, id);
     if (names && names.detail) finished[names.project + '\n' + names.detail.replace(/\s+/g, ' ').trim().toLowerCase()] = 1;
   });
@@ -2265,16 +2265,160 @@ function renderProject() {
     }
     if (sub) main.appendChild(currentSubtaskBlock(sub, subTitle));
 
-    // "Stop", not "Done": it stops the clock on this; Done is for finished items (C1).
+    // "Stop" pauses it: that work is not finished. Done and Drop (edit queue 2) close it too.
     var done = document.createElement('button');
     done.type = 'button';
     done.className = 'done-btn';
     done.textContent = 'Stop';
     done.addEventListener('click', function () { finishProject(done, name); });
 
-    li.append(main, done);
+    li.append(main, tileActs(done, name, day, rows));
     list.appendChild(li);
   });
+}
+
+/* ── Edit queue 2: Done and Drop beside Stop ────────────────────────────
+ * Done = Stop AND finished: the running task's own Done when Done belongs on it
+ * (a sub-task ticks Google through tasks-sync; a project never does), else the
+ * tile's entry, finished in ProBeing only (What's done). Drop = Stop and drop
+ * the task. A task with open items has neither: they sit on its items. */
+
+/** Stop, then Done and Drop when the tile has somewhere to put them. */
+function tileActs(stop, name, day, rows) {
+  var box = document.createElement('div');
+  box.className = 'tile-acts';
+  box.appendChild(stop);
+  var t = tileTarget(name, day, rows);
+  if (t.node || t.entry) box.appendChild(tileBtn('Done', name, 'done'));
+  if (t.node) box.appendChild(tileBtn('Drop', name, 'drop'));
+  return box;
+}
+
+function tileBtn(text, name, mark) {
+  var b = document.createElement('button');
+  b.type = 'button';
+  b.className = 'done-btn tile-' + mark;
+  b.textContent = text;
+  b.setAttribute('aria-label', text + ': ' + name);
+  b.addEventListener('click', function () { tileClose(b, name, mark); });
+  return b;
+}
+
+/** What Done and Drop on tile `name` act on: {node: id} the running task, when
+ *  they belong on it; {items: true} when it has open items; {entry} the tile's
+ *  newest entry otherwise; {} when there is none. `rows` newest first. */
+function tileTarget(name, day, rows) {
+  var id = name === day.subtaskProject ? day.currentSubtask : '';
+  if (id && openLeafById(id)) return openItemCount(id) ? { items: true } : { node: id };
+  var ent = tileEntry(name, rows);
+  return ent ? { entry: ent } : {};
+}
+
+/** The tile's newest entry with a rid, and the project it is filed under:
+ *  {rid, node_id}. Its rid keys the finish, so both devices write the same one. */
+function tileEntry(name, rows) {
+  var hit = (rows || []).filter(function (r) {
+    return (r.type === 'work' || r.type === 'voice') && r.rid &&
+           String(r.project || r.raw_text || '').trim() === name;
+  })[0];
+  return hit ? { rid: String(hit.rid), node_id: tileNode(name) } : null;
+}
+
+/** One press: finish or drop what the tile is on, then Stop it; all through the outbox. */
+function tileClose(btn, name, mark) {
+  if (btn.disabled) return;
+  coolDown(btn);
+  var rows = named(sessionLog());
+  var t = tileTarget(name, replayDay(rows), rows);       // as it is now, not as drawn
+  if (!t.node && !(mark === 'done' && t.entry)) {
+    flash(t.items ? 'Mark its items Done or Drop instead.' : 'Nothing to mark ' + mark + ' here.', 'err');
+    return;
+  }
+  // The finish first, so it is the first press sent; then the Stop.
+  if (t.node) {
+    if (mark === 'drop') dropTask(t.node); else finishTask(t.node);
+  } else {
+    finishEntry(name, t.entry);
+  }
+  closeProject(name);
+  paintTasksPage();
+}
+
+/* An entry finished in ProBeing only: an `entrydone` row, undone by `entryopen`.
+ * rid = prefix + the entry's rid + '-' + gen, as tree.js directRid does for a
+ * task, so a second tap or the other device makes the same rid. */
+var ENTRY_DONE = 'ed-';
+var ENTRY_OPEN = 'eo-';
+var ENTRY_RID = /^(ed|eo)-(.+)-(\d{1,6})$/;
+var entryRows = [];                      // entry Done/Reopen rows, as last read
+
+function isEntryRow(type, rid) {
+  var m = ENTRY_RID.exec(String(rid || ''));
+  return Boolean(m) && ((type === 'entrydone' && m[1] === 'ed') || (type === 'entryopen' && m[1] === 'eo'));
+}
+
+/** Every entry Done/Reopen known here: the last read, held presses and today's
+ *  rows. A refused (parked) one is not a press. */
+function entryAll() {
+  var rows = [];
+  var have = userMap();
+  parkedAll().forEach(function (x) { if (x && x.rid) have[x.rid] = 1; });
+  function add(r) {
+    if (!r || !isEntryRow(r.type, r.rid) || have[r.rid]) return;
+    have[r.rid] = 1;
+    rows.push(r);
+  }
+  (Array.isArray(entryRows) ? entryRows : []).forEach(add);
+  outboxOurs().forEach(function (it) { if (it.action === 'log') add(queuedRow(it)); });
+  sessionLog().forEach(add);
+  return rows;
+}
+
+/** entry rid -> its newest Done/Reopen: {mark, gen, at, rid, raw_text, node_id}. */
+function entryMarks(rows) {
+  var out = userMap();
+  (rows || []).forEach(function (r) {
+    var m = r && ENTRY_RID.exec(String(r.rid || ''));
+    if (!m || !isEntryRow(r.type, r.rid) || isNaN(instantOf(r.at))) return;
+    var d = { mark: m[1] === 'ed' ? 'done' : 'open', gen: Number(m[3]), at: r.at, rid: String(r.rid),
+              raw_text: r.raw_text || '', node_id: r.node_id || '' };
+    var have = out[m[2]];
+    if (!have || directNewer(d, have)) out[m[2]] = d;
+  });
+  return out;
+}
+
+/** Done on the entry `ent` ({rid, node_id}) of tile `name`. False when it is done already. */
+function finishEntry(name, ent) {
+  var m = entryMarks(entryAll())[ent.rid];
+  if (m && m.mark === 'done') return false;
+  var rid = ENTRY_DONE + ent.rid + '-' + (m ? m.gen + 1 : 0);
+  var at = new Date(Math.max(Date.now(), m ? instantOf(m.at) + 1 : 0)).toISOString();
+  var step = { type: 'entrydone', raw_text: name, project: name, detail: '', rid: rid, at: at,
+               local_time: humanLocal() };
+  if (ent.node_id) step.node_id = ent.node_id;
+  unpark(rid);
+  noteLocalRow('entrydone', name, name, '', ent.node_id).rid = rid;
+  runWrites([step]);
+  flash('Done: ' + name + '. Reopen it in What\'s done.', 'ok');
+  return true;
+}
+
+/** Reopen an entry finished here. */
+function reopenEntry(key) {
+  var m = entryMarks(entryAll())[key];
+  if (!m || m.mark !== 'done') return false;
+  var rid = ENTRY_OPEN + key + '-' + m.gen;
+  var at = new Date(Math.max(Date.now(), instantOf(m.at) + 1)).toISOString();
+  var text = 'Reopened: ' + (String(m.raw_text || '').trim() || '(untitled)');
+  var step = { type: 'entryopen', raw_text: text, project: m.raw_text || '', detail: '', rid: rid, at: at,
+               local_time: humanLocal() };
+  if (m.node_id) step.node_id = m.node_id;
+  unpark(rid);
+  noteLocalRow('entryopen', text, m.raw_text || '', '', m.node_id).rid = rid;
+  runWrites([step]);
+  flash(text, 'ok');
+  return true;
 }
 
 /* Write the row that closes one project, without touching the others or the
@@ -7899,7 +8043,7 @@ var catsDlg = $('catsDlg');
 var KINDS_BACKUP_KEY = 'probeing.categories.backup-7oct';
 var NAMES_BACKUP_KEY = 'probeing.projects.backup-7oct';
 var KINDS_PRUNED_KEY = 'probeing.categories.pruned-7oct';
-var PRUNE_TYPES = ['work', 'voice', 'done', 'subdone', 'subopen'];
+var PRUNE_TYPES = ['work', 'voice', 'done', 'subdone', 'subopen', 'subdrop', 'entrydone', 'entryopen'];
 var PRUNE_PAGE = 1000;           // Supabase hands back at most 1000 rows at once
 var PRUNE_PAGES_MAX = 50;
 
@@ -10892,7 +11036,7 @@ function paintPlan() {
     var li = document.createElement('li');
     if (!g.up) {
       // A childless project, or a sub-task whose project is not in the list.
-      li.appendChild(taskButton(g.leaves[0], 'planList', taskMeta(g.leaves[0], today, true)));
+      appendLeaf(li, g.leaves[0], 'planList', taskMeta(g.leaves[0], today, true));
     } else {
       li.className = 'plan-group';
       var head = document.createElement('div');
@@ -10902,7 +11046,7 @@ function paintPlan() {
       var sub = document.createElement('ul');
       g.leaves.forEach(function (leaf) {
         var sli = document.createElement('li');
-        sli.appendChild(taskButton(leaf, 'planList', taskMeta(leaf, today, false)));
+        appendLeaf(sli, leaf, 'planList', taskMeta(leaf, today, false));
         sub.appendChild(sli);
       });
       li.appendChild(sub);
@@ -11075,13 +11219,13 @@ function leafOpen(leaf) {
   return nodeOpen(leaf.node) && !(leaf.up && leaf.up.gone_at);
 }
 
-/** Open, and not finished here by its own Done (`done`: doneHere()). */
+/** Open, and not closed here by its own Done or Drop (`done`: closedHere()). */
 function leafLive(leaf, done) {
   return leafOpen(leaf) && !done[leaf.node.id];
 }
 
 function openLeafById(id) {
-  var done = doneHere();
+  var done = closedHere();
   var hit = taskLeaves(currentNodes()).filter(function (l) { return l.node.id === id && leafLive(l, done); });
   return hit[0] || null;
 }
@@ -11113,7 +11257,7 @@ function byTaskWhen(a, b) {
 
 /** Open tasks on Planned, soonest finish first, unset last. */
 function plannedLeaves(nodes) {
-  var done = doneHere();
+  var done = closedHere();
   return taskLeaves(nodes).filter(function (l) {
     var plan = planOf(l.node.id);
     return leafLive(l, done) && Boolean(plan && plan.planned);
@@ -11124,7 +11268,7 @@ function plannedLeaves(nodes) {
  *  to finish before `endMs`; soonest first. None of those: every open task, as
  *  todaysPlan lists them (13b). */
 function homePlanLeaves(nodes, today, endMs) {
-  var done = doneHere();
+  var done = closedHere();
   var open = taskLeaves(nodes).filter(function (l) { return leafLive(l, done); });
   var picked = open.filter(function (l) {
     var plan = planOf(l.node.id);
@@ -11150,7 +11294,7 @@ function sameTitle(a, b) {
  */
 function workingOnLeaves(nodes, rows) {
   var day = replayDay(rows);
-  var done = doneHere();
+  var done = closedHere();
   var open = taskLeaves(nodes).filter(leafOpen);
   var byId = userMap();
   open.forEach(function (l) { byId[l.node.id] = l; });
@@ -11170,9 +11314,9 @@ function workingOnLeaves(nodes, rows) {
     });
     if (!hits.length) open.forEach(function (l) { if (sameTitle(l.node.title, name)) add(l); });
     if (!hits.length) { items.push({ name: name, leaf: null }); return; }
-    // Finished by its own Done: off the list. All of them: the project says so.
+    // Closed by its own Done or Drop: off the list. All of them: the project says so.
     var live = hits.filter(function (l) { return !done[l.node.id]; });
-    if (!live.length) { items.push({ name: name, leaf: null, finished: true }); return; }
+    if (!live.length) { items.push({ name: name, leaf: null, finished: done[hits[0].node.id] }); return; }
     live.forEach(function (l) {
       if (seen[l.node.id]) return;
       seen[l.node.id] = 1;
@@ -11209,6 +11353,16 @@ function taskMeta(leaf, today, withProject) {
     parts.push('due ' + humanYmd(due));
   }
   return { text: parts.join(' · '), late: late };
+}
+
+/** A task's button into `li`, with Done and Drop beside it when they belong on
+ *  it (edit queue 2). Its items, appended after, go on the line below. */
+function appendLeaf(li, leaf, listId, meta) {
+  li.appendChild(taskButton(leaf, listId, meta));
+  var acts = taskActs(leaf.node);
+  if (!acts) return;
+  li.classList.add('task-leaf');
+  li.appendChild(acts);
 }
 
 /** A task as a button that opens its box. Titles are his text (rule 5). */
@@ -11324,13 +11478,20 @@ function paintTasksPage() {
   var nodes = currentNodes();
   var today = counterDate(Date.now());
 
-  var now = workingOnLeaves(nodes, named(sessionLog()));
+  var nowRows = named(sessionLog());
+  var now = workingOnLeaves(nodes, nowRows);
   var nowList = $('tasksNow');
   nowList.textContent = '';
   now.items.forEach(function (it) {
     if (!it.leaf) {
-      nowList.appendChild(taskLine(it.name, (it.finished ? 'its task is done' : 'not in your Tasks list') +
-                                            (now.running ? '' : ' · paused')));
+      var line = taskLine(it.name, (it.finished ? 'its task is ' + (it.finished === 'drop' ? 'dropped' : 'done')
+                                                : 'not in your Tasks list') + (now.running ? '' : ' · paused'),
+                          'task-row');
+      var box = document.createElement('div');
+      box.className = 'task-row-title';
+      while (line.firstChild) box.appendChild(line.firstChild);
+      line.append(box, nowActs(it.name, null, nowRows));
+      nowList.appendChild(line);
       return;
     }
     var meta = taskMeta(it.leaf, today, true);
@@ -11338,8 +11499,7 @@ function paintTasksPage() {
     var li = document.createElement('li');
     li.className = 'task-row';
     li.appendChild(taskButton(it.leaf, 'tasksNow', meta));
-    var done = taskDoneButton(it.leaf.node);
-    if (done) li.appendChild(done);
+    li.appendChild(nowActs(it.name, it.leaf, nowRows));
     nowList.appendChild(li);
   });
   nowList.hidden = !now.items.length;
@@ -11350,14 +11510,14 @@ function paintTasksPage() {
   plist.textContent = '';
   planned.forEach(function (l) {
     var li = document.createElement('li');
-    li.appendChild(taskButton(l, 'tasksPlanned', taskMeta(l, today, true)));
+    appendLeaf(li, l, 'tasksPlanned', taskMeta(l, today, true));
     plist.appendChild(li);
   });
   plist.hidden = !planned.length;
   $('tasksPlannedEmpty').hidden = planned.length > 0;
 
   // All tasks: the tree, open tasks as buttons. Done and gone ones only with Show done (dimmed).
-  var doneIds = doneHere();
+  var doneIds = closedHere();
   var openIds = userMap();
   taskLeaves(nodes).forEach(function (l) { if (leafLive(l, doneIds)) openIds[l.node.id] = l; });
   var all = $('tasksAll');
@@ -11379,7 +11539,7 @@ function paintTasksPage() {
     var li = document.createElement('li');
     var own = p.node ? openIds[p.node.id] : null;
     if (own) {
-      li.appendChild(taskButton(own, 'tasksAll', taskMeta(own, today, false)));
+      appendLeaf(li, own, 'tasksAll', taskMeta(own, today, false));
       li.appendChild(itemsBlock(own.node.id));
     } else {
       var name = document.createElement('span');
@@ -11401,7 +11561,7 @@ function paintTasksPage() {
         var leaf = openIds[c.node.id];
         if (leaf) {
           var cli = document.createElement('li');
-          cli.appendChild(taskButton(leaf, 'tasksAll', taskMeta(leaf, today, false)));
+          appendLeaf(cli, leaf, 'tasksAll', taskMeta(leaf, today, false));
           cli.appendChild(itemsBlock(leaf.node.id));
           sub.appendChild(cli);
         } else if (doneIds[c.node.id] && !c.node.gone_at) {
@@ -11447,20 +11607,22 @@ $('tasksShowDoneBtn').addEventListener('click', function () {
   paintTasksPage();
 });
 
-/** A sub-task finished by its own Done: dimmed, with Reopen while the tick in
+/** A task closed by its own Done or Drop: dimmed, with Reopen while the tick in
  *  Google is ProBeing's or not sent yet. One he completed in Google stays his. */
 function doneHereLine(node) {
+  var dropped = Boolean(droppedHere()[node.id]);
   var li = document.createElement('li');
   li.className = 'task-row';
   var box = document.createElement('div');
   box.className = 'task-row-title';
   var title = document.createElement('div');
-  title.className = 'task-done';
+  title.className = 'task-done' + (dropped ? ' task-dropped' : '');
   title.textContent = nodeTitle(node);
   box.appendChild(title);
   var meta = document.createElement('div');
   meta.className = 'plan-meta';
-  meta.textContent = shutMeta(node) || (node.g_status === 'completed' ? '' : 'Done in ProBeing');
+  meta.textContent = shutMeta(node) || (node.g_status === 'completed' ? ''
+                                       : dropped ? 'Dropped in ProBeing' : 'Done in ProBeing');
   box.appendChild(meta);
   if (hasItems(node.id)) box.appendChild(itemsBlock(node.id));
   li.appendChild(box);
@@ -11538,7 +11700,8 @@ function openTaskDlg(id, opener, listId) {
                                             : 'A task of its own, with no project above it.';
   fillTaskWhen(id);
   $('taskDlgNote').textContent = '';
-  $('taskDoneBtn').hidden = leaf.node.kind !== 'subtask';     // never a project (Stage 15)
+  // Edit queue 2: on the lowest level only. A project's Done stays in ProBeing (Stage 15).
+  $('taskDoneBtn').hidden = $('taskDropBtn').hidden = !leafActsHere(id);
   paintTaskDlg();
   taskDlg.showModal();
   $('taskStartBtn').focus();                // not the date box: on a phone that opens a picker
@@ -11673,6 +11836,14 @@ $('taskStartBtn').addEventListener('click', function () {
 
 $('taskDoneBtn').addEventListener('click', function () {
   if (!finishTask(taskDlgNode)) {
+    $('taskDlgNote').textContent = 'This task is no longer open.';
+    return;
+  }
+  closeTaskDlg();
+});
+
+$('taskDropBtn').addEventListener('click', function () {
+  if (!dropTask(taskDlgNode)) {
     $('taskDlgNote').textContent = 'This task is no longer open.';
     return;
   }
@@ -12052,12 +12223,18 @@ function taskTree() {
            direct: directRows.concat(directPressed.filter(unseen)) };
 }
 
-/** Held Done/Reopen presses on a sub-task (`log` rows with a direct rid). */
+/* A direct row: Done, Reopen or Drop pressed on a task itself (tree.js). */
+var DIRECT_RID = /^sd[dox]-/;
+
+function isDirectRow(type, rid) {
+  return (type === 'subdone' || type === 'subopen' || type === 'subdrop') && DIRECT_RID.test(String(rid || ''));
+}
+
+/** Held Done/Reopen/Drop presses on a task (`log` rows with a direct rid). */
 function queuedDirect(have) {
   return outboxOurs().filter(function (it) {
     var p = it.payload || {};
-    return it.action === 'log' && (p.type === 'subdone' || p.type === 'subopen') && p.node_id &&
-           /^sd[do]-/.test(it.rid) && !(have && have[it.rid]);
+    return it.action === 'log' && isDirectRow(p.type, it.rid) && p.node_id && !(have && have[it.rid]);
   }).map(queuedRow);
 }
 
@@ -12094,13 +12271,19 @@ async function readItems() {
     if (mk.error) return false;
     // Feedback 1: Done and Reopen on a sub-task itself; tree.js directMarks keeps only those.
     var dr = await readPages(function () {
-      return sb.from('events').select('type,rid,node_id,at').in('type', ['subdone', 'subopen'])
+      return sb.from('events').select('type,rid,node_id,at').in('type', ['subdone', 'subopen', 'subdrop'])
         .not('node_id', 'is', null).order('at', { ascending: false }).order('rid');
     });
     if (dr.error) return false;
+    // Edit queue 2: entries finished in ProBeing only. A failed read keeps the last.
+    var er = await readPages(function () {
+      return sb.from('events').select('type,rid,node_id,at,raw_text').in('type', ['entrydone', 'entryopen'])
+        .order('at', { ascending: false }).order('rid');
+    });
+    if (!er.error) entryRows = (er.data || []).filter(function (r) { return isEntryRow(r.type, r.rid); });
     itemRows = it.data || [];
     markRows = mk.data || [];
-    directRows = (dr.data || []).filter(function (r) { return /^sd[do]-/.test(String(r.rid || '')); });
+    directRows = (dr.data || []).filter(function (r) { return isDirectRow(r.type, r.rid); });
     itemsRead = true;
     /* A press the read returned is the table's now. One that had already left
      * the device before the read set out, and is not in it, was refused. */
@@ -12280,11 +12463,7 @@ function currentSubtaskBlock(node, title) {
     var finish = shownFinishMs(node);
     if (isFinite(finish)) head.appendChild(deadlineChip(finish, ' · '));
     row.appendChild(head);
-    // Feedback 1: finish a small task (no items) right here.
-    var live = !node.gone_at && node.g_status !== 'completed';
-    var done = live ? taskDoneButton(node) : null;
-    if (done) row.appendChild(done);
-    box.appendChild(row);
+    box.appendChild(row);                      // its Done and Drop are the tile's (edit queue 2)
   }
   box.appendChild(itemsBlock(node.id, HOME_ITEMS_MAX));
   return box;
@@ -12340,7 +12519,7 @@ function directAll() {
   rows.forEach(function (r) { have[r.rid] = 1; });
   parkedAll().forEach(function (x) { if (x && x.rid) have[x.rid] = 1; });   // refused: not a press
   sessionLog().forEach(function (r) {
-    if ((r.type !== 'subdone' && r.type !== 'subopen') || !r.node_id || !/^sd[do]-/.test(String(r.rid || ''))) return;
+    if (!isDirectRow(r.type, r.rid) || !r.node_id) return;
     if (have[r.rid]) return;
     have[r.rid] = 1;
     rows.push(r);
@@ -12356,11 +12535,12 @@ function doneHere() {
   return directDone(taskNodes, tree.items, itemNewest(tree.marks), directMarks(directAll()));
 }
 
-/** Done on sub-task `id`. False when it is not an open sub-task, or is done already. */
+/** Done on task `id`: a sub-task, or a project with nothing under it (edit
+ *  queue 2; tasks-sync never ticks a project). False when it is not open here. */
 function finishTask(id) {
   if (typeof directRid !== 'function') return false;
   var leaf = openLeafById(id);
-  if (!leaf || leaf.node.kind !== 'subtask') return false;
+  if (!leaf) return false;
   var d = directMarks(directAll())[id];
   var rid = directRid(DIRECT_DONE, id, d ? d.gen + 1 : 0);
   // Never older than the Reopen it follows, whatever this device's clock says.
@@ -12377,9 +12557,9 @@ function finishTask(id) {
   return true;
 }
 
-/** Reopen a sub-task finished by its own Done. Only one ProBeing finished. */
+/** Reopen a task finished by its own Done, or dropped. Only one ProBeing closed. */
 function reopenTask(id) {
-  if (typeof directRid !== 'function' || !doneHere()[id]) return false;
+  if (typeof directRid !== 'function' || !closedHere()[id]) return false;
   var d = directMarks(directAll())[id];
   var names = nodeNames(nodeIndex(taskNodes), id);
   if (!d || !names) return false;
@@ -12396,20 +12576,111 @@ function reopenTask(id) {
   return true;
 }
 
-/** A small Done button for sub-task `id`; nothing for a project. */
-function taskDoneButton(node) {
-  if (!node || node.kind !== 'subtask') return null;
+/* ── Edit queue 2: Done and Drop on the lowest level ─────────────────────
+ * Items, when the task has open ones; else the task itself: a sub-task, or a
+ * project with nothing under it. Drop = not finished: hidden like a dropped
+ * item, never sent to Google, undone by Reopen (a `subdrop` row, tree.js).
+ * Projects are never ticked in Google: tasks-sync sends sub-tasks only. */
+
+/** node id -> true: dropped here (tree.js directDropped). */
+function droppedHere() {
+  if (typeof directDropped !== 'function' || !Array.isArray(directRows)) return userMap();
+  return Object.assign(userMap(), directDropped(directMarks(directAll())));
+}
+
+/** node id -> 'done' | 'drop': closed here by its own Done or Drop. */
+function closedHere() {
+  var out = userMap();
+  Object.keys(doneHere()).forEach(function (id) { out[id] = 'done'; });
+  Object.keys(droppedHere()).forEach(function (id) { if (!out[id]) out[id] = 'drop'; });
+  return out;
+}
+
+/** Open items under task `id`. Before the items are read, none are known. */
+function openItemCount(id) {
+  if (!itemsRead) return 0;
+  return itemsOf(taskTree(), id).filter(function (it) { return it.state === 'open'; }).length;
+}
+
+/** Do Done and Drop belong on task `id` itself? A live leaf with no open items. */
+function leafActsHere(id) {
+  return Boolean(openLeafById(id)) && !openItemCount(id);
+}
+
+/** Drop on task `id`. False when it is not open here. */
+function dropTask(id) {
+  if (typeof directRid !== 'function' || typeof DIRECT_DROP !== 'string') return false;
+  var leaf = openLeafById(id);
+  if (!leaf) return false;
+  var d = directMarks(directAll())[id];
+  var rid = directRid(DIRECT_DROP, id, d ? d.gen + 1 : 0);
+  var at = new Date(Math.max(Date.now(), d ? instantOf(d.at) + 1 : 0)).toISOString();
+  var e = taskEntry(leaf);
+  var text = 'Dropped: ' + (e.detail || e.project);
+  unpark(rid);
+  noteLocalRow('subdrop', text, e.project, e.detail, id).rid = rid;
+  directPressed.push({ type: 'subdrop', rid: rid, node_id: id, at: at });
+  runWrites([{ type: 'subdrop', raw_text: text, project: e.project, detail: e.detail, node_id: id,
+               rid: rid, at: at, local_time: humanLocal() }]);
+  paintTasks();
+  flash(text + '. Reopen it under Tasks, All tasks, Show done.', 'ok');
+  return true;
+}
+
+function smallBtn(text, cls, label, onTap) {
   var b = document.createElement('button');
   b.type = 'button';
-  b.className = 'item-btn item-done-btn';
-  b.textContent = 'Done';
-  b.setAttribute('aria-label', 'Done: ' + (node.title || '(untitled)'));
+  b.className = 'item-btn' + (cls ? ' ' + cls : '');
+  b.textContent = text;
+  b.setAttribute('aria-label', label);
   b.addEventListener('click', function () {
     if (b.disabled) return;
     coolDown(b);
-    finishTask(node.id);
+    onTap();
   });
   return b;
+}
+
+/** Working on (Tasks page): Stop, and Done and Drop that stop it too, as on the
+ *  Home tile. For task `leaf` of tile `name`, or the tile's entry when it matched none. */
+function nowActs(name, leaf, rows) {
+  var box = document.createElement('span');
+  box.className = 'task-acts';
+  box.appendChild(smallBtn('Stop', '', 'Stop: ' + name, function () {
+    closeProject(name);
+    paintTasksPage();
+    flash(name + ' — stopped', 'ok');
+  }));
+  var id = leaf ? leaf.node.id : '';
+  var acts = id ? leafActsHere(id) : false;
+  var ent = id ? null : tileEntry(name, rows);
+  var title = leaf ? leaf.node.title || '(untitled)' : name;
+  if (acts || ent) {
+    box.appendChild(smallBtn('Done', 'item-done-btn', 'Done: ' + title, function () {
+      if (id) finishTask(id); else finishEntry(name, ent);
+      closeProject(name);
+      paintTasksPage();
+    }));
+  }
+  if (acts) {
+    box.appendChild(smallBtn('Drop', 'item-drop-btn', 'Drop: ' + title, function () {
+      dropTask(id);
+      closeProject(name);
+      paintTasksPage();
+    }));
+  }
+  return box;
+}
+
+/** Done and Drop for task `node`, or null when they belong on its items or it is not open. */
+function taskActs(node) {
+  if (!node || !leafActsHere(node.id)) return null;
+  var title = node.title || '(untitled)';
+  var box = document.createElement('span');
+  box.className = 'task-acts';
+  box.append(smallBtn('Done', 'item-done-btn', 'Done: ' + title, function () { finishTask(node.id); }),
+             smallBtn('Drop', 'item-drop-btn', 'Drop: ' + title, function () { dropTask(node.id); }));
+  return box;
 }
 
 function openItemDlg(nodeId) {
@@ -12476,6 +12747,7 @@ function stopItems() {
   marksPressed = [];
   directRows = [];
   directPressed = [];
+  entryRows = [];
   subdoneTried = userMap();
   itemsRead = false;
   showClosed = userMap();
@@ -12512,8 +12784,10 @@ function subtaskDoneMs(n, rids, newest, d) {
  * `project` is the project's node id; `under` is an item's sub-task title ('' for
  * an item filed on the project itself). An item counts on its newest mark, only
  * when that is Done. A finish counts only if it came before its task or project
- * was deleted in Google. `tree` is {nodes, items, marks, direct}; `direct` are
- * subdone/subopen rows.
+ * was deleted in Google. `tree` is {nodes, items, marks, direct, entries};
+ * `direct` are subdone/subopen/subdrop rows. Edit queue 2: a project with nothing
+ * under it finished by its own Done (kind 'project'), and entries finished in
+ * ProBeing only (kind 'entry', `entries` rows), under 'pb-other' when no project.
  */
 function doneEntries(tree) {
   tree = tree || {};
@@ -12542,6 +12816,26 @@ function doneEntries(tree) {
       out.push({ project: p.id, kind: 'subtask', id: n.id, title: title(n), under: '', ms: ms });
     }
   });
+  var hasKids = userMap();
+  nodes.forEach(function (n) { if (n && n.kind === 'subtask') hasKids[(n.list_id || '') + '|' + n.parent_google_id] = 1; });
+  nodes.forEach(function (n) {
+    if (!n || !n.id || n.kind !== 'project' || hasKids[(n.list_id || '') + '|' + n.google_id]) return;
+    var ms = directDoneAt(n, direct[n.id], rids[n.id], newest);
+    if (ms !== null && beforeGone(n, n, ms)) {
+      out.push({ project: n.id, kind: 'project', id: n.id, title: title(n), under: '', ms: ms });
+    }
+  });
+  if (tree.entries && tree.entries.length) {
+    var ends = entryMarks(tree.entries);
+    Object.keys(ends).forEach(function (key) {
+      var m = ends[key];
+      if (m.mark !== 'done') return;
+      var n = m.node_id ? index.byId[m.node_id] : null;
+      var p = n ? up(n) : null;
+      out.push({ project: p ? p.id : 'pb-other', kind: 'entry', id: key,
+                 title: String(m.raw_text || '').trim() || '(untitled)', under: '', ms: instantOf(m.at) });
+    });
+  }
   (tree.items || []).forEach(function (it) {
     var m = it && it.rid ? newest[it.rid] : null;
     var n = m && m.mark === 'done' ? index.byId[it.node_id] : null;
@@ -12571,12 +12865,15 @@ function whatsDone(tree, windows, bySubtask) {
     var ymd = counterDate(e.ms);
     if (windows && (ymd < first || ymd > last)) return;
     var line = Object.assign({ ymd: ymd }, e);
-    if (e.kind === 'subtask') line.time = times[e.id] || 0;
+    if (e.kind === 'subtask' || e.kind === 'project') line.time = times[e.id] || 0;
     (byProject[e.project] = byProject[e.project] || []).push(line);
   });
-  return mirrorTree((tree || {}).nodes || []).filter(function (p) {
+  var groups = mirrorTree((tree || {}).nodes || []).filter(function (p) {
     return p.node && (!p.node.gone_at || byProject[p.node.id]);
-  }).map(function (p) {
+  });
+  // Entries finished in ProBeing whose project is not in the list.
+  if (byProject['pb-other']) groups.push({ node: { id: 'pb-other', title: 'Not in your Tasks list' } });
+  return groups.map(function (p) {
     var lines = (byProject[p.node.id] || []).sort(function (a, b) {
       return (b.ms - a.ms) || (a.kind === b.kind ? 0 : a.kind === 'subtask' ? -1 : 1);
     });
@@ -12655,7 +12952,7 @@ async function doneRows(startIso, endIso) {
 /** The current list's mirror, items and marks with held presses, and every direct Done/Reopen. */
 function doneTree() {
   var tree = taskTree();
-  return { nodes: currentNodes(), items: tree.items, marks: tree.marks, direct: directAll() };
+  return { nodes: currentNodes(), items: tree.items, marks: tree.marks, direct: directAll(), entries: entryAll() };
 }
 
 /** The span the filter's time is counted over. */
@@ -12707,15 +13004,24 @@ function renderDone() {
   $('doneNote').hidden = !doneView.note;
 }
 
-/** A sub-task with its time in the range, or an item with the sub-task it was under. */
+/** A task with its time in the range, or an item with the sub-task it was under.
+ *  An entry finished in ProBeing only has its Reopen here. */
 function doneLine(l) {
   var li = document.createElement('li');
   li.className = 'done-' + l.kind;
   var what = document.createElement('span');
   what.className = 'what';
-  what.textContent = (l.kind === 'subtask' ? '✓ ' : '• ') + l.title;
+  what.textContent = (l.kind === 'item' ? '• ' : '✓ ') + l.title;
   li.appendChild(what);
-  var meta = l.kind === 'subtask' ? (l.time > 0 ? humanDuration(l.time) : '') : l.under;
+  if (l.kind === 'entry') {
+    var b = itemLink('Reopen', 'Reopen: ' + l.title, function () {
+      if (b.disabled) return;
+      coolDown(b);
+      if (reopenEntry(l.id)) renderDone();
+    });
+    li.appendChild(b);
+  }
+  var meta = l.kind === 'subtask' || l.kind === 'project' ? (l.time > 0 ? humanDuration(l.time) : '') : l.under;
   if (meta) {
     var m = document.createElement('span');
     m.className = 'when';

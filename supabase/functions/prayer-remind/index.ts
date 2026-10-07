@@ -428,12 +428,14 @@ async function remindTasks(sb: ReturnType<typeof admin>, owner: string, now: num
         .in('item_rid', items.map((i) => i.rid)).limit(1000)).forEach((m) => { newest[m.item_rid] = m; });
     }
     const direct = Tree.directMarks(must(await sb.from('events').select('type, rid, node_id, at')
-      .eq('user_id', owner).in('type', ['subdone', 'subopen']).in('node_id', ids).limit(1000)));
+      .eq('user_id', owner).in('type', Tree.DIRECT_TYPES).in('node_id', ids).limit(1000)));
     const ridsOf: Record<string, string[]> = {};
     items.forEach((i) => { (ridsOf[i.node_id] = ridsOf[i.node_id] || []).push(i.rid); });
     const finished: Record<string, boolean> = {};
+    // Dropped in ProBeing (edit queue 2): off the lists, so no reminder either.
+    const dropped = Tree.directDropped(direct);
     nodeRows.forEach((n) => {
-      if (Tree.finishedAt(n, ridsOf[n.id] || [], newest, direct[n.id]) !== null) finished[n.id] = true;
+      if (dropped[n.id] || Tree.finishedAt(n, ridsOf[n.id] || [], newest, direct[n.id]) !== null) finished[n.id] = true;
     });
     const kinds = plans.map((p: { node_id: string; expected_at: string }) => taskKind(p.node_id, Date.parse(p.expected_at)));
     const already: Record<string, boolean> = {};
@@ -497,8 +499,9 @@ async function remindPlan(sb: ReturnType<typeof admin>, owner: string, now: numb
             .in('item_rid', items.map((i) => i.rid)).limit(1000)).forEach((m) => { newest[m.item_rid] = m; });
         }
         const direct = Tree.directMarks(must(await sb.from('events').select('type, rid, node_id, at')
-          .eq('user_id', owner).in('type', ['subdone', 'subopen']).in('node_id', c.ids).limit(1000)));
-        const done = Tree.directDone(nodes.filter((n) => c.ids.indexOf(n.id) !== -1), items, newest, direct);
+          .eq('user_id', owner).in('type', Tree.DIRECT_TYPES).in('node_id', c.ids).limit(1000)));
+        const done = Object.assign(Tree.directDone(nodes.filter((n) => c.ids.indexOf(n.id) !== -1), items, newest, direct),
+                                   Tree.directDropped(direct));    // a Drop leaves the card too (edit queue 2)
         c = planCounts(nodes, plans, done, due.day, start, end, Tree);
       }
     }

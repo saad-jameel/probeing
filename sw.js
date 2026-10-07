@@ -45,8 +45,10 @@
  * v21 (Stage 16): the What's done page on Tasks.
  * v22 (Stage 17): the morning plan push (opens Home) and its Settings time.
  * v23 (edit queue 1): tab names, remaining tasks only, prayer times on Home,
- * a shorter Settings, kinds of work in a popup. */
-var CACHE = 'probeing-shell-v23';
+ * a shorter Settings, kinds of work in a popup.
+ * v24 (edit queue 2): Done and Drop beside Stop and on the lowest level, the
+ * Add a due buttons. */
+var CACHE = 'probeing-shell-v24';
 var SHELL = [
   './',
   'index.html',

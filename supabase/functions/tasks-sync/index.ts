@@ -165,11 +165,11 @@ function mirrorStore(sb) {
       rows.forEach(function (m) { out[m.item_rid] = m; });
       return out;
     },
-    // Feedback 1: Done and Reopen pressed on a sub-task itself (tree.js directMarks).
+    // Feedback 1: Done and Reopen pressed on a sub-task itself; a Drop too (edit queue 2).
     direct: async function (userId) {
       var rows = await paged(function () {
         return sb.from('events').select('type,rid,node_id,at').eq('user_id', userId)
-          .in('type', ['subdone', 'subopen']).not('node_id', 'is', null).order('rid', { ascending: true });
+          .in('type', ['subdone', 'subopen', 'subdrop']).not('node_id', 'is', null).order('rid', { ascending: true });
       });
       return directMarks(rows);
     },
