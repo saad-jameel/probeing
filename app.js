@@ -12368,8 +12368,9 @@ function subtaskDoneMs(n, rids, newest, d) {
  * Everything finished, any day: [{project, kind, id, title, under, ms}].
  * `project` is the project's node id; `under` is an item's sub-task title ('' for
  * an item filed on the project itself). An item counts on its newest mark, only
- * when that is Done. Anything under a deleted task or project is dropped.
- * `tree` is {nodes, items, marks, direct}; `direct` are subdone/subopen rows.
+ * when that is Done. A finish counts only if it came before its task or project
+ * was deleted in Google. `tree` is {nodes, items, marks, direct}; `direct` are
+ * subdone/subopen rows.
  */
 function doneEntries(tree) {
   tree = tree || {};
@@ -12382,20 +12383,27 @@ function doneEntries(tree) {
     return n.kind === 'subtask' ? index.byGoogle[(n.list_id || '') + '|' + n.parent_google_id] || null : n;
   }
   function title(n) { return String(n.title || '').trim() || '(untitled)'; }
+  /** Finished before the node and its project were deleted (always, when neither was). */
+  function beforeGone(n, p, ms) {
+    var a = n.gone_at ? instantOf(n.gone_at) : Infinity;
+    var b = p.gone_at ? instantOf(p.gone_at) : Infinity;
+    return ms < Math.min(isNaN(a) ? Infinity : a, isNaN(b) ? Infinity : b);
+  }
   var out = [];
   nodes.forEach(function (n) {
-    if (!n || !n.id || n.kind !== 'subtask' || n.gone_at) return;
+    if (!n || !n.id || n.kind !== 'subtask') return;
     var p = up(n);
-    if (!p || p.gone_at) return;
+    if (!p) return;
     var ms = subtaskDoneMs(n, rids[n.id], newest, direct[n.id]);
-    if (ms !== null) out.push({ project: p.id, kind: 'subtask', id: n.id, title: title(n), under: '', ms: ms });
+    if (ms !== null && beforeGone(n, p, ms)) {
+      out.push({ project: p.id, kind: 'subtask', id: n.id, title: title(n), under: '', ms: ms });
+    }
   });
   (tree.items || []).forEach(function (it) {
     var m = it && it.rid ? newest[it.rid] : null;
     var n = m && m.mark === 'done' ? index.byId[it.node_id] : null;
-    if (!n || n.gone_at) return;
-    var p = up(n);
-    if (!p || p.gone_at) return;
+    var p = n ? up(n) : null;
+    if (!p || !beforeGone(n, p, instantOf(m.at))) return;
     out.push({ project: p.id, kind: 'item', id: it.rid, title: String(it.title || '').trim() || '(untitled)',
                under: n.kind === 'subtask' ? title(n) : '', ms: instantOf(m.at) });
   });
@@ -12403,26 +12411,28 @@ function doneEntries(tree) {
 }
 
 /**
- * The page: one entry per live project, in Google's order, each with the
- * counter days in `windows` it finished something on, newest first:
- * [{id, title, count, days: [{ymd, lines}]}]. A line is a doneEntries() entry;
- * a sub-task's also carries `time`, its bySubtask figure over the range.
+ * The page: one entry per project, in Google's order, each with the counter days
+ * it finished something on, newest first: [{id, title, count, days: [{ymd, lines}]}].
+ * `windows` bounds the days (their first and last ymd); null is All, with no bound,
+ * so nothing is listed day by day. A deleted project is listed only when it has
+ * something to show. A line is a doneEntries() entry; a sub-task's also carries
+ * `time`, its bySubtask figure over the period.
  */
 function whatsDone(tree, windows, bySubtask) {
-  if (!windows || !windows.length) return [];
-  var first = windows[0].ymd;
-  var last = windows[windows.length - 1].ymd;
+  if (windows && !windows.length) return [];
+  var first = windows ? windows[0].ymd : '';
+  var last = windows ? windows[windows.length - 1].ymd : '';
   var times = bySubtask || {};
   var byProject = userMap();
   doneEntries(tree).forEach(function (e) {
     var ymd = counterDate(e.ms);
-    if (ymd < first || ymd > last) return;
+    if (windows && (ymd < first || ymd > last)) return;
     var line = Object.assign({ ymd: ymd }, e);
     if (e.kind === 'subtask') line.time = times[e.id] || 0;
     (byProject[e.project] = byProject[e.project] || []).push(line);
   });
   return mirrorTree((tree || {}).nodes || []).filter(function (p) {
-    return p.node && !p.node.gone_at;
+    return p.node && (!p.node.gone_at || byProject[p.node.id]);
   }).map(function (p) {
     var lines = (byProject[p.node.id] || []).sort(function (a, b) {
       return (b.ms - a.ms) || (a.kind === b.kind ? 0 : a.kind === 'subtask' ? -1 : 1);
@@ -12432,28 +12442,46 @@ function whatsDone(tree, windows, bySubtask) {
       if (!days.length || days[days.length - 1].ymd !== l.ymd) days.push({ ymd: l.ymd, lines: [] });
       days[days.length - 1].lines.push(l);
     });
-    return { id: p.node.id, title: String(p.node.title || '').trim() || '(untitled)',
+    var name = String(p.node.title || '').trim() || '(untitled)';
+    return { id: p.node.id, title: p.node.gone_at ? name + ' (deleted in Google)' : name,
              count: lines.length, days: days };
   });
 }
 
-/** The counter days a filter covers, as {start, end} local dates: this week
- *  from Monday, this month from the 1st, or All from `firstMs`'s day. */
+/** The counter days a filter's TIME covers, as {start, end} local dates: this
+ *  week from Monday, this month from the 1st, or All from `firstMs`'s day (the
+ *  first row read), at most 400 days back (dayWindows' own stop). */
 function doneRangeOf(range, now, firstMs) {
   var today = counterToday(now);
   if (range === 'month') return { start: new Date(today.getFullYear(), today.getMonth(), 1), end: today };
   if (range === 'all') {
+    var floor = new Date(today.getFullYear(), today.getMonth(), today.getDate() - 399);
     var from = isFinite(firstMs) ? counterToday(new Date(firstMs)) : today;
+    if (from < floor) from = floor;
     return { start: from < today ? from : today, end: today };
   }
   var wk = reviewRangeOf('wk', now);
   return { start: wk.start, end: wk.end };
 }
 
-/* The time read pages past PostgREST's 1000-row cap. Only rows that move the
- * work clock (LEAD_TYPES): replayDay ignores the rest, so bySubtask is unchanged. */
+/** A day heading: Today, Yesterday, "Sat 26 Sep", with the year when it is not this one. */
+function doneDayName(ymd, todayYmd) {
+  if (String(ymd).slice(0, 4) === String(todayYmd).slice(0, 4)) return moneyDayName(ymd, ymdBack(ymd, todayYmd));
+  var p = String(ymd).split('-');
+  try {
+    return new Date(Number(p[0]), Number(p[1]) - 1, Number(p[2]))
+      .toLocaleDateString(undefined, { weekday: 'short', day: 'numeric', month: 'short', year: 'numeric' });
+  } catch (e) {
+    return String(ymd);
+  }
+}
+
+/* The time read goes newest first, so a hit cap drops the OLDEST rows. 1000 a
+ * page (PostgREST's cap); a lower server cap only means more pages, since only
+ * an empty page ends the read. Only rows that move the work clock (LEAD_TYPES):
+ * replayDay ignores the rest, so bySubtask is unchanged. */
 var DONE_PAGE = 1000;
-var DONE_PAGES_MAX = 20;
+var DONE_PAGES_MAX = 50;
 var DONE_COLS = 'id,at,type,raw_text,project,detail,node_id,rid,created_at';
 var DONE_RANGES = [['week', 'Week'], ['month', 'Month'], ['all', 'All']];
 var DONE_EMPTY = { week: 'this week', month: 'this month', all: 'yet' };
@@ -12465,17 +12493,20 @@ var doneView = { range: 'week', project: '', sum: null, firstMs: NaN, read: 0, n
 async function doneRows(startIso, endIso) {
   var rows = [];
   var seen = userMap();
+  var from = 0;                          // rows handed back so far: a server cap below 1000 skips none
   for (var page = 0; page < DONE_PAGES_MAX; page++) {
     var q = sb.from('events').select(DONE_COLS).in('type', LEAD_TYPES).lt('at', endIso);
     if (startIso) q = q.gte('at', startIso);
-    var res = await q.order('at', { ascending: true }).order('created_at', { ascending: true })
-      .order('id', { ascending: true }).range(page * DONE_PAGE, page * DONE_PAGE + DONE_PAGE - 1);
+    var res = await q.order('at', { ascending: false }).order('created_at', { ascending: false })
+      .order('id', { ascending: false }).range(from, from + DONE_PAGE - 1);
     if (res.error) throw errorFrom(res.error);
     var got = res.data || [];
+    if (!got.length) return { rows: rows.reverse(), partial: false };
+    from += got.length;
+    // A row landing mid-read shifts the pages by one: seen twice, kept once.
     got.forEach(function (r) { if (!seen[r.id]) { seen[r.id] = 1; rows.push(sbRow(r)); } });
-    if (got.length < DONE_PAGE) return { rows: rows, partial: false };
   }
-  return { rows: rows, partial: true };
+  return { rows: rows.reverse(), partial: true };
 }
 
 /** The current list's mirror, items and marks with held presses, and every direct Done/Reopen. */
@@ -12484,19 +12515,16 @@ function doneTree() {
   return { nodes: currentNodes(), items: tree.items, marks: tree.marks, direct: directAll() };
 }
 
-/** The filter's span; All starts at the first row read or the oldest finish. */
-function doneSpan(tree) {
-  var first = doneView.firstMs;
-  if (doneView.range === 'all') {
-    doneEntries(tree).forEach(function (e) { if (!(first <= e.ms)) first = e.ms; });
-  }
-  return doneRangeOf(doneView.range, new Date(), first);
+/** The span the filter's time is counted over. */
+function doneSpan() {
+  return doneRangeOf(doneView.range, new Date(), doneView.firstMs);
 }
 
 function renderDone() {
-  var tree = doneTree();
-  var span = doneSpan(tree);
-  var projects = whatsDone(tree, dayWindows(span.start, span.end), doneView.sum ? doneView.sum.bySubtask : null);
+  var span = doneSpan();
+  // All groups every finish by its day; Week and Month bound them by their windows.
+  var bounds = doneView.range === 'all' ? null : dayWindows(span.start, span.end);
+  var projects = whatsDone(doneTree(), bounds, doneView.sum ? doneView.sum.bySubtask : null);
   Array.prototype.forEach.call($('doneRanges').querySelectorAll('button'), function (b) {
     b.setAttribute('aria-pressed', String(b.dataset.range === doneView.range));
   });
@@ -12521,7 +12549,7 @@ function renderDone() {
   (shown ? shown.days : []).forEach(function (d) {
     var head = document.createElement('li');
     head.className = 'day-head';
-    head.textContent = moneyDayName(d.ymd, ymdBack(d.ymd, todayYmd));
+    head.textContent = doneDayName(d.ymd, todayYmd);
     list.appendChild(head);
     d.lines.forEach(function (l) { list.appendChild(doneLine(l)); });
   });
@@ -12563,13 +12591,13 @@ async function readDone() {
     if (!supabaseReady()) throw new Error('Sign in to read your time.');
     if (!itemsRead) await readItems();
     var all = doneView.range === 'all';
-    var span = doneSpan(doneTree());
+    var span = doneSpan();
     var bounds = rangeReadBounds(span.start, span.end);
     var got = await doneRows(all ? null : bounds.startIso, bounds.endIso);
     if (ticket !== doneView.read) return;
     if (all && got.rows.length) {
       doneView.firstMs = instantOf(got.rows[0].at);
-      span = doneSpan(doneTree());
+      span = doneSpan();
     }
     doneView.sum = summariseRange(got.rows, dayWindows(span.start, span.end));
     doneView.note = got.partial ? 'Too many rows to read at once, so times may be short.' : '';

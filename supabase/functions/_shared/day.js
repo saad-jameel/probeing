@@ -427,9 +427,10 @@ var IDLE_RESET_TYPES = ['work', 'voice', 'done', 'break', 'resume', 'awake', 'su
 
 /**
  * The lead-in for a day starting at `beforeMs`: rows of LEAD_TYPES earlier than
- * it, no more than LEAD_MAX_MS earlier, and strictly after the newest off/sleep.
+ * it, no more than LEAD_MAX_MS earlier, and strictly after the newest `off`.
  * Newest first, as replayDay() takes them. A row sharing the close's instant is
- * dropped with it: Sleep writes `break` and `sleep` together, and the close wins.
+ * dropped with it: a night Sleep writes `off` and `sleep` together, and the close wins.
+ * A lone `sleep` is a daytime nap (sleepClosingRow), so it does not end the session.
  */
 function sessionLead(rows, beforeMs) {
   var from = beforeMs - LEAD_MAX_MS;
@@ -438,7 +439,7 @@ function sessionLead(rows, beforeMs) {
   (rows || []).forEach(function (r, i) {
     var t = instantOf(r.at);
     if (isNaN(t) || t >= beforeMs || t < from || LEAD_TYPES.indexOf(r.type) === -1) return;
-    if ((r.type === 'off' || r.type === 'sleep') && t > closedAt) closedAt = t;
+    if (r.type === 'off' && t > closedAt) closedAt = t;
     keep.push({ r: r, t: t, i: i });
   });
   var cut = keep.filter(function (x) { return x.t > closedAt; })
