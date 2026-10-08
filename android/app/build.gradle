@@ -98,8 +98,8 @@ android {
         applicationId "io.github.saad_jameel.probeing"
         minSdkVersion 26
         targetSdkVersion 36
-        versionCode 3
-        versionName "3"
+        versionCode 4
+        versionName "4"
 
         // The name for the application
         resValue "string", "appName", twaManifest.name
@@ -265,5 +265,7 @@ dependencies {
     implementation fileTree(include: ['*.jar'], dir: 'libs')
     
         implementation 'com.google.androidbrowserhelper:androidbrowserhelper:2.6.2'
-    
+    // ADDED BY HAND (Stage 18c): runs the phone watcher every 15 minutes.
+    implementation 'androidx.work:work-runtime:2.10.5'
+
 }

@@ -1,0 +1,30 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Stage 18c. Its own file, not strings.xml: Bubblewrap overwrites that one. -->
+<resources>
+    <string name="phone_watch_title">Phone activity</string>
+    <string name="phone_explainer">While you are working in ProBeing (not on a break, not after End day), this phone tells ProBeing which app was on screen and from when to when: every 15 minutes, and every few minutes while a distraction is on. Only the app\'s name and the times. Never what is on the screen, never notification text. Banking, wallets, chats and messages go only as \"private\", with no name.\n\nYouTube, Instagram, X, TikTok and Facebook are distractions here: 10 minutes on one and you get a push; ignore it 5 minutes and it becomes a break from when it started, unless your laptop shows work in the same minutes (then ProBeing asks you later).</string>
+    <string name="phone_usage_on">Usage access: allowed.</string>
+    <string name="phone_usage_off">Usage access: not allowed yet. Press the button, find ProBeing, switch it on.</string>
+    <string name="phone_usage_btn">Allow usage access</string>
+    <string name="phone_usage_btn_again">Usage access settings</string>
+    <string name="phone_usage_missing">This phone has no Usage access page to open. Look under Settings, Apps, Special app access.</string>
+    <string name="phone_paired_as">Paired as: %1$s.</string>
+    <string name="phone_not_paired">Not paired. In ProBeing: Settings, Laptop and phone activity, Pair this phone.</string>
+    <string name="phone_last_run">Last run %1$s: %2$s</string>
+    <string name="phone_offer">ProBeing just made a code for this phone. Press Pair only if you pressed \"Pair this phone\" a moment ago.</string>
+    <string name="phone_offer_replace">ProBeing just made a new code for this phone. Pair replaces the current pairing. Press it only if you pressed \"Pair this phone\" a moment ago.</string>
+    <string name="phone_offer_btn">Pair</string>
+    <string name="phone_paste_hint">Or paste the code ProBeing\'s Settings showed:</string>
+    <string name="phone_paste_box">Phone code</string>
+    <string name="phone_paste_btn">Pair with this code</string>
+    <string name="phone_token_short">That is not a whole code. Copy it again from ProBeing\'s Settings.</string>
+    <string name="phone_checking">Checking the code with ProBeing…</string>
+    <string name="phone_paired_now">Paired as: %1$s. If you are working, the first blocks go out within a minute or two.</string>
+    <string name="phone_pair_failed">Not paired: %1$s</string>
+    <string name="phone_pair_unknown">ProBeing does not know this code (revoked, or mistyped).</string>
+    <string name="phone_pair_store">this phone could not store it safely.</string>
+    <string name="phone_send_btn">Send now</string>
+    <string name="phone_send_queued">Asked for a run now. Come back in a minute for the result.</string>
+    <string name="phone_stop_btn">Stop watching on this phone</string>
+    <string name="phone_stopped">Stopped, and the code is forgotten. Revoke this phone in ProBeing\'s Settings too.</string>
+</resources>

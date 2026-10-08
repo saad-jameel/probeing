@@ -20,6 +20,7 @@
      application, the package attribute will need to reflect the correct path in order to use
      the abbreviated format. -->
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools"
     package="io.github.saad_jameel.probeing">
 
     <!-- ADDED BY HAND (Stage 8). Bubblewrap generates this file with an empty
@@ -30,6 +31,23 @@
     <!-- Android 13+ refuses to show a notification without it, which is why the
          app looked like it "does not send notifications". -->
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+
+    <!-- ADDED BY HAND (Stage 18c): the phone watcher. Usage access is switched on
+         by him in Android's settings, never granted at install; it gives app names
+         and times only. <queries> lets it read launchable apps' names and find the
+         home screen, without asking to see every installed package. -->
+    <uses-permission android:name="android.permission.PACKAGE_USAGE_STATS"
+        tools:ignore="ProtectedPermissions" />
+    <queries>
+        <intent>
+            <action android:name="android.intent.action.MAIN" />
+            <category android:name="android.intent.category.LAUNCHER" />
+        </intent>
+        <intent>
+            <action android:name="android.intent.action.MAIN" />
+            <category android:name="android.intent.category.HOME" />
+        </intent>
+    </queries>
 
     
 
@@ -233,6 +251,25 @@
             android:theme="@android:style/Theme.DeviceDefault.Dialog"
             android:windowSoftInputMode="adjustResize" />
         <!-- ====================== end ADDED BY HAND (Stage 8) ============== -->
+
+        <!-- ADDED BY HAND (Stage 18c): the phone activity screen. Exported so
+             ProBeing's Settings can open it (probeing://pair-phone, with the new
+             token as an extra); a token offered that way is kept only after he
+             presses Pair and the server knows it. -->
+        <activity
+            android:name=".watch.PhoneWatchActivity"
+            android:exported="true"
+            android:label="@string/phone_watch_title"
+            android:launchMode="singleTop"
+            android:theme="@android:style/Theme.DeviceDefault"
+            android:windowSoftInputMode="adjustResize">
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data android:scheme="probeing" android:host="pair-phone" />
+            </intent-filter>
+        </activity>
 
     </application>
 </manifest>

@@ -24,6 +24,7 @@ public class Application extends android.app.Application {
   @Override
   public void onCreate() {
       super.onCreate();
-      
+      // ADDED BY HAND (Stage 18c): keep the phone watcher scheduled once paired.
+      io.github.saad_jameel.probeing.watch.WatchWorker.ensure(this);
   }
 }

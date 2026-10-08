@@ -10,6 +10,8 @@ package io.github.saad_jameel.probeing.glance;
  * is what protects the rows. What this key can reach is exactly one function,
  * glance_for(secret), and only when it is handed a secret that matches a row —
  * which is why the widget can read two lines of text and nothing else.
+ * The phone watcher (Stage 18c, watch/Ingest.java) also uses it to reach
+ * activity-ingest, which acts only for a paired device token.
  *
  * The alternative was asking for them at pairing time. It was rejected for the
  * reason app.js gives: a 209-character key typed on a phone is a key typed
@@ -20,11 +22,11 @@ package io.github.saad_jameel.probeing.glance;
  * scripts/secret_scan.sh reads *.java as well as *.js precisely so that this
  * file is covered by the same check.
  */
-final class Supabase {
+public final class Supabase {
 
-    static final String URL = "https://whxgzdrowvkpzpgfilof.supabase.co";
+    public static final String URL = "https://whxgzdrowvkpzpgfilof.supabase.co";
 
-    static final String ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9."
+    public static final String ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9."
             + "eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6IndoeGd6ZHJvd3ZrcHpwZ2ZpbG9mIiwicm9sZSI6"
             + "ImFub24iLCJpYXQiOjE3ODc4NDEzNDQsImV4cCI6MjEwMzQxNzM0NH0."
             + "qJyTdirLFpOu5uBsLwOWAnwWUp4lU1Ka0ZwM6Vsz3mE";
