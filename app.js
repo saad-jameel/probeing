@@ -299,6 +299,24 @@ function sbRow(r) {
   return row;
 }
 
+/* Item 20: `row` (a Bought or Remove void) lost to another void. If a Move won,
+ * void its moved copy (mv-) the same way, even before that copy lands, and so
+ * on down the chain; rids derived, so a resend writes each once. */
+async function buyOffMoved(row) {
+  for (var hop = 0; hop < 48; hop++) {
+    var won = await sb.from('money').select('rid').eq('voids_rid', row.voids_rid).limit(1);
+    if (won.error) throw errorFrom(won.error);
+    var by = won.data && won.data[0] ? String(won.data[0].rid) : '';
+    if (by.indexOf(BUY_RID.movedOff) !== 0) return;     // ours, or a Bought/Remove: done
+    var copy = BUY_RID.moved + row.voids_rid;
+    var prefix = row.note === BUY_NOTE.bought ? BUY_RID.boughtOff : BUY_RID.removed;
+    row = Object.assign({}, row, { rid: prefix + copy, voids_rid: copy });
+    var ins = await sb.from('money').insert(row);
+    if (!ins.error) return;
+    if (ins.error.code !== '23505') throw errorFrom(ins.error);
+  }
+}
+
 async function sbInsert(payload) {
   /* THE PRESS TIME, NOT THE SEND TIME. api() stamps `at` and `local_time` once,
    * beside the rid, and every attempt — including one replayed off the outbox an
@@ -611,12 +629,19 @@ async function callSupabase(action, payload) {
         throw new Error('Waiting for its ' + first + ' to be sent.');
       }
     }
-    // Only one void per thing gets in: if Bought or Remove on another device
-    // took it off first, the move is over and the new month's row is not written.
+    // The moved copy is written only if the row it moves is in the table, our
+    // void is the one that took it off, and nothing in its chain was bought.
     if (payload.moved_from) {
-      var offRow = await sb.from('money').select('rid').eq('voids_rid', String(payload.moved_from)).limit(1);
+      var from = String(payload.moved_from);
+      var offRow = await sb.from('money').select('rid').eq('voids_rid', from).limit(1);
       if (offRow.error) throw errorFrom(offRow.error);
-      if (offRow.data && offRow.data.length && offRow.data[0].rid !== payload.after) {
+      var chain = await sb.from('money').select('rid').in('rid', [from].concat(buyChainUp(from).map(function (r) {
+        return BUY_RID.bought + r;
+      })));
+      if (chain.error) throw errorFrom(chain.error);
+      var have = (chain.data || []).map(function (r) { return r.rid; });
+      if (have.indexOf(from) === -1 || have.length > 1 ||
+          (offRow.data && offRow.data.length && offRow.data[0].rid !== payload.after)) {
         moneyLocal = moneyLocal.filter(function (r) { return r.rid !== payload.rid; });
         return { ok: true, skipped: true };
       }
@@ -654,6 +679,10 @@ async function callSupabase(action, payload) {
     var ins = await sb.from('money').insert(moneyRow);
     // 23505: this rid, or a void of this row, is already in. Success either way.
     if (ins.error && ins.error.code !== '23505') throw errorFrom(ins.error);
+    // A Bought or Remove beaten by a Move takes the moved copy off instead.
+    if (ins.error && kind === 'buy' && moneyRow.voids_rid && moneyRow.note !== BUY_NOTE.moved) {
+      await buyOffMoved(moneyRow);
+    }
     return { ok: true, duplicate: Boolean(ins.error) };
   }
 
@@ -6281,6 +6310,13 @@ function monthAdd(ym, n) {
  *  even at PKR 0; '' only when nothing at all is on the list. */
 function buyLineMonth(open, todayYm) {
   return (open || []).length ? todayYm : '';
+}
+
+/** A thing's rid and those it was moved from: 'mv-mv-X' -> [mv-mv-X, mv-X, X]. */
+function buyChainUp(rid) {
+  var out = [String(rid)];
+  while (out[out.length - 1].indexOf(BUY_RID.moved) === 0) out.push(out[out.length - 1].slice(BUY_RID.moved.length));
+  return out;
 }
 
 /** Months a thing in `fromYm` can move to: this month on, never its own or a
