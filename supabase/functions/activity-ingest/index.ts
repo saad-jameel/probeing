@@ -107,21 +107,31 @@ function streakOf(blocks) {
   return { start: start, end: last.end, what: what };
 }
 
-/** How much of [a, b] other devices spent in a work app or a meeting, and on what. */
+/**
+ * How much of [a, b] other devices spent in a work app or a meeting, and on what.
+ * Each device reports on its own 5-minute clock, so the others may not have
+ * sent the end of the span yet: it is measured up to the last minute any other
+ * device has reported, and only once that covers half the span.
+ */
 function otherCover(blocks, device, a, b) {
   var spans = [];
   var time = {};
+  var seen = -Infinity;
   (blocks || []).forEach(function (x) {
-    if (x.device_id === device || (x.category !== 'work' && x.category !== 'meeting')) return;
+    if (x.device_id === device) return;
+    if (x.end > seen) seen = x.end;
+    if (x.category !== 'work' && x.category !== 'meeting') return;
     A.actIntersect(x.start, x.end, [[a, b]]).forEach(function (p) {
       spans.push(p);
       var w = [x.app, x.project].filter(Boolean).join(' · ') || x.category;
       time['w' + w] = (time['w' + w] || 0) + (p[1] - p[0]);
     });
   });
+  var upTo = Math.min(b, seen);
+  if (!(upTo - a >= (b - a) / 2)) return { ratio: 0, what: '' };
   var ms = A.actSpansMs(A.actMergeSpans(spans));
   var top = Object.keys(time).sort(function (x, y) { return time[y] - time[x]; })[0];
-  return { ratio: b > a ? ms / (b - a) : 0, what: top ? top.slice(1) : '' };
+  return { ratio: ms / (upTo - a), what: top ? top.slice(1) : '' };
 }
 
 function hasRid(rows, rid) {
