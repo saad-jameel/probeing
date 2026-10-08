@@ -598,6 +598,17 @@ async function callSupabase(action, payload) {
    * Money 2: a record-only due ('due') and the wallet's count ('wallet'), the same.
    * Item 19: a thing on the buying list ('buy'), the same. */
   if (moneyItem({ action: action })) {
+    // Item 19: Bought's void waits for its expense, and goes nowhere if that was refused.
+    if (payload.after) {
+      if (parkedAll().some(function (x) { return x && x.rid === payload.after; })) {
+        var noExpense = new Error('its expense was refused');
+        noExpense.fatal = true;
+        throw noExpense;
+      }
+      if (outboxAll().some(function (x) { return x.rid === payload.after; })) {
+        throw new Error('Waiting for its expense to be sent.');
+      }
+    }
     // Checked again here: a held item is sent exactly as it was stored.
     var kind = MONEY_KIND_OF[action];
     var amount = kind === 'opening' ? parseWalletAmount(payload.amount) : parseMoneyAmount(payload.amount);
@@ -9628,15 +9639,23 @@ function paintBought() {
 function openBought(t, opener) {
   bought = { thing: t, tag: '' };
   $('boughtTitle').textContent = 'Bought ' + t.name;         // his words: never markup
-  $('boughtAmount').value = formatPkr(t.amount).replace(/,/g, '');
+  var had = boughtExpense(t);              // already spent: show what was
+  $('boughtAmount').value = formatPkr(had ? moneyPaisa(had.amount) / 100 : t.amount).replace(/,/g, '');
   paintBoughtTags();
   paintBought();
   openMoneyDlg(boughtDlg, opener, $('boughtSaveBtn'));
 }
 
-/* The expense first; the thing comes off only once that is in the table or held
- * on the device. A refused expense leaves the thing on the list, never gone
- * with nothing spent. Pressed again, the same rids make both a no-op. */
+/** Bought's expense for thing `t`, if one is in the table, saved here or held. */
+function boughtExpense(t) {
+  var rid = BUY_RID.bought + t.rid;
+  return moneyMerged().filter(function (r) { return r.rid === rid; })[0] || null;
+}
+
+/* The expense and the void are both held in this one tap, in that order, so a
+ * closed app loses neither. The void names the expense (`after`): it is sent
+ * only once the expense has gone, and parked if the expense was refused, so
+ * the thing is never gone with nothing spent. */
 function saveBought() {
   var t = bought.thing;
   var amount = parseMoneyAmount($('boughtAmount').value);
@@ -9647,17 +9666,17 @@ function saveBought() {
   var expense = { rid: BUY_RID.bought + t.rid, at: new Date().toISOString(), local_time: humanLocal(),
                   dir: 'out', amount: amount, tag: bought.tag || MONEY_UNTAGGED, note: t.name };
   var off = buyOffPayload(t, 'bought');
-  // Off the list on the tap; sent after the expense.
-  var shown = queuedMoney({ rid: off.rid, action: 'buy', payload: off });
-  shown.queued = false;
-  moneyLocal.unshift(shown);
+  off.after = expense.rid;
+  var had = boughtExpense(t);
+  // Pressed again after a refusal: these are fresh presses, not the parked ones.
+  unpark(expense.rid);
+  unpark(off.rid);
   closeMoneyDlg(boughtDlg);
-  sendMoney(expense).then(function (ok) {
-    moneyLocal = moneyLocal.filter(function (r) { return r !== shown; });
-    if (ok) sendMoney(off, 'buy');
-    else renderMoney();
-  });
-  flash('Bought ' + t.name + ': spent PKR ' + formatPkr(moneyPaisa(amount) / 100), 'ok');
+  if (!had) sendMoney(expense);
+  sendMoney(off, 'buy');
+  // The same rid makes a second expense a no-op, so never claim a new amount.
+  flash(had ? 'Already bought: ' + t.name + ' for PKR ' + formatPkr(moneyPaisa(had.amount) / 100) + '. Off the list now.'
+            : 'Bought ' + t.name + ': spent PKR ' + formatPkr(moneyPaisa(amount) / 100), 'ok');
   if (buyDlg.open) $('buyName').focus();
 }
 
