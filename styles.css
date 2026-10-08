@@ -591,6 +591,11 @@ body {
 .dlg .hint, .loan-people .chip { overflow-wrap: anywhere; }
 .loan-people .chip { max-width: 100%; text-align: left; }
 .settle-warn { color: var(--fg); }
+/* Item 19: the buying list. Rule 6: .buy-add sets `display`, so it has its pair. */
+.buy-add { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-top: 8px; }
+.buy-add[hidden] { display: none; }
+#buyFilter { margin-top: 8px; }
+#boughtTags { margin-top: 8px; }
 /* Money on the Review card. No `display` here, so no Rule 6 pair. */
 .review-money { margin-top: 12px; }
 .review-money .money-head { margin: 0; font-size: 14.5px; font-weight: 600; font-variant-numeric: tabular-nums; }

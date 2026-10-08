@@ -595,15 +595,18 @@ async function callSupabase(action, payload) {
 
   /* Stage 13b: a loan is a money row with kind 'loan' and a person. It has its
    * own action so an older tab HOLDS it (R8) instead of sending it as spending.
-   * Money 2: a record-only due ('due') and the wallet's count ('wallet'), the same. */
+   * Money 2: a record-only due ('due') and the wallet's count ('wallet'), the same.
+   * Item 19: a thing on the buying list ('buy'), the same. */
   if (moneyItem({ action: action })) {
     // Checked again here: a held item is sent exactly as it was stored.
     var kind = MONEY_KIND_OF[action];
     var amount = kind === 'opening' ? parseWalletAmount(payload.amount) : parseMoneyAmount(payload.amount);
     var tag = String(payload.tag || '').trim();
     var person = kind === 'loan' || kind === 'due' ? cleanPerson(payload.person) : '';
+    var buyMonth = kind === 'buy' ? String(payload.buy_month || '') : '';
     if (MONEY_DIRS[kind].indexOf(payload.dir) === -1 || !amount || !tag ||
-        tag.length > MONEY_TAG_MAX || ((kind === 'loan' || kind === 'due') && !person)) {
+        tag.length > MONEY_TAG_MAX || ((kind === 'loan' || kind === 'due') && !person) ||
+        (kind === 'buy' && !BUY_MONTH_RE.test(buyMonth))) {
       var badMoney = new Error('bad_money');
       badMoney.fatal = true;
       throw badMoney;
@@ -624,6 +627,7 @@ async function callSupabase(action, payload) {
     // Cash names no kind or person, so it still saves before those columns exist.
     if (kind !== 'cash') moneyRow.kind = kind;
     if (person) moneyRow.person = person;
+    if (buyMonth) moneyRow.buy_month = buyMonth;
     var ins = await sb.from('money').insert(moneyRow);
     // 23505: this rid, or a void of this row, is already in. Success either way.
     if (ins.error && ins.error.code !== '23505') throw errorFrom(ins.error);
@@ -897,7 +901,7 @@ var PARKED_MAX = 50;
 /* The writes a person makes. `label` is deliberately absent: it only ever
  * fills in a project name on a row, and a name that never arrives leaves the
  * entry called by its own sentence — which is what it was called anyway. */
-var QUEUEABLE = { log: 1, m: 1, prayer: 1, money: 1, loan: 1, due: 1, wallet: 1, file: 1, mark: 1, item: 1 };
+var QUEUEABLE = { log: 1, m: 1, prayer: 1, money: 1, loan: 1, due: 1, wallet: 1, buy: 1, file: 1, mark: 1, item: 1 };
 
 function trimUrl(u) { return String(u || '').trim().replace(/\/+$/, ''); }
 
@@ -1185,10 +1189,11 @@ function queuedRow(it) {
 }
 
 /* Each write that becomes a `money` row, and the kind it is stored as. */
-var MONEY_KIND_OF = { money: 'cash', loan: 'loan', due: 'due', wallet: 'opening' };
-var MONEY_ACTION_OF = { cash: 'money', loan: 'loan', due: 'due', opening: 'wallet' };
+var MONEY_KIND_OF = { money: 'cash', loan: 'loan', due: 'due', wallet: 'opening', buy: 'buy' };
+var MONEY_ACTION_OF = { cash: 'money', loan: 'loan', due: 'due', opening: 'wallet', buy: 'buy' };
 // The dirs each kind may carry, as money_dir_check has them.
-var MONEY_DIRS = { cash: ['in', 'out'], loan: ['in', 'out'], due: ['they_owe', 'i_owe'], opening: ['set'] };
+var MONEY_DIRS = { cash: ['in', 'out'], loan: ['in', 'out'], due: ['they_owe', 'i_owe'], opening: ['set'],
+                   buy: ['plan'] };
 
 /** The action that writes a row of this kind, or '' for a kind this version does not know. */
 function moneyActionOf(kind) {
@@ -1209,6 +1214,7 @@ function queuedMoney(it) {
   var kind = MONEY_KIND_OF[it.action];
   if (kind !== 'cash') row.kind = kind;
   if (kind === 'loan' || kind === 'due') row.person = cleanPerson(p.person);
+  if (kind === 'buy') row.buy_month = String(p.buy_month || '');
   return row;
 }
 
@@ -1294,6 +1300,7 @@ function queuedPrayersToday(have) {
 function queuedDates() {
   var seen = userMap();
   outboxMine().forEach(function (it) {
+    if (it.action === 'buy') return;          // the buying list moves no figure
     var d = queuedDay(it);
     if (d) seen[d] = 1;
     var voidsAt = instantOf((it.payload || {}).voids_at);
@@ -6210,6 +6217,66 @@ function perDayTillFirst(left, today) {
   return Math.floor(paisa / daysTillFirst(today) / 100);
 }
 
+/* Item 19: the buying list. A thing is a money row of kind 'buy' (dir 'plan',
+ * name in tag, its month in buy_month); it is off the list once a void names it.
+ * It never counts in spent, got or the wallet: only Bought's own expense does. */
+var BUY_MONTH_RE = /^\d{4}-(0[1-9]|1[0-2])$/;
+var BUY_RID = { bought: 'bb-', boughtOff: 'bv-', removed: 'br-' };   // + the thing's rid
+var BUY_NOTE = { bought: 'Bought', removed: 'Removed' };            // on the void row
+
+/** Open things, oldest first: {rid, name, amount (rupees), month, at, queued}. Pure. */
+function buyOpen(rows) {
+  var cancelled = userMap();
+  (rows || []).forEach(function (r) { if (r && r.voids_rid) cancelled[r.voids_rid] = 1; });
+  return (rows || []).filter(function (r) {
+    return r && r.kind === 'buy' && !r.voids_rid && !(r.rid && cancelled[r.rid] === 1) &&
+           BUY_MONTH_RE.test(String(r.buy_month || '')) && moneyPaisa(r.amount) > 0;
+  }).map(function (r) {
+    return { rid: r.rid, name: String(r.tag || ''), amount: moneyPaisa(r.amount) / 100,
+             month: r.buy_month, at: r.at, queued: Boolean(r.queued) };
+  }).sort(function (a, b) { return (instantOf(a.at) || 0) - (instantOf(b.at) || 0); });
+}
+
+/** Expected total for one month ('' = every month), in rupees. */
+function buyExpected(open, month) {
+  var paisa = 0;
+  (open || []).forEach(function (t) {
+    if (!month || t.month === month) paisa += Math.round(t.amount * 100);
+  });
+  return paisa / 100;
+}
+
+/** '2026-10' moved by n months. */
+function monthAdd(ym, n) {
+  var p = String(ym).split('-');
+  var i = Number(p[0]) * 12 + Number(p[1]) - 1 + n;
+  return Math.floor(i / 12) + '-' + String(i % 12 + 1).padStart(2, '0');
+}
+
+/** The month the Money screen's line shows: `chosen` while it has open things,
+ *  else the first month from `todayYm` on that has any; '' when none. */
+function buyLineMonth(open, chosen, todayYm) {
+  var has = userMap();
+  (open || []).forEach(function (t) { has[t.month] = 1; });
+  if (chosen && has[chosen] === 1) return chosen;
+  return Object.keys(has).filter(function (m) { return m >= todayYm; }).sort()[0] || '';
+}
+
+/** "Oct", or "Jan 2027" when it is not this year. */
+function buyMonthShort(ym, todayYm) {
+  var name = monthName(ym);
+  return String(ym).slice(0, 4) === String(todayYm).slice(0, 4) ? name.split(' ')[0] : name;
+}
+
+/** "Expected Oct PKR 12,000 · Left in wallet PKR 48,500 · fits". `left` is null
+ *  while the wallet is not known: then there is no verdict. */
+function buyLineText(month, expected, left, todayYm) {
+  var text = 'Expected ' + buyMonthShort(month, todayYm) + ' PKR ' + formatPkr(expected);
+  if (left === null || left === undefined) return text + ' · Left in wallet —';
+  var fits = Math.round(Number(expected) * 100) <= Math.round(Number(left) * 100);
+  return text + ' · Left in wallet PKR ' + formatPkr(left) + ' · ' + (fits ? 'fits' : 'doesn’t fit');
+}
+
 /** What one range read must cover, first to last counter day inclusive: from a
  *  lead-in's reach before the first, so a session already running is replayed
  *  from where it began, to the rollover after the last. */
@@ -8435,6 +8502,8 @@ var duesDlg = $('duesDlg');
 var dueDlg = $('dueDlg');
 var settleDlg = $('settleDlg');
 var walletDlg = $('walletDlg');
+var buyDlg = $('buyDlg');
+var boughtDlg = $('boughtDlg');
 
 /** Trimmed, no commas, no repeats whatever the case, at most MONEY_TAGS_MAX. */
 function cleanTags(list) {
@@ -8549,6 +8618,12 @@ function moneyWhat(r) {
   var pre = r.voids_rid ? 'Void of ' : '';
   var person = String(r.person || '');
   if (r.kind === 'opening') return pre + 'Wallet set to ' + amount;
+  if (r.kind === 'buy') {
+    var thing = String(r.tag || '');
+    if (r.voids_rid) return (r.note === BUY_NOTE.bought ? 'Bought: ' : 'Off the buying list: ') + thing;
+    return 'To buy: ' + thing + ' ' + amount + (BUY_MONTH_RE.test(String(r.buy_month || ''))
+      ? ' (' + monthName(r.buy_month) + ')' : '');
+  }
   if (r.kind === 'due') {
     return pre + (r.dir === 'they_owe' ? person + ' owes you ' + amount : 'You owe ' + person + ' ' + amount);
   }
@@ -8718,21 +8793,25 @@ function resetMoneyForm() {
 }
 
 /** Show it, then send it. api() has it on the device before this returns.
- *  `action` is 'money', 'loan', 'due' or 'wallet'; anything else is cash. */
+ *  `action` is 'money', 'loan', 'due', 'wallet' or 'buy'; anything else is cash. */
 function sendMoney(payload, action) {
   action = moneyItem({ action: action }) ? action : 'money';
   var row = queuedMoney({ rid: payload.rid, action: action, payload: payload });
   row.queued = false;
+  moneyLocal = moneyLocal.filter(function (r) { return r.rid !== payload.rid; });
   moneyLocal.unshift(row);
-  api(action, payload).then(function (res) {
+  var sent = api(action, payload).then(function (res) {
     if (!(res && res.queued)) scheduleMoneyRead();
+    return true;
   }, function (err) {
     // Refused outright: take it back off the screen, as a failed prayer is.
     moneyLocal = moneyLocal.filter(function (r) { return r.rid !== payload.rid; });
     renderMoney();
     writeFailed(err);
+    return false;
   });
   renderMoney();
+  return sent;          // true once it is in the table or held on the device
 }
 
 function saveMoney() {
@@ -8810,6 +8889,7 @@ function renderMoney() {
   var month = moneySince(moneyFigures(rows, monthDays), monthDays);
   $('moneyMonth').textContent = (month.since ? 'Since ' + moneySinceDay(month) : 'This month') +
     ': got ' + formatPkr(month['in']) + ' · spent ' + formatPkr(month.out);
+  paintBuyLine(rows, known ? wallet.left : null);
 
   var held = outboxOurs().filter(moneyItem).length;
   var note = [];
@@ -8825,6 +8905,10 @@ function renderMoney() {
   if (logsDlg.open) renderLogs();
   if (duesDlg.open) renderDues();
   if (dueDlg.open) paintDue();
+  if (buyDlg.open) renderBuy();
+  if (boughtDlg.open && bought.thing && !buyOpen(rows).some(function (t) { return t.rid === bought.thing.rid; })) {
+    closeMoneyDlg(boughtDlg);                // the other device took it off meanwhile
+  }
 }
 
 /** Every money row, a page at a time: the wallet runs from the first one.
@@ -8956,7 +9040,7 @@ function logsKindOf(r) {
 function logsMatch(rows, f) {
   var q = String(f.q || '').trim().toLowerCase();
   return rows.filter(function (r) {
-    if (!r || r.voids_rid) return false;
+    if (!r || r.voids_rid || r.kind === 'buy') return false;     // the buying list has its own dialog
     var t = instantOf(r.at);
     if (isNaN(t)) return false;
     if (f.kind !== 'all' && logsKindOf(r) !== f.kind) return false;
@@ -9032,7 +9116,7 @@ function renderLogs() {
   var tags = userMap();
   var months = userMap();
   rows.forEach(function (r) {
-    if (r.voids_rid || isNaN(instantOf(r.at))) return;
+    if (r.voids_rid || r.kind === 'buy' || isNaN(instantOf(r.at))) return;
     months[counterDate(instantOf(r.at)).slice(0, 7)] = 1;
     if ((r.kind || 'cash') === 'cash' && r.tag) tags[String(r.tag)] = 1;
   });
@@ -9077,7 +9161,8 @@ function renderLogs() {
   if (!shown.length) {
     var empty = document.createElement('li');
     empty.className = 'empty';
-    empty.textContent = rows.some(function (r) { return !r.voids_rid; }) ? 'Nothing matches.' : 'Nothing logged yet.';
+    empty.textContent = rows.some(function (r) { return !r.voids_rid && r.kind !== 'buy'; })
+      ? 'Nothing matches.' : 'Nothing logged yet.';
     list.appendChild(empty);
   }
   $('logsCount').textContent = shown.length + (shown.length === 1 ? ' entry' : ' entries');
@@ -9385,6 +9470,217 @@ $('walletAmount').addEventListener('input', paintWallet);
 $('walletCancelBtn').addEventListener('click', function () { closeMoneyDlg(walletDlg); });
 $('walletSaveBtn').addEventListener('click', saveWallet);
 moneyDlgKeys(walletDlg, function () { if (!$('walletSaveBtn').disabled) saveWallet(); });
+
+// ------------------------------------------------------------ buying list
+
+/* Item 19. Things he means to buy, by month. Bought logs an ordinary expense
+ * and takes the thing off; Remove takes it off without spending. Both rids are
+ * made from the thing's own, so two devices or a resend write each row once. */
+var BUY_MONTHS_AHEAD = 12;      // the Add form offers this month and the next 11
+var buyFilter = '';             // the dialog's month, '' = all months
+var buyChosen = '';             // the month last picked there; the line follows it
+var bought = { thing: null, tag: '' };
+
+function buyTodayYm() { return counterDate(Date.now()).slice(0, 7); }
+
+/** A thing's name as stored in tag: spaces collapsed, at most MONEY_TAG_MAX
+ *  UTF-16 units (api() checks that), never half an emoji. */
+function cleanBuyName(text) {
+  var a = Array.from(String(text === null || text === undefined ? '' : text).replace(/\s+/g, ' ').trim());
+  while (a.join('').length > MONEY_TAG_MAX) a.pop();
+  return a.join('').trim();
+}
+
+/** The line under Today: hidden while nothing is open from this month on. */
+function paintBuyLine(rows, left) {
+  var todayYm = buyTodayYm();
+  var open = buyOpen(rows);
+  var month = buyLineMonth(open, buyChosen, todayYm);
+  $('buyLineBtn').hidden = !month;
+  $('buyLineBtn').dataset.month = month;
+  $('buyLineText').textContent = month ? buyLineText(month, buyExpected(open, month), left, todayYm) : '';
+}
+
+function renderBuy() {
+  var todayYm = buyTodayYm();
+  var open = buyOpen(moneyMerged());
+  var months = userMap();
+  months[todayYm] = 1;
+  open.forEach(function (t) { months[t.month] = 1; });
+  if (buyFilter) months[buyFilter] = 1;
+  buyFilter = fillSelect($('buyFilter'), [['', 'All months']].concat(Object.keys(months).sort()
+    .map(function (m) { return [m, monthName(m)]; })), buyFilter);
+
+  var shown = open.filter(function (t) { return !buyFilter || t.month === buyFilter; })
+    .sort(function (a, b) { return a.month < b.month ? -1 : a.month > b.month ? 1 : 0; });
+  var list = $('buyList');
+  list.textContent = '';
+  shown.forEach(function (t) {
+    var li = document.createElement('li');
+    var line = document.createElement('span');
+    line.className = 'due-line';
+    line.textContent = t.name + ' · PKR ' + formatPkr(t.amount) +          // his words: never markup
+      (buyFilter ? '' : ' · ' + buyMonthShort(t.month, todayYm)) + (t.queued ? ' · waiting' : '');
+    var got = document.createElement('button');
+    got.type = 'button';
+    got.className = 'item-btn item-done-btn';
+    got.textContent = 'Bought';
+    got.setAttribute('aria-label', 'Bought ' + t.name);
+    got.addEventListener('click', function () { openBought(t, got); });
+    var off = document.createElement('button');
+    off.type = 'button';
+    off.className = 'item-btn';
+    off.textContent = 'Remove';
+    off.setAttribute('aria-label', 'Remove ' + t.name);
+    off.addEventListener('click', function () { removeBuy(t); });
+    li.append(line, got, off);
+    list.appendChild(li);
+  });
+  var n = shown.length;
+  $('buySum').textContent = n ? (n === 1 ? '1 thing' : n + ' things') + ' · PKR ' +
+    formatPkr(buyExpected(shown, '')) + ' expected' : 'Nothing to buy' + (buyFilter ? ' in ' + monthName(buyFilter) : '') + '.';
+  $('buyNote').textContent = $('moneyStatus').textContent;
+  $('buyNote').hidden = $('moneyStatus').hidden;
+}
+
+/** The Add form's months: this month and the next ones, keeping the pick. */
+function fillBuyMonths(keep) {
+  var todayYm = buyTodayYm();
+  var pairs = [];
+  for (var i = 0; i < BUY_MONTHS_AHEAD; i++) {
+    var m = monthAdd(todayYm, i);
+    pairs.push([m, monthName(m)]);
+  }
+  if (!fillSelect($('buyMonth'), pairs, keep)) $('buyMonth').value = todayYm;
+}
+
+function paintBuyAdd() {
+  $('buyAddBtn').disabled = !(cleanBuyName($('buyName').value) && parseMoneyAmount($('buyAmount').value) &&
+                              BUY_MONTH_RE.test($('buyMonth').value));
+}
+
+/** `month`: the month to show; '' shows the line's month, else this month. */
+function openBuy(opener, month) {
+  buyFilter = month || $('buyLineBtn').dataset.month || buyTodayYm();
+  $('buyName').value = '';
+  $('buyAmount').value = '';
+  fillBuyMonths(buyFilter);
+  paintBuyAdd();
+  renderBuy();
+  openMoneyDlg(buyDlg, opener, $('buyName'));
+}
+
+function addBuy() {
+  var name = cleanBuyName($('buyName').value);
+  var typed = $('buyAmount').value;
+  var amount = parseMoneyAmount(typed);
+  var month = $('buyMonth').value;
+  if (!name || !amount || !BUY_MONTH_RE.test(month)) {
+    flash(typed.trim() && !amount
+      ? 'That amount cannot be read: digits, and at most two after the point.'
+      : 'Type what it is and roughly what it costs.', 'err');
+    return;
+  }
+  var payload = { rid: newRid(), at: new Date().toISOString(), local_time: humanLocal(),
+                  dir: 'plan', amount: amount, tag: name, note: '', buy_month: month };
+  // The list shows the month it went to; the Money line stays where it was.
+  if (buyFilter) buyFilter = month;
+  sendMoney(payload, 'buy');
+  flash(moneyWhat({ kind: 'buy', amount: amount, tag: name, buy_month: month }), 'ok');
+  $('buyName').value = '';
+  $('buyAmount').value = '';
+  paintBuyAdd();
+  $('buyName').focus();
+}
+
+/** The void that takes thing `t` off the list; `why` is 'bought' or 'removed'. */
+function buyOffPayload(t, why) {
+  return { rid: (why === 'bought' ? BUY_RID.boughtOff : BUY_RID.removed) + t.rid,
+           at: new Date().toISOString(), local_time: humanLocal(),
+           dir: 'plan', amount: parseMoneyAmount(t.amount), tag: t.name, note: BUY_NOTE[why],
+           buy_month: t.month, voids_rid: t.rid };
+}
+
+function removeBuy(t) {
+  if (!window.confirm('Take ' + t.name + ' off the buying list? Nothing is spent.')) return;
+  sendMoney(buyOffPayload(t, 'removed'), 'buy');
+  flash('Off the buying list: ' + t.name, 'ok');
+  if (buyDlg.open) $('buyName').focus();
+}
+
+function paintBoughtTags() {
+  var box = $('boughtTags');
+  box.textContent = '';
+  fixedTags('out').forEach(function (tag) {
+    var cell = tagCell(moneyTagIcon(tag), tag, tag === bought.tag, function () {
+      bought.tag = bought.tag === tag ? '' : tag;      // tap again: no tag
+      paintBoughtTags();
+    });
+    cell.dataset.tag = tag;
+    box.appendChild(cell);
+  });
+}
+
+function paintBought() {
+  $('boughtSaveBtn').disabled = !parseMoneyAmount($('boughtAmount').value);
+}
+
+function openBought(t, opener) {
+  bought = { thing: t, tag: '' };
+  $('boughtTitle').textContent = 'Bought ' + t.name;         // his words: never markup
+  $('boughtAmount').value = formatPkr(t.amount).replace(/,/g, '');
+  paintBoughtTags();
+  paintBought();
+  openMoneyDlg(boughtDlg, opener, $('boughtSaveBtn'));
+}
+
+/* The expense first; the thing comes off only once that is in the table or held
+ * on the device. A refused expense leaves the thing on the list, never gone
+ * with nothing spent. Pressed again, the same rids make both a no-op. */
+function saveBought() {
+  var t = bought.thing;
+  var amount = parseMoneyAmount($('boughtAmount').value);
+  if (!t || !amount) {
+    flash('That amount cannot be read: digits, and at most two after the point.', 'err');
+    return;
+  }
+  var expense = { rid: BUY_RID.bought + t.rid, at: new Date().toISOString(), local_time: humanLocal(),
+                  dir: 'out', amount: amount, tag: bought.tag || MONEY_UNTAGGED, note: t.name };
+  var off = buyOffPayload(t, 'bought');
+  // Off the list on the tap; sent after the expense.
+  var shown = queuedMoney({ rid: off.rid, action: 'buy', payload: off });
+  shown.queued = false;
+  moneyLocal.unshift(shown);
+  closeMoneyDlg(boughtDlg);
+  sendMoney(expense).then(function (ok) {
+    moneyLocal = moneyLocal.filter(function (r) { return r !== shown; });
+    if (ok) sendMoney(off, 'buy');
+    else renderMoney();
+  });
+  flash('Bought ' + t.name + ': spent PKR ' + formatPkr(moneyPaisa(amount) / 100), 'ok');
+  if (buyDlg.open) $('buyName').focus();
+}
+
+$('buyBtn').addEventListener('click', function () { openBuy($('buyBtn'), ''); });
+$('buyLineBtn').addEventListener('click', function () {
+  openBuy($('buyLineBtn'), $('buyLineBtn').dataset.month);
+});
+$('buyFilter').addEventListener('change', function () {
+  buyFilter = $('buyFilter').value;
+  if (buyFilter) { buyChosen = buyFilter; fillBuyMonths(buyFilter); paintBuyAdd(); }
+  renderBuy();
+  renderMoney();
+});
+$('buyName').addEventListener('input', paintBuyAdd);
+$('buyAmount').addEventListener('input', paintBuyAdd);
+$('buyMonth').addEventListener('change', paintBuyAdd);
+$('buyAddBtn').addEventListener('click', addBuy);
+$('buyCloseBtn').addEventListener('click', function () { closeMoneyDlg(buyDlg); });
+$('boughtAmount').addEventListener('input', paintBought);
+$('boughtCancelBtn').addEventListener('click', function () { closeMoneyDlg(boughtDlg); });
+$('boughtSaveBtn').addEventListener('click', saveBought);
+moneyDlgKeys(buyDlg, function () { if (!$('buyAddBtn').disabled) addBuy(); });
+moneyDlgKeys(boughtDlg, function () { if (!$('boughtSaveBtn').disabled) saveBought(); });
 
 // ------------------------------------------------------------------ taskboard
 
