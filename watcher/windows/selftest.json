@@ -1,0 +1,967 @@
+{
+ "note": "Fake data only. Run by claudeWorkingDocs/tests/stage18b_watcher.js (activity.js) and by watch.ps1 -SelfTest (Windows). Both must pass.",
+ "url": [
+  {
+   "in": "https://www.YouTube.com/shorts/AbC?x=1",
+   "host": "youtube.com",
+   "path": "/shorts/abc"
+  },
+  {
+   "in": "http://user:pw@Example.org:8080/a/B#c",
+   "host": "example.org",
+   "path": "/a/b"
+  },
+  {
+   "in": "https://mail.example.com",
+   "host": "mail.example.com",
+   "path": "/"
+  },
+  {
+   "in": "chrome://newtab/",
+   "host": "",
+   "path": ""
+  },
+  {
+   "in": "file:///C:/Users/someone/private.pdf",
+   "host": "",
+   "path": ""
+  },
+  {
+   "in": "not a url at all",
+   "host": "",
+   "path": ""
+  },
+  {
+   "in": "https://bad host.com/x",
+   "host": "",
+   "path": ""
+  }
+ ],
+ "scrub": [
+  {
+   "in": "Invoice 1234567 for jane@example.com - https://pay.example.com/x?y=1 - Chrome",
+   "out": "Invoice for - - Chrome"
+  },
+  {
+   "in": "  Tabs\tand spaces   ",
+   "out": "Tabs and spaces"
+  },
+  {
+   "in": "Room 1234 is fine",
+   "out": "Room 1234 is fine"
+  },
+  {
+   "in": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+   "out": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+  }
+ ],
+ "classify": [
+  {
+   "name": "code on probeing",
+   "seg": {
+    "app": "Code.exe",
+    "title": "app.js - proBeing - Visual Studio Code",
+    "host": "",
+    "path": "",
+    "incognito": false
+   },
+   "cfg": {
+    "lists": null,
+    "rules": [
+     {
+      "keyword": "docker",
+      "project": "OneNet"
+     },
+     {
+      "keyword": "neuravue",
+      "project": "NeuraVue"
+     }
+    ],
+    "projects": [
+     "ProBeing",
+     "OneNet",
+     "NeuraVue"
+    ]
+   },
+   "want": {
+    "category": "work",
+    "project": "ProBeing",
+    "key": "probeing"
+   }
+  },
+  {
+   "name": "shorts",
+   "seg": {
+    "app": "chrome.exe",
+    "title": "Shorts - YouTube",
+    "host": "youtube.com",
+    "path": "/shorts/abc",
+    "incognito": false
+   },
+   "cfg": {
+    "lists": null,
+    "rules": [
+     {
+      "keyword": "docker",
+      "project": "OneNet"
+     },
+     {
+      "keyword": "neuravue",
+      "project": "NeuraVue"
+     }
+    ],
+    "projects": [
+     "ProBeing",
+     "OneNet",
+     "NeuraVue"
+    ]
+   },
+   "want": {
+    "category": "distraction",
+    "project": "",
+    "key": ""
+   }
+  },
+  {
+   "name": "a youtube talk is not shorts",
+   "seg": {
+    "app": "chrome.exe",
+    "title": "Some talk - YouTube",
+    "host": "youtube.com",
+    "path": "/watch",
+    "incognito": false
+   },
+   "cfg": {
+    "lists": null,
+    "rules": [
+     {
+      "keyword": "docker",
+      "project": "OneNet"
+     },
+     {
+      "keyword": "neuravue",
+      "project": "NeuraVue"
+     }
+    ],
+    "projects": [
+     "ProBeing",
+     "OneNet",
+     "NeuraVue"
+    ]
+   },
+   "want": {
+    "category": "unclear",
+    "project": "",
+    "key": ""
+   }
+  },
+  {
+   "name": "x.com",
+   "seg": {
+    "app": "chrome.exe",
+    "title": "Home / X",
+    "host": "x.com",
+    "path": "/home",
+    "incognito": false
+   },
+   "cfg": {
+    "lists": null,
+    "rules": [
+     {
+      "keyword": "docker",
+      "project": "OneNet"
+     },
+     {
+      "keyword": "neuravue",
+      "project": "NeuraVue"
+     }
+    ],
+    "projects": [
+     "ProBeing",
+     "OneNet",
+     "NeuraVue"
+    ]
+   },
+   "want": {
+    "category": "distraction",
+    "project": "",
+    "key": ""
+   }
+  },
+  {
+   "name": "a sub-domain of twitter",
+   "seg": {
+    "app": "chrome.exe",
+    "title": "Twitter",
+    "host": "mobile.twitter.com",
+    "path": "/",
+    "incognito": false
+   },
+   "cfg": {
+    "lists": null,
+    "rules": [
+     {
+      "keyword": "docker",
+      "project": "OneNet"
+     },
+     {
+      "keyword": "neuravue",
+      "project": "NeuraVue"
+     }
+    ],
+    "projects": [
+     "ProBeing",
+     "OneNet",
+     "NeuraVue"
+    ]
+   },
+   "want": {
+    "category": "distraction",
+    "project": "",
+    "key": ""
+   }
+  },
+  {
+   "name": "max.com is not x.com",
+   "seg": {
+    "app": "chrome.exe",
+    "title": "Max",
+    "host": "max.com",
+    "path": "/",
+    "incognito": false
+   },
+   "cfg": {
+    "lists": null,
+    "rules": [
+     {
+      "keyword": "docker",
+      "project": "OneNet"
+     },
+     {
+      "keyword": "neuravue",
+      "project": "NeuraVue"
+     }
+    ],
+    "projects": [
+     "ProBeing",
+     "OneNet",
+     "NeuraVue"
+    ]
+   },
+   "want": {
+    "category": "unclear",
+    "project": "",
+    "key": ""
+   }
+  },
+  {
+   "name": "a bank title is private",
+   "seg": {
+    "app": "chrome.exe",
+    "title": "HBL Bank login",
+    "host": "hbl.com",
+    "path": "/login",
+    "incognito": false
+   },
+   "cfg": {
+    "lists": null,
+    "rules": [
+     {
+      "keyword": "docker",
+      "project": "OneNet"
+     },
+     {
+      "keyword": "neuravue",
+      "project": "NeuraVue"
+     }
+    ],
+    "projects": [
+     "ProBeing",
+     "OneNet",
+     "NeuraVue"
+    ]
+   },
+   "want": {
+    "category": "private",
+    "project": "",
+    "key": ""
+   }
+  },
+  {
+   "name": "incognito is private",
+   "seg": {
+    "app": "chrome.exe",
+    "title": "Anything",
+    "host": "example.com",
+    "path": "/",
+    "incognito": true
+   },
+   "cfg": {
+    "lists": null,
+    "rules": [
+     {
+      "keyword": "docker",
+      "project": "OneNet"
+     },
+     {
+      "keyword": "neuravue",
+      "project": "NeuraVue"
+     }
+    ],
+    "projects": [
+     "ProBeing",
+     "OneNet",
+     "NeuraVue"
+    ]
+   },
+   "want": {
+    "category": "private",
+    "project": "",
+    "key": ""
+   }
+  },
+  {
+   "name": "whatsapp app is private",
+   "seg": {
+    "app": "WhatsApp.exe",
+    "title": "Chat with a friend",
+    "host": "",
+    "path": "",
+    "incognito": false
+   },
+   "cfg": {
+    "lists": null,
+    "rules": [
+     {
+      "keyword": "docker",
+      "project": "OneNet"
+     },
+     {
+      "keyword": "neuravue",
+      "project": "NeuraVue"
+     }
+    ],
+    "projects": [
+     "ProBeing",
+     "OneNet",
+     "NeuraVue"
+    ]
+   },
+   "want": {
+    "category": "private",
+    "project": "",
+    "key": ""
+   }
+  },
+  {
+   "name": "private beats distraction",
+   "seg": {
+    "app": "chrome.exe",
+    "title": "Password reset",
+    "host": "x.com",
+    "path": "/reset",
+    "incognito": false
+   },
+   "cfg": {
+    "lists": null,
+    "rules": [
+     {
+      "keyword": "docker",
+      "project": "OneNet"
+     },
+     {
+      "keyword": "neuravue",
+      "project": "NeuraVue"
+     }
+    ],
+    "projects": [
+     "ProBeing",
+     "OneNet",
+     "NeuraVue"
+    ]
+   },
+   "want": {
+    "category": "private",
+    "project": "",
+    "key": ""
+   }
+  },
+  {
+   "name": "meet names a project",
+   "seg": {
+    "app": "chrome.exe",
+    "title": "ProBeing sync - Meet",
+    "host": "meet.google.com",
+    "path": "/abc",
+    "incognito": false
+   },
+   "cfg": {
+    "lists": null,
+    "rules": [
+     {
+      "keyword": "docker",
+      "project": "OneNet"
+     },
+     {
+      "keyword": "neuravue",
+      "project": "NeuraVue"
+     }
+    ],
+    "projects": [
+     "ProBeing",
+     "OneNet",
+     "NeuraVue"
+    ]
+   },
+   "want": {
+    "category": "meeting",
+    "project": "ProBeing",
+    "key": "probeing"
+   }
+  },
+  {
+   "name": "zoom app",
+   "seg": {
+    "app": "Zoom.exe",
+    "title": "Zoom Meeting",
+    "host": "",
+    "path": "",
+    "incognito": false
+   },
+   "cfg": {
+    "lists": null,
+    "rules": [
+     {
+      "keyword": "docker",
+      "project": "OneNet"
+     },
+     {
+      "keyword": "neuravue",
+      "project": "NeuraVue"
+     }
+    ],
+    "projects": [
+     "ProBeing",
+     "OneNet",
+     "NeuraVue"
+    ]
+   },
+   "want": {
+    "category": "meeting",
+    "project": "",
+    "key": ""
+   }
+  },
+  {
+   "name": "a learned keyword",
+   "seg": {
+    "app": "Docker Desktop.exe",
+    "title": "Containers",
+    "host": "",
+    "path": "",
+    "incognito": false
+   },
+   "cfg": {
+    "lists": null,
+    "rules": [
+     {
+      "keyword": "docker",
+      "project": "OneNet"
+     },
+     {
+      "keyword": "neuravue",
+      "project": "NeuraVue"
+     }
+    ],
+    "projects": [
+     "ProBeing",
+     "OneNet",
+     "NeuraVue"
+    ]
+   },
+   "want": {
+    "category": "work",
+    "project": "OneNet",
+    "key": "docker"
+   }
+  },
+  {
+   "name": "longest keyword wins",
+   "seg": {
+    "app": "Code.exe",
+    "title": "neuravue and onenet notes",
+    "host": "",
+    "path": "",
+    "incognito": false
+   },
+   "cfg": {
+    "lists": null,
+    "rules": [
+     {
+      "keyword": "docker",
+      "project": "OneNet"
+     },
+     {
+      "keyword": "neuravue",
+      "project": "NeuraVue"
+     }
+    ],
+    "projects": [
+     "ProBeing",
+     "OneNet",
+     "NeuraVue"
+    ]
+   },
+   "want": {
+    "category": "work",
+    "project": "NeuraVue",
+    "key": "neuravue"
+   }
+  },
+  {
+   "name": "gemini answered this title before",
+   "seg": {
+    "app": "Notepad.exe",
+    "title": "ideas.txt - Notepad",
+    "host": "",
+    "path": "",
+    "incognito": false
+   },
+   "cfg": {
+    "lists": null,
+    "rules": [
+     {
+      "keyword": "docker",
+      "project": "OneNet"
+     },
+     {
+      "keyword": "neuravue",
+      "project": "NeuraVue"
+     }
+    ],
+    "projects": [
+     "ProBeing",
+     "OneNet",
+     "NeuraVue"
+    ],
+    "known": {
+     "notepad|ideastxtnotepad": "OneNet"
+    }
+   },
+   "want": {
+    "category": "work",
+    "project": "OneNet",
+    "key": ""
+   }
+  },
+  {
+   "name": "empty lists: shorts is just unclear",
+   "seg": {
+    "app": "chrome.exe",
+    "title": "Shorts - YouTube",
+    "host": "youtube.com",
+    "path": "/shorts/abc",
+    "incognito": false
+   },
+   "cfg": {
+    "lists": {
+     "distract": [],
+     "private": [],
+     "meeting": []
+    },
+    "rules": [
+     {
+      "keyword": "docker",
+      "project": "OneNet"
+     },
+     {
+      "keyword": "neuravue",
+      "project": "NeuraVue"
+     }
+    ],
+    "projects": [
+     "ProBeing",
+     "OneNet",
+     "NeuraVue"
+    ]
+   },
+   "want": {
+    "category": "unclear",
+    "project": "",
+    "key": ""
+   }
+  },
+  {
+   "name": "a one-item list is still a list",
+   "seg": {
+    "app": "chrome.exe",
+    "title": "Reddit",
+    "host": "reddit.com",
+    "path": "/r/all",
+    "incognito": false
+   },
+   "cfg": {
+    "lists": {
+     "distract": [
+      "reddit.com"
+     ]
+    },
+    "rules": [
+     {
+      "keyword": "docker",
+      "project": "OneNet"
+     },
+     {
+      "keyword": "neuravue",
+      "project": "NeuraVue"
+     }
+    ],
+    "projects": [
+     "ProBeing",
+     "OneNet",
+     "NeuraVue"
+    ]
+   },
+   "want": {
+    "category": "distraction",
+    "project": "",
+    "key": ""
+   }
+  }
+ ],
+ "pipeline": [
+  {
+   "name": "a working half hour",
+   "cut": {
+    "from": "2026-10-12T05:00:00.000Z",
+    "to": "2026-10-12T05:40:00.000Z",
+    "spans": [
+     [
+      "2026-10-12T05:00:00.000Z",
+      "2026-10-12T05:40:00.000Z"
+     ]
+    ]
+   },
+   "cfg": {
+    "lists": null,
+    "rules": [
+     {
+      "keyword": "docker",
+      "project": "OneNet"
+     },
+     {
+      "keyword": "neuravue",
+      "project": "NeuraVue"
+     }
+    ],
+    "projects": [
+     "ProBeing",
+     "OneNet",
+     "NeuraVue"
+    ]
+   },
+   "events": {
+    "afk": [
+     {
+      "timestamp": "2026-10-12T04:50:00+00:00",
+      "duration": 2400,
+      "data": {
+       "status": "not-afk"
+      }
+     },
+     {
+      "timestamp": "2026-10-12T05:30:00+00:00",
+      "duration": 600,
+      "data": {
+       "status": "afk"
+      }
+     }
+    ],
+    "window": [
+     {
+      "timestamp": "2026-10-12T05:00:00.000000+00:00",
+      "duration": 480,
+      "data": {
+       "app": "Code.exe",
+       "title": "app.js - proBeing - Visual Studio Code"
+      }
+     },
+     {
+      "timestamp": "2026-10-12T05:08:00.000000+00:00",
+      "duration": 120,
+      "data": {
+       "app": "WhatsApp.exe",
+       "title": "Chat with a friend"
+      }
+     },
+     {
+      "timestamp": "2026-10-12T05:10:00.000000+00:00",
+      "duration": 120,
+      "data": {
+       "app": "Code.exe",
+       "title": "day.js - proBeing - Visual Studio Code"
+      }
+     },
+     {
+      "timestamp": "2026-10-12T05:12:00.000000+00:00",
+      "duration": 780,
+      "data": {
+       "app": "chrome.exe",
+       "title": "Shorts - YouTube - Google Chrome"
+      }
+     },
+     {
+      "timestamp": "2026-10-12T05:25:00.000000+00:00",
+      "duration": 30,
+      "data": {
+       "app": "Code.exe",
+       "title": "app.js - proBeing - Visual Studio Code"
+      }
+     },
+     {
+      "timestamp": "2026-10-12T05:25:30.000000+00:00",
+      "duration": 270,
+      "data": {
+       "app": "chrome.exe",
+       "title": "neuravue/vision: the repo - Google Chrome"
+      }
+     },
+     {
+      "timestamp": "2026-10-12T05:30:00.000000+00:00",
+      "duration": 600,
+      "data": {
+       "app": "WindowsTerminal.exe",
+       "title": "away from keyboard"
+      }
+     }
+    ],
+    "web": [
+     {
+      "timestamp": "2026-10-12T05:12:20.000000+00:00",
+      "duration": 760,
+      "data": {
+       "url": "https://www.youtube.com/shorts/Zz9?feature=share",
+       "title": "Shorts",
+       "incognito": false
+      }
+     },
+     {
+      "timestamp": "2026-10-12T05:25:30.000000+00:00",
+      "duration": 270,
+      "data": {
+       "url": "https://github.com/neuravue/vision/pull/7?token=SECRET",
+       "title": "neuravue/vision",
+       "incognito": false
+      }
+     }
+    ]
+   },
+   "want": [
+    {
+     "start": "2026-10-12T05:00:00.000Z",
+     "end": "2026-10-12T05:08:00.000Z",
+     "app": "Code.exe",
+     "domain": "",
+     "category": "work",
+     "project": "ProBeing",
+     "key": "probeing"
+    },
+    {
+     "start": "2026-10-12T05:08:00.000Z",
+     "end": "2026-10-12T05:10:00.000Z",
+     "app": "WhatsApp.exe",
+     "domain": "",
+     "category": "private",
+     "project": "",
+     "key": ""
+    },
+    {
+     "start": "2026-10-12T05:10:00.000Z",
+     "end": "2026-10-12T05:12:20.000Z",
+     "app": "Code.exe",
+     "domain": "",
+     "category": "work",
+     "project": "ProBeing",
+     "key": "probeing"
+    },
+    {
+     "start": "2026-10-12T05:12:20.000Z",
+     "end": "2026-10-12T05:25:30.000Z",
+     "app": "chrome.exe",
+     "domain": "youtube.com",
+     "category": "distraction",
+     "project": "",
+     "key": ""
+    },
+    {
+     "start": "2026-10-12T05:25:30.000Z",
+     "end": "2026-10-12T05:30:00.000Z",
+     "app": "chrome.exe",
+     "domain": "github.com",
+     "category": "work",
+     "project": "NeuraVue",
+     "key": "neuravue"
+    }
+   ]
+  },
+  {
+   "name": "only inside the working spans",
+   "cut": {
+    "from": "2026-10-12T05:00:00.000Z",
+    "to": "2026-10-12T05:40:00.000Z",
+    "spans": [
+     [
+      "2026-10-12T05:00:00.000Z",
+      "2026-10-12T05:05:00.000Z"
+     ],
+     [
+      "2026-10-12T05:20:00.000Z",
+      "2026-10-12T06:00:00.000Z"
+     ]
+    ]
+   },
+   "cfg": {
+    "lists": null,
+    "rules": [
+     {
+      "keyword": "docker",
+      "project": "OneNet"
+     },
+     {
+      "keyword": "neuravue",
+      "project": "NeuraVue"
+     }
+    ],
+    "projects": [
+     "ProBeing",
+     "OneNet",
+     "NeuraVue"
+    ]
+   },
+   "events": {
+    "afk": [
+     {
+      "timestamp": "2026-10-12T05:00:00+00:00",
+      "duration": 1800,
+      "data": {
+       "status": "not-afk"
+      }
+     }
+    ],
+    "window": [
+     {
+      "timestamp": "2026-10-12T05:00:00+00:00",
+      "duration": 2400,
+      "data": {
+       "app": "C:\\Windows\\notepad.exe",
+       "title": "plans.txt - Notepad"
+      }
+     }
+    ],
+    "web": []
+   },
+   "want": [
+    {
+     "start": "2026-10-12T05:00:00.000Z",
+     "end": "2026-10-12T05:05:00.000Z",
+     "app": "notepad.exe",
+     "domain": "",
+     "category": "unclear",
+     "project": "",
+     "key": ""
+    },
+    {
+     "start": "2026-10-12T05:20:00.000Z",
+     "end": "2026-10-12T05:30:00.000Z",
+     "app": "notepad.exe",
+     "domain": "",
+     "category": "unclear",
+     "project": "",
+     "key": ""
+    }
+   ]
+  },
+  {
+   "name": "a lone short piece is dropped, an incognito tab keeps no site",
+   "cut": {
+    "from": "2026-10-12T05:00:00.000Z",
+    "to": "2026-10-12T05:40:00.000Z",
+    "spans": [
+     [
+      "2026-10-12T05:00:00.000Z",
+      "2026-10-12T05:40:00.000Z"
+     ]
+    ]
+   },
+   "cfg": {
+    "lists": null,
+    "rules": [
+     {
+      "keyword": "docker",
+      "project": "OneNet"
+     },
+     {
+      "keyword": "neuravue",
+      "project": "NeuraVue"
+     }
+    ],
+    "projects": [
+     "ProBeing",
+     "OneNet",
+     "NeuraVue"
+    ]
+   },
+   "events": {
+    "afk": [
+     {
+      "timestamp": "2026-10-12T05:00:00+00:00",
+      "duration": 2400,
+      "data": {
+       "status": "not-afk"
+      }
+     }
+    ],
+    "window": [
+     {
+      "timestamp": "2026-10-12T05:00:00+00:00",
+      "duration": 40,
+      "data": {
+       "app": "Code.exe",
+       "title": "app.js - proBeing"
+      }
+     },
+     {
+      "timestamp": "2026-10-12T05:10:00+00:00",
+      "duration": 300,
+      "data": {
+       "app": "msedge.exe",
+       "title": "Something private"
+      }
+     }
+    ],
+    "web": [
+     {
+      "timestamp": "2026-10-12T05:10:00+00:00",
+      "duration": 300,
+      "data": {
+       "url": "https://secret.example.com/path",
+       "title": "x",
+       "incognito": true
+      }
+     }
+    ]
+   },
+   "want": [
+    {
+     "start": "2026-10-12T05:10:00.000Z",
+     "end": "2026-10-12T05:15:00.000Z",
+     "app": "msedge.exe",
+     "domain": "",
+     "category": "private",
+     "project": "",
+     "key": ""
+    }
+   ]
+  }
+ ]
+}

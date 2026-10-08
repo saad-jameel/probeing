@@ -73,6 +73,14 @@
 # grant helpers google-link and tasks-sync share (server-only, no secrets).
 !/supabase/functions/_shared/tree.js
 !/supabase/functions/_shared/google.js
+# Stage 18b: the activity watcher's logic (the PWA loads it too).
+!/supabase/functions/_shared/activity.js
+
+# --- The laptop activity watcher (Stage 18b) ----------------------------------
+# PowerShell that runs on his Windows laptop. No secrets: the token is pasted in
+# once and kept encrypted on that laptop, never in this folder.
+!/watcher/
+!/watcher/**
 
 # --- Tooling and docs --------------------------------------------------------
 !/scripts/
