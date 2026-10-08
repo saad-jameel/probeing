@@ -1775,9 +1775,9 @@ function localIso(d) {
  *
  * Rows go in newest-first, matching today(), because replayDay() breaks
  * same-second ties on that order. */
-function noteLocalRow(type, text, project, detail, nodeId) {
+function noteLocalRow(type, text, project, detail, nodeId, at) {
   var row = {
-    at: localIso(), local: '', type: type,
+    at: at || localIso(), local: '', type: type,
     raw_text: text || '', project: project || '', detail: detail || ''
   };
   if (nodeId) row.node_id = nodeId;
@@ -2007,7 +2007,10 @@ function renderToday(data) {
  *  refresh, plus anything written since. */
 function renderLogList() {
   // A Stop's substop rows (tree.js STOP_TYPE) are for Upcoming; its `done` row already says it.
-  var entries = todayEntries({ log: lastLog, prayers: todayPrayers }).filter(function (e) { return e.type !== 'substop'; });
+  // Stage 18a: a priority/effort answer is a setting, not an entry.
+  var entries = todayEntries({ log: lastLog, prayers: todayPrayers }).filter(function (e) {
+    return e.type !== 'substop' && e.type !== 'taskmeta';
+  });
   var list = $('logList');
   list.textContent = '';
 
@@ -2283,101 +2286,238 @@ function renderProject() {
       : 'Nothing yet — say what you are on below.';
     return;
   }
+  renderNowList(list, rows, day);
+}
 
-  // Tasks closed by their own Done or Drop leave the list: "project\ntitle" -> 1.
-  var finished = userMap();
-  var index = nodeIndex(taskNodes);
-  Object.keys(closedHere()).forEach(function (id) {
-    var names = nodeNames(index, id);
-    if (names && names.detail) finished[names.project + '\n' + names.detail.replace(/\s+/g, ' ').trim().toLowerCase()] = 1;
+/* ── Stage 18a: several tasks at once ─────────────────────────────────────
+ * Every task started keeps its own clock until its Done, Stop or Drop (day.js
+ * replayDay), and a pinned one alone collects time. Working on draws each open
+ * project as a heading with its running tasks under it, one line each: title,
+ * deadline, then ✓ Done, ⏸ Stop, ✕ Drop, 📌 Pin and + item. Typed entries that
+ * are not a task get a line of their own with Stop and Done. */
+var PIN_TYPE = 'pin';
+var UNPIN_TYPE = 'unpin';
+var META_TYPE = 'taskmeta';
+var SUBNEW_TYPE = 'subnew';
+var ALL_DONE_PREFIX = 'Done from All tasks (not worked on): ';
+var ALL_DROP_PREFIX = 'Dropped from All tasks (not worked on): ';
+
+/** {node, up} for any task the mirror knows, open or not; null when unknown. */
+function leafById(id) {
+  var index = nodeIndex(Array.isArray(taskNodes) ? taskNodes : []);
+  var n = index.byId[id];
+  if (!n) return null;
+  var up = n.kind === 'subtask' ? index.byGoogle[(n.list_id || '') + '|' + n.parent_google_id] || null : null;
+  return { node: n, up: up };
+}
+
+/** The running tasks of tile `name` (a replayDay of named rows), newest first:
+ *  [{id, leaf, ms}]. A task the mirror does not know is left to the entry line. */
+function tileTasks(name, day) {
+  var keys = day.subtaskKeys || {};
+  return (day.runningSubtasks || []).slice().reverse().filter(function (id) {
+    return keys[id] === name && Boolean(leafById(id));
+  }).map(function (id) {
+    return { id: id, leaf: leafById(id), ms: day.bySubtask[id] || 0 };
   });
+}
 
+/** What the tile's typed entries say that no task it started covers. */
+function looseTasks(rows, name) {
+  var started = [];
+  (rows || []).forEach(function (r) {
+    if ((r.type !== 'work' && r.type !== 'voice') || !r.node_id) return;
+    if (String(r.project || r.raw_text || '').trim() !== name) return;
+    var leaf = leafById(r.node_id);
+    if (leaf) started.push(String(leaf.node.title || ''));
+  });
+  return projectTasks(rows, name).filter(function (t) {
+    return !started.some(function (title) { return sameTitle(title, t); });
+  });
+}
+
+/** Working on, into `list` (Home's projList or the Tasks page's tasksNow). */
+function renderNowList(list, rows, day) {
+  day = day || replayDay(rows);
+  list.textContent = '';
   // Most recently started first: that is the one you are most likely to finish.
   day.activeProjects.slice().reverse().forEach(function (name) {
     var li = document.createElement('li');
-
-    var main = document.createElement('div');
-    main.className = 'proj-main';
-
-    var n = document.createElement('div');
+    li.className = 'now-group';
+    var head = document.createElement('div');
+    head.className = 'now-head';
+    var n = document.createElement('span');
     n.className = 'proj-name';
     n.textContent = name;                   // user input — textContent only
-
-    var t = document.createElement('div');
+    var t = document.createElement('span');
     t.className = 'proj-time' + (day.running ? '' : ' paused');
-    t.textContent = humanDuration(day.byProject[name] || 0) + ' this session' +
-                    (day.running ? '' : ' · paused');
-
-    main.append(n, t);
-
-    /* The sub-tasks, under their heading. Every one is either the user's own
-     * words or a model's reading of them, so textContent throughout. The one
-     * being worked on is drawn below with its items instead (14b). */
-    var sub = name === day.subtaskProject ? nodeIndex(taskNodes).byId[day.currentSubtask] : null;
-    var subTitle = sub ? String(sub.title || '').trim() || '(untitled)' : '';
-    var tasks = projectTasks(rows, name).filter(function (t) {
-      return (!sub || sub.kind !== 'subtask' || !sameTitle(t, subTitle)) &&
-             !finished[name + '\n' + t.replace(/\s+/g, ' ').trim().toLowerCase()];
-    });
-    if (tasks.length) {
-      var ul = document.createElement('ul');
-      ul.className = 'proj-tasks';
-      tasks.forEach(function (task) {
-        var item = document.createElement('li');
-        item.textContent = task;
-        ul.appendChild(item);
-      });
-      main.appendChild(ul);
-    }
-    if (sub) main.appendChild(currentSubtaskBlock(sub, subTitle));
-
-    // "Stop" pauses it: that work is not finished. Done and Drop (edit queue 2) close it too.
-    var done = document.createElement('button');
-    done.type = 'button';
-    done.className = 'done-btn';
-    done.textContent = 'Stop';
-    done.addEventListener('click', function () { finishProject(done, name); });
-
-    li.append(main, tileActs(done, name, day, rows));
+    t.textContent = humanDuration(day.byProject[name] || 0) + ' this session' + (day.running ? '' : ' · paused');
+    head.append(n, t);
+    li.appendChild(head);
+    var ul = document.createElement('ul');
+    ul.className = 'now-tasks';
+    var tasks = tileTasks(name, day);
+    tasks.forEach(function (task) { ul.appendChild(nowTaskRow(task, name, day, list.id)); });
+    var loose = looseTasks(rows, name);
+    if (!tasks.length || loose.length) ul.appendChild(nowEntryRow(name, loose, tasks.length > 0, rows));
+    li.appendChild(ul);
     list.appendChild(li);
   });
 }
 
-/* ── Edit queue 2: Done and Drop beside Stop ────────────────────────────
- * Done = Stop AND finished: the running task's own Done when Done belongs on it
- * (a sub-task ticks Google through tasks-sync; a project never does), else the
- * tile's entry, finished in ProBeing only (What's done). Drop = Stop and drop
- * the task. A task with open items has neither: they sit on its items. */
-
-/** Stop, then Done and Drop when the tile has somewhere to put them. */
-function tileActs(stop, name, day, rows) {
-  var box = document.createElement('div');
-  box.className = 'tile-acts';
-  box.appendChild(stop);
-  var t = tileTarget(name, day, rows);
-  if (t.node || t.entry) box.appendChild(tileBtn('Done', name, 'done'));
-  if (t.node) box.appendChild(tileBtn('Drop', name, 'drop'));
-  return box;
-}
-
-function tileBtn(text, name, mark) {
+/** A small round button with an icon and a spoken name. */
+function iconBtn(icon, cls, label, onTap) {
   var b = document.createElement('button');
   b.type = 'button';
-  b.className = 'done-btn tile-' + mark;
-  b.textContent = text;
-  b.setAttribute('aria-label', text + ': ' + name);
-  b.addEventListener('click', function () { tileClose(b, name, mark); });
+  b.className = 'icon-act ' + cls;
+  b.textContent = icon;
+  b.setAttribute('aria-label', label);
+  b.setAttribute('title', label);
+  b.addEventListener('click', function () {
+    if (b.disabled) return;
+    coolDown(b);
+    onTap(b);
+  });
   return b;
 }
 
-/** What Done and Drop on tile `name` act on: {node: id} the running task, when
- *  they belong on it; {items: true} when it has open items or they are not read yet; {entry} the tile's
- *  newest entry otherwise; {} when there is none. `rows` newest first. */
-function tileTarget(name, day, rows) {
-  var id = name === day.subtaskProject ? day.currentSubtask : '';
-  if (id && openLeafById(id)) return !itemsRead || openItemCount(id) ? { items: true } : { node: id };
-  var ent = tileEntry(name, rows);
-  return ent ? { entry: ent } : {};
+/** One running task: title, deadline and time, then its buttons; its items below. */
+function nowTaskRow(task, name, day, listId) {
+  var node = task.leaf.node;
+  var title = String(node.title || '').trim() || '(untitled)';
+  var li = document.createElement('li');
+  li.className = 'now-row' + (day.pinned === task.id ? ' pinned' : '');
+  li.setAttribute('data-node', task.id);
+  var b = document.createElement('button');
+  b.type = 'button';
+  b.className = 'task-item now-title';
+  b.setAttribute('data-node', task.id);
+  b.textContent = node.gone_at ? title + ' (deleted in Google)' : title;
+  b.addEventListener('click', function () { openTaskDlg(task.id, b, listId); });
+  li.appendChild(b);
+  var finish = shownFinishMs(node);
+  if (isFinite(finish)) li.appendChild(deadlineChip(finish, ''));
+  var info = document.createElement('span');
+  info.className = 'now-time';
+  info.textContent = humanDuration(task.ms) +
+    (day.pinned === task.id ? ' · pinned' : day.pinned ? ' · stalled' : day.running ? '' : ' · paused');
+  li.appendChild(info);
+  var acts = document.createElement('span');
+  acts.className = 'now-acts';
+  var pinned = day.pinned === task.id;
+  var pin = iconBtn('📌', 'act-pin', (pinned ? 'Unpin: ' : 'Pin: ') + title, function () { togglePin(task.id); });
+  pin.setAttribute('aria-pressed', pinned ? 'true' : 'false');
+  acts.append(iconBtn('✓', 'act-done', 'Done: ' + title, function () { nowClose(task.id, name, 'done'); }),
+              iconBtn('⏸', 'act-stop', 'Stop: ' + title, function () { stopTask(task.id, name); }),
+              iconBtn('✕', 'act-drop', 'Drop: ' + title, function () { nowClose(task.id, name, 'drop'); }),
+              pin);
+  if (leafOpen(task.leaf)) acts.appendChild(addItemBtn(node));
+  li.appendChild(acts);
+  li.appendChild(itemsBlock(task.id, HOME_ITEMS_MAX, true));
+  return li;
+}
+
+/** The tile's typed entries: their words, ⏸ Stop (the whole project) and ✓ Done. */
+function nowEntryRow(name, loose, withTasks, rows) {
+  var li = document.createElement('li');
+  li.className = 'now-row now-entry';
+  var title = document.createElement('div');
+  title.className = 'now-title';
+  title.textContent = loose.length ? loose.join(' · ') : name;
+  li.appendChild(title);
+  var acts = document.createElement('span');
+  acts.className = 'now-acts';
+  if (tileEntry(name, rows)) {
+    acts.appendChild(iconBtn('✓', 'act-done', 'Done: ' + name, function (b) { tileClose(b, name); }));
+  }
+  acts.appendChild(iconBtn('⏸', 'act-stop', withTasks ? 'Stop all of ' + name : 'Stop: ' + name, function () {
+    stopAndAsk(name);
+    flash(name + ' — stopped', 'ok');
+    paintTasksPage();
+  }));
+  li.appendChild(acts);
+  return li;
+}
+
+/** Is `id` the only task still running on tile `name`? Read now, not as drawn. */
+function lastOnTile(id, name) {
+  var day = replayDay(named(sessionLog()));
+  return !tileTasks(name, day).some(function (t) { return t.id !== id; });
+}
+
+/** ✓ or ✕ on a running task: its own Done or Drop; the last one closes its project. */
+function nowClose(id, name, mark) {
+  if (!itemsRead || openItemCount(id)) {
+    flash(itemsRead ? 'Mark its items Done or Drop first.' : 'Its items are still loading.', 'err');
+    return false;
+  }
+  var last = lastOnTile(id, name);
+  var ok = mark === 'drop' ? dropTask(id) : finishTask(id);
+  if (!ok) { flash('This task is no longer open.', 'err'); return false; }
+  if (last) closeProject(name);
+  paintPlan();
+  paintTasksPage();
+  return true;
+}
+
+/** ⏸ on one running task: a `substop` row, so it waits in Upcoming tasks; the last
+ *  one closes its project too. Then "What happened?", as for any Stop. */
+function stopTask(id, name) {
+  var leaf = leafById(id);
+  if (!leaf || typeof STOP_TYPE !== 'string') return false;
+  var e = taskEntry(leaf);
+  var last = lastOnTile(id, name);
+  var at = new Date().toISOString();
+  var text = 'Stopped: ' + (e.detail || e.project);
+  var step = { type: STOP_TYPE, raw_text: text, project: e.project, detail: e.detail, node_id: id,
+               rid: newRid(), at: at, local_time: humanLocal() };
+  noteLocalRow(STOP_TYPE, text, e.project, e.detail, id, at).rid = step.rid;
+  runWrites([step]);
+  if (last) closeProject(name);
+  paintPlan();
+  paintTasksPage();
+  flash((e.detail || e.project) + ' — stopped. It waits in Upcoming tasks.', 'ok');
+  askNote(closeLink(step.rid, e, id));
+  return true;
+}
+
+/** 📌: pin a running task (only it collects time) or unpin it. One pin at a time:
+ *  a new pin replaces the old one in replayDay. A logged row, through the outbox. */
+function togglePin(id) {
+  var leaf = leafById(id);
+  if (!leaf) return false;
+  var on = replayDay(named(sessionLog())).pinned !== id;
+  var e = taskEntry(leaf);
+  var title = e.detail || e.project;
+  var type = on ? PIN_TYPE : UNPIN_TYPE;
+  var text = (on ? 'Pinned: ' : 'Unpinned: ') + title;
+  var at = new Date().toISOString();
+  var step = { type: type, raw_text: text, project: e.project, detail: e.detail, node_id: id,
+               rid: newRid(), at: at, local_time: humanLocal() };
+  noteLocalRow(type, text, e.project, e.detail, id, at).rid = step.rid;
+  runWrites([step]);
+  paintTasksPage();
+  flash(on ? title + ' pinned: only it collects time until you unpin it' : title + ' unpinned', 'ok');
+  return true;
+}
+
+/** ✓ on a tile's entry line: the entry finished in ProBeing only, then the tile
+ *  stopped; its running tasks are paused into Upcoming tasks. All through the outbox. */
+function tileClose(btn, name) {
+  if (btn && btn.disabled) return;
+  if (btn) coolDown(btn);
+  var ent = tileEntry(name, named(sessionLog()));        // as it is now, not as drawn
+  if (!ent) {
+    flash('Nothing to mark done here.', 'err');
+    return;
+  }
+  var paused = stopSteps(name, '');
+  // The finish first, so it is the first press sent; then the Stop.
+  finishEntry(name, ent);
+  closeProject(name);
+  if (paused.length) runWrites(paused);
+  paintPlan();
+  paintTasksPage();
 }
 
 /** The tile's newest entry with a rid, and the project it is filed under:
@@ -2388,30 +2528,6 @@ function tileEntry(name, rows) {
            String(r.project || r.raw_text || '').trim() === name;
   })[0];
   return hit ? { rid: String(hit.rid), node_id: tileNode(name) } : null;
-}
-
-/** One press: finish or drop what the tile is on, then Stop it; all through the outbox. */
-function tileClose(btn, name, mark) {
-  if (btn.disabled) return;
-  coolDown(btn);
-  var rows = named(sessionLog());
-  var t = tileTarget(name, replayDay(rows), rows);       // as it is now, not as drawn
-  if (!t.node && !(mark === 'done' && t.entry)) {
-    flash(t.items ? (itemsRead ? 'Mark its items Done or Drop instead.' : 'Its items are still loading.')
-                  : 'Nothing to mark ' + mark + ' here.', 'err');
-    return;
-  }
-  var paused = stopSteps(name, t.node || '');      // its other tasks are paused, not closed
-  // The finish first, so it is the first press sent; then the Stop.
-  if (t.node) {
-    if (mark === 'drop') dropTask(t.node); else finishTask(t.node);
-  } else {
-    finishEntry(name, t.entry);
-  }
-  closeProject(name);
-  if (paused.length) runWrites(paused);
-  paintPlan();
-  paintTasksPage();
 }
 
 /* An entry finished in ProBeing only: an `entrydone` row, undone by `entryopen`.
@@ -2543,13 +2659,6 @@ function tileNode(name) {
   return ids.length === 1 ? ids[0] : '';
 }
 
-function finishProject(btn, name) {
-  if (btn.disabled) return;
-  coolDown(btn);
-  stopAndAsk(name);
-  flash(name + ' — stopped', 'ok');
-}
-
 /* ── Edit queue 3: "What happened?" after Done, Drop or Stop ───────────────
  * Optional, and asked only once the closing row is already on its way. A note
  * is its own `note` row through the outbox, rid NOTE_PREFIX + the closing row's
@@ -2578,19 +2687,19 @@ function stopAndAsk(name) {
 var stopRowsRead = [];                   // every substop row, as last read
 var startRowsRead = [];                  // work/voice rows under stopped tasks since the oldest Stop
 
-/** The substop rows for the tasks tile `name` is on, bar `except` (one just
+/** The substop rows for the tasks running on tile `name`, bar `except` (one just
  *  done or dropped). Read before the Stop takes them off Working on. */
 function stopSteps(name, except) {
   if (typeof STOP_TYPE !== 'string') return [];
   var at = new Date().toISOString();
   var out = [];
-  workingOnLeaves(currentNodes(), named(sessionLog())).items.forEach(function (it) {
-    if (it.name !== name || !it.leaf || it.leaf.node.id === except) return;
-    var e = taskEntry(it.leaf);
+  tileTasks(name, replayDay(named(sessionLog()))).forEach(function (task) {
+    if (task.id === except) return;
+    var e = taskEntry(task.leaf);
     var text = 'Stopped: ' + (e.detail || e.project);
     var step = { type: STOP_TYPE, raw_text: text, project: e.project, detail: e.detail,
-                 node_id: it.leaf.node.id, rid: newRid(), at: at, local_time: humanLocal() };
-    var row = noteLocalRow(STOP_TYPE, text, e.project, e.detail, it.leaf.node.id);
+                 node_id: task.id, rid: newRid(), at: at, local_time: humanLocal() };
+    var row = noteLocalRow(STOP_TYPE, text, e.project, e.detail, task.id);
     row.rid = step.rid;
     row.at = at;
     out.push(step);
@@ -2622,7 +2731,8 @@ function stoppedHere() {
  *  Read before the Stop is written; the caller adds the Stop's rid. */
 function stopLink(name) {
   var day = replayDay(named(sessionLog()));
-  var sub = name === day.subtaskProject ? day.currentSubtask : '';
+  var running = tileTasks(name, day);
+  var sub = running.length === 1 ? running[0].id : '';
   var names = sub ? nodeNames(nodeIndex(taskNodes), sub) : null;
   var detail = names && names.detail ? names.detail : '';
   return { rid: '', project: name, detail: detail, node_id: sub || tileNode(name),
@@ -3164,12 +3274,24 @@ function missingPrayers(now) {
   });
 }
 
+/** Stage 18a: entries waiting in the Unsorted tray, asked about like a missing prayer. */
+function unsortedCount() {
+  if (typeof trayEntries === 'undefined' || !Array.isArray(trayEntries) || !tasksConnected() || !serverFiles()) return 0;
+  return trayEntries.filter(function (e) { return !queuedFile(e.rid); }).length;
+}
+
 function askDayPrayers(go) {
   var missing = missingPrayers(Date.now());
-  if (!missing.length) { dayOffPending = null; go(); return; }
+  var unsorted = unsortedCount();
+  if (!missing.length && !unsorted) { dayOffPending = null; go(); return; }
   dayOffPending = go;
-  $('dayPrayersText').textContent = 'Not logged today: ' + missing.join(', ');
+  $('dayPrayersText').textContent = missing.length ? 'Not logged today: ' + missing.join(', ') : '';
+  $('dayPrayersText').hidden = !missing.length;
+  $('daySortText').textContent = 'Please sort your things: ' + unsorted +
+    (unsorted === 1 ? ' entry is' : ' entries are') + ' waiting in Unsorted.';
+  $('daySort').hidden = !unsorted;
   var box = $('dayPrayersList');
+  box.hidden = !missing.length;
   box.textContent = '';
   missing.forEach(function (name) {
     var b = document.createElement('button');
@@ -3192,6 +3314,16 @@ function afterPrayerPicker() {
   dayOffPending = null;
   askDayPrayers(go);
 }
+
+// One tap to the tray; the day stays open until End day is pressed again.
+$('daySortBtn').addEventListener('click', function () {
+  dayOffPending = null;
+  dayPrayersDlg.close();
+  showScreen('tasks');
+  scheduleFiling(0);
+  var tray = $('tasksTrayCard');
+  if (tray && typeof tray.scrollIntoView === 'function') tray.scrollIntoView();
+});
 
 $('dayPrayersAnyway').addEventListener('click', function () {
   var go = dayOffPending;
@@ -6783,6 +6915,19 @@ function reviewPrompt(win, now, prior, cats, pace) {
     });
   }
 
+  /* Stage 18a: how the tasks went. Worked out already; the model may name the
+   * drops and say whether deadlines were kept, never restate the counts. */
+  var tf = now.taskFigs;
+  if (tf && (tf.done || tf.stopped || tf.dropped)) {
+    lines.push('');
+    lines.push('TASKS IN THIS PERIOD (worked out already, for you to judge from, not to repeat): ' +
+               tf.done + ' finished (' + tf.onTime + ' by their deadline, ' + tf.late + ' after it, ' +
+               tf.noDeadline + ' with none), ' + tf.stopped + ' stopped to come back to, ' + tf.dropped +
+               ' dropped' + (tf.doneFromAll ? ', ' + tf.doneFromAll + ' marked done without being worked on' : '') +
+               (tf.backlogDays ? ', and planned tasks waited ' + tf.backlogDays + ' days in the Backlog' : '') + '.');
+    if (tf.drops && tf.drops.length) lines.push('Dropped: ' + tf.drops.join('; ') + '.');
+  }
+
   /* Edit queue 4: prayers made up late. Named, never counted by the model. */
   var qaza = Array.isArray(now.qaza) ? now.qaza : [];
   if (qaza.length) {
@@ -6821,6 +6966,10 @@ function reviewPrompt(win, now, prior, cats, pace) {
   if (qaza.length) {
     lines.push('In those same lines, add one short clause saying which prayers were made up late ' +
                '(Qaza), naming them as listed above. Do not count them.');
+  }
+  if (tf && (tf.done || tf.stopped || tf.dropped)) {
+    lines.push('Where it matters, say in those same lines whether deadlines were kept and name what ' +
+               'was dropped, without any count.');
   }
   if (notes.length) {
     lines.push('Where the notes above explain why something went as it did — a blocker, ' +
@@ -6963,6 +7112,116 @@ function spanFigures(rows, win, prior, priorKnown, cats) {
   // `rows` too: prayerStats() places prayers by prayer day, which can lie just past the windows.
   return { windows: windows, inRange: inRange, rows: rows, sum: sum, tasks: rangeTasks(inRange),
            earlier: earlier, focus: focus, pace: pace, notes: notes };
+}
+
+/* ── Stage 18a: tasks in a report ──────────────────────────────────────────
+ * Worked out here, never by Gemini: per project hours and weighted hours, Done
+ * on time or late against its deadline, the Done/Stop/Drop counts, the drops by
+ * name, Backlog days and Done from All tasks.
+ *   weighted = a task's time x taskWeight (priority x effort / 4), plus the
+ *              project's time with no task running x 1
+ *   on time  = its Done at or before the deadline it has now (task_plans)
+ *   Backlog days = days a task sat planned from an earlier day, unfinished
+ * @param rows    the read (rangeEvents), any types, oldest first
+ * @param windows the period's day windows
+ * @param sum     summariseRange() of the period (byProject, bySubtask)
+ * @param ctx     {nodes, plans: id -> task_plans row, metas: id -> parseMeta(), now} */
+var REPORT_DROPS_MAX = 20;
+
+function taskFigures(rows, windows, sum, ctx) {
+  ctx = ctx || {};
+  var index = nodeIndex(ctx.nodes || []);
+  var plans = ctx.plans || {};
+  var metas = ctx.metas || {};
+  var now = typeof ctx.now === 'number' ? ctx.now : Date.now();
+  var inRange = rowsInWindows(rows, windows);
+  var out = { done: 0, stopped: 0, dropped: 0, doneFromAll: 0, onTime: 0, late: 0, noDeadline: 0,
+              skipped: 0, drops: [], backlogDays: 0, backlogTasks: 0, weighted: 0, byProject: [] };
+  function nameOf(r) {
+    var names = r.node_id ? nodeNames(index, r.node_id) : null;
+    var t = names ? names.detail || names.project : String(r.detail || r.project || '').trim();
+    return t || '(untitled)';
+  }
+  inRange.forEach(function (r) {
+    if (r.type === 'subdone') {
+      out.done += 1;
+      if (String(r.raw_text || '').indexOf(ALL_DONE_PREFIX) === 0) out.doneFromAll += 1;
+      var plan = r.node_id ? plans[r.node_id] : null;
+      var due = plan && plan.expected_at ? Date.parse(plan.expected_at) : NaN;
+      if (!isFinite(due)) out.noDeadline += 1;
+      else if (instantOf(r.at) <= due) out.onTime += 1;
+      else out.late += 1;
+    } else if (r.type === 'substop') {
+      out.stopped += 1;
+    } else if (r.type === 'subdrop') {
+      out.dropped += 1;
+      var title = nameOf(r);
+      if (out.drops.length < REPORT_DROPS_MAX && out.drops.indexOf(title) === -1) out.drops.push(title);
+    }
+  });
+
+  // Weighted hours per project: each task's time by its weight, the rest by 1.
+  var taskMs = userMap();
+  var weighted = userMap();
+  Object.keys(sum.bySubtask || {}).forEach(function (id) {
+    var names = nodeNames(index, id);
+    var ms = sum.bySubtask[id] || 0;
+    if (!names || !(ms > 0)) return;
+    var meta = metas[id] || null;
+    if (meta && meta.skipped) out.skipped += 1;
+    taskMs[names.project] = (taskMs[names.project] || 0) + ms;
+    weighted[names.project] = (weighted[names.project] || 0) + ms * taskWeight(meta);
+  });
+  Object.keys(sum.byProject || {}).forEach(function (p) {
+    var ms = sum.byProject[p] || 0;
+    if (!(ms > 0)) return;
+    var w = (weighted[p] || 0) + Math.max(0, ms - (taskMs[p] || 0));
+    out.byProject.push({ name: p, ms: ms, weighted: Math.round(w) });
+    out.weighted += Math.round(w);
+  });
+  out.byProject.sort(function (a, b) { return b.ms - a.ms; });
+
+  // Backlog days: each day of the period a planned task waited from an earlier day.
+  var ends = userMap();
+  (rows || []).forEach(function (r) {
+    if ((r.type === 'subdone' || r.type === 'subdrop') && r.node_id) {
+      var t = instantOf(r.at);
+      if (!(ends[r.node_id] >= t)) ends[r.node_id] = t;
+    }
+  });
+  Object.keys(plans).forEach(function (id) {
+    var plan = plans[id];
+    var from = plan && plan.planned ? planDay(plan) : '';
+    if (!from) return;
+    var n = index.byId[id];
+    var end = ends[id];
+    if (!isFinite(end)) {
+      var g = n && n.g_status === 'completed' ? Date.parse(n.g_completed_at || '') : NaN;
+      end = isFinite(g) ? g : n && n.gone_at ? Date.parse(n.gone_at) : Infinity;
+    }
+    var days = windows.filter(function (w) {
+      return w.ymd > from && w.startMs < end && w.startMs <= now;
+    }).length;
+    if (days) {
+      out.backlogDays += days;
+      out.backlogTasks += 1;
+    }
+  });
+  return out;
+}
+
+/** The tasks line under a saved report's figures; '' for a report saved before 18a. */
+function reportTaskLine(t) {
+  if (!t || typeof t !== 'object') return '';
+  var bits = [Number(t.done || 0) + ' done' +
+              (Number(t.onTime) || Number(t.late) ? ' (' + Number(t.onTime || 0) + ' on time, ' + Number(t.late || 0) + ' late)' : ''),
+              Number(t.stopped || 0) + ' stopped', Number(t.dropped || 0) + ' dropped'];
+  if (Number(t.doneFromAll)) bits.push(Number(t.doneFromAll) + ' done from All tasks (not worked on)');
+  if (Number(t.backlogDays)) bits.push('Backlog ' + Number(t.backlogDays) + (Number(t.backlogDays) === 1 ? ' day' : ' days'));
+  if (Number(t.weighted)) bits.push(reviewDuration(Number(t.weighted)) + ' weighted');
+  var line = 'Tasks: ' + bits.join(' · ');
+  if (Array.isArray(t.drops) && t.drops.length) line += '. Dropped: ' + t.drops.map(String).join(', ');
+  return line;
 }
 
 /* ---------------------------------------------------------------------------
@@ -7673,7 +7932,7 @@ function spanText(win) {
  * without anybody parsing English out of a paragraph. Not one sentence belongs
  * in here.
  */
-function reportStats(sum, prayers, money) {
+function reportStats(sum, prayers, money, tasks) {
   var stats = {
     worked: sum.worked,
     paused: sum.paused,
@@ -7689,6 +7948,7 @@ function reportStats(sum, prayers, money) {
     avgWorked: sum.avgWorked
   };
   if (money) stats.money = money;              // Stage 11; never shown to Gemini
+  if (tasks) stats.tasks = tasks;              // Stage 18a
   return stats;
 }
 
@@ -7888,6 +8148,13 @@ function renderReports(rows) {
     body.textContent = String(r.text || '');
 
     li.append(head, figs);
+    var taskLine = reportTaskLine(stats.tasks);
+    if (taskLine) {
+      var tl = document.createElement('p');
+      tl.className = 'report-figs report-tasks';
+      tl.textContent = taskLine;            // task titles are his text (rule 5)
+      li.appendChild(tl);
+    }
     var prayers = prayerTable(stats.prayerBreakdown);
     if (prayers) li.appendChild(prayers);
     li.appendChild(body);
@@ -7939,8 +8206,9 @@ async function generateReport(win) {
   }
 
   var prayed = prayerStats(got.rows, got.windows);       // the saved breakdown, and Qaza for the prompt
-  var prompt = reviewPrompt(win, { sum: got.sum, tasks: got.tasks, notes: got.notes, qaza: prayed.qaza }, got.earlier,
-                            projectCategories, got.pace);
+  var taskFigs = await reportTaskFigures(got.rows, got.windows, got.sum);   // Stage 18a
+  var prompt = reviewPrompt(win, { sum: got.sum, tasks: got.tasks, notes: got.notes, qaza: prayed.qaza,
+                                   taskFigs: taskFigs }, got.earlier, projectCategories, got.pace);
 
   /* Money is read before the one call, so a failed read costs no call, and a
    * failure stops the report: it is written once, and must not miss the money. */
@@ -7978,9 +8246,20 @@ async function generateReport(win) {
   }
 
   await saveReport(win, answer,
-                   reportStats(got.sum, prayed, money),
+                   reportStats(got.sum, prayed, money, taskFigs),
                    lastGeminiModel);
   return '';
+}
+
+/** taskFigures() for a report: the mirror, plans and every priority answer this
+ *  device knows, read first when they have not been this visit. Null when
+ *  Google Tasks is not connected: the report then has no tasks part. */
+async function reportTaskFigures(rows, windows, sum) {
+  if (!tasksConnected()) return null;
+  if (!itemsRead) await readItems();
+  await readTaskPlans();
+  var metas = metaByNode(metaAll().concat((rows || []).filter(function (r) { return r.type === META_TYPE; })));
+  return taskFigures(rows, windows, sum, { nodes: currentNodes(), plans: taskPlans, metas: metas });
 }
 
 /* HOW MUCH OF THE DAY MUST BE LEFT before a report is written WITHOUT being
@@ -11699,6 +11978,7 @@ function tasksConnected() {
  * the Stage 13 set is read instead, so an app ahead of its SQL still shows the tree. */
 var TASK_NODE_COLS = 'id,google_id,list_id,parent_google_id,kind,title,position,due,g_status,gone_at';
 var TASK_NODE_SENT = ',g_completed_at,g_reopened_at,pb_pushed_at,pb_completed_at,pb_due,pb_due_sent_at';
+var TASK_NODE_DROP = ',pb_deleted_for';         // Stage 18a: a Drop deleted it in Google
 
 /** Open and done rows first, then the newest gone ones. A failed read keeps the last. */
 async function readTaskNodes() {
@@ -11708,7 +11988,8 @@ async function readTaskNodes() {
       .order('gone_at', { ascending: false, nullsFirst: true }).limit(1000);
   }
   try {
-    var res = await read(TASK_NODE_COLS + TASK_NODE_SENT);
+    var res = await read(TASK_NODE_COLS + TASK_NODE_SENT + TASK_NODE_DROP);
+    if (res.error && res.error.code === '42703') res = await read(TASK_NODE_COLS + TASK_NODE_SENT);
     if (res.error && res.error.code === '42703') res = await read(TASK_NODE_COLS);
     if (!res.error) taskNodes = res.data || [];
   } catch (e) { /* the last read stands */ }
@@ -11769,28 +12050,44 @@ function paintTasks() {
   renderDaySummary();
 }
 
-/** Home's Upcoming tasks: Planned and due tasks, soonest first; when there are
- *  none, every open task (13b). Grouped under their projects. Hidden until a
- *  list is connected. */
+/** Home's Upcoming tasks (Stage 18a): the tasks planned for today and the ones
+ *  stopped, under their projects, soonest finish first; under them a Backlog bar
+ *  of tasks planned on an earlier day and not finished. Running tasks are in
+ *  Working on instead. Hidden until a list is connected. */
 function paintPlan() {
   var card = $('planCard');
   if (!tasksConnected() || typeof todaysPlan !== 'function') { card.hidden = true; return; }
-  var now = Date.now();
-  var today = counterDate(now);
-  var plan = homePlanLeaves(currentNodes(), today, counterDayEnd(now));
+  var today = counterDate(Date.now());
+  var up = upcomingLeaves(currentNodes(), today);
   var stopped = stoppedHere();
   function meta(leaf, withProject) {
     var m = taskMeta(leaf, today, withProject);
     if (isFinite(stopped[leaf.node.id])) m.text = (m.text ? m.text + ' · ' : '') + 'stopped';
     return m;
   }
-  var list = $('planList');
+  function backMeta(leaf, withProject) {
+    var m = taskMeta(leaf, today, withProject);
+    var day = planDay(planOf(leaf.node.id));
+    if (day) m.text = (m.text ? m.text + ' · ' : '') + 'planned ' + humanYmd(day);
+    return m;
+  }
+  fillPlanList($('planList'), up.main, 'planList', meta);
+  $('planList').hidden = !up.main.length;
+  $('planEmpty').hidden = up.main.length > 0;
+  fillPlanList($('backlogList'), up.backlog, 'backlogList', backMeta);
+  $('backlogCount').textContent = String(up.backlog.length);
+  $('backlogBox').hidden = !up.backlog.length;
+  card.hidden = false;
+}
+
+/** Leaves into `list`, grouped under their projects. */
+function fillPlanList(list, leaves, listId, meta) {
   list.textContent = '';
-  planGroups(plan).forEach(function (g) {
+  planGroups(leaves).forEach(function (g) {
     var li = document.createElement('li');
     if (!g.up) {
       // A childless project, or a sub-task whose project is not in the list.
-      appendLeaf(li, g.leaves[0], 'planList', meta(g.leaves[0], true));
+      appendLeaf(li, g.leaves[0], listId, meta(g.leaves[0], true));
     } else {
       li.className = 'plan-group';
       var head = document.createElement('div');
@@ -11800,16 +12097,13 @@ function paintPlan() {
       var sub = document.createElement('ul');
       g.leaves.forEach(function (leaf) {
         var sli = document.createElement('li');
-        appendLeaf(sli, leaf, 'planList', meta(leaf, false));
+        appendLeaf(sli, leaf, listId, meta(leaf, false));
         sub.appendChild(sli);
       });
       li.appendChild(sub);
     }
     list.appendChild(li);
   });
-  list.hidden = !plan.length;
-  $('planEmpty').hidden = plan.length > 0;
-  card.hidden = false;
 }
 
 /** Leaves grouped by project, in the order each project first appears:
@@ -11924,7 +12218,10 @@ var taskDlgBusy = false;
 async function readTaskPlans() {
   if (!sb) return false;
   try {
-    var res = await sb.from('task_plans').select('node_id,planned,expected_at,updated_at').limit(2000);
+    var cols = 'node_id,planned,expected_at,updated_at';
+    var res = await sb.from('task_plans').select(cols + ',planned_for').limit(2000);
+    // Before the Stage 18a column exists: the plan's day is its updated_at's.
+    if (res.error && res.error.code === '42703') res = await sb.from('task_plans').select(cols).limit(2000);
     if (res.error) return false;
     var map = userMap();
     (res.data || []).forEach(function (r) { if (r && r.node_id) map[r.node_id] = r; });
@@ -11945,11 +12242,6 @@ function expectedMs(id) {
  *  after ProBeing sent it; then Google's date wins (Stage 15). */
 function shownFinishMs(node) {
   return typeof dueMovedInGoogle === 'function' && dueMovedInGoogle(node) ? NaN : expectedMs(node.id);
-}
-
-/** When the counter day holding `now` ends. 30 hours after its start is always the next day. */
-function counterDayEnd(now) {
-  return counterDayStart(counterDayStart(now) + 30 * 3600000);
 }
 
 /** Every task that can be worked on, in any state: a sub-task, or a project with
@@ -12018,73 +12310,54 @@ function plannedLeaves(nodes) {
   }).sort(byTaskWhen);
 }
 
-/** Home's card: Planned, due by `today` (the counter date) in Google, or expected
- *  to finish before `endMs`; soonest first. None of those: every open task, as
- *  todaysPlan lists them (13b). Stopped tasks are added after, if not there yet. */
-function homePlanLeaves(nodes, today, endMs) {
+/** The counter day a plan is for: planned_for, else the day it was last saved. */
+function planDay(plan) {
+  if (!plan) return '';
+  if (plan.planned_for) return String(plan.planned_for).slice(0, 10);
+  var t = Date.parse(plan.updated_at || '');
+  return isFinite(t) ? counterDate(t) : '';
+}
+
+/** On the plan for `today` (a plan of no known day counts as today's). */
+function plannedFor(plan, today) {
+  var day = planDay(plan);
+  return Boolean(plan && plan.planned) && (!day || day === today);
+}
+
+/** On the plan for an earlier day and not taken off it: Backlog. */
+function inBacklog(plan, today) {
+  var day = planDay(plan);
+  return Boolean(plan && plan.planned) && Boolean(day) && day < today;
+}
+
+/** node id -> 1 for every task running now (day.js replayDay). */
+function runningIds() {
+  var out = userMap();
+  (replayDay(named(sessionLog())).runningSubtasks || []).forEach(function (id) { out[id] = 1; });
+  return out;
+}
+
+/** Home's card: {main, backlog}. main = planned for `today` (the counter date) or
+ *  stopped; backlog = planned on an earlier day. Open, not running; soonest first. */
+function upcomingLeaves(nodes, today) {
   var done = closedHere();
   var stopped = stoppedHere();
-  var open = taskLeaves(nodes).filter(function (l) { return leafLive(l, done); });
-  var picked = open.filter(function (l) {
-    var plan = planOf(l.node.id);
-    var due = dueOf(l.node.due);
-    return Boolean(plan && plan.planned) || Boolean(due && due <= today) || shownFinishMs(l.node) < endMs;
-  }).sort(byTaskWhen);
-  if (!picked.length) {
-    var byId = userMap();
-    open.forEach(function (l) { byId[l.node.id] = l; });
-    picked = todaysPlan(nodes, today).map(function (p) { return byId[p.id]; }).filter(Boolean);
-  }
-  // Edit queue 4: stopped tasks are added, never instead of the rest.
-  var shown = userMap();
-  picked.forEach(function (l) { shown[l.node.id] = 1; });
-  return picked.concat(open.filter(function (l) { return isFinite(stopped[l.node.id]) && !shown[l.node.id]; })
-    .sort(byTaskWhen));
+  var running = runningIds();
+  var main = [];
+  var backlog = [];
+  taskLeaves(nodes).forEach(function (l) {
+    var id = l.node.id;
+    if (!leafLive(l, done) || running[id]) return;
+    var plan = planOf(id);
+    if (plannedFor(plan, today) || isFinite(stopped[id])) main.push(l);
+    else if (inBacklog(plan, today)) backlog.push(l);
+  });
+  return { main: main.sort(byTaskWhen), backlog: backlog.sort(byTaskWhen) };
 }
 
 function sameTitle(a, b) {
   var norm = function (s) { return String(s || '').replace(/\s+/g, ' ').trim().toLowerCase(); };
   return norm(a) !== '' && norm(a) === norm(b);
-}
-
-/**
- * What is being worked on, as tasks. Each open project in the session
- * (replayDay), newest first, matched to open tasks by the node_id its rows
- * carry, then by title: its sub-tasks as projectTasks reads them, or a task
- * named on its own. {running, items: [{name, leaf}]}; leaf null = no match.
- */
-function workingOnLeaves(nodes, rows) {
-  var day = replayDay(rows);
-  var done = closedHere();
-  var open = taskLeaves(nodes).filter(leafOpen);
-  var byId = userMap();
-  open.forEach(function (l) { byId[l.node.id] = l; });
-  var seen = userMap();
-  var items = [];
-  day.activeProjects.slice().reverse().forEach(function (name) {
-    var hits = [];
-    function add(l) { if (hits.indexOf(l) === -1) hits.push(l); }
-    (rows || []).forEach(function (r) {
-      if ((r.type !== 'work' && r.type !== 'voice') || !r.node_id || !byId[r.node_id]) return;
-      if (String(r.project || r.raw_text || '').trim() === name) add(byId[r.node_id]);
-    });
-    var tasks = projectTasks(rows, name);
-    open.forEach(function (l) {
-      if (l.up && sameTitle(l.up.title, name) &&
-          tasks.some(function (t) { return sameTitle(t, l.node.title); })) add(l);
-    });
-    if (!hits.length) open.forEach(function (l) { if (sameTitle(l.node.title, name)) add(l); });
-    if (!hits.length) { items.push({ name: name, leaf: null }); return; }
-    // Closed by its own Done or Drop: off the list. All of them: the project says so.
-    var live = hits.filter(function (l) { return !done[l.node.id]; });
-    if (!live.length) { items.push({ name: name, leaf: null, finished: done[hits[0].node.id] }); return; }
-    live.forEach(function (l) {
-      if (seen[l.node.id]) return;
-      seen[l.node.id] = 1;
-      items.push({ name: name, leaf: l });
-    });
-  });
-  return { running: day.running, items: items };
 }
 
 /** "today, 17:00" or "3 Oct 2026, 09:30", on this device's clock. "today" is the
@@ -12116,22 +12389,72 @@ function taskMeta(leaf, today, withProject) {
   return { text: parts.join(' · '), late: late };
 }
 
-/** A task's button into `li`, with Done and Drop beside it when they belong on
- *  it (edit queue 2). Its items, appended after, go on the line below. */
-function appendLeaf(li, leaf, listId, meta) {
+/** A task's button into `li`, with the buttons its list offers (Stage 18a):
+ *  Upcoming and Planned: Start, Done, Drop, Remove, + item; Backlog: Plan for
+ *  today, Done, Drop; All tasks: Plan, Done, Drop (never Start). Done and Drop
+ *  only where they belong (edit queue 2). Its items, appended after, go below. */
+function appendLeaf(li, leaf, listId, meta, extra) {
   li.appendChild(taskButton(leaf, listId, meta));
-  var acts = taskActs(leaf.node);
-  // Edit queue 4: + item straight on an Upcoming tasks row.
-  if (listId === 'planList' && leafOpen(leaf)) {
-    if (!acts) {
-      acts = document.createElement('span');
-      acts.className = 'task-acts';
-    }
-    acts.insertBefore(addItemBtn(leaf.node), acts.firstChild);
-  }
-  if (!acts) return;
+  var acts = rowActs(leaf, listId);
+  if (extra) acts.insertBefore(extra, acts.firstChild);
+  if (!acts.childNodes.length) return;
   li.classList.add('task-leaf');
   li.appendChild(acts);
+}
+
+function rowActs(leaf, listId) {
+  var box = document.createElement('span');
+  box.className = 'task-acts';
+  if (!leafOpen(leaf)) return box;
+  var id = leaf.node.id;
+  var title = leaf.node.title || '(untitled)';
+  var fromAll = listId === 'tasksAll';
+  var upcoming = listId === 'planList' || listId === 'tasksPlanned';
+  if (upcoming) {
+    box.appendChild(smallBtn('Start', 'item-start-btn', 'Start working on: ' + title,
+                             function () { startFromPlan(id); }));
+  }
+  if (listId === 'backlogList') {
+    box.appendChild(smallBtn('Plan for today', 'item-plan-btn', 'Plan for today: ' + title,
+                             function () { planToday(id, true); }));
+  }
+  if (fromAll) {
+    var on = plannedFor(planOf(id), counterDate(Date.now()));
+    var plan = smallBtn(on ? 'Planned ✓' : 'Plan', 'item-plan-btn', (on ? 'Remove from plan: ' : 'Plan for today: ') + title,
+                        function () { planToday(id, !on); });
+    plan.setAttribute('aria-pressed', on ? 'true' : 'false');
+    box.appendChild(plan);
+  }
+  if (leafActsHere(id)) {
+    box.append(smallBtn('Done', 'item-done-btn', 'Done: ' + title, function () { finishTask(id, fromAll); }),
+               smallBtn('Drop', 'item-drop-btn', 'Drop: ' + title, function () { dropTask(id, fromAll); }));
+  }
+  if (upcoming) {
+    box.append(smallBtn('Remove', 'item-unplan-btn', 'Remove from plan: ' + title, function () { planToday(id, false); }),
+               addItemBtn(leaf.node));
+  }
+  return box;
+}
+
+/** Plan task `id` for today, or take it off the plan. Straight to the table, as
+ *  every plan change is; shown at once, and the table's answer wins after. */
+function planToday(id, on) {
+  if (!supabaseReady()) { flash('Sign in first.', 'err'); return; }
+  var fields = on ? { planned: true, planned_for: counterDate(Date.now()) } : { planned: false };
+  var was = planOf(id);
+  taskPlans[id] = Object.assign({}, was || { node_id: id, planned: false, expected_at: null }, fields,
+                                { updated_at: new Date().toISOString() });
+  paintPlan();
+  paintTasksPage();
+  savePlan(id, fields).then(function () {
+    flash(on ? 'Planned for today.' : 'Removed from the plan.', 'ok');
+  }, function (err) {
+    if (was) taskPlans[id] = was; else delete taskPlans[id];
+    flash('Not saved: ' + ((err && err.message) || 'no answer') + '. Try again.', 'err');
+  }).then(function () {
+    paintPlan();
+    paintTasksPage();
+  });
 }
 
 /** A task as a button that opens its box. Titles are his text (rule 5). */
@@ -12156,17 +12479,20 @@ function taskButton(leaf, listId, meta) {
   return b;
 }
 
-/* ── Deadlines (feedback 1): "by 4:30 PM" on a task with an expected finish.
- * Orange while more than an hour is left, red in the last hour, and a blinking
- * red dot once it has passed. paintDeadlines() keeps them current. */
+/* ── Deadlines: "by 4:30 PM" on a task with an expected finish. Stage 18a (it
+ * replaces feedback 1's colours): green while more than an hour is left, orange
+ * in the last hour, red in the last 30 minutes, blinking once it has passed. No
+ * deadline, no chip. paintDeadlines() keeps them current. */
 var DEADLINE_NEAR_MS = 3600000;
+var DEADLINE_RED_MS = 1800000;
 var WEEKDAYS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
 
-/** 'soon' (orange), 'near' (red, the last hour) or 'past' (red, with the dot). */
+/** 'ok' (green), 'soon' (orange, the last hour), 'near' (red, the last 30 min) or 'past' (blinking). */
 function deadlineLevel(ms, now) {
   var left = ms - now;
   if (left <= 0) return 'past';
-  return left <= DEADLINE_NEAR_MS ? 'near' : 'soon';
+  if (left <= DEADLINE_RED_MS) return 'near';
+  return left <= DEADLINE_NEAR_MS ? 'soon' : 'ok';
 }
 
 /** "4:30 PM" on this device's clock. */
@@ -12247,45 +12573,31 @@ function paintTasksPage() {
   var nodes = currentNodes();
   var today = counterDate(Date.now());
 
+  // Working on: the same lines as Home's (Stage 18a).
   var nowRows = named(sessionLog());
-  var now = workingOnLeaves(nodes, nowRows);
+  var day = replayDay(nowRows);
   var nowList = $('tasksNow');
-  nowList.textContent = '';
-  now.items.forEach(function (it) {
-    if (!it.leaf) {
-      var line = taskLine(it.name, (it.finished ? 'its task is ' + (it.finished === 'drop' ? 'dropped' : 'done')
-                                                : 'not in your Tasks list') + (now.running ? '' : ' · paused'),
-                          'task-row');
-      var box = document.createElement('div');
-      box.className = 'task-row-title';
-      while (line.firstChild) box.appendChild(line.firstChild);
-      line.append(box, nowActs(it.name, null, nowRows));
-      nowList.appendChild(line);
-      return;
-    }
-    var meta = taskMeta(it.leaf, today, true);
-    if (!now.running) meta.text = (meta.text ? meta.text + ' · ' : '') + 'paused';
-    var li = document.createElement('li');
-    li.className = 'task-row';
-    li.appendChild(taskButton(it.leaf, 'tasksNow', meta));
-    li.appendChild(nowActs(it.name, it.leaf, nowRows));
-    nowList.appendChild(li);
-  });
-  nowList.hidden = !now.items.length;
-  $('tasksNowEmpty').hidden = now.items.length > 0;
+  renderNowList(nowList, nowRows, day);
+  nowList.hidden = !day.activeProjects.length;
+  $('tasksNowEmpty').hidden = day.activeProjects.length > 0;
 
-  var planned = plannedLeaves(nodes);
+  // Planned, any day, running ones aside; a Backlog one says so.
+  var running = runningIds();
+  var planned = plannedLeaves(nodes).filter(function (l) { return !running[l.node.id]; });
   var plist = $('tasksPlanned');
   plist.textContent = '';
   planned.forEach(function (l) {
     var li = document.createElement('li');
-    appendLeaf(li, l, 'tasksPlanned', taskMeta(l, today, true));
+    var m = taskMeta(l, today, true);
+    if (inBacklog(planOf(l.node.id), today)) m.text = (m.text ? m.text + ' · ' : '') + 'Backlog';
+    appendLeaf(li, l, 'tasksPlanned', m);
     plist.appendChild(li);
   });
   plist.hidden = !planned.length;
   $('tasksPlannedEmpty').hidden = planned.length > 0;
 
-  // All tasks: the tree, open tasks as buttons. Done and gone ones only with Show done (dimmed).
+  // All tasks: the tree, the project always the heading, with + for a new sub-task.
+  // Done and gone ones only with Show done (dimmed).
   var doneIds = closedHere();
   var openIds = userMap();
   taskLeaves(nodes).forEach(function (l) { if (leafLive(l, doneIds)) openIds[l.node.id] = l; });
@@ -12301,20 +12613,25 @@ function paintTasksPage() {
   toggle.setAttribute('aria-pressed', tasksShowDone ? 'true' : 'false');
   projects.forEach(function (p) {
     // Show done: a childless task finished here gets the same line, with Reopen, as a sub-task.
-    if (p.node && !p.children.length && !p.had && doneIds[p.node.id] && !p.node.gone_at) {
+    if (p.node && !p.children.length && !p.had && doneIds[p.node.id] && reopenable(p.node)) {
       all.appendChild(doneHereLine(p.node));
       return;
     }
     var li = document.createElement('li');
     var own = p.node ? openIds[p.node.id] : null;
+    var add = p.node && p.state === 'open' ? subAddBtn(p.node) : null;
     if (own) {
-      appendLeaf(li, own, 'tasksAll', taskMeta(own, today, false));
+      appendLeaf(li, own, 'tasksAll', taskMeta(own, today, false), add);
       li.appendChild(itemsBlock(own.node.id));
     } else {
+      var row = document.createElement('div');
+      row.className = 'task-project-row';
       var name = document.createElement('span');
       name.className = 'task-project task-' + p.state;
       name.textContent = p.node ? nodeTitle(p.node) : '(no project)';
-      li.appendChild(name);
+      row.appendChild(name);
+      if (add) row.appendChild(add);
+      li.appendChild(row);
       var said = p.node ? shutMeta(p.node) : '';
       if (said) {
         var pm = document.createElement('div');
@@ -12324,7 +12641,8 @@ function paintTasksPage() {
       }
       if (p.node && !(p.had || p.children.length) && hasItems(p.node.id)) li.appendChild(itemsBlock(p.node.id));
     }
-    if (p.children.length) {
+    var pending = p.node ? pendingSubs(p.node) : [];
+    if (p.children.length || pending.length) {
       var sub = document.createElement('ul');
       p.children.forEach(function (c) {
         var leaf = openIds[c.node.id];
@@ -12333,7 +12651,7 @@ function paintTasksPage() {
           appendLeaf(cli, leaf, 'tasksAll', taskMeta(leaf, today, false));
           cli.appendChild(itemsBlock(leaf.node.id));
           sub.appendChild(cli);
-        } else if (doneIds[c.node.id] && !c.node.gone_at) {
+        } else if (doneIds[c.node.id] && reopenable(c.node)) {
           sub.appendChild(doneHereLine(c.node));
         } else {
           // Done, gone, or open under a deleted project: dimmed, not a button.
@@ -12342,6 +12660,9 @@ function paintTasksPage() {
           if (hasItems(c.node.id)) shut.appendChild(itemsBlock(c.node.id));
           sub.appendChild(shut);
         }
+      });
+      pending.forEach(function (title) {
+        sub.appendChild(taskLine(title, 'adding to Google Tasks…', 'task-pending'));
       });
       li.appendChild(sub);
     }
@@ -12352,6 +12673,38 @@ function paintTasksPage() {
   $('tasksAllEmpty').textContent = tree.length ? 'Nothing left to do.' : 'Your list is empty.';
 
   if (taskDlg && taskDlg.open) paintTaskDlg();
+}
+
+/** Closed here and still Reopen-able: not deleted in Google, or deleted by its Drop (18a). */
+function reopenable(node) {
+  return !node.gone_at || Boolean(node.pb_deleted_for);
+}
+
+/** "+" on a project: a new sub-task, made in Google by tasks-sync (Stage 18a). */
+function subAddBtn(node) {
+  return smallBtn('+', 'item-add-btn sub-add-btn', 'Add a sub-task to: ' + (node.title || '(untitled)'),
+                  function () { openItemDlg(node.id, 'sub'); });
+}
+
+/** Sub-tasks added by hand under project `node` that the mirror does not show yet. */
+function pendingSubs(node) {
+  var have = userMap();
+  var out = [];
+  var kids = (Array.isArray(taskNodes) ? taskNodes : []).filter(function (n) {
+    return n.kind === 'subtask' && !n.gone_at && n.list_id === node.list_id && n.parent_google_id === node.google_id;
+  });
+  var parked = userMap();
+  parkedAll().forEach(function (x) { if (x && x.rid) parked[x.rid] = 1; });
+  var rows = sessionLog().concat(outboxOurs().filter(function (it) { return it.action === 'log'; }).map(queuedRow));
+  rows.forEach(function (r) {
+    if (!r || r.type !== SUBNEW_TYPE || r.node_id !== node.id || !r.rid || have[r.rid] || parked[r.rid]) return;
+    have[r.rid] = 1;
+    var title = String(r.raw_text || '').trim();
+    if (!title || kids.some(function (k) { return sameTitle(k.title, title); })) return;
+    if (out.some(function (t) { return sameTitle(t, title); })) return;
+    out.push(title);
+  });
+  return out;
 }
 
 /* All tasks shows what is left, like the taskboard; Show done brings back the
@@ -12390,12 +12743,13 @@ function doneHereLine(node) {
   box.appendChild(title);
   var meta = document.createElement('div');
   meta.className = 'plan-meta';
-  meta.textContent = shutMeta(node) || (node.g_status === 'completed' ? ''
-                                       : dropped ? 'Dropped in ProBeing' : 'Done in ProBeing');
+  meta.textContent = shutMeta(node) || (node.g_status === 'completed' && !node.gone_at ? ''
+                                       : dropped ? (node.pb_deleted_for ? 'Dropped, deleted in Google' : 'Dropped in ProBeing')
+                                       : 'Done in ProBeing');
   box.appendChild(meta);
   if (hasItems(node.id)) box.appendChild(itemsBlock(node.id));
   li.appendChild(box);
-  if (node.g_status !== 'completed' || shutMeta(node)) {
+  if (node.g_status !== 'completed' || shutMeta(node) || node.pb_deleted_for) {
     var b = itemLink('Reopen', 'Reopen: ' + nodeTitle(node), function () {
       if (b.disabled) return;
       coolDown(b);
@@ -12471,15 +12825,22 @@ function openTaskDlg(id, opener, listId) {
   $('taskDlgNote').textContent = '';
   // Edit queue 2: on the lowest level only. A project's Done stays in ProBeing (Stage 15).
   $('taskDoneBtn').hidden = $('taskDropBtn').hidden = !leafActsHere(id);
+  // Stage 18a: All tasks never starts one (plan it first); a running one is already started.
+  $('taskStartBtn').hidden = listId === 'tasksAll' || Boolean(runningIds()[id]);
   paintTaskDlg();
   taskDlg.showModal();
-  $('taskStartBtn').focus();                // not the date box: on a phone that opens a picker
+  // Not the date box: on a phone that opens a picker.
+  ($('taskStartBtn').hidden ? $('taskCloseBtn') : $('taskStartBtn')).focus();
 }
 
-/** The Planned button's words, and the plan buttons off while a save is out. */
+/** The Planned button's words, the priority and effort picks, and the plan buttons off while a save is out. */
 function paintTaskDlg() {
   var plan = planOf(taskDlgNode);
-  $('taskPlanBtn').textContent = plan && plan.planned ? 'Remove from Planned' : 'Add to Planned';
+  $('taskPlanBtn').textContent = plannedFor(plan, counterDate(Date.now())) ? 'Remove from plan' : 'Plan for today';
+  paintMetaPicks($('taskPriority'), $('taskEffort'), metaOf(taskDlgNode), function (m) {
+    if (writeMeta(taskDlgNode, m.priority, m.effort)) $('taskDlgNote').textContent = 'Saved: ' + metaLabel(m) + '.';
+    paintTaskDlg();
+  });
   // A finish changed elsewhere (the other device, say) shows, unless he is typing one.
   if (((plan && plan.expected_at) || null) !== taskDlgFilled.at && !taskWhenTouched()) fillTaskWhen(taskDlgNode);
   ['taskPlanBtn', 'taskWhenSave', 'taskWhenClear'].forEach(function (b) { $(b).disabled = taskDlgBusy; });
@@ -12510,8 +12871,14 @@ async function savePlan(id, fields) {
   var row = Object.assign({ user_id: sbUser.id, node_id: id,
                             updated_at: new Date().toISOString() }, fields);
   var res = await sb.from('task_plans').upsert(row, { onConflict: 'user_id,node_id' });
+  // Ahead of the Stage 18a SQL: saved without the day (its updated_at stands in).
+  if (res.error && 'planned_for' in row && /planned_for/.test(String(res.error.message || ''))) {
+    delete row.planned_for;
+    res = await sb.from('task_plans').upsert(row, { onConflict: 'user_id,node_id' });
+  }
   if (res.error) throw errorFrom(res.error);
-  taskPlans[id] = Object.assign({}, planOf(id) || { node_id: id, planned: false, expected_at: null }, fields);
+  taskPlans[id] = Object.assign({}, planOf(id) || { node_id: id, planned: false, expected_at: null }, fields,
+                                { updated_at: row.updated_at });
   await readTaskPlans();                    // the table wins where it answers
 }
 
@@ -12556,9 +12923,9 @@ $('taskWhenClear').addEventListener('click', function () {
 });
 
 $('taskPlanBtn').addEventListener('click', function () {
-  var plan = planOf(taskDlgNode);
-  var on = !(plan && plan.planned);
-  changePlan({ planned: on }, on ? 'Added to Planned.' : 'Removed from Planned.');
+  var on = !plannedFor(planOf(taskDlgNode), counterDate(Date.now()));
+  changePlan(on ? { planned: true, planned_for: counterDate(Date.now()) } : { planned: false },
+             on ? 'Planned for today.' : 'Removed from the plan.');
 });
 
 /** The work row Start writes, named the way a labelled tracker row is: project,
@@ -12576,9 +12943,9 @@ function startTask(id) {
   var leaf = openLeafById(id);
   if (!leaf) return false;
   var e = taskEntry(leaf);
-  // Already the running sub-task: nothing to write (feedback 1). Paused, it starts again.
+  // Already running: nothing to write (feedback 1). Paused, it starts again.
   var day = replayDay(named(sessionLog()));
-  if (day.running && day.currentSubtask === id && toggles.work.state === 'working' &&
+  if (day.running && (day.runningSubtasks || []).indexOf(id) !== -1 && toggles.work.state === 'working' &&
       toggles.sleep.state !== 'asleep') {
     flash('Already working on ' + (e.detail ? e.project + ': ' + e.detail : e.project), 'ok');
     return true;
@@ -12587,7 +12954,7 @@ function startTask(id) {
   var steps = wakeSteps(true);
   if (toggles.work.state !== 'working') setToggle('work', 'working');
   // Stamped to the millisecond, so a restart in the same second as a Stop reads as after it.
-  noteLocalRow('work', e.raw_text, e.project, e.detail, leaf.node.id).at = new Date().toISOString();
+  noteLocalRow('work', e.raw_text, e.project, e.detail, leaf.node.id, new Date().toISOString());
   steps.push({ type: 'work', raw_text: e.raw_text, project: e.project, detail: e.detail,
                node_id: leaf.node.id, rid: newRid() });
   flash('Working on ' + (e.detail ? e.project + ': ' + e.detail : e.project), 'ok');
@@ -12598,32 +12965,214 @@ function startTask(id) {
 }
 
 $('taskStartBtn').addEventListener('click', function () {
-  if (!startTask(taskDlgNode)) {
+  var id = taskDlgNode;
+  if (!startTask(id)) {
     $('taskDlgNote').textContent = 'This task is no longer open in Google Tasks.';
     return;
   }
   closeTaskDlg();
+  openStartDlg(id);
 });
 
-$('taskDoneBtn').addEventListener('click', function () {
-  if (!finishTask(taskDlgNode)) {
+/** Done or Drop from the box: a running task as its ✓/✕ does, else as its list's would. */
+function closeFromBox(mark) {
+  var id = taskDlgNode;
+  var key = (replayDay(named(sessionLog())).subtaskKeys || {})[id];
+  var fromAll = Boolean(taskDlgOpener && taskDlgOpener.list === 'tasksAll');
+  var ok = key ? nowClose(id, key, mark) : mark === 'drop' ? dropTask(id, fromAll) : finishTask(id, fromAll);
+  if (!ok) {
     $('taskDlgNote').textContent = 'This task is no longer open.';
     return;
   }
   closeTaskDlg();
-});
+}
 
-$('taskDropBtn').addEventListener('click', function () {
-  if (!dropTask(taskDlgNode)) {
-    $('taskDlgNote').textContent = 'This task is no longer open.';
-    return;
-  }
-  closeTaskDlg();
-});
+$('taskDoneBtn').addEventListener('click', function () { closeFromBox('done'); });
+$('taskDropBtn').addEventListener('click', function () { closeFromBox('drop'); });
 
 $('taskCloseBtn').addEventListener('click', closeTaskDlg);
 // Escape: closed here, so focus goes back to the task whatever the browser does.
 taskDlg.addEventListener('cancel', function (e) { e.preventDefault(); closeTaskDlg(); });
+
+/* ── Stage 18a: priority and effort ─────────────────────────────────────
+ * Asked when a task is started (Skip allowed) and changed in its box. Each answer
+ * is a `taskmeta` row through the outbox (detail 'p=high;e=m', or 'skip'); the
+ * newest one is the task's. weight = priority x effort / 4, with High 3, Normal 2,
+ * Low 1 and S 1, M 2, L 3, so Normal x M (and Skip, or never asked) weighs 1. */
+var PRIORITIES = [['high', 'High', 3], ['normal', 'Normal', 2], ['low', 'Low', 1]];
+var EFFORTS = [['s', 'S', 1], ['m', 'M', 2], ['l', 'L', 3]];
+var metaRows = [];                       // every taskmeta row, as last read
+
+function weightOf(list, key) {
+  var hit = list.filter(function (x) { return x[0] === key; })[0];
+  return hit ? hit[2] : 2;
+}
+
+/** A taskmeta row's detail as {priority, effort, skipped}; null when unreadable. */
+function parseMeta(detail) {
+  var d = String(detail || '').trim();
+  if (d === 'skip') return { priority: '', effort: '', skipped: true };
+  var m = /^p=(high|normal|low);e=(s|m|l)$/.exec(d);
+  return m ? { priority: m[1], effort: m[2], skipped: false } : null;
+}
+
+/** weight = priority x effort / 4 (Normal x M = 1); 1 when skipped or never asked. */
+function taskWeight(meta) {
+  if (!meta || meta.skipped) return 1;
+  return weightOf(PRIORITIES, meta.priority) * weightOf(EFFORTS, meta.effort) / 4;
+}
+
+function metaLabel(meta) {
+  if (!meta || meta.skipped) return 'priority and effort skipped';
+  var p = PRIORITIES.filter(function (x) { return x[0] === meta.priority; })[0];
+  var e = EFFORTS.filter(function (x) { return x[0] === meta.effort; })[0];
+  return (p ? p[1] : '?') + ' priority · effort ' + (e ? e[1] : '?');
+}
+
+/** Every taskmeta row known here: the last read, held presses and today's rows. */
+function metaAll() {
+  var rows = [];
+  var have = userMap();
+  parkedAll().forEach(function (x) { if (x && x.rid) have[x.rid] = 1; });   // refused: not an answer
+  function add(r) {
+    if (!r || r.type !== META_TYPE || !r.rid || !r.node_id || have[r.rid]) return;
+    have[r.rid] = 1;
+    rows.push(r);
+  }
+  (Array.isArray(metaRows) ? metaRows : []).forEach(add);
+  outboxOurs().forEach(function (it) { if (it.action === 'log') add(queuedRow(it)); });
+  sessionLog().forEach(add);
+  return rows;
+}
+
+/** node id -> its newest answer {priority, effort, skipped, at}. */
+function metaByNode(rows) {
+  var out = userMap();
+  (rows || []).forEach(function (r) {
+    var m = r && r.node_id ? parseMeta(r.detail) : null;
+    var t = r ? instantOf(r.at) : NaN;
+    if (!m || isNaN(t)) return;
+    var have = out[r.node_id];
+    if (have && (have.at > t || (have.at === t && have.rid > String(r.rid)))) return;
+    out[r.node_id] = Object.assign(m, { at: t, rid: String(r.rid) });
+  });
+  return out;
+}
+
+/** Task `id`'s newest answer, or null when never asked. */
+function metaOf(id) {
+  return id ? metaByNode(metaAll())[id] || null : null;
+}
+
+/** One answer for task `id`: priority and effort, or Skip (no priority). */
+function writeMeta(id, priority, effort) {
+  var leaf = leafById(id);
+  if (!leaf) return false;
+  var e = taskEntry(leaf);
+  var title = e.detail || e.project;
+  var detail = priority ? 'p=' + priority + ';e=' + (effort || 'm') : 'skip';
+  var meta = parseMeta(detail);
+  var text = (priority ? metaLabel(meta) : 'Priority and effort skipped') + ': ' + title;
+  var at = new Date().toISOString();
+  var step = { type: META_TYPE, raw_text: text, project: e.project, detail: detail, node_id: id,
+               rid: newRid(), at: at, local_time: humanLocal() };
+  noteLocalRow(META_TYPE, text, e.project, detail, id, at).rid = step.rid;
+  runWrites([step]);
+  return true;
+}
+
+/** The two rows of picks: tapping one calls `onPick({priority, effort})` with the
+ *  other kept (Normal and M when there is none yet). */
+function paintMetaPicks(pBox, eBox, meta, onPick) {
+  var cur = meta && !meta.skipped ? meta : { priority: '', effort: '' };
+  pBox.textContent = '';
+  eBox.textContent = '';
+  PRIORITIES.forEach(function (x) {
+    pBox.appendChild(pickButton(x[1], cur.priority === x[0], false, function () {
+      onPick({ priority: x[0], effort: cur.effort || 'm' });
+    }));
+  });
+  EFFORTS.forEach(function (x) {
+    eBox.appendChild(pickButton(x[1], cur.effort === x[0], false, function () {
+      onPick({ priority: cur.priority || 'normal', effort: x[0] });
+    }));
+  });
+}
+
+/* The box after Start: priority, effort and a deadline, or Skip. The task is
+ * already started when it opens, so the press itself never waits on it (rule 4).
+ * Skip, or closing it, records "skipped" once: a task already answered keeps its answer. */
+var startDlg = $('startDlg');
+var startFor = null;                     // the task the box asks about
+var startPick = { priority: '', effort: '' };
+
+function openStartDlg(id) {
+  var leaf = leafById(id);
+  if (!leaf || !startDlg) return;
+  startFor = id;
+  var meta = metaOf(id);
+  startPick = meta && !meta.skipped ? { priority: meta.priority, effort: meta.effort } : { priority: '', effort: '' };
+  var e = taskEntry(leaf);
+  $('startDlgTask').textContent = e.detail ? e.project + ' › ' + e.detail : e.project;   // his text
+  var t = expectedMs(id);
+  var d = isFinite(t) ? new Date(t) : null;
+  $('startDate').value = d ? ymdLocal(d) : '';
+  $('startTime').value = d ? pad2(d.getHours()) + ':' + pad2(d.getMinutes()) : '';
+  $('startDlgNote').textContent = '';
+  paintStartPicks();
+  if (!startDlg.open) startDlg.showModal();
+  $('startSaveBtn').focus();
+}
+
+function paintStartPicks() {
+  paintMetaPicks($('startPriority'), $('startEffort'), startPick.priority ? startPick : null, function (m) {
+    startPick = m;
+    paintStartPicks();
+  });
+}
+
+/** Skip: recorded only for a task never answered, so an answer is not lost. */
+function skipStart() {
+  var id = startFor;
+  startFor = null;
+  if (startDlg.open) startDlg.close();
+  if (id && !metaOf(id)) writeMeta(id, '', '');
+}
+
+function saveStart() {
+  var id = startFor;
+  if (!id) return;
+  var dateStr = $('startDate').value;
+  var iso = dateStr ? expectedFromInputs(dateStr, $('startTime').value) : null;
+  if (dateStr && !iso) { $('startDlgNote').textContent = 'That date is not real. Pick it again.'; return; }
+  startFor = null;
+  startDlg.close();
+  writeMeta(id, startPick.priority || 'normal', startPick.effort || 'm');
+  var was = planOf(id);
+  if (iso && iso !== ((was && was.expected_at) || null)) {
+    savePlan(id, { expected_at: iso }).then(paintTasks, function (err) {
+      flash('Deadline not saved: ' + ((err && err.message) || 'no answer') + '. Set it in the task\'s box.', 'err');
+    });
+  }
+  flash('Saved: ' + metaLabel(parseMeta('p=' + (startPick.priority || 'normal') + ';e=' + (startPick.effort || 'm'))) +
+        (iso ? ', deadline ' + taskWhenLabel(Date.parse(iso)) : ''), 'ok');
+}
+
+/** Start from Upcoming or Planned: the press first, then its box. */
+function startFromPlan(id) {
+  if (!startTask(id)) {
+    flash('This task is no longer open in Google Tasks.', 'err');
+    return false;
+  }
+  openStartDlg(id);
+  return true;
+}
+
+if (startDlg) {
+  $('startForm').addEventListener('submit', function (e) { e.preventDefault(); saveStart(); });
+  $('startSkipBtn').addEventListener('click', skipStart);
+  startDlg.addEventListener('cancel', function (e) { e.preventDefault(); skipStart(); });
+}
 
 /* Its own channel: a task_plans table not made yet must not take the task_nodes
  * feed down with it. The announcement is only a nudge; the plans are read again. */
@@ -13042,7 +13591,7 @@ async function readItems() {
     if (mk.error) return false;
     // Feedback 1: Done and Reopen on a sub-task itself; tree.js directMarks keeps only those.
     var dr = await readPages(function () {
-      return sb.from('events').select('type,rid,node_id,at').in('type', ['subdone', 'subopen', 'subdrop'])
+      return sb.from('events').select('type,rid,node_id,at,raw_text').in('type', ['subdone', 'subopen', 'subdrop'])
         .not('node_id', 'is', null).order('at', { ascending: false }).order('rid');
     });
     if (dr.error) return false;
@@ -13058,6 +13607,12 @@ async function readItems() {
         .order('at', { ascending: false }).order('rid');
     });
     if (!nr.error) noteRows = nr.data || [];
+    // Stage 18a: every priority and effort answer. A failed read keeps the last.
+    var mr = await readPages(function () {
+      return sb.from('events').select('type,rid,node_id,at,detail').eq('type', META_TYPE)
+        .not('node_id', 'is', null).order('at', { ascending: false }).order('rid');
+    });
+    if (!mr.error) metaRows = mr.data || [];
     // Edit queue 4: Stops, then any start since under those tasks. A failed read keeps the last.
     var sr = await readPages(function () {
       return sb.from('events').select('type,rid,node_id,at').eq('type', STOP_TYPE)
@@ -13163,7 +13718,7 @@ function closeFinishedTasks() {
 /** The items under one task, open ones first; done and dropped ones behind a
  *  toggle. `max` caps the open ones shown (Home). Before a read only presses
  *  held here are known, so nothing is drawn. */
-function itemsBlock(nodeId, max) {
+function itemsBlock(nodeId, max, noAdd) {
   var box = document.createElement('div');
   box.className = 'items';
   if (!itemsRead) return box;
@@ -13192,7 +13747,7 @@ function itemsBlock(nodeId, max) {
     more.textContent = '+' + (open.length - max) + ' more on Tasks';
     foot.appendChild(more);
   }
-  if (!finished) foot.appendChild(itemLink('+ item', 'Add an item', function () { openItemDlg(nodeId); }));
+  if (!finished && !noAdd) foot.appendChild(itemLink('+ item', 'Add an item', function () { openItemDlg(nodeId); }));
   if (closed.length) {
     foot.appendChild(itemLink(showClosed[nodeId] ? 'Hide closed' : closed.length + ' closed',
                               showClosed[nodeId] ? 'Hide done and dropped items' : 'Show done and dropped items',
@@ -13242,25 +13797,6 @@ function itemLine(it) {
     li.appendChild(b);
   });
   return li;
-}
-
-/** The sub-task being worked on, under its project on the Home tile. */
-function currentSubtaskBlock(node, title) {
-  var box = document.createElement('div');
-  box.className = 'proj-sub';
-  if (node.kind === 'subtask') {               // a project's own items need no second heading
-    var row = document.createElement('div');
-    row.className = 'proj-sub-head';
-    var head = document.createElement('div');
-    head.className = 'proj-sub-title';
-    head.textContent = '▸ ' + (node.gone_at ? title + ' (deleted in Google)' : title);
-    var finish = shownFinishMs(node);
-    if (isFinite(finish)) head.appendChild(deadlineChip(finish, ' · '));
-    row.appendChild(head);
-    box.appendChild(row);                      // its Done and Drop are the tile's (edit queue 2)
-  }
-  box.appendChild(itemsBlock(node.id, HOME_ITEMS_MAX));
-  return box;
 }
 
 /** Done, Drop or Undo ('open') on one item, through the outbox. Closing the
@@ -13338,8 +13874,9 @@ function doneHere() {
 }
 
 /** Done on task `id`: a sub-task, or a project with nothing under it (edit
- *  queue 2; tasks-sync never ticks a project). False when it is not open here. */
-function finishTask(id) {
+ *  queue 2; tasks-sync never ticks a project). False when it is not open here.
+ *  `fromAll`: pressed on All tasks, so the row says it was never worked on (18a). */
+function finishTask(id, fromAll) {
   if (typeof directRid !== 'function') return false;
   var leaf = openLeafById(id);
   if (!leaf) return false;
@@ -13348,14 +13885,14 @@ function finishTask(id) {
   // Never older than the Reopen it follows, whatever this device's clock says.
   var at = new Date(Math.max(Date.now(), d ? instantOf(d.at) + 1 : 0)).toISOString();
   var e = taskEntry(leaf);
-  var text = e.detail || e.project;
+  var text = (fromAll ? ALL_DONE_PREFIX : '') + (e.detail || e.project);
   unpark(rid);                        // pressed again after a refusal: this press is the live one
   noteLocalRow('subdone', text, e.project, e.detail, id).rid = rid;
-  directPressed.push({ type: 'subdone', rid: rid, node_id: id, at: at });
+  directPressed.push({ type: 'subdone', rid: rid, node_id: id, at: at, raw_text: text });
   runWrites([{ type: 'subdone', raw_text: text, project: e.project, detail: e.detail, node_id: id,
                rid: rid, at: at, local_time: humanLocal() }]);
   paintTasks();
-  flash('Done: ' + text + '. Reopen it under Tasks, All tasks, Show done.', 'ok');
+  flash('Done: ' + (e.detail || e.project) + '. Reopen it under Tasks, All tasks, Show done.', 'ok');
   askNote(closeLink(rid, e, id));
   return true;
 }
@@ -13417,8 +13954,9 @@ function leafActsHere(id) {
   return itemsRead && Boolean(openLeafById(id)) && !openItemCount(id);
 }
 
-/** Drop on task `id`. False when it is not open here. */
-function dropTask(id) {
+/** Drop on task `id`: hidden here, and deleted in Google by tasks-sync (18a;
+ *  DROP_DELETE_MARK says so on the row). False when it is not open here. */
+function dropTask(id, fromAll) {
   if (typeof directRid !== 'function' || typeof DIRECT_DROP !== 'string') return false;
   var leaf = openLeafById(id);
   if (!leaf) return false;
@@ -13426,14 +13964,16 @@ function dropTask(id) {
   var rid = directRid(DIRECT_DROP, id, d ? d.gen + 1 : 0);
   var at = new Date(Math.max(Date.now(), d ? instantOf(d.at) + 1 : 0)).toISOString();
   var e = taskEntry(leaf);
-  var text = 'Dropped: ' + (e.detail || e.project);
+  var title = e.detail || e.project;
+  var text = (fromAll ? ALL_DROP_PREFIX : 'Dropped: ') + title +
+             (typeof DROP_DELETE_MARK === 'string' ? DROP_DELETE_MARK : '');
   unpark(rid);
   noteLocalRow('subdrop', text, e.project, e.detail, id).rid = rid;
-  directPressed.push({ type: 'subdrop', rid: rid, node_id: id, at: at });
+  directPressed.push({ type: 'subdrop', rid: rid, node_id: id, at: at, raw_text: text });
   runWrites([{ type: 'subdrop', raw_text: text, project: e.project, detail: e.detail, node_id: id,
                rid: rid, at: at, local_time: humanLocal() }]);
   paintTasks();
-  flash(text + '. Reopen it under Tasks, All tasks, Show done.', 'ok');
+  flash('Dropped: ' + title + '. It is deleted in Google Tasks; Reopen it in What\'s done.', 'ok');
   askNote(closeLink(rid, e, id));
   return true;
 }
@@ -13452,69 +13992,47 @@ function smallBtn(text, cls, label, onTap) {
   return b;
 }
 
-/** Working on (Tasks page): Stop, and Done and Drop that stop it too, as on the
- *  Home tile. For task `leaf` of tile `name`, or the tile's entry when it matched none. */
-function nowActs(name, leaf, rows) {
-  var box = document.createElement('span');
-  box.className = 'task-acts';
-  box.appendChild(smallBtn('Stop', '', 'Stop: ' + name, function () {
-    stopAndAsk(name);
-    paintTasksPage();
-    flash(name + ' — stopped', 'ok');
-  }));
-  var id = leaf ? leaf.node.id : '';
-  if (leaf && leafOpen(leaf)) box.appendChild(addItemBtn(leaf.node));      // edit queue 4
-  var acts = id ? leafActsHere(id) : false;
-  var ent = id ? null : tileEntry(name, rows);
-  var title = leaf ? leaf.node.title || '(untitled)' : name;
-  if (acts || ent) {
-    box.appendChild(smallBtn('Done', 'item-done-btn', 'Done: ' + title, function () {
-      var paused = stopSteps(name, id);
-      if (id) finishTask(id); else finishEntry(name, ent);
-      closeProject(name);
-      if (paused.length) runWrites(paused);
-      paintPlan();
-      paintTasksPage();
-    }));
-  }
-  if (acts) {
-    box.appendChild(smallBtn('Drop', 'item-drop-btn', 'Drop: ' + title, function () {
-      var paused = stopSteps(name, id);
-      dropTask(id);
-      closeProject(name);
-      if (paused.length) runWrites(paused);
-      paintPlan();
-      paintTasksPage();
-    }));
-  }
-  return box;
-}
-
 /** "+ item" on a task row: the task box's add-item flow, for that task. */
 function addItemBtn(node) {
   return smallBtn('+ item', 'item-add-btn', 'Add an item to: ' + (node.title || '(untitled)'),
                   function () { openItemDlg(node.id); });
 }
 
-/** Done and Drop for task `node`, or null when they belong on its items or it is not open. */
-function taskActs(node) {
-  if (!node || !leafActsHere(node.id)) return null;
-  var title = node.title || '(untitled)';
-  var box = document.createElement('span');
-  box.className = 'task-acts';
-  box.append(smallBtn('Done', 'item-done-btn', 'Done: ' + title, function () { finishTask(node.id); }),
-             smallBtn('Drop', 'item-drop-btn', 'Drop: ' + title, function () { dropTask(node.id); }));
-  return box;
-}
-
-function openItemDlg(nodeId) {
+/** The item box, or with mode 'sub' the same box for a new sub-task (18a). */
+function openItemDlg(nodeId, mode) {
   var names = nodeNames(nodeIndex(taskNodes), nodeId);
   if (!names) return;
   itemDlgNode = nodeId;
-  $('itemDlgTask').textContent = names.detail ? names.project + ' › ' + names.detail : names.project;
+  itemDlgMode = mode === 'sub' ? 'sub' : 'item';
+  var sub = itemDlgMode === 'sub';
+  $('itemDlgTitle').textContent = sub ? 'New sub-task' : 'New item';
+  $('itemNameLabel').textContent = sub ? 'Sub-task' : 'Item';
+  $('itemName').placeholder = sub ? 'Fix the tailscale connection' : 'Send the invoice';
+  $('itemDlgTask').textContent = sub ? 'Under ' + names.project + ', in Google Tasks too'
+                                     : names.detail ? names.project + ' › ' + names.detail : names.project;
   $('itemName').value = '';
   itemDlg.showModal();
   $('itemName').focus();
+}
+
+var itemDlgMode = 'item';
+var SUBTASK_TITLE_MAX = 80;
+
+/** A sub-task added by hand under project `projectId`: a `subnew` row through
+ *  the outbox; tasks-sync makes it in Google (once) and it shows when mirrored. */
+function addSubtask(projectId, text) {
+  var title = Array.from(String(text || '').replace(/\s+/g, ' ').trim()).slice(0, SUBTASK_TITLE_MAX).join('');
+  var leaf = leafById(projectId);
+  if (!title || !leaf || leaf.node.kind !== 'project') return false;
+  var project = String(leaf.node.title || '').trim() || '(untitled)';
+  var at = new Date().toISOString();
+  var step = { type: SUBNEW_TYPE, raw_text: title, project: project, detail: '', node_id: projectId,
+               rid: newRid(), at: at, local_time: humanLocal() };
+  noteLocalRow(SUBNEW_TYPE, title, project, '', projectId, at).rid = step.rid;
+  runWrites([step]);
+  paintTasksPage();
+  flash('Adding "' + title + '" under ' + project + ' in Google Tasks…', 'ok');
+  return true;
 }
 
 /** Add an item by hand under task `nodeId`, through the outbox. */
@@ -13536,8 +14054,9 @@ function addItem(nodeId, text) {
 
 $('itemForm').addEventListener('submit', function (e) {
   e.preventDefault();
-  if (!addItem(itemDlgNode, $('itemName').value)) {
-    flash('Type the item first.', 'err');
+  var sub = itemDlgMode === 'sub';
+  if (!(sub ? addSubtask(itemDlgNode, $('itemName').value) : addItem(itemDlgNode, $('itemName').value))) {
+    flash(sub ? 'Type the sub-task first.' : 'Type the item first.', 'err');
     return;
   }
   itemDlg.close();
@@ -13575,6 +14094,7 @@ function stopItems() {
   noteRows = [];
   stopRowsRead = [];
   startRowsRead = [];
+  metaRows = [];
   closeNote();
   subdoneTried = userMap();
   itemsRead = false;
@@ -13616,6 +14136,8 @@ function subtaskDoneMs(n, rids, newest, d) {
  * `direct` are subdone/subopen/subdrop rows. Edit queue 2: a project with nothing
  * under it finished by its own Done (kind 'project'), and entries finished in
  * ProBeing only (kind 'entry', `entries` rows), under 'pb-other' when no project.
+ * Stage 18a: tasks dropped (kind 'drop', with Reopen), whatever Google did with
+ * them since; and `fromAll` on a task's own Done pressed on All tasks.
  */
 function doneEntries(tree) {
   tree = tree || {};
@@ -13641,7 +14163,8 @@ function doneEntries(tree) {
     if (!p) return;
     var ms = subtaskDoneMs(n, rids[n.id], newest, direct[n.id]);
     if (ms !== null && beforeGone(n, p, ms)) {
-      out.push({ project: p.id, kind: 'subtask', id: n.id, title: title(n), under: '', ms: ms });
+      out.push({ project: p.id, kind: 'subtask', id: n.id, title: title(n), under: '', ms: ms,
+                 fromAll: fromAllDone(direct[n.id], ms) });
     }
   });
   var hasKids = userMap();
@@ -13650,8 +14173,18 @@ function doneEntries(tree) {
     if (!n || !n.id || n.kind !== 'project' || hasKids[(n.list_id || '') + '|' + n.google_id]) return;
     var ms = directDoneAt(n, direct[n.id], rids[n.id], newest);
     if (ms !== null && beforeGone(n, n, ms)) {
-      out.push({ project: n.id, kind: 'project', id: n.id, title: title(n), under: '', ms: ms });
+      out.push({ project: n.id, kind: 'project', id: n.id, title: title(n), under: '', ms: ms,
+                 fromAll: fromAllDone(direct[n.id], ms) });
     }
+  });
+  // Dropped: listed with Reopen, under its project (a childless one under itself).
+  nodes.forEach(function (n) {
+    var d = n && n.id ? direct[n.id] : null;
+    if (!d || d.mark !== 'drop' || (n.kind !== 'subtask' && n.kind !== 'project')) return;
+    var p = up(n);
+    if (!p) return;
+    out.push({ project: p.id, kind: 'drop', id: n.id, title: title(n), under: '', ms: instantOf(d.at),
+               fromAll: String(d.text || '').indexOf(ALL_DROP_PREFIX) === 0 });
   });
   if (tree.entries && tree.entries.length) {
     var ends = entryMarks(tree.entries);
@@ -13693,7 +14226,7 @@ function whatsDone(tree, windows, bySubtask) {
     var ymd = counterDate(e.ms);
     if (windows && (ymd < first || ymd > last)) return;
     var line = Object.assign({ ymd: ymd }, e);
-    if (e.kind === 'subtask' || e.kind === 'project') line.time = times[e.id] || 0;
+    if (e.kind === 'subtask' || e.kind === 'project' || e.kind === 'drop') line.time = times[e.id] || 0;
     if (tree && tree.notes && tree.notes.length) line.notes = lineNotes(line, tree.notes);
     (byProject[e.project] = byProject[e.project] || []).push(line);
   });
@@ -13715,6 +14248,12 @@ function whatsDone(tree, windows, bySubtask) {
     return { id: p.node.id, title: p.node.gone_at ? name + ' (deleted in Google)' : name,
              count: lines.length, days: days };
   });
+}
+
+/** Was the Done at `ms` pressed on All tasks (18a)? Its own row says so. */
+function fromAllDone(d, ms) {
+  return Boolean(d && d.mark === 'done' && instantOf(d.at) === ms &&
+                 String(d.text || '').indexOf(ALL_DONE_PREFIX) === 0);
 }
 
 /** Edit queue 3: the notes under one What's done line, oldest first, as text. An
@@ -13854,7 +14393,14 @@ function doneLine(l) {
   li.className = 'done-' + l.kind;
   var what = document.createElement('span');
   what.className = 'what';
-  what.textContent = (l.kind === 'item' ? '• ' : '✓ ') + l.title;
+  what.textContent = (l.kind === 'item' ? '• ' : l.kind === 'drop' ? '✕ ' : '✓ ') + l.title;
+  if (l.kind === 'drop' || l.fromAll) {
+    var how = document.createElement('span');
+    how.className = 'done-how';
+    how.textContent = l.kind === 'drop' ? (l.fromAll ? 'dropped from All tasks, not worked on' : 'dropped')
+                                         : 'done from All tasks, not worked on';
+    what.appendChild(how);
+  }
   (l.notes || []).forEach(function (text) {
     var n = document.createElement('span');
     n.className = 'done-note';
@@ -13862,15 +14408,16 @@ function doneLine(l) {
     what.appendChild(n);
   });
   li.appendChild(what);
-  if (l.kind === 'entry') {
+  if (l.kind === 'entry' || l.kind === 'drop') {
     var b = itemLink('Reopen', 'Reopen: ' + l.title, function () {
       if (b.disabled) return;
       coolDown(b);
-      if (reopenEntry(l.id)) renderDone();
+      if (l.kind === 'drop' ? reopenTask(l.id) : reopenEntry(l.id)) renderDone();
     });
     li.appendChild(b);
   }
-  var meta = l.kind === 'subtask' || l.kind === 'project' ? (l.time > 0 ? humanDuration(l.time) : '') : l.under;
+  var meta = l.kind === 'subtask' || l.kind === 'project' || l.kind === 'drop'
+           ? (l.time > 0 ? humanDuration(l.time) : '') : l.under;
   if (meta) {
     var m = document.createElement('span');
     m.className = 'when';

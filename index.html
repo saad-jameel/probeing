@@ -145,10 +145,16 @@
        are none, every open task (13b). A tap opens the task's box. Last on the
        screen, under every logging control, so it costs no taps (rule 4).
        Hidden until Google is connected. -->
+  <!-- Stage 18a: only what is planned for today (and stopped tasks); planned on an
+       earlier day and not finished waits in the Backlog bar. -->
   <section id="planCard" class="card" hidden>
     <h2 class="card-head">Upcoming tasks</h2>
     <ul id="planList" class="plan-list"></ul>
-    <p id="planEmpty" class="pending" hidden>Nothing due today.</p>
+    <p id="planEmpty" class="pending" hidden>Please plan your day before starting it.</p>
+    <details id="backlogBox" class="backlog" hidden>
+      <summary>Backlog (<span id="backlogCount">0</span>)</summary>
+      <ul id="backlogList" class="plan-list"></ul>
+    </details>
   </section>
 </section>
 
@@ -167,13 +173,13 @@
   <section id="tasksNowCard" class="card" hidden>
     <h2 class="card-head">Working on</h2>
     <ul id="tasksNow" class="plan-list"></ul>
-    <p id="tasksNowEmpty" class="pending" hidden>Nothing running. Tap a task below and choose Start working on it.</p>
+    <p id="tasksNowEmpty" class="pending" hidden>Nothing running. Plan a task below, then Start it from Upcoming tasks.</p>
   </section>
 
   <section id="tasksPlannedCard" class="card" hidden>
     <h2 class="card-head">Planned</h2>
     <ul id="tasksPlanned" class="plan-list"></ul>
-    <p id="tasksPlannedEmpty" class="pending" hidden>Nothing planned. Tap a task and choose Add to Planned.</p>
+    <p id="tasksPlannedEmpty" class="pending" hidden>Nothing planned. Tap Plan on a task under All tasks.</p>
   </section>
 
   <section id="tasksAllCard" class="card" hidden>
@@ -364,12 +370,17 @@
 </dialog>
 
 <!-- Stage 13b. Asked before End day (or Sleep at night) when a prayer whose time
-     has begun is not logged. Never shown when nothing is missing. -->
+     has begun is not logged. Never shown when nothing is missing. Stage 18a: also
+     when entries wait in Unsorted. -->
 <dialog id="dayPrayersDlg" class="dlg">
   <form method="dialog">
     <h2>Before the day ends</h2>
     <p id="dayPrayersText" class="hint"></p>
     <div id="dayPrayersList" class="pick-grid" aria-label="Log it now"></div>
+    <div id="daySort" hidden>
+      <p id="daySortText" class="hint"></p>
+      <button type="button" id="daySortBtn" class="btn">Sort them now</button>
+    </div>
     <div class="dlg-actions">
       <button type="button" id="dayPrayersAnyway" class="btn">End day anyway</button>
     </div>
@@ -903,17 +914,45 @@
     </div>
     <p id="taskDlgNote" class="hint" role="status"></p>
 
+    <p class="pick-head">Priority</p>
+    <div id="taskPriority" class="pick-grid" aria-label="Priority"></div>
+    <p class="pick-head">Effort</p>
+    <div id="taskEffort" class="pick-grid" aria-label="Effort"></div>
+
     <div class="task-dlg-main">
       <button type="button" id="taskStartBtn" class="btn btn-accent btn-wide">Start working on it</button>
       <button type="button" id="taskDoneBtn" class="btn btn-wide" hidden>Done</button>
       <button type="button" id="taskDropBtn" class="btn btn-wide" hidden>Drop</button>
-      <button type="button" id="taskPlanBtn" class="btn btn-wide">Add to Planned</button>
+      <button type="button" id="taskPlanBtn" class="btn btn-wide">Plan for today</button>
     </div>
 
     <div class="dlg-actions">
       <button type="button" id="taskCloseBtn" class="link-btn">Close</button>
     </div>
   </div>
+</dialog>
+
+<!-- Stage 18a: asked after Start working on. The task is already started; Skip
+     (or closing it) records that it was skipped. The title is his text. -->
+<dialog id="startDlg" class="dlg" aria-labelledby="startDlgTitle">
+  <form id="startForm" method="dialog">
+    <h2 id="startDlgTitle">Started</h2>
+    <p id="startDlgTask" class="hint"></p>
+    <p class="pick-head">Priority</p>
+    <div id="startPriority" class="pick-grid" aria-label="Priority"></div>
+    <p class="pick-head">Effort</p>
+    <div id="startEffort" class="pick-grid" aria-label="Effort"></div>
+    <label for="startDate">Deadline</label>
+    <div class="task-when">
+      <input id="startDate" type="date" aria-label="Deadline date">
+      <input id="startTime" type="time" aria-label="Deadline time">
+    </div>
+    <p id="startDlgNote" class="hint" role="status"></p>
+    <div class="dlg-actions">
+      <button type="button" id="startSkipBtn" class="link-btn">Skip</button>
+      <button type="submit" id="startSaveBtn" class="btn btn-accent">Save</button>
+    </div>
+  </form>
 </dialog>
 
 <!-- Stage 16: finished sub-tasks and items, per project, by counter day.
@@ -953,7 +992,7 @@
     <h2 id="itemDlgTitle">New item</h2>
     <p id="itemDlgTask" class="hint"></p>
 
-    <label for="itemName">Item</label>
+    <label for="itemName" id="itemNameLabel">Item</label>
     <input id="itemName" type="text" placeholder="Send the invoice" maxlength="200" autocomplete="off">
 
     <div class="dlg-actions">

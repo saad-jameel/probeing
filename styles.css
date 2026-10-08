@@ -880,8 +880,11 @@ body {
    hour, a blinking red dot once past. The app has one dark palette (the state
    tints); these read on all four backgrounds. */
 .deadline { font-weight: 600; white-space: nowrap; }
+/* Stage 18a: green over an hour, orange the last hour, red the last 30 min, blinking past. */
+.deadline.dl-ok { color: #69db7c; }
 .deadline.dl-soon { color: #ffa94d; }
 .deadline.dl-near, .deadline.dl-past { color: #ff6b6b; }
+.deadline.dl-past { animation: dl-blink 1.2s ease-in-out infinite; }
 .dl-dot { display: none; width: 8px; height: 8px; margin-right: 5px; border-radius: 50%;
   background: #ff6b6b; vertical-align: middle; }
 /* Rule 6: .dl-dot sets `display`, so it declares its [hidden] pair. */
@@ -889,7 +892,7 @@ body {
 /* Opacity only, so the blink costs the compositor and no layout. */
 .dl-past .dl-dot { display: inline-block; animation: dl-blink 1.2s ease-in-out infinite; }
 @keyframes dl-blink { 50% { opacity: .15; } }
-@media (prefers-reduced-motion: reduce) { .dl-past .dl-dot { animation: none; } }
+@media (prefers-reduced-motion: reduce) { .dl-past .dl-dot, .deadline.dl-past { animation: none; } }
 
 /* Done on a sub-task itself, and Reopen on one finished that way. */
 .task-row { display: flex; align-items: center; gap: 8px; }
@@ -954,3 +957,46 @@ body {
 .done-projects .pick { flex: 1 1 40%; padding: 8px 6px; font-size: 14px; }
 .done-list .when { white-space: normal; text-align: right; max-width: 45%; overflow-wrap: anywhere; }
 .done-list li.done-item .what { color: var(--muted); }
+
+/* Stage 18a: Working on as project headings, one line per running task: title,
+   deadline, time, then ✓ ⏸ ✕ 📌 and + item; its items below. The .proj-list li
+   rule reaches these too, so the overrides are written at a higher specificity.
+   Rule 6: each class that sets `display` declares its [hidden] pair. */
+.proj-list li.now-group, .plan-list li.now-group { display: block; }
+.proj-list li.now-group[hidden], .plan-list li.now-group[hidden] { display: none; }
+.now-head { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 10px; }
+.now-head[hidden] { display: none; }
+.now-tasks, .proj-list ul.now-tasks { list-style: none; margin: 6px 0 0; padding: 0; display: grid; gap: 8px; }
+.now-tasks[hidden], .proj-list ul.now-tasks[hidden] { display: none; }
+.now-tasks li.now-row, .proj-list .now-tasks li.now-row {
+  display: flex; flex-wrap: wrap; align-items: center; gap: 6px; padding: 0; border-top: 0;
+}
+.now-tasks li.now-row[hidden], .proj-list .now-tasks li.now-row[hidden] { display: none; }
+.now-row > .now-title { flex: 1 1 8em; width: auto; min-width: 0; padding: 4px 0; overflow-wrap: anywhere; }
+.now-row > .items { flex: 1 1 100%; margin: 0; }
+.now-row.pinned > .now-title { color: var(--accent); font-weight: 600; }
+.now-entry > .now-title { color: var(--muted); font-size: 14px; }
+.now-time { color: var(--muted); font-size: 12.5px; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.now-acts { display: flex; flex-wrap: wrap; gap: 4px; flex: 0 0 auto; align-items: center; }
+.now-acts[hidden] { display: none; }
+.icon-act {
+  width: 32px; height: 32px; padding: 0; border-radius: 999px; cursor: pointer;
+  background: none; color: var(--fg); border: 1px solid var(--line); font-size: 15px; line-height: 1;
+}
+.icon-act.act-done { color: #69db7c; border-color: #69db7c; }
+.icon-act.act-stop { color: #ffd43b; border-color: #ffd43b; }
+.icon-act.act-drop { color: #ff6b6b; border-color: #ff6b6b; }
+.icon-act.act-pin[aria-pressed="true"] { background: var(--accent); border-color: var(--accent); }
+.icon-act:active { transform: scale(.94); }
+.icon-act[disabled] { opacity: .5; cursor: default; }
+
+/* All tasks: the project heading with its +, a sub-task still being made in
+   Google, and the Backlog bar under Upcoming tasks. */
+.task-project-row { display: flex; align-items: center; gap: 8px; }
+.task-project-row[hidden] { display: none; }
+.task-project-row > .task-project { flex: 1; min-width: 0; }
+.task-tree .task-pending { opacity: .6; font-style: italic; }
+.backlog { margin-top: 12px; }
+.backlog summary { cursor: pointer; color: var(--muted); font-size: 14px; font-weight: 600; }
+.done-list .done-how { display: block; margin-top: 2px; color: var(--muted); font-size: 12.5px; }
+.done-list .done-how[hidden] { display: none; }

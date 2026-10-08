@@ -52,8 +52,9 @@
  * v26 (edit queue 4): Qaza prayers, + item on task rows, Stop keeps a task in Upcoming.
  * v27 (item 19): the buying list on the Money screen.
  * v28 (item 20): the buying list redone: Add on top, the list in its own panel, Move.
- * v29 (item 21): Bought asks for the exact amount and an optional comment. */
-var CACHE = 'probeing-shell-v29';
+ * v29 (item 21): Bought asks for the exact amount and an optional comment.
+ * v30 (Stage 18a): several tasks at once with a pin, Upcoming = the plan plus Backlog, priority and effort on Start. */
+var CACHE = 'probeing-shell-v30';
 var SHELL = [
   './',
   'index.html',
