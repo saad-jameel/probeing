@@ -366,7 +366,7 @@ function directMarks(rows) {
     if (!r || !r.node_id) return;
     var p = directParse(r.type, r.rid, r.node_id);
     if (!p || !isFinite(msOf(r.at))) return;
-    var d = { mark: p.mark, gen: p.gen, at: r.at, rid: String(r.rid) };
+    var d = { mark: p.mark, gen: p.gen, at: r.at, rid: String(r.rid), text: String(r.raw_text || '') };
     var have = out[r.node_id];
     if (!have || directNewer(d, have)) out[r.node_id] = d;
   });
@@ -455,6 +455,63 @@ function stoppedSince(stopped) {
   var min = Infinity;
   Object.keys(stopped || {}).forEach(function (id) { if (stopped[id] < min) min = stopped[id]; });
   return isFinite(min) ? new Date(min).toISOString() : '';
+}
+
+/* ── Stage 18a: a Drop deletes the task in Google; Reopen makes it again ────
+ * Only a Drop whose text ends DROP_DELETE_MARK (written since 18a; older Drops
+ * were promised to stay in Google) and only a sub-task, or a project with no
+ * live sub-task. pb_deleted_for is the Drop's rid once Google has deleted it;
+ * pb_recreated_for the Reopen's rid once a new copy was asked for, so each is
+ * sent once. A task he completed in Google himself is never deleted. */
+var DROP_DELETE_MARK = ' (deleted in Google)';
+
+/** Was this Drop row written to delete its task in Google? */
+function dropDeletes(text) {
+  var t = String(text || '');
+  return t.length >= DROP_DELETE_MARK.length && t.slice(-DROP_DELETE_MARK.length) === DROP_DELETE_MARK;
+}
+
+/** node id -> true for projects with a live sub-task. */
+function liveParents(nodes) {
+  var out = {};
+  (nodes || []).forEach(function (n) {
+    if (n && n.kind === 'subtask' && !n.gone_at) out[(n.list_id || '') + '|' + n.parent_google_id] = true;
+  });
+  return out;
+}
+
+/** Tasks of one list to delete in Google now: [{node, rid}], `rid` the Drop's. */
+function deleteWanted(nodes, direct) {
+  direct = direct || {};
+  var list = nodes || [];
+  var kids = liveParents(list);
+  var byGoogle = {};
+  list.forEach(function (n) { byGoogle[(n.list_id || '') + '|' + n.google_id] = n; });
+  return list.filter(function (n) {
+    var d = direct[n.id];
+    if (!d || d.mark !== 'drop' || !dropDeletes(d.text) || n.gone_at || n.pb_deleted_for === d.rid) return false;
+    if (n.g_status === 'completed' && !oursInGoogle(n)) return false;
+    if (n.kind === 'project') return !kids[(n.list_id || '') + '|' + n.google_id];
+    var up = byGoogle[(n.list_id || '') + '|' + n.parent_google_id];
+    return n.kind === 'subtask' && !(up && up.gone_at);
+  }).map(function (n) { return { node: n, rid: direct[n.id].rid }; });
+}
+
+/** Tasks ProBeing deleted and he has reopened since: [{node, rid}], `rid` the
+ *  Reopen's. A sub-task only while its project is still in Google. */
+function recreateWanted(nodes, direct) {
+  direct = direct || {};
+  var list = nodes || [];
+  var byGoogle = {};
+  list.forEach(function (n) { byGoogle[(n.list_id || '') + '|' + n.google_id] = n; });
+  return list.filter(function (n) {
+    var d = direct[n.id];
+    if (!d || d.mark !== 'open' || !n.gone_at || !n.pb_deleted_for || n.pb_recreated_for === d.rid) return false;
+    if (n.pb_deleted_for !== directRid(DIRECT_DROP, n.id, d.gen)) return false;   // not the Drop this Reopen undoes
+    if (n.kind === 'project') return true;
+    var up = byGoogle[(n.list_id || '') + '|' + n.parent_google_id];
+    return n.kind === 'subtask' && Boolean(up) && !up.gone_at;
+  }).map(function (n) { return { node: n, rid: direct[n.id].rid }; });
 }
 
 /** Completed in Google by ProBeing's own PATCH, still: Google's `completed`
@@ -603,5 +660,9 @@ globalThis.ProBeingTree = {
   STOP_TYPE: STOP_TYPE,
   START_TYPES: START_TYPES,
   stoppedTasks: stoppedTasks,
-  stoppedSince: stoppedSince
+  stoppedSince: stoppedSince,
+  DROP_DELETE_MARK: DROP_DELETE_MARK,
+  dropDeletes: dropDeletes,
+  deleteWanted: deleteWanted,
+  recreateWanted: recreateWanted
 };

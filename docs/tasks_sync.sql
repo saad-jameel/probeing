@@ -84,12 +84,15 @@ create trigger tasks_sync_after_mark
   execute function public.tasks_sync_after_change();
 
 -- Feedback 1: Done or Reopen pressed on a sub-task itself (rid sdd-/sdo-, see tree.js).
+-- Stage 18a: a Drop (deleted in Google) and a sub-task added by hand too.
 drop trigger if exists tasks_sync_after_direct on public.events;
 create trigger tasks_sync_after_direct
   after insert on public.events
   for each row
-  when (new.type in ('subdone', 'subopen') and new.node_id is not null
-        and (new.rid like 'sdd-%' or new.rid like 'sdo-%'))
+  when (new.node_id is not null and (
+        (new.type in ('subdone', 'subopen', 'subdrop')
+         and (new.rid like 'sdd-%' or new.rid like 'sdo-%' or new.rid like 'sdx-%'))
+        or new.type = 'subnew'))
   execute function public.tasks_sync_after_change();
 
 -- A finish date set, changed or cleared becomes Google's due date. Planned

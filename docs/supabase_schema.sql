@@ -1415,3 +1415,42 @@ alter table public.money add constraint money_buy_month check (
 alter table public.money drop constraint if exists money_buy_person;
 alter table public.money add constraint money_buy_person
   check (kind <> 'buy' or person is null);
+
+-- ============================================================ stage 18a (8 Oct)
+-- Several tasks at once, a pin, priority and effort, a Backlog, and Drop
+-- deleting the task in Google. Safe to run twice.
+-- New events types need no schema change (events.type is free text):
+--   pin / unpin  node_id = the task; while pinned it alone collects time
+--   taskmeta     node_id = the task; detail 'p=high;e=m' (priority and effort) or 'skip'
+--   subnew       node_id = a project; raw_text = a sub-task added by hand, made in
+--                Google by tasks-sync (docs/tasks_sync.sql pokes it)
+-- A Drop whose text ends ' (deleted in Google)' deletes the task there (tree.js).
+
+-- The counter day a task was planned for. Planned from an earlier day and not
+-- finished = Backlog. Null on plans made before this: their updated_at's day is used.
+alter table public.task_plans add column if not exists planned_for date;
+
+-- tasks-sync's record of a Drop it deleted in Google (the Drop's rid, and when)
+-- and of a Reopen it made again (the Reopen's rid). Server-written, like the rest.
+alter table public.task_nodes add column if not exists pb_deleted_for text;
+alter table public.task_nodes add column if not exists pb_deleted_at timestamptz;
+alter table public.task_nodes add column if not exists pb_recreated_for text;
+
+-- subtask_requests: one row per sub-task added by hand (its subnew rid), written
+-- before Google is asked, so a run that dies never makes it twice. Server-only:
+-- RLS on, no policies, nothing granted to the browser roles.
+create table if not exists public.subtask_requests (
+  -- Written with the service role, so user_id is always named.
+  user_id    uuid        not null references auth.users on delete cascade,
+  rid        text        not null,
+  state      text        not null default 'sending' check (state in ('sending', 'made', 'failed')),
+  google_id  text,
+  tried_at   timestamptz,
+  tries      integer     not null default 0,
+  why        text,
+  created_at timestamptz not null default now(),
+  primary key (user_id, rid)
+);
+
+alter table public.subtask_requests enable row level security;
+revoke all on table public.subtask_requests from anon, authenticated;

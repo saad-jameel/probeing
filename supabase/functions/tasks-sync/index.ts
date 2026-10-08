@@ -22,6 +22,12 @@
 // becomes the due date. Projects are never touched (Saad, 2 Oct). At most one
 // PATCH per task per run; a PATCH Google refuses (a 4xx) is tried 3 runs, then left.
 //
+// Stage 18a: a Drop (written since 18a) deletes the task in Google — a
+// sub-task, or a project with no live sub-task — and a Reopen of it makes it
+// again under the same task_nodes row (tree.js deleteWanted / recreateWanted).
+// A sub-task added by hand on the Tasks page (a `subnew` row) is made here too,
+// once: subtask_requests records each try before it is sent.
+//
 // Secrets: the Stage 12 three (GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET,
 // GOOGLE_TOKEN_KEY), CRON_SECRET and ALLOWED_USER_ID. Needs task_nodes and
 // tasks_sync_wants from docs/supabase_schema.sql.
@@ -36,7 +42,7 @@ import '../_shared/tree.js';
 // Classic scripts, so they hand their functions over on globalThis.
 const { RECONNECT, googleConfig, importTokenKey, scrub, markReconnect, tasksGet, accessToken, reconnectError } =
   (globalThis as unknown as { ProBeingGoogle: Record<string, any> }).ProBeingGoogle;
-const { diffPull, rollUp, unpushWanted, duePush, dueOf, directMarks } =
+const { diffPull, rollUp, unpushWanted, duePush, dueOf, directMarks, deleteWanted, recreateWanted } =
   (globalThis as unknown as { ProBeingTree: Record<string, any> }).ProBeingTree;
 
 const CORS: Record<string, string> = {
@@ -168,7 +174,7 @@ function mirrorStore(sb) {
     // Feedback 1: Done and Reopen pressed on a sub-task itself; a Drop too (edit queue 2).
     direct: async function (userId) {
       var rows = await paged(function () {
-        return sb.from('events').select('type,rid,node_id,at').eq('user_id', userId)
+        return sb.from('events').select('type,rid,node_id,at,raw_text').eq('user_id', userId)
           .in('type', ['subdone', 'subopen', 'subdrop']).not('node_id', 'is', null).order('rid', { ascending: true });
       });
       return directMarks(rows);
@@ -193,7 +199,8 @@ function mirrorStore(sb) {
         .eq('user_id', userId).eq('id', n.id)
         // Quoted: PostgREST reserves '.' and ':' inside an or=(...) value.
         .or('push_claim_until.is.null,push_claim_until.lt."' + nowIso + '"');
-      ['g_status', 'pb_pushed_at', 'pb_due_sent_at', 'gone_at'].forEach(function (col) {
+      ['g_status', 'pb_pushed_at', 'pb_due_sent_at', 'gone_at', 'pb_deleted_for', 'pb_recreated_for'].forEach(function (col) {
+        if (!(col in n)) return;              // a column the database does not have yet
         q = n[col] == null ? q.is(col, null) : q.eq(col, n[col]);
       });
       return (must(await q.select('id')) || []).length === 1;
@@ -201,6 +208,43 @@ function mirrorStore(sb) {
     settle: async function (userId, id, fields) {
       must(await sb.from('task_nodes').update(Object.assign({ push_claim_until: null }, fields))
         .eq('user_id', userId).eq('id', id));
+    },
+    // Stage 18a: written while the claim is still held, before Google is asked.
+    mark: async function (userId, id, fields) {
+      must(await sb.from('task_nodes').update(fields).eq('user_id', userId).eq('id', id));
+    },
+    // Sub-tasks asked for by hand since `sinceIso` (`subnew` rows).
+    subnew: async function (userId, sinceIso) {
+      return paged(function () {
+        return sb.from('events').select('rid,at,raw_text,node_id').eq('user_id', userId).eq('type', 'subnew')
+          .not('node_id', 'is', null).gte('at', sinceIso).order('rid', { ascending: true });
+      });
+    },
+    // rid -> its subtask_requests row. null when the table is not there yet.
+    requests: async function (userId, rids) {
+      var r = await sb.from('subtask_requests').select('*').eq('user_id', userId).in('rid', rids);
+      if (r.error) return null;
+      var out = {};
+      (r.data || []).forEach(function (x) { out[x.rid] = x; });
+      return out;
+    },
+    // A first try: false when another run took it first.
+    requestNew: async function (userId, row) {
+      var r = await sb.from('subtask_requests').insert(Object.assign({ user_id: userId }, row));
+      if (r.error && r.error.code === '23505') return false;
+      must(r);
+      return true;
+    },
+    // Only while it is still as `was` read it.
+    requestSet: async function (userId, rid, was, fields) {
+      var q = sb.from('subtask_requests').update(fields).eq('user_id', userId).eq('rid', rid);
+      q = was.tried_at == null ? q.is('tried_at', null) : q.eq('tried_at', was.tried_at);
+      return (must(await q.select('rid')) || []).length === 1;
+    },
+    // A made sub-task's mirror row, kept if a sync wrote it first.
+    putNode: async function (userId, row) {
+      must(await sb.from('task_nodes').upsert(Object.assign({ user_id: userId }, row),
+        { onConflict: 'user_id,google_id', ignoreDuplicates: true }));
     },
     /* The trigger's queue (docs/tasks_sync.sql): wanted_n counts taps, sent_at
      * says a request is out. null when there is no row. */
@@ -272,6 +316,59 @@ async function tasksPatch(d, grant, taskId, body) {
   throw e;
 }
 
+/** Stage 18a: DELETE one task. A 404 is already gone, which is what was wanted. */
+async function tasksDelete(d, grant, taskId) {
+  var url = TASKS_LISTS_URL + encodeURIComponent(grant.list_id) + '/tasks/' + encodeURIComponent(taskId);
+  function send(token) {
+    return d.fetch(url, { method: 'DELETE', headers: { Authorization: 'Bearer ' + token } });
+  }
+  var res = await send(await accessToken(d, grant, false));
+  if (res.status === 401) res = await send(await accessToken(d, grant, true));
+  if (res.ok || res.status === 404) return true;
+  var got = await res.json().catch(function () { return null; });
+  if (res.status === 429 || /rateLimit|RATE_LIMIT|quota/i.test(JSON.stringify(got || {}))) {
+    var busy = new Error('Google Tasks is busy; it is sent on the next sync.');
+    busy.status = res.status;
+    busy.busy = true;
+    throw busy;
+  }
+  if (res.status === 403) throw reconnectError('Google refused to delete a task');
+  var e = new Error('Google Tasks answered ' + res.status + ': ' + scrub(got && got.error && got.error.message));
+  e.status = res.status;
+  throw e;
+}
+
+/** Stage 18a: insert one task, under `parentId` when given. {verdict, task, why}:
+ *  'made', 'refused' (nothing made), 'later' (busy: nothing made) or 'unsure'. */
+async function tasksInsert(d, grant, parentId, body) {
+  var url = TASKS_LISTS_URL + encodeURIComponent(grant.list_id) + '/tasks' +
+            (parentId ? '?parent=' + encodeURIComponent(parentId) : '');
+  function send(token) {
+    return d.fetch(url, { method: 'POST', body: JSON.stringify(body),
+                          headers: { Authorization: 'Bearer ' + token, 'Content-Type': 'application/json' } });
+  }
+  var res;
+  try {
+    res = await send(await accessToken(d, grant, false));
+    if (res.status === 401) res = await send(await accessToken(d, grant, true));
+  } catch (e) {
+    if (e && e.reconnect) throw e;
+    return { verdict: 'unsure', task: null, why: 'could not reach Google Tasks: ' + scrub((e && e.message) || e) };
+  }
+  var got = await res.json().catch(function () { return null; });
+  if (res.ok) {
+    return got && typeof got.id === 'string' && got.id ? { verdict: 'made', task: got, why: '' }
+                                                       : { verdict: 'unsure', task: null, why: 'no task in the answer' };
+  }
+  var why = 'Google Tasks answered ' + res.status + ': ' + scrub(got && got.error && got.error.message);
+  if (res.status === 429 || /rateLimit|RATE_LIMIT|quota/i.test(JSON.stringify(got || {}))) {
+    return { verdict: 'later', task: null, why: why };
+  }
+  if (res.status === 403) throw reconnectError('Google refused to make a task');
+  if (res.status >= 400 && res.status < 500) return { verdict: 'refused', task: null, why: why };
+  return { verdict: 'unsure', task: null, why: why };
+}
+
 /** Google said no to this change itself (a bad request), not to us or to the moment. */
 function refusedByGoogle(e) {
   return Boolean(e) && !e.reconnect && !e.busy && e.status >= 400 && e.status < 500 && e.status !== 404;
@@ -335,6 +432,154 @@ async function sendJob(d, grant, j, nowIso) {
   return task ? 'sent' : 'recorded';
 }
 
+/* ── Stage 18a: Drop deletes, Reopen makes it again ─────────────────── */
+
+/** Delete task `j.node` in Google for Drop `j.rid`. 'deleted', 'busy' (another
+ *  run has it), 'refused' (a 4xx, recorded) or a throw. */
+async function deleteJob(d, grant, j) {
+  var n = j.node;
+  var now = d.now();
+  var stamp = new Date(now).toISOString();
+  if (!(await d.store.claim(d.userId, n, stamp, new Date(now + CLAIM_MS).toISOString()))) return 'busy';
+  try {
+    await tasksDelete(d, grant, n.google_id);
+  } catch (e) {
+    if (refusedByGoogle(e)) {
+      var left = { push_refused: { body: 'delete|' + j.rid, n: 1, why: scrub((e && e.message) || e) },
+                   pb_deleted_for: j.rid };        // not asked again for this Drop
+      try { await d.store.settle(d.userId, n.id, left); Object.assign(n, left); } catch (_e) { /* the claim lapses */ }
+      return 'refused';
+    }
+    try { await d.store.settle(d.userId, n.id, {}); } catch (_e) { /* the claim lapses */ }
+    throw e;
+  }
+  var f = { gone_at: n.gone_at || stamp, pb_deleted_for: j.rid, pb_deleted_at: stamp, push_refused: null };
+  await d.store.settle(d.userId, n.id, f);
+  Object.assign(n, f);
+  return 'deleted';
+}
+
+/** Make task `j.node` again in Google for Reopen `j.rid`, under the same row:
+ *  its google_id becomes the new task's, so its time and items stay with it.
+ *  The try is recorded before the insert, so a run that dies cannot make two. */
+async function recreateJob(d, grant, j) {
+  var n = j.node;
+  var now = d.now();
+  var stamp = new Date(now).toISOString();
+  if (!(await d.store.claim(d.userId, n, stamp, new Date(now + CLAIM_MS).toISOString()))) return 'busy';
+  await d.store.mark(d.userId, n.id, { pb_recreated_for: j.rid });
+  n.pb_recreated_for = j.rid;
+  var got = await tasksInsert(d, grant, n.kind === 'subtask' ? n.parent_google_id : null,
+                              { title: String(n.title || '') });
+  if (got.verdict !== 'made') {
+    // Busy: nothing was made, so the next run tries again. Refused or unclear: left.
+    var left = got.verdict === 'later' ? { pb_recreated_for: null }
+             : { push_refused: { body: 'recreate|' + j.rid, n: 1, why: got.why } };
+    try { await d.store.settle(d.userId, n.id, left); Object.assign(n, left); } catch (_e) { /* the claim lapses */ }
+    return got.verdict === 'later' ? 'busy' : 'refused';
+  }
+  var t = got.task;
+  var f = { google_id: String(t.id), position: String(t.position || ''), title: String(t.title || n.title || ''),
+            due: null, g_status: 'needsAction', g_completed_at: null, g_updated: t.updated || stamp,
+            g_reopened_at: null, missing_since: null, gone_at: null, pb_done_at: null, pb_pushed_at: null,
+            pb_completed_at: null, pb_due: null, pb_due_sent_at: null, pb_due_for: null, push_refused: null,
+            pb_deleted_for: null, pb_deleted_at: null, pb_recreated_for: j.rid, synced_at: stamp };
+  await d.store.settle(d.userId, n.id, f);
+  Object.assign(n, f);
+  return 'made';
+}
+
+/* A sub-task added by hand (a `subnew` row: node_id = its project, raw_text = the
+ * title). One subtask_requests row per ask: 'sending' before the insert, 'made'
+ * after; a try Google may have taken is looked for in the next whole pull
+ * before it is sent again, at most SUBNEW_TRIES times. */
+var SUBNEW_DAYS = 3;
+var SUBNEW_SETTLE_MS = 5 * 60000;
+var SUBNEW_SLACK_MS = 10 * 60000;
+var SUBNEW_TRIES = 3;
+var SUBNEW_TITLE_MAX = 80;
+
+function subnewTitle(raw) {
+  var t = String(raw || '').replace(/\s+/g, ' ').trim();
+  var chars = Array.from(t);
+  return chars.length > SUBNEW_TITLE_MAX ? chars.slice(0, SUBNEW_TITLE_MAX - 1).join('').trim() + '…' : t;
+}
+
+function sameTitleText(a, b) {
+  var f = function (x) { return String(x == null ? '' : x).replace(/\s+/g, ' ').trim().replace(/\.$/, '').toLowerCase(); };
+  return f(a) !== '' && f(a) === f(b);
+}
+
+/** In a whole pull, the live task under `parent` called `title` and touched since `sinceMs`, or null. */
+function foundIn(pulled, parent, title, sinceMs) {
+  return (pulled || []).filter(function (t) {
+    return t && t.id && !t.deleted && t.parent === parent && sameTitleText(t.title, title) &&
+           !(Date.parse(t.updated || '') < sinceMs);
+  })[0] || null;
+}
+
+/** The mirror row for a task Google made under `parent` (a project row). */
+function madeRow(t, parent, nowIso) {
+  return { google_id: String(t.id), list_id: parent.list_id, parent_google_id: parent.google_id, kind: 'subtask',
+           title: String(t.title || ''), position: String(t.position || ''), due: dueOf(t.due),
+           g_status: 'needsAction', g_updated: t.updated || nowIso, synced_at: nowIso };
+}
+
+async function makeSubtasks(d, grant, nodes, pulled) {
+  var out = { made: 0, error: '' };
+  var now = d.now();
+  var asks = await d.store.subnew(d.userId, new Date(now - SUBNEW_DAYS * 86400000).toISOString());
+  if (!asks.length) return out;
+  var recs = await d.store.requests(d.userId, asks.map(function (a) { return a.rid; }));
+  if (!recs) return out;                    // before its table exists: nothing is made
+  var byId = {};
+  nodes.forEach(function (n) { byId[n.id] = n; });
+  for (var i = 0; i < asks.length; i++) {
+    var a = asks[i];
+    var rec = recs[a.rid] || null;
+    if (rec && (rec.state === 'made' || rec.state === 'failed')) continue;
+    var up = byId[a.node_id];
+    var title = subnewTitle(a.raw_text);
+    if (!up || up.kind !== 'project' || up.gone_at || String(up.list_id) !== String(grant.list_id) || !title) {
+      if (!rec) await d.store.requestNew(d.userId, { rid: a.rid, state: 'failed', why: 'its project is not in your list' });
+      continue;
+    }
+    var stamp = new Date(d.now()).toISOString();
+    // Already there (made before, or by a try whose answer was lost): adopted, never made twice.
+    var since = rec && rec.tried_at ? Date.parse(rec.tried_at) - SUBNEW_SLACK_MS : -Infinity;
+    var hit = foundIn(pulled, up.google_id, title, since);
+    if (hit) {
+      await d.store.putNode(d.userId, madeRow(hit, up, stamp));
+      if (rec) await d.store.requestSet(d.userId, a.rid, rec, { state: 'made', google_id: String(hit.id) });
+      else await d.store.requestNew(d.userId, { rid: a.rid, state: 'made', google_id: String(hit.id), tried_at: stamp, tries: 0 });
+      continue;
+    }
+    if (rec && rec.tried_at && now - Date.parse(rec.tried_at) < SUBNEW_SETTLE_MS) continue;   // Google may still list it
+    var tries = rec ? Number(rec.tries) || 0 : 0;
+    if (tries >= SUBNEW_TRIES) {
+      await d.store.requestSet(d.userId, a.rid, rec, { state: 'failed', why: 'not made after ' + tries + ' tries' });
+      continue;
+    }
+    var took = rec ? await d.store.requestSet(d.userId, a.rid, rec, { state: 'sending', tried_at: stamp, tries: tries + 1 })
+                   : await d.store.requestNew(d.userId, { rid: a.rid, state: 'sending', tried_at: stamp, tries: 1 });
+    if (!took) continue;                    // another run has it
+    var mine = { tried_at: stamp };
+    var got = await tasksInsert(d, grant, up.google_id, { title: title });
+    if (got.verdict === 'made') {
+      await d.store.putNode(d.userId, madeRow(got.task, up, stamp));
+      await d.store.requestSet(d.userId, a.rid, mine, { state: 'made', google_id: String(got.task.id) });
+      out.made += 1;
+    } else if (got.verdict === 'later') {
+      await d.store.requestSet(d.userId, a.rid, mine, { tried_at: null, tries: tries });   // nothing made: again next run
+    } else if (got.verdict === 'refused') {
+      await d.store.requestSet(d.userId, a.rid, mine, { state: 'failed', why: got.why });
+      out.error = 'Google Tasks refused to add "' + title.slice(0, 60) + '": ' + got.why;
+    }
+    // 'unsure': left 'sending'; the next whole pull looks for it before any new try.
+  }
+  return out;
+}
+
 /**
  * Pull is done; send what ProBeing finished or undid. Stops at the first
  * failure that is not about one task (a 500, a busy Google, a lost
@@ -352,12 +597,43 @@ async function pushPhase(d, grant, nowIso) {
   var plans = await d.store.plans(d.userId);
   var zone = await d.store.zone(d.userId);
 
+  // Stage 18a: deletes and new copies first; a task being deleted is sent nothing else.
+  var dels = typeof deleteWanted === 'function' ? deleteWanted(nodes, direct) : [];
+  var res = typeof recreateWanted === 'function' ? recreateWanted(nodes, direct) : [];
+  var held = {};
+  dels.concat(res).forEach(function (x) { held[x.node.id] = true; });
+  var special = dels.map(function (x) { return { kind: 'delete', j: x }; })
+    .concat(res.map(function (x) { return { kind: 'recreate', j: x }; }));
+  for (var k = 0; k < special.length; k++) {
+    try {
+      var r = special[k].kind === 'delete' ? await deleteJob(d, grant, special[k].j)
+                                           : await recreateJob(d, grant, special[k].j);
+      if (r === 'deleted' || r === 'made') out.pushed += 1;
+      if (r === 'refused') {
+        out.failed += 1;
+        out.error = 'Google Tasks refused to ' + (special[k].kind === 'delete' ? 'delete' : 'make again') + ' "' +
+                    String(special[k].j.node.title || '').slice(0, 60) + '"';
+      }
+    } catch (e) {
+      out.failed += 1;
+      if (e && e.reconnect) {
+        out.reconnect = true;
+        out.error = RECONNECT + ': ' + e.message;
+      } else {
+        out.error = 'Could not send a change to Google Tasks, so it is tried again on the next sync: ' +
+                    scrub((e && e.message) || e);
+      }
+      return out;
+    }
+  }
+
   var jobs = {};
   var order = [];
   function job(n) {
     if (!jobs[n.id]) { jobs[n.id] = { node: n, body: {} }; order.push(n.id); }
     return jobs[n.id];
   }
+  nodes = nodes.filter(function (n) { return !held[n.id]; });
   unpushWanted(nodes, items, newest, direct).forEach(function (n) {
     var j = job(n);
     j.undo = true;
@@ -484,6 +760,25 @@ async function syncTasks(d) {
   } catch (e) {
     push.error = 'Could not work out what to send to Google Tasks: ' + scrub((e && e.message) || e);
   }
+  // Stage 18a: sub-tasks added by hand, looked for in this whole pull first.
+  var made = 0;
+  if (!push.reconnect) {
+    try {
+      var mk = await makeSubtasks(d, grant, (await d.store.nodes(d.userId)).filter(function (n) {
+        return String(n.list_id) === String(grant.list_id);
+      }), pull.tasks);
+      made = mk.made;
+      if (mk.error && !push.error) push.error = mk.error;
+    } catch (e) {
+      if (e && e.reconnect) {
+        push.reconnect = true;
+        push.error = RECONNECT + ': ' + e.message;
+      } else if (!push.error) {
+        push.error = 'Could not add a sub-task to Google Tasks, so it is tried again on the next sync: ' +
+                     scrub((e && e.message) || e);
+      }
+    }
+  }
 
   // list_id tells the browser which rows are the current list's.
   var state = { user_id: d.userId, list_id: grant.list_id, last_pull_ok_at: nowIso,
@@ -494,7 +789,7 @@ async function syncTasks(d) {
   var out = { ok: true, tasks: pull.tasks.length, pages: pull.pages, added: diff.added,
               changed: diff.changed, revived: diff.revived, missing: diff.missing.length,
               gone: diff.gone.length, deep_ignored: diff.deep,
-              pushed: push.pushed, push_failed: push.failed, push_gone: push.gone };
+              pushed: push.pushed, push_failed: push.failed, push_gone: push.gone, subtasks_made: made };
   if (push.error) out.push_error = push.error;
   if (push.reconnect) out.reconnect = true;
   return out;
