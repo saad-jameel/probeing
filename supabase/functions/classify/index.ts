@@ -36,6 +36,10 @@
 // rather than inserting again; after FILE_MAX_TRIES the main one goes to
 // Unsorted and another is let go. Only a 429 (nothing made) is inserted again.
 //
+// Stage 18a: separate pieces of work are sub-tasks, never items, and that holds
+// for a project with no sub-tasks too: "OneNet: the docker issues and the
+// tailscale problem" makes two sub-tasks of OneNet. Still one call per batch.
+//
 // Secrets: CRON_SECRET, ALLOWED_USER_ID, GEMINI_API_KEY and GEMINI_MODEL (all
 // already set for the other functions); GEMINI_DAILY and FILE_WAIT_MIN optional.
 // The Google three (GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET, GOOGLE_TOKEN_KEY)
@@ -217,14 +221,22 @@ function classifyPrompt(texts, cands, itemsByNode) {
   lines.push('subtask: the s-id of the sub-task the line is about, or "" if none fits.');
   lines.push('project: the p-id of that sub-task\'s project; for a project with no sub-tasks, its own ' +
              'p-id; "" if the line fits no project.');
-  lines.push('items: the small concrete jobs the line mentions, a few words each, in the line\'s own ' +
-             'words. [] if it names none. Never invent one.');
+  lines.push('items: the small concrete steps of the ONE piece of work the line is filed under, a few ' +
+             'words each, in the line\'s own words. [] if it names none. Never invent one.');
+  lines.push('A SUB-TASK IS A PIECE OF WORK IN ITS OWN RIGHT: a problem to solve, a feature, a setup. An ' +
+             'item is a small step inside one of them. When a line names two or more separate problems or ' +
+             'pieces of work for a project (joined by "and", "also", commas), each one is its own sub-task: ' +
+             'the main one in subtask or new_subtask, the others in more_subtasks. Never put separate pieces ' +
+             'of work in items. Example: "working on OneNet to resolve the docker issues and also the ' +
+             'tailscale problem for multi-PC connection" is two sub-tasks of OneNet, "Resolve docker issues" ' +
+             'and "Tailscale multi-PC connection", not two items.');
   lines.push('same_as: the ids of items listed above that a job in this line repeats; leave those ' +
              'jobs out of items. [] if none.');
-  lines.push('new_subtask: only when project is a p-id that has sub-tasks and none of them fits the line ' +
-             '(so subtask is ""): a short title for a new sub-task of that project, 2 to 6 words, in the ' +
-             'line\'s own words. Otherwise "".');
-  lines.push('more_subtasks: only when project is a p-id that has sub-tasks and the line lists OTHER, ' +
+  lines.push('new_subtask: only when project is a p-id and none of its sub-tasks fits the line (so subtask ' +
+             'is ""): a short title for a new sub-task of that project, 2 to 6 words, in the line\'s own ' +
+             'words. For a project with no sub-tasks, only when the line names two or more separate pieces ' +
+             'of work; a line about one piece of work is filed on that project itself. Otherwise "".');
+  lines.push('more_subtasks: only when project is a p-id (with or without sub-tasks) and the line lists OTHER, ' +
              'separate pieces of work for that project that no sub-task above covers: one object per ' +
              'piece, at most ' + (NEW_SUBS_MAX - 1) + ', each {"title": 2 to 6 words in the line\'s own ' +
              'words, "items": that piece\'s small jobs}. The piece the line is mainly about goes in ' +
@@ -384,7 +396,10 @@ function readAnswer(ans, cands) {
     if (also.length) place.more = also;
     return place;
   }
-  if (proj && !proj.subs.length) return { project: proj.node, sub: null, items: items };
+  // A project with no sub-tasks is a place of its own, unless the line names new ones (18a).
+  if (proj && !proj.subs.length && !tidyTitle(ans && ans.new_subtask) && !more.length) {
+    return { project: proj.node, sub: null, items: items };
+  }
   var title = proj ? tidyTitle(ans && ans.new_subtask) : '';
   if (proj && !title && more.length) {
     var first = more.shift();
