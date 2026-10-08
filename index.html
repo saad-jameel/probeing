@@ -709,8 +709,8 @@
 
       <!-- Stage 18b: the laptop watcher (watcher/windows/). -->
       <div class="dlg-block">
-        <h3>Laptop activity <button type="button" class="help-btn" data-help="helpWatch"
-          data-title="Laptop activity" aria-label="About laptop activity">?</button></h3>
+        <h3>Laptop and phone activity <button type="button" class="help-btn" data-help="helpWatch"
+          data-title="Laptop and phone activity" aria-label="About laptop and phone activity">?</button></h3>
         <template id="helpWatch">
         <p class="hint">A small script on your Windows laptop reads ActivityWatch every 5 minutes,
           <strong>only while you are working</strong>, and sends time blocks: when, which app, which
@@ -722,9 +722,27 @@
           another device was working across the same span, you are asked instead.</p>
         <p class="hint">Pair once: press the button, copy the line, paste it into PowerShell on the
           laptop. The line is shown only now; ProBeing keeps a fingerprint, not the token.</p>
+        <p class="hint">The phone (the ProBeing Android app, version 4 or later) does the same with Android's
+          Usage access: which app was on screen, from when to when, every 15 minutes and every few minutes
+          while a distraction is on. Never what is on the screen, never notification text. On the phone,
+          the YouTube, Instagram, X, TikTok and Facebook apps count as distractions whole. Press
+          <strong>Pair this phone</strong> on the phone, then <strong>Finish in the Android app</strong>.</p>
         </template>
         <div class="dlg-actions" style="justify-content: flex-start">
           <button type="button" id="watchPairBtn" class="btn">Pair this laptop</button>
+          <button type="button" id="phonePairBtn" class="btn">Pair this phone</button>
+          <a id="phoneOpenLink" class="link-btn" href="#">Phone activity screen</a>
+        </div>
+        <!-- Stage 18c: the phone's code goes to the Android app by a link (a fresh tap). -->
+        <div id="phonePairBox" hidden>
+          <div class="dlg-actions" style="justify-content: flex-start">
+            <a id="phoneFinishLink" class="btn btn-accent" href="#">Finish in the Android app</a>
+          </div>
+          <label class="hint" for="phonePairCode">If nothing opens, paste this code into the app's Phone activity screen</label>
+          <input id="phonePairCode" type="text" readonly>
+          <div class="dlg-actions" style="justify-content: flex-start">
+            <button type="button" id="phoneCopyBtn" class="btn">Copy code</button>
+          </div>
         </div>
         <div id="watchPairBox" hidden>
           <textarea id="watchPairLine" rows="4" readonly aria-label="The line to paste into PowerShell"></textarea>

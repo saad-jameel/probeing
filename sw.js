@@ -55,7 +55,7 @@
  * v29 (item 21): Bought asks for the exact amount and an optional comment.
  * v30 (Stage 18a): several tasks at once with a pin, Upcoming = the plan plus Backlog, priority and effort on Start.
  * v31 (Stage 18b): activity.js, the laptop's catch-up sheet, and the distraction push with its two buttons. */
-var CACHE = 'probeing-shell-v31';
+var CACHE = 'probeing-shell-v32';
 var SHELL = [
   './',
   'index.html',

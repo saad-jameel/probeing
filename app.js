@@ -14987,7 +14987,7 @@ function renderWatchDevices(rows) {
     row.className = 'cat-row';
     var name = document.createElement('span');
     name.className = 'cat-name';
-    name.textContent = (r.label || 'Laptop') + ' · ' + (r.last_seen_at
+    name.textContent = (r.label || (r.kind === 'phone' ? 'Phone' : 'Laptop')) + ' · ' + (r.last_seen_at
       ? 'last sent ' + humanYmd(ymdLocal(new Date(r.last_seen_at))) + ', ' + clockAt(Date.parse(r.last_seen_at))
       : 'nothing sent yet');
     var kill = document.createElement('button');
@@ -15005,6 +15005,9 @@ async function loadWatch() {
   var out = $('watchResult');
   $('watchPairBox').hidden = true;
   $('watchPairLine').value = '';
+  $('phonePairBox').hidden = true;
+  $('phonePairCode').value = '';
+  $('phoneFinishLink').href = '#';
   out.textContent = '';
   if (!supabaseReady()) { renderWatchDevices([]); out.textContent = 'Sign in to pair a laptop.'; return; }
   try {
@@ -15079,6 +15082,51 @@ $('watchCopyBtn').addEventListener('click', function () {
     navigator.clipboard.writeText(line).then(done, function () { $('watchPairLine').select(); });
   } else {
     $('watchPairLine').select();
+  }
+});
+
+/* Stage 18c: the phone. The Android app's "Phone activity" screen takes the token
+ * from an intent link (a fresh tap, so Chrome lets it open the app), or pasted. */
+var PHONE_APP_ID = 'io.github.saad_jameel.probeing';
+
+/** The link that opens the Android app's Phone activity screen, with a token or without. */
+function phoneScreenUrl(token) {
+  return 'intent://pair-phone#Intent;scheme=probeing;package=' + PHONE_APP_ID + ';' +
+         (token ? 'S.token=' + encodeURIComponent(token) + ';' : '') + 'end';
+}
+
+$('phoneOpenLink').href = phoneScreenUrl('');
+
+$('phonePairBtn').addEventListener('click', async function () {
+  var out = $('watchResult');
+  $('phonePairBox').hidden = true;
+  if (!supabaseReady()) { out.textContent = 'Sign in first.'; return; }
+  if (!pairingSupported()) { out.textContent = 'This browser cannot make a token here. Open ProBeing over https and try again.'; return; }
+  out.textContent = 'Making a token…';
+  try {
+    var token = newWatchToken();
+    var res = await sb.from('watch_devices').insert({ user_id: sbUser.id, secret_sha256: await pairCodeHash(token),
+                                                      label: 'Phone · ' + humanLocal(), kind: 'phone' });
+    if (res.error) throw errorFrom(res.error);
+    await loadWatch();
+    $('phoneFinishLink').href = phoneScreenUrl(token);      // shown, never logged
+    $('phonePairCode').value = pairCodeDisplay(token);
+    $('phonePairBox').hidden = false;
+    out.textContent = 'Now press "Finish in the Android app" on this phone. The code is shown only now: ' +
+      'ProBeing keeps a fingerprint, not the code.';
+  } catch (e) {
+    out.textContent = '❌ ' + ((e && e.message) || e);
+  }
+});
+
+$('phoneCopyBtn').addEventListener('click', function () {
+  var code = $('phonePairCode').value;
+  if (!code) return;
+  var done = function () { $('watchResult').textContent = 'Copied. Paste it into the Android app\'s Phone activity screen.'; };
+  if (navigator.clipboard && typeof navigator.clipboard.writeText === 'function') {
+    navigator.clipboard.writeText(code).then(done, function () { $('phonePairCode').select(); });
+  } else {
+    $('phonePairCode').select();
   }
 });
 
