@@ -1962,6 +1962,12 @@ function leadWithQueue(lead, have) {
 function renderToday(data) {
   lastReadAt = Date.now();
   dayUnread = false;
+  // Another device's Stop is seen in today's rows; once the day turns it is only in
+  // the Stops read, so read that again (Stage 18a: a stopped task must not fall to Backlog).
+  if (itemsRead && itemsReadDay && itemsReadDay !== counterDate(lastReadAt)) {
+    itemsReadDay = '';
+    scheduleItems(0);
+  }
 
   /* EVERY RE-READ PUTS THE QUEUE BACK. Without this the read replaces the
    * screen's rows with the table's, and an offline M vanishes from the count,
@@ -13522,6 +13528,7 @@ var marksPressed = [];
 var directRows = [];                      // Done/Reopen pressed on a sub-task itself, as last read
 var directPressed = [];                   // ... and pressed on this page, not yet seen in a read
 var itemsRead = false;                    // both read this visit; until then only held presses
+var itemsReadDay = '';                    // the counter day of that read (Stage 18a)
 var itemsTimer = 0;
 var itemsChannel = null;
 var marksChannel = null;
@@ -13643,6 +13650,7 @@ async function readItems() {
     markRows = mk.data || [];
     directRows = (dr.data || []).filter(function (r) { return isDirectRow(r.type, r.rid); });
     itemsRead = true;
+    itemsReadDay = counterDate(startedAt);
     /* A press the read returned is the table's now. One that had already left
      * the device before the read set out, and is not in it, was refused. */
     var seen = userMap();
