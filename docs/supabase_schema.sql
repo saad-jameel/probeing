@@ -1437,8 +1437,8 @@ alter table public.task_nodes add column if not exists pb_deleted_at timestamptz
 alter table public.task_nodes add column if not exists pb_recreated_for text;
 
 -- subtask_requests: one row per sub-task added by hand (its subnew rid), written
--- before Google is asked, so a run that dies never makes it twice. Server-only:
--- RLS on, no policies, nothing granted to the browser roles.
+-- before Google is asked, so a run that dies never makes it twice. The server
+-- writes it; the browser may only read its own rows (below).
 create table if not exists public.subtask_requests (
   -- Written with the service role, so user_id is always named.
   user_id    uuid        not null references auth.users on delete cascade,
@@ -1454,3 +1454,9 @@ create table if not exists public.subtask_requests (
 
 alter table public.subtask_requests enable row level security;
 revoke all on table public.subtask_requests from anon, authenticated;
+-- Fix round: the browser reads its own rows (select only), to say when Google
+-- refused a sub-task and offer Retry or Remove. Writes stay with the server.
+drop policy if exists "read own subtask requests" on public.subtask_requests;
+create policy "read own subtask requests" on public.subtask_requests
+  for select to authenticated using (auth.uid() = user_id);
+grant select on table public.subtask_requests to authenticated;

@@ -461,9 +461,18 @@ function stoppedSince(stopped) {
  * Only a Drop whose text ends DROP_DELETE_MARK (written since 18a; older Drops
  * were promised to stay in Google) and only a sub-task, or a project with no
  * live sub-task. pb_deleted_for is the Drop's rid once Google has deleted it;
- * pb_recreated_for the Reopen's rid once a new copy was asked for, so each is
- * sent once. A task he completed in Google himself is never deleted. */
-var DROP_DELETE_MARK = ' (deleted in Google)';
+ * pb_recreated_for the Reopen's rid once a new copy was asked for. A refused
+ * delete or copy is tried CHANGE_TRIES runs (push_refused counts them), then
+ * left. A task he completed in Google himself is never deleted. The mark says
+ * what was asked, not what happened: only gone_at says Google deleted it. */
+var DROP_DELETE_MARK = ' (to remove from Google Tasks)';
+var CHANGE_TRIES = 3;
+
+/** How often Google refused `kind` ('delete' or 'recreate') for row `rid` on node `n`. */
+function triesFor(n, kind, rid) {
+  var r = n && n.push_refused;
+  return r && r.body === kind + '|' + rid ? Number(r.n) || 0 : 0;
+}
 
 /** Was this Drop row written to delete its task in Google? */
 function dropDeletes(text) {
@@ -490,6 +499,7 @@ function deleteWanted(nodes, direct) {
   return list.filter(function (n) {
     var d = direct[n.id];
     if (!d || d.mark !== 'drop' || !dropDeletes(d.text) || n.gone_at || n.pb_deleted_for === d.rid) return false;
+    if (triesFor(n, 'delete', d.rid) >= CHANGE_TRIES) return false;          // refused 3 times: left
     if (n.g_status === 'completed' && !oursInGoogle(n)) return false;
     if (n.kind === 'project') return !kids[(n.list_id || '') + '|' + n.google_id];
     var up = byGoogle[(n.list_id || '') + '|' + n.parent_google_id];
@@ -498,7 +508,9 @@ function deleteWanted(nodes, direct) {
 }
 
 /** Tasks ProBeing deleted and he has reopened since: [{node, rid}], `rid` the
- *  Reopen's. A sub-task only while its project is still in Google. */
+ *  Reopen's. A sub-task only while its project is still in Google. A copy asked
+ *  for and not seen yet (pb_recreated_for set, still gone) stays wanted: the job
+ *  looks for it in the pull before it asks again, CHANGE_TRIES times at most. */
 function recreateWanted(nodes, direct) {
   direct = direct || {};
   var list = nodes || [];
@@ -506,12 +518,22 @@ function recreateWanted(nodes, direct) {
   list.forEach(function (n) { byGoogle[(n.list_id || '') + '|' + n.google_id] = n; });
   return list.filter(function (n) {
     var d = direct[n.id];
-    if (!d || d.mark !== 'open' || !n.gone_at || !n.pb_deleted_for || n.pb_recreated_for === d.rid) return false;
+    if (!d || d.mark !== 'open' || !n.gone_at || !n.pb_deleted_for) return false;
     if (n.pb_deleted_for !== directRid(DIRECT_DROP, n.id, d.gen)) return false;   // not the Drop this Reopen undoes
     if (n.kind === 'project') return true;
     var up = byGoogle[(n.list_id || '') + '|' + n.parent_google_id];
     return n.kind === 'subtask' && Boolean(up) && !up.gone_at;
   }).map(function (n) { return { node: n, rid: direct[n.id].rid }; });
+}
+
+/** Tasks ProBeing deleted that Google lists again: [{node, rid}], `rid` the
+ *  Reopen to write for the Drop (Google wins: the drop is undone, never sent again). */
+function listedAgain(nodes, direct) {
+  direct = direct || {};
+  return (nodes || []).filter(function (n) {
+    var d = direct[n.id];
+    return n && !n.gone_at && n.pb_deleted_for && d && d.mark === 'drop' && d.rid === n.pb_deleted_for;
+  }).map(function (n) { return { node: n, rid: directRid(DIRECT_OPEN, n.id, direct[n.id].gen) }; });
 }
 
 /** Completed in Google by ProBeing's own PATCH, still: Google's `completed`
@@ -662,6 +684,9 @@ globalThis.ProBeingTree = {
   stoppedTasks: stoppedTasks,
   stoppedSince: stoppedSince,
   DROP_DELETE_MARK: DROP_DELETE_MARK,
+  CHANGE_TRIES: CHANGE_TRIES,
+  triesFor: triesFor,
+  listedAgain: listedAgain,
   dropDeletes: dropDeletes,
   deleteWanted: deleteWanted,
   recreateWanted: recreateWanted
