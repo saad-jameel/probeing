@@ -1460,3 +1460,171 @@ drop policy if exists "read own subtask requests" on public.subtask_requests;
 create policy "read own subtask requests" on public.subtask_requests
   for select to authenticated using (auth.uid() = user_id);
 grant select on table public.subtask_requests to authenticated;
+
+-- ============================================================ stage 18b (9 Oct)
+-- The laptop activity watcher. watcher/windows/watch.ps1 reads ActivityWatch on
+-- the laptop and sends TIME BLOCKS to the activity-ingest Edge Function: start,
+-- end, app, site (host only), project, category, and the keyword that matched.
+-- Never a URL, never page text, never a window title (Saad, 9 Oct). The checks
+-- below refuse a URL or a file path even if a bug tried to store one.
+-- New events types need no schema change (events.type is free text):
+--   actfix     a corrected block: detail = block ids (comma separated), project = the new one
+--   actseen    the catch-up popup confirmed, detail = up to when (ISO)
+--   actanswer  "I'm working" to a distraction push (rid an-<nudge>) or a question (aq-<nudge>)
+-- and break/resume rows with fixed rids: ab-/ar- (the watcher's own break and its
+-- resume), qb-/qr- (a question answered "break"), kb-/kr- (a span marked break),
+-- aw- (an auto break undone). Safe to run twice.
+
+-- Distraction, private and meeting lists ({"distract": [...], "private": [...],
+-- "meeting": [...]}; a missing list is the built-in one) and the push/auto-break switch.
+alter table public.user_settings add column if not exists activity_lists jsonb
+  check (activity_lists is null or jsonb_typeof(activity_lists) = 'object');
+alter table public.user_settings add column if not exists activity_nudge boolean not null default true;
+
+-- watch_devices: one row per paired laptop (a phone later, 18c). Like
+-- device_keys: Settings makes a token, shows it once, and stores only its
+-- sha256 (of the token with dashes and case taken off). The browser can never
+-- read the fingerprint back.
+create table if not exists public.watch_devices (
+  id            uuid        primary key default gen_random_uuid(),
+  user_id       uuid        not null default auth.uid() references auth.users on delete cascade,
+  secret_sha256 text        not null check (secret_sha256 ~ '^[0-9a-f]{64}$'),
+  label         text        not null default '' check (char_length(label) <= 80),
+  kind          text        not null default 'laptop' check (kind in ('laptop', 'phone')),
+  created_at    timestamptz not null default now(),
+  last_seen_at  timestamptz
+);
+
+create unique index if not exists watch_devices_secret_idx on public.watch_devices (secret_sha256);
+create index if not exists watch_devices_user_idx on public.watch_devices (user_id);
+
+alter table public.watch_devices enable row level security;
+
+do $$ begin
+  create policy "read own watchers" on public.watch_devices
+    for select using (auth.uid() = user_id);
+exception when duplicate_object then null; end $$;
+
+do $$ begin
+  create policy "insert own watchers" on public.watch_devices
+    for insert with check (auth.uid() = user_id);
+exception when duplicate_object then null; end $$;
+
+-- Revoke = delete the row; its blocks stay for the reports.
+do $$ begin
+  create policy "delete own watchers" on public.watch_devices
+    for delete using (auth.uid() = user_id);
+exception when duplicate_object then null; end $$;
+
+revoke all on table public.watch_devices from anon, authenticated;
+grant select (id, user_id, label, kind, created_at, last_seen_at) on public.watch_devices to authenticated;
+grant insert (user_id, secret_sha256, label, kind) on public.watch_devices to authenticated;
+grant delete on public.watch_devices to authenticated;
+
+-- activity_blocks: the time blocks. Written by activity-ingest only (service
+-- role); one per device and start, so a re-sent block updates in place.
+create table if not exists public.activity_blocks (
+  id          uuid        primary key default gen_random_uuid(),
+  user_id     uuid        not null references auth.users on delete cascade,
+  device_id   uuid        references public.watch_devices(id) on delete set null,
+  started_at  timestamptz not null,
+  ended_at    timestamptz not null,
+  app         text        not null default '' check (char_length(app) <= 80 and app !~ '[/\\]'),
+  domain      text        not null default '' check (domain = '' or domain ~ '^[a-z0-9.-]{1,253}$'),
+  category    text        not null check (category in ('work', 'meeting', 'distraction', 'unclear', 'private')),
+  project     text        not null default '' check (char_length(project) <= 120),
+  rule_key    text        not null default '' check (rule_key ~ '^[0-9a-z\u0080-￿]{0,40}$'),
+  created_at  timestamptz not null default now(),
+  updated_at  timestamptz not null default now(),
+  constraint activity_blocks_device_start_key unique (device_id, started_at),
+  constraint activity_blocks_span check (ended_at > started_at and ended_at <= started_at + interval '12 hours'),
+  constraint activity_blocks_private check (category <> 'private' or (domain = '' and project = '' and rule_key = ''))
+);
+
+create index if not exists activity_blocks_user_end_idx on public.activity_blocks (user_id, ended_at desc);
+
+alter table public.activity_blocks enable row level security;
+
+do $$ begin
+  create policy "read own blocks" on public.activity_blocks
+    for select using (auth.uid() = user_id);
+exception when duplicate_object then null; end $$;
+
+revoke insert, update, delete, truncate on table public.activity_blocks from anon, authenticated;
+
+-- activity_rules: keyword -> project. His own ('hand'), from a correction in the
+-- catch-up popup ('fix'), or learned from Gemini ('gemini', server only). The
+-- keyword is squashed: lower case, letters and digits ("probeing").
+create table if not exists public.activity_rules (
+  id          uuid        primary key default gen_random_uuid(),
+  user_id     uuid        not null default auth.uid() references auth.users on delete cascade,
+  keyword     text        not null check (keyword ~ '^[0-9a-z\u0080-￿]{4,40}$'),
+  project     text        not null check (char_length(project) between 1 and 120),
+  source      text        not null default 'hand' check (source in ('hand', 'fix', 'gemini')),
+  created_at  timestamptz not null default now(),
+  updated_at  timestamptz not null default now(),
+  constraint activity_rules_user_keyword_key unique (user_id, keyword)
+);
+
+alter table public.activity_rules enable row level security;
+
+do $$ begin
+  create policy "read own rules" on public.activity_rules
+    for select using (auth.uid() = user_id);
+exception when duplicate_object then null; end $$;
+
+do $$ begin
+  create policy "insert own rules" on public.activity_rules
+    for insert with check (auth.uid() = user_id and source in ('hand', 'fix'));
+exception when duplicate_object then null; end $$;
+
+do $$ begin
+  create policy "update own rules" on public.activity_rules
+    for update using (auth.uid() = user_id) with check (auth.uid() = user_id and source in ('hand', 'fix'));
+exception when duplicate_object then null; end $$;
+
+do $$ begin
+  create policy "delete own rules" on public.activity_rules
+    for delete using (auth.uid() = user_id);
+exception when duplicate_object then null; end $$;
+
+revoke all on table public.activity_rules from anon, authenticated;
+grant select, delete on public.activity_rules to authenticated;
+grant insert (user_id, keyword, project, source) on public.activity_rules to authenticated;
+grant update (project, source, updated_at) on public.activity_rules to authenticated;
+
+-- activity_nudges: one row per distraction streak pushed (device + start), so
+-- none is pushed twice. state: sent -> working / break / answered / left /
+-- autobreak / question / stale / closed. nonce_sha256 lets the push's buttons
+-- answer without a sign-in (as wrapup's check does); the browser cannot read it.
+-- A 'question' (another device showed work in the same span) waits for the
+-- catch-up popup: span_end and other_work say what to ask.
+create table if not exists public.activity_nudges (
+  id            uuid        primary key default gen_random_uuid(),
+  user_id       uuid        not null references auth.users on delete cascade,
+  device_id     uuid        references public.watch_devices(id) on delete set null,
+  streak_start  timestamptz not null,
+  what          text        not null default '' check (char_length(what) <= 80),
+  pushed_at     timestamptz,
+  nonce_sha256  text,
+  state         text        not null default 'sent' check (state in ('sent', 'working', 'break', 'answered',
+                            'left', 'autobreak', 'question', 'stale', 'closed')),
+  span_end      timestamptz,
+  other_work    text        not null default '' check (char_length(other_work) <= 160),
+  decided_at    timestamptz,
+  created_at    timestamptz not null default now(),
+  constraint activity_nudges_streak_key unique (user_id, device_id, streak_start)
+);
+
+create index if not exists activity_nudges_user_state_idx on public.activity_nudges (user_id, state, created_at desc);
+
+alter table public.activity_nudges enable row level security;
+
+do $$ begin
+  create policy "read own nudges" on public.activity_nudges
+    for select using (auth.uid() = user_id);
+exception when duplicate_object then null; end $$;
+
+revoke all on table public.activity_nudges from anon, authenticated;
+grant select (id, user_id, device_id, streak_start, what, pushed_at, state, span_end, other_work, decided_at, created_at)
+  on public.activity_nudges to authenticated;
