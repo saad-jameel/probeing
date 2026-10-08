@@ -1001,14 +1001,6 @@ body {
 .done-list .done-how { display: block; margin-top: 2px; color: var(--muted); font-size: 12.5px; }
 .done-list .done-how[hidden] { display: none; }
 
-/* Stage 16: What's done. A fixed height, so switching project does not resize it.
-   Only #doneProjects (.pick-grid, which has its pair) and #doneNote are ever hidden (rule 6). */
-.done-dlg { height: min(85vh, 85dvh); }
-.done-ranges .pick { flex: 1 1 25%; padding: 8px 4px; font-size: 14px; }
-.done-projects .pick { flex: 1 1 40%; padding: 8px 6px; font-size: 14px; }
-.done-list .when { white-space: normal; text-align: right; max-width: 45%; overflow-wrap: anywhere; }
-.done-list li.done-item .what { color: var(--muted); }
-
 /* Stage 18b: the catch-up sheet. Opened non-modal, so it sits at the bottom and
    the M and Prayer tiles above it stay tappable (rule 4). */
 .catchup-dlg[open] { position: fixed; inset: auto 0 0 0; margin: 0 auto 8px; max-height: 60vh; max-height: 60dvh; z-index: 20; }
@@ -1023,3 +1015,11 @@ body {
 .catchup-row.catchup-break .catchup-what { text-decoration: line-through; color: var(--muted); }
 .catchup-ask .dlg-actions { justify-content: flex-start; margin-top: 8px; }
 #watchPairLine { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 12px; }
+
+/* Stage 16: What's done. A fixed height, so switching project does not resize it.
+   Only #doneProjects (.pick-grid, which has its pair) and #doneNote are ever hidden (rule 6). */
+.done-dlg { height: min(85vh, 85dvh); }
+.done-ranges .pick { flex: 1 1 25%; padding: 8px 4px; font-size: 14px; }
+.done-projects .pick { flex: 1 1 40%; padding: 8px 6px; font-size: 14px; }
+.done-list .when { white-space: normal; text-align: right; max-width: 45%; overflow-wrap: anywhere; }
+.done-list li.done-item .what { color: var(--muted); }
