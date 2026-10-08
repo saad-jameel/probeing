@@ -1249,15 +1249,22 @@ grant select on public.item_mark_latest to authenticated;
 -- To see what is there first:
 --   select conname, pg_get_constraintdef(oid) from pg_constraint
 --    where conrelid = 'public.money'::regclass and contype = 'c';
-alter table public.money drop constraint if exists money_kind_check;
-alter table public.money add constraint money_kind_check
-  check (kind in ('cash', 'loan', 'due', 'opening'));
--- money_dir_check is the name Postgres gave the column check in create table.
-alter table public.money drop constraint if exists money_dir_check;
-alter table public.money add constraint money_dir_check check (
-  (kind in ('cash', 'loan') and dir in ('in', 'out')) or
-  (kind = 'due' and dir in ('they_owe', 'i_owe')) or
-  (kind = 'opening' and dir = 'set'));
+-- Item 19 widens these two again below. Once it has, a re-run leaves them alone:
+-- putting this narrower pair back would fail on a buying-list row.
+do $$ begin
+  if not exists (select 1 from pg_constraint where conrelid = 'public.money'::regclass
+                 and conname = 'money_kind_check' and pg_get_constraintdef(oid) like '%buy%') then
+    alter table public.money drop constraint if exists money_kind_check;
+    alter table public.money add constraint money_kind_check
+      check (kind in ('cash', 'loan', 'due', 'opening'));
+    -- money_dir_check is the name Postgres gave the column check in create table.
+    alter table public.money drop constraint if exists money_dir_check;
+    alter table public.money add constraint money_dir_check check (
+      (kind in ('cash', 'loan') and dir in ('in', 'out')) or
+      (kind = 'due' and dir in ('they_owe', 'i_owe')) or
+      (kind = 'opening' and dir = 'set'));
+  end if;
+end $$;
 alter table public.money drop constraint if exists money_amount_positive;
 alter table public.money add constraint money_amount_positive
   check (amount <> 'NaN' and (amount > 0 or (kind = 'opening' and amount = 0)));
@@ -1377,3 +1384,32 @@ alter table public.entry_filing add column if not exists new_at timestamptz;
 alter table public.entry_filing add column if not exists new_more jsonb;
 -- A Stop on a task is an events row of type 'substop' (node_id = the task): no
 -- schema change, as events.type is free text.
+
+-- ======================================================== item 19 (8 Oct)
+-- The buying list on the Money screen, in the same append-only money table.
+--   kind 'buy'   a thing he means to buy: dir 'plan', its name in tag, the
+--                expected amount, and the month in buy_month ('2026-10').
+-- It is off the list once a void row names it (voids_rid), as every money
+-- correction is: note 'Bought' or 'Removed'. Bought also writes an ordinary
+-- cash expense, rid 'bb-' + the thing's rid. A 'buy' row never counts in
+-- spent, got or the wallet; the app before this skips it (its dir is not in/out).
+-- Run this section on its own; the whole file re-run afterwards is safe too.
+alter table public.money add column if not exists buy_month text;
+alter table public.money drop constraint if exists money_kind_check;
+alter table public.money add constraint money_kind_check
+  check (kind in ('cash', 'loan', 'due', 'opening', 'buy'));
+alter table public.money drop constraint if exists money_dir_check;
+alter table public.money add constraint money_dir_check check (
+  (kind in ('cash', 'loan') and dir in ('in', 'out')) or
+  (kind = 'due' and dir in ('they_owe', 'i_owe')) or
+  (kind = 'opening' and dir = 'set') or
+  (kind = 'buy' and dir = 'plan'));
+-- A month on every thing, and on nothing else.
+alter table public.money drop constraint if exists money_buy_month;
+alter table public.money add constraint money_buy_month check (
+  (kind = 'buy') = (buy_month is not null) and
+  (buy_month is null or buy_month ~ '^[0-9]{4}-(0[1-9]|1[0-2])$'));
+-- A thing belongs to nobody.
+alter table public.money drop constraint if exists money_buy_person;
+alter table public.money add constraint money_buy_person
+  check (kind <> 'buy' or person is null);
