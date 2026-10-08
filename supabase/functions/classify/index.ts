@@ -396,8 +396,8 @@ function readAnswer(ans, cands) {
     if (also.length) place.more = also;
     return place;
   }
-  // A project with no sub-tasks is a place of its own, unless the line names new ones (18a).
-  if (proj && !proj.subs.length && !tidyTitle(ans && ans.new_subtask) && !more.length) {
+  // A project with no sub-tasks is a place of its own, unless the line names two or more pieces (18a).
+  if (proj && !proj.subs.length && (tidyTitle(ans && ans.new_subtask) ? 1 : 0) + more.length < 2) {
     return { project: proj.node, sub: null, items: items };
   }
   var title = proj ? tidyTitle(ans && ans.new_subtask) : '';
