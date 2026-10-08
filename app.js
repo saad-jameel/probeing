@@ -9775,9 +9775,29 @@ function openBought(t, opener) {
   $('boughtTitle').textContent = 'Bought ' + t.name;         // his words: never markup
   var had = boughtExpense(t);              // already spent: show what was
   $('boughtAmount').value = formatPkr(had ? moneyPaisa(had.amount) / 100 : t.amount).replace(/,/g, '');
+  $('boughtComment').value = '';
+  $('boughtComment').maxLength = Math.max(0, MONEY_NOTE_MAX - BOUGHT_SEP.length - t.name.length);
   paintBoughtTags();
   paintBought();
-  openMoneyDlg(boughtDlg, opener, $('boughtSaveBtn'));
+  // The list's figure is an estimate: selected, so typing the real one replaces it.
+  openMoneyDlg(boughtDlg, opener, $('boughtAmount'));
+  $('boughtAmount').select();
+}
+
+var BOUGHT_SEP = ' · ';
+
+/** The expense's note: the thing's name, then the comment cut to fit the column. */
+function boughtNote(name, comment) {
+  var room = MONEY_NOTE_MAX - BOUGHT_SEP.length - name.length;
+  var out = '';
+  // Whole characters only, so the cut never leaves half an emoji.
+  Array.from(String(comment || '').replace(/\s+/g, ' ').trim()).some(function (ch) {
+    if (out.length + ch.length > room) return true;
+    out += ch;
+    return false;
+  });
+  out = out.trim();
+  return out ? name + BOUGHT_SEP + out : name;
 }
 
 /** Bought's expense for thing `t`, if one is in the table, saved here or held. */
@@ -9798,7 +9818,8 @@ function saveBought() {
     return;
   }
   var expense = { rid: BUY_RID.bought + t.rid, at: new Date().toISOString(), local_time: humanLocal(),
-                  dir: 'out', amount: amount, tag: bought.tag || MONEY_UNTAGGED, note: t.name };
+                  dir: 'out', amount: amount, tag: bought.tag || MONEY_UNTAGGED,
+                  note: boughtNote(t.name, $('boughtComment').value) };
   var off = buyOffPayload(t, 'bought');
   off.after = expense.rid;
   var had = boughtExpense(t);

@@ -505,12 +505,14 @@
   </form>
 </dialog>
 
-<!-- Bought: an ordinary expense, logged now. The tag is optional. -->
+<!-- Bought: an ordinary expense, logged now. The list's amount was an estimate. -->
 <dialog id="boughtDlg" class="dlg">
   <form method="dialog">
     <h2 id="boughtTitle">Bought</h2>
-    <label for="boughtAmount">Amount in PKR</label>
+    <label for="boughtAmount">Exact amount (PKR)</label>
     <input id="boughtAmount" type="text" inputmode="decimal" autocomplete="off">
+    <label for="boughtComment">Comment</label>
+    <input id="boughtComment" type="text" maxlength="196" autocomplete="off" placeholder="Optional">
     <p class="pick-head">Tag (optional)</p>
     <div id="boughtTags" class="tag-grid" aria-label="Tag"></div>
     <div class="dlg-actions">

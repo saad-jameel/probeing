@@ -51,8 +51,9 @@
  * v25 (edit queue 3): the "What happened?" note after Done, Drop or Stop.
  * v26 (edit queue 4): Qaza prayers, + item on task rows, Stop keeps a task in Upcoming.
  * v27 (item 19): the buying list on the Money screen.
- * v28 (item 20): the buying list redone: Add on top, the list in its own panel, Move. */
-var CACHE = 'probeing-shell-v28';
+ * v28 (item 20): the buying list redone: Add on top, the list in its own panel, Move.
+ * v29 (item 21): Bought asks for the exact amount and an optional comment. */
+var CACHE = 'probeing-shell-v29';
 var SHELL = [
   './',
   'index.html',
