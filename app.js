@@ -1947,7 +1947,8 @@ function renderToday(data) {
 /** The Today tab's list, drawn from whatever is currently in memory — the last
  *  refresh, plus anything written since. */
 function renderLogList() {
-  var entries = todayEntries({ log: lastLog, prayers: todayPrayers });
+  // A Stop's substop rows (tree.js STOP_TYPE) are for Upcoming; its `done` row already says it.
+  var entries = todayEntries({ log: lastLog, prayers: todayPrayers }).filter(function (e) { return e.type !== 'substop'; });
   var list = $('logList');
   list.textContent = '';
 
@@ -11540,7 +11541,7 @@ function plannedLeaves(nodes) {
 
 /** Home's card: Planned, due by `today` (the counter date) in Google, or expected
  *  to finish before `endMs`; soonest first. None of those: every open task, as
- *  todaysPlan lists them (13b). */
+ *  todaysPlan lists them (13b). Stopped tasks are added after, if not there yet. */
 function homePlanLeaves(nodes, today, endMs) {
   var done = closedHere();
   var stopped = stoppedHere();
@@ -11548,13 +11549,18 @@ function homePlanLeaves(nodes, today, endMs) {
   var picked = open.filter(function (l) {
     var plan = planOf(l.node.id);
     var due = dueOf(l.node.due);
-    return Boolean(plan && plan.planned) || Boolean(due && due <= today) || shownFinishMs(l.node) < endMs ||
-           isFinite(stopped[l.node.id]);           // edit queue 4: stopped, still to do
+    return Boolean(plan && plan.planned) || Boolean(due && due <= today) || shownFinishMs(l.node) < endMs;
   }).sort(byTaskWhen);
-  if (picked.length) return picked;
-  var byId = userMap();
-  open.forEach(function (l) { byId[l.node.id] = l; });
-  return todaysPlan(nodes, today).map(function (p) { return byId[p.id]; }).filter(Boolean);
+  if (!picked.length) {
+    var byId = userMap();
+    open.forEach(function (l) { byId[l.node.id] = l; });
+    picked = todaysPlan(nodes, today).map(function (p) { return byId[p.id]; }).filter(Boolean);
+  }
+  // Edit queue 4: stopped tasks are added, never instead of the rest.
+  var shown = userMap();
+  picked.forEach(function (l) { shown[l.node.id] = 1; });
+  return picked.concat(open.filter(function (l) { return isFinite(stopped[l.node.id]) && !shown[l.node.id]; })
+    .sort(byTaskWhen));
 }
 
 function sameTitle(a, b) {
@@ -12101,7 +12107,8 @@ function startTask(id) {
   var undo = beginToggleWrite();
   var steps = wakeSteps(true);
   if (toggles.work.state !== 'working') setToggle('work', 'working');
-  noteLocalRow('work', e.raw_text, e.project, e.detail, leaf.node.id);
+  // Stamped to the millisecond, so a restart in the same second as a Stop reads as after it.
+  noteLocalRow('work', e.raw_text, e.project, e.detail, leaf.node.id).at = new Date().toISOString();
   steps.push({ type: 'work', raw_text: e.raw_text, project: e.project, detail: e.detail,
                node_id: leaf.node.id, rid: newRid() });
   flash('Working on ' + (e.detail ? e.project + ': ' + e.detail : e.project), 'ok');

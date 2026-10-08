@@ -31,7 +31,10 @@
 // up to NEW_SUBS_MAX new sub-tasks (more_subtasks), each with its own items, in the
 // same one call per batch. The entry is filed under the main one (new_subtask, or
 // the sub-task it chose, else the first listed). Every one is in the plan
-// (new_more) before the first insert, so a retry makes none twice.
+// (new_more) before the first insert, so a retry makes none twice. A retry that
+// cannot find a sent insert in Google (updated and whole-list look-ups) waits
+// rather than inserting again; after FILE_MAX_TRIES the main one goes to
+// Unsorted and another is let go. Only a 429 (nothing made) is inserted again.
 //
 // Secrets: CRON_SECRET, ALLOWED_USER_ID, GEMINI_API_KEY and GEMINI_MODEL (all
 // already set for the other functions); GEMINI_DAILY and FILE_WAIT_MIN optional.
@@ -345,11 +348,11 @@ function madeIn(tasks, parent, title) {
 }
 
 /** Google's answer to tasks.insert: 'made', 'refused' (nothing was made: say so
- *  and stop) or 'unsure' (it may have been made, or Google asked to slow down:
- *  keep the plan, look next run). */
+ *  and stop), 'later' (Google asked to slow down: nothing was made, insert next
+ *  run) or 'unsure' (it may have been made: keep the plan, look next run). */
 function insertVerdict(status, body) {
   if (status >= 200 && status < 300) return body && typeof body.id === 'string' && body.id ? 'made' : 'unsure';
-  if (status === 429 || /rateLimit|RATE_LIMIT|quota/i.test(JSON.stringify(body || {}))) return 'unsure';
+  if (status === 429 || /rateLimit|RATE_LIMIT|quota/i.test(JSON.stringify(body || {}))) return 'later';
   if (status >= 400 && status < 500) return 'refused';
   return 'unsure';
 }
@@ -845,6 +848,9 @@ async function classifyRun(d: any) {
       if (d.now() - Date.parse(slot.at) < PLAN_SETTLE_MS) return { wait: true };
       const found = await findMade(g, proj.google_id, slot.title, slot.at);
       if (found.unsure) { made[key] = UNSURE; return { unsure: found.unsure }; }
+      // Not found by either look-up: an insert may still be lagging in Google's
+      // listing. Never insert twice; wait, and after the last try let it go.
+      if (!found.task) { made[key] = UNSURE; return { unsure: 'not in Google yet: waiting, not inserting again' }; }
       task = found.task;
     }
     if (!task) {
@@ -852,6 +858,12 @@ async function classifyRun(d: any) {
       if (!(await save())) return { lost: true };
       const ins = await insertSub(g, proj.google_id, slot.title);
       if (ins.verdict === 'refused') return { refused: ins.why };
+      if (ins.verdict === 'later') {                          // nothing made: the next run inserts
+        slot.at = null;
+        await save();
+        made[key] = UNSURE;
+        return { unsure: ins.why };
+      }
       if (ins.verdict !== 'made') { made[key] = UNSURE; return { unsure: ins.why }; }
       task = ins.task;
       out.made += 1;
