@@ -22,6 +22,9 @@
 // Idle, it reads nothing: the time is checked before any read. Edit queue 4: plus
 // "S stopped", the stopped tasks Home's Upcoming card shows. A Qaza prayer row is a
 // prayer row, so it ends that prayer's reminders like any other.
+// Stage 18a (Saad, 8 Oct): it counts Home's new card instead: "Today: N planned ·
+// N in Backlog" when something is planned for today, else "Plan your day: N in
+// Backlog, N stopped" (or just "Plan your day").
 //
 // Deployed by hand:
 //   npx supabase functions deploy prayer-remind --project-ref <ref> --use-api
@@ -44,6 +47,11 @@ const Day = (globalThis as unknown as { ProBeingDay: {
   counterDayStart: (t: number, offsetMin?: number) => number;
   counterDate: (t: number, offsetMin?: number) => string;
   prayerDate: (t: number, offsetMin?: number) => string;
+  sessionLead: (rows: unknown[], beforeMs: number) => unknown[];
+  LEAD_MAX_MS: number;
+  LEAD_TYPES: string[];
+  dayFigures: (log: unknown[], prayers: unknown[], endMs?: number, carry?: unknown[] | null,
+               lead?: unknown[], tree?: unknown) => { day: { runningSubtasks?: string[] } };
 } }).ProBeingDay;
 
 function reply(status: number, body: unknown): Response {
@@ -267,7 +275,8 @@ function taskPayload(r, offsetMin) {
            body: r.up ? String(r.up.title || '').trim().slice(0, 120) : '' };
 }
 
-/* ── Stage 17: the morning push, "Today: N due, M carried over, P planned", once per
+/* ── Stage 17: the morning push (Stage 18a: "Today: N planned · N in Backlog" or
+ *    "Plan your day: N in Backlog, N stopped"), once per
  *    counter day at user_settings.plan_push_time on his saved zone's clock. */
 
 var PLAN_DEFAULT_MIN = 9 * 60;
@@ -300,47 +309,48 @@ function planDue(now, offsetMin, timeText, on, day) {
   return null;
 }
 
+/** The day a plan is for: planned_for, else the counter date of updated_at (as app.js planDay). */
+function planDayOf(p, dayOf) {
+  if (!p) return '';
+  if (p.planned_for) return String(p.planned_for).slice(0, 10);
+  var t = Date.parse(String(p.updated_at || ''));
+  return isFinite(t) ? dayOf(t) : '';
+}
+
 /**
- * Home's Upcoming tasks, counted by date. Leaves (sub-tasks, or projects with no
- * sub-task left) of the shown list, open in Google, project not deleted, not
- * finished by their own Done (done: id -> true). finish = his expected finish,
- * unless Google's due date was moved there after ProBeing sent it. As the card
- * dates a task: by the finish when it is set and before `end` (before `start`:
- * carried, else due); otherwise by Google's due date (`today`: due, earlier:
- * carried). Any other task on Planned is `planned`; any other stopped one
- * (edit queue 4, tree.js stoppedTasks: id -> ms) is `stopped`, as the card shows
- * it; the rest count nowhere. The counted set is the card's own pick.
- * nodes: task_nodes of the list; plans: node id -> task_plans row; tree: tree.js.
- * Returns {due, carried, planned, stopped, ids, names}: ids are the counted leaves,
- * and names their titles, due first, then carried, planned and stopped.
+ * Home's Upcoming card and its Backlog, counted (Stage 18a, app.js upcomingLeaves).
+ * Leaves (sub-tasks, or projects with no sub-task left) open in Google, project not
+ * deleted, not finished or dropped in ProBeing (done: id -> true), not running now
+ * (running: id -> true). Planned for `today` (a plan with no known day counts as
+ * today's): planned. Else stopped (tree.js stoppedTasks: id -> ms): stopped. Else
+ * planned on an earlier day: backlog. The card shows planned + stopped, then the
+ * Backlog. dayOf(ms) is the counter date. Returns {planned, stopped, backlog, ids, named}.
  */
-function planCounts(nodes, plans, done, today, start, end, tree, stopped) {
+function planCounts(nodes, plans, done, today, stopped, running, dayOf) {
   var paused = stopped || {};
+  var busy = running || {};
   var byGoogle = {};
   var hasKids = {};
   (nodes || []).forEach(function (n) {
     byGoogle[n.google_id] = n;
     if (n.kind === 'subtask' && !n.gone_at) hasKids[n.parent_google_id] = true;
   });
-  var out = { due: 0, carried: 0, planned: 0, stopped: 0, ids: [], names: [] };
-  var named = { due: [], carried: [], planned: [], stopped: [] };
+  var out = { planned: 0, stopped: 0, backlog: 0, ids: [], named: { planned: [], stopped: [], backlog: [] } };
   (nodes || []).forEach(function (n) {
     if (!(n.kind === 'subtask' || (n.kind === 'project' && !hasKids[n.google_id]))) return;
     var up = n.kind === 'subtask' ? byGoogle[n.parent_google_id] : null;
-    if (n.gone_at || n.g_status === 'completed' || (up && up.gone_at) || done[n.id]) return;
+    if (n.gone_at || n.g_status === 'completed' || (up && up.gone_at) || done[n.id] || busy[n.id]) return;
     var p = plans[n.id];
-    var fin = p && p.expected_at && !tree.dueMovedInGoogle(n) ? Date.parse(String(p.expected_at)) : NaN;
-    var gdue = tree.dueOf(n.due);
-    // NaN (no finish) fails both tests and falls to Google's date.
-    var when = fin < start ? 'carried' : fin < end ? 'due'
-      : gdue === today ? 'due' : gdue && gdue < today ? 'carried' : p && p.planned ? 'planned'
-      : paused.hasOwnProperty(n.id) && isFinite(paused[n.id]) ? 'stopped' : '';
+    var on = Boolean(p && p.planned);
+    var day = on ? planDayOf(p, dayOf) : '';
+    var when = on && (!day || day === today) ? 'planned'
+      : paused.hasOwnProperty(n.id) && isFinite(paused[n.id]) ? 'stopped'
+      : on && day && day < today ? 'backlog' : '';
     if (!when) return;
     out[when]++;
     out.ids.push(n.id);
-    named[when].push(String(n.title || '').trim() || '(untitled)');
+    out.named[when].push(String(n.title || '').trim() || '(untitled)');
   });
-  out.names = named.due.concat(named.carried, named.planned, named.stopped);
   return out;
 }
 
@@ -353,22 +363,33 @@ function planBody(names) {
   };
   var out = names.slice(0, 3).map(clip).join(', ');
   if (names.length > 3) out += ' +' + (names.length - 3) + ' more';
-  return out || 'Open ProBeing for the list.';
+  return out || 'Open ProBeing to plan it.';
 }
 
 /**
- * The push's JSON: "Today: 2 due, 1 planned", zero parts left out. kind 'prayer'
- * and a probeing-prayer- tag so a v19/v20 sw.js shows it as a plain notification
- * that opens Home; `plan` lets v21 show it under its own tag.
+ * The push's JSON (Stage 18a): "Today: 2 planned · 1 in Backlog" when something is
+ * planned for today, else "Plan your day: 1 in Backlog, 2 stopped"; zero parts left
+ * out, both zero is "Plan your day". kind 'prayer' and a probeing-prayer- tag so a
+ * v19/v20 sw.js shows it as a plain notification that opens Home; `plan` lets v21
+ * show it under its own tag.
  */
 function planPayload(c) {
+  var named = c.named || { planned: [], stopped: [], backlog: [] };
   var parts = [];
-  if (c.due) parts.push(c.due + ' due');
-  if (c.carried) parts.push(c.carried + ' carried over');
-  if (c.planned) parts.push(c.planned + ' planned');
-  if (c.stopped) parts.push(c.stopped + ' stopped');
+  var title, names;
+  if (c.planned) {
+    parts.push(c.planned + ' planned');
+    if (c.backlog) parts.push(c.backlog + ' in Backlog');
+    title = 'Today: ' + parts.join(' · ');
+    names = named.planned.concat(named.backlog);
+  } else {
+    if (c.backlog) parts.push(c.backlog + ' in Backlog');
+    if (c.stopped) parts.push(c.stopped + ' stopped');
+    title = parts.length ? 'Plan your day: ' + parts.join(', ') : 'Plan your day';
+    names = named.backlog.concat(named.stopped);
+  }
   return { kind: 'prayer', plan: true, tag: 'probeing-prayer-Plan', goto: 'home',
-           title: 'Today: ' + parts.join(', '), body: planBody(c.names || []) };
+           title: title, body: planBody(names) };
 }
 
 /* ─────────────────────────────────────────────────── end of the pure part */
@@ -508,6 +529,32 @@ async function stoppedNow(sb: ReturnType<typeof admin>, owner: string,
   return Tree.stoppedTasks(stops, starts, direct);
 }
 
+/** Stage 18a: node id -> true for each task running now, as Home's replay sees it:
+ *  today's rows plus the session left open from before the turn (glance-refresh's reads). */
+async function runningNow(sb: ReturnType<typeof admin>, owner: string, now: number, start: number,
+                          nodes: Record<string, any>[],
+                          must: (r: { data: unknown; error: { message?: string } | null }) => Record<string, any>[]) {
+  const cols = 'at, local_time, type, raw_text, project, detail, node_id';
+  const startIso = new Date(start).toISOString();
+  const shape = (r: Record<string, any>) => {
+    const row: Record<string, any> = { at: r.at, local: r.local_time || '', type: r.type, raw_text: r.raw_text || '',
+                                       project: r.project || '', detail: r.detail || '' };
+    if (r.node_id) row.node_id = r.node_id;
+    return row;
+  };
+  const today = must(await sb.from('events').select(cols).eq('user_id', owner).gte('at', startIso)
+    .order('at', { ascending: false }).order('created_at', { ascending: false }).limit(1000))
+    .filter((r) => r.type !== 'prayer').map(shape);
+  const before = must(await sb.from('events').select(cols).eq('user_id', owner).lt('at', startIso)
+    .gte('at', new Date(start - Day.LEAD_MAX_MS).toISOString()).in('type', Day.LEAD_TYPES)
+    .order('at', { ascending: false }).order('created_at', { ascending: false }).limit(1000)).map(shape);
+  const lead = Day.sessionLead(before, start);
+  const day = Day.dayFigures(today, [], now, null, lead, { nodes: nodes, items: [], marks: [] }).day;
+  const out: Record<string, boolean> = {};
+  (day.runningSubtasks || []).forEach((id) => { out[id] = true; });
+  return out;
+}
+
 /** Stage 17: send the morning push if it is due now. Reads nothing outside its time. */
 async function remindPlan(sb: ReturnType<typeof admin>, owner: string, now: number, offset: number,
                           on: boolean, time: unknown) {
@@ -523,20 +570,22 @@ async function remindPlan(sb: ReturnType<typeof admin>, owner: string, now: numb
 
     // Home's card: the list tasks-sync reads, and only while Google is connected.
     const start = Day.counterDayStart(due.at, offset);
-    const end = Day.counterDayStart(start + 30 * 3600000, offset);
+    const dayOf = (t: number) => Day.counterDate(t, offset);
     const sync = must(await sb.from('sync_state').select('*').eq('user_id', owner).limit(1))[0] || {};
-    let c = { due: 0, carried: 0, planned: 0, ids: [] as string[], names: [] as string[] };
-    if (sync.connected && sync.list_title && sync.list_id) {
+    const linked = Boolean(sync.connected && sync.list_title && sync.list_id);
+    let c: Record<string, any> = { planned: 0, stopped: 0, backlog: 0, ids: [], named: { planned: [], stopped: [], backlog: [] } };
+    if (linked) {
       const nodes = must(await sb.from('task_nodes').select('*').eq('user_id', owner)
         .eq('list_id', sync.list_id).limit(1000));
       const plans: Record<string, any> = {};
-      // Every plan: Planned counts whatever its date.
-      must(await sb.from('task_plans').select('node_id, planned, expected_at').eq('user_id', owner).limit(2000))
+      must(await sb.from('task_plans').select('node_id, planned, planned_for, updated_at, expected_at')
+        .eq('user_id', owner).eq('planned', true).limit(2000))
         .forEach((p) => { plans[p.node_id] = p; });
       const stopped = await stoppedNow(sb, owner, must);
-      c = planCounts(nodes, plans, {}, due.day, start, end, Tree, stopped);
+      const running = await runningNow(sb, owner, now, start, nodes, must);
+      c = planCounts(nodes, plans, {}, due.day, stopped, running, dayOf);
       if (c.ids.length) {
-        // Finished by its own Done in ProBeing: off the card, so out of the count (doneHere).
+        // Finished or dropped in ProBeing: off the card, so out of the count (closedHere).
         const items = must(await sb.from('items').select('rid, node_id').eq('user_id', owner)
           .in('node_id', c.ids).limit(1000));
         const newest: Record<string, any> = {};
@@ -547,8 +596,8 @@ async function remindPlan(sb: ReturnType<typeof admin>, owner: string, now: numb
         const direct = Tree.directMarks(must(await sb.from('events').select('type, rid, node_id, at')
           .eq('user_id', owner).in('type', Tree.DIRECT_TYPES).in('node_id', c.ids).limit(1000)));
         const done = Object.assign(Tree.directDone(nodes.filter((n) => c.ids.indexOf(n.id) !== -1), items, newest, direct),
-                                   Tree.directDropped(direct));    // a Drop leaves the card too (edit queue 2)
-        c = planCounts(nodes, plans, done, due.day, start, end, Tree, stopped);
+                                   Tree.directDropped(direct));
+        c = planCounts(nodes, plans, done, due.day, stopped, running, dayOf);
       }
     }
 
@@ -558,13 +607,15 @@ async function remindPlan(sb: ReturnType<typeof admin>, owner: string, now: numb
       return { act: 'nothing', day: due.day,
                skipped: claim.error.code === '23505' ? 'already sent' : claim.error.message };
     }
-    if (!c.ids.length) return { act: 'empty', day: due.day };
+    // No task list, no card: nothing to say. With one, an empty plan still says "Plan your day".
+    if (!linked) return { act: 'empty', day: due.day };
+    const end = Day.counterDayStart(start + 30 * 3600000, offset);
     const out = await pushAll(sb, owner, JSON.stringify(planPayload(c)), {
       ttl: Math.max(60, Math.floor((end - now) / 1000)), topic: 'probeing-plan', urgency: 'normal'
     });
     // Delivered nowhere: release the claim so the next minute tries again.
     if (!out.sent) await sb.from('reminders_sent').delete().eq('user_id', owner).eq('kind', due.kind).eq('day', due.day);
-    return { act: out.sent ? 'sent' : 'failed', day: due.day, due: c.due, carried: c.carried, planned: c.planned,
+    return { act: out.sent ? 'sent' : 'failed', day: due.day, planned: c.planned, backlog: c.backlog,
              stopped: c.stopped, ...out };
   } catch (e) {
     return { act: 'error', error: String((e && (e as Error).message) || e) };

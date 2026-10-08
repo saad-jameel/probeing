@@ -143,7 +143,7 @@ var PLAN_TAG = 'probeing-plan';
 self.addEventListener('push', function (event) {
   var data = pushData(event);
 
-  /* Stage 17: the morning "Today: 2 due, 1 planned"; each day's replaces the last.
+  /* Stage 17: the morning plan push (18a: "Today: 2 planned · 1 in Backlog"); each day's replaces the last.
    * It arrives as kind 'prayer' with plan: true, so an older sw.js still shows it plainly. */
   if (data.kind === 'plan' || data.plan === true) {
     event.waitUntil(self.registration.showNotification(String(data.title || 'ProBeing'), {
