@@ -911,11 +911,14 @@ body {
 .tile-acts[hidden] { display: none; }
 .tile-acts .done-btn { padding: 5px 12px; }
 .tile-acts .tile-drop { color: var(--fg); border-color: var(--line); }
-.task-acts { display: flex; gap: 6px; flex: 0 0 auto; }
+.task-acts { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 6px; flex: 0 0 auto; }
+.task-acts .item-drop-btn { margin-left: 8px; }
 .task-acts[hidden] { display: none; }
-.task-leaf { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; column-gap: 8px; }
+.task-leaf { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 8px; }
 .task-leaf[hidden] { display: none; }
-.task-leaf > :not(.task-item):not(.task-acts) { grid-column: 1 / -1; }
+.task-leaf > .task-item { flex: 1 1 auto; min-width: 0; max-width: 100%; }
+.task-leaf > .task-acts { margin-left: auto; }
+.task-leaf > :not(.task-item):not(.task-acts) { flex: 1 1 100%; }
 .task-tree .task-dropped { text-decoration: none; font-style: italic; }
 
 /* The Add a due choices: the big two-column buttons of the first Lend or borrow
@@ -960,16 +963,21 @@ body {
 .now-head[hidden] { display: none; }
 .now-tasks, .proj-list ul.now-tasks { list-style: none; margin: 6px 0 0; padding: 0; display: grid; gap: 8px; }
 .now-tasks[hidden], .proj-list ul.now-tasks[hidden] { display: none; }
+/* Fix round: the buttons sit on the title's line when both fit; a longer title takes
+   the whole row (never squeezed beside them) and the buttons go to the line below. */
 .now-tasks li.now-row, .proj-list .now-tasks li.now-row {
-  display: flex; flex-wrap: wrap; align-items: center; gap: 6px; padding: 0; border-top: 0;
+  display: flex; flex-wrap: wrap; align-items: center; gap: 4px 8px; padding: 0; border-top: 0;
 }
 .now-tasks li.now-row[hidden], .proj-list .now-tasks li.now-row[hidden] { display: none; }
-.now-row > .now-title { flex: 1 1 8em; width: auto; min-width: 0; padding: 4px 0; overflow-wrap: anywhere; }
+.now-main { flex: 1 1 auto; min-width: 0; max-width: 100%; }
+.now-sub { display: flex; flex-wrap: wrap; align-items: baseline; gap: 2px 8px; }
+.now-sub[hidden] { display: none; }
+.now-row .now-title { display: block; width: 100%; min-width: 0; padding: 4px 0; text-align: left; overflow-wrap: anywhere; }
 .now-row > .items { flex: 1 1 100%; margin: 0; }
-.now-row.pinned > .now-title { color: var(--accent); font-weight: 600; }
+.now-row.pinned .now-title { color: var(--accent); font-weight: 600; }
 .now-entry > .now-title { color: var(--muted); font-size: 14px; }
 .now-time { color: var(--muted); font-size: 12.5px; font-variant-numeric: tabular-nums; white-space: nowrap; }
-.now-acts { display: flex; flex-wrap: wrap; gap: 4px; flex: 0 0 auto; align-items: center; }
+.now-acts { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 4px; align-items: center; margin-left: auto; }
 .now-acts[hidden] { display: none; }
 .icon-act {
   width: 32px; height: 32px; padding: 0; border-radius: 999px; cursor: pointer;
@@ -977,7 +985,7 @@ body {
 }
 .icon-act.act-done { color: #69db7c; border-color: #69db7c; }
 .icon-act.act-stop { color: #ffd43b; border-color: #ffd43b; }
-.icon-act.act-drop { color: #ff6b6b; border-color: #ff6b6b; }
+.icon-act.act-drop { color: #ff6b6b; border-color: #ff6b6b; margin-left: 10px; }   /* apart: it deletes in Google */
 .icon-act.act-pin[aria-pressed="true"] { background: var(--accent); border-color: var(--accent); }
 .icon-act:active { transform: scale(.94); }
 .icon-act[disabled] { opacity: .5; cursor: default; }

@@ -535,8 +535,12 @@ function userMap() {
  *               the open projects, the clock, the break — so a session that
  *               crossed into this window from the one before is counted from
  *               the line, not dropped. Omit it to credit every row given.
+ * weightOf      optional: task id -> its weight (Stage 18a reports). Then
+ *               weightedByProject[p] is p's wall-clock time, each moment at the
+ *               highest weight among p's tasks running then (1 with none), and
+ *               weighted the day's worked time at the highest weight running.
  */
-function replayDay(log, endMs, fromMs) {
+function replayDay(log, endMs, fromMs, weightOf) {
   /* Sheet timestamps are second-precision, so two rows written inside the same
    * second tie. A stable sort would then keep the input order — and today()
    * hands rows back NEWEST FIRST, which replays a same-second pair backwards
@@ -593,6 +597,8 @@ function replayDay(log, endMs, fromMs) {
   var subOrder = [];                        // running task ids, most recently started last
   var pinned = '';
   var bySubtask = userMap();
+  var weightedByProject = userMap();
+  var weighted = 0;
 
   function dropSub(id) {
     if (!subs[id]) return;
@@ -635,6 +641,18 @@ function replayDay(log, endMs, fromMs) {
         names.forEach(function (p) {
           byProject[p] = (byProject[p] || 0) + span;
         });
+        if (typeof weightOf === 'function') {
+          // Wall clock, at the highest weight running: never more than worked x the top weight.
+          var top = 0;
+          names.forEach(function (p) {
+            var w = 0;
+            running.forEach(function (id) { if (subs[id] === p) w = Math.max(w, Number(weightOf(id)) || 1); });
+            w = w || 1;
+            top = Math.max(top, w);
+            weightedByProject[p] = (weightedByProject[p] || 0) + span * w;
+          });
+          weighted += span * (top || 1);
+        }
       } else if (underWay) {
         paused += span;
         Object.keys(reasons).forEach(function (r) {
@@ -763,7 +781,9 @@ function replayDay(log, endMs, fromMs) {
     subtaskProject: curSub ? subs[curSub] : '', // the project key it was named under
     runningSubtasks: subOrder.slice(),      // every running task, most recently started last
     subtaskKeys: subKeys,                   // running task id -> its project key
-    pinned: pinned                          // '' when nothing is pinned
+    pinned: pinned,                         // '' when nothing is pinned
+    weightedByProject: weightedByProject,   // with weightOf only: project -> wall-clock ms x weight
+    weighted: weighted                      // with weightOf only: worked ms x the top weight running
   };
 }
 

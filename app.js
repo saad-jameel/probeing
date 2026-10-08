@@ -2015,7 +2015,7 @@ function renderLogList() {
   // A Stop's substop rows (tree.js STOP_TYPE) are for Upcoming; its `done` row already says it.
   // Stage 18a: a priority/effort answer is a setting, not an entry.
   var entries = todayEntries({ log: lastLog, prayers: todayPrayers }).filter(function (e) {
-    return e.type !== 'substop' && e.type !== 'taskmeta';
+    return e.type !== 'substop' && e.type !== 'taskmeta' && e.type !== SUBNEW_OFF;
   });
   var list = $('logList');
   list.textContent = '';
@@ -2407,14 +2407,21 @@ function nowTaskRow(task, name, day, listId) {
   b.setAttribute('data-node', task.id);
   b.textContent = node.gone_at ? title + ' (deleted in Google)' : title;
   b.addEventListener('click', function () { openTaskDlg(task.id, b, listId); });
-  li.appendChild(b);
+  // Title over its deadline and time, in one column beside the buttons (fix round).
+  var main = document.createElement('div');
+  main.className = 'now-main';
+  main.appendChild(b);
+  var line = document.createElement('div');
+  line.className = 'now-sub';
   var finish = shownFinishMs(node);
-  if (isFinite(finish)) li.appendChild(deadlineChip(finish, ''));
+  if (isFinite(finish)) line.appendChild(deadlineChip(finish, ''));
   var info = document.createElement('span');
   info.className = 'now-time';
   info.textContent = humanDuration(task.ms) +
     (day.pinned === task.id ? ' · pinned' : day.pinned ? ' · stalled' : day.running ? '' : ' · paused');
-  li.appendChild(info);
+  line.appendChild(info);
+  main.appendChild(line);
+  li.appendChild(main);
   var acts = document.createElement('span');
   acts.className = 'now-acts';
   var pinned = day.pinned === task.id;
@@ -2422,12 +2429,19 @@ function nowTaskRow(task, name, day, listId) {
   pin.setAttribute('aria-pressed', pinned ? 'true' : 'false');
   acts.append(iconBtn('✓', 'act-done', 'Done: ' + title, function () { nowClose(task.id, name, 'done'); }),
               iconBtn('⏸', 'act-stop', 'Stop: ' + title, function () { stopTask(task.id, name); }),
-              iconBtn('✕', 'act-drop', 'Drop: ' + title, function () { nowClose(task.id, name, 'drop'); }),
+              iconBtn('✕', 'act-drop', 'Drop: ' + title, function () {
+                if (confirmDrop(title)) nowClose(task.id, name, 'drop');
+              }),
               pin);
   if (leafOpen(task.leaf)) acts.appendChild(addItemBtn(node));
   li.appendChild(acts);
   li.appendChild(itemsBlock(task.id, HOME_ITEMS_MAX, true));
   return li;
+}
+
+/** One line before a Drop (fix round): it deletes the task in Google, so it is asked. */
+function confirmDrop(title) {
+  return window.confirm('Drop ' + title + '? It will be removed from Google Tasks.');
 }
 
 /** The tile's typed entries: their words, ⏸ Stop (the whole project) and ✓ Done. */
@@ -6001,7 +6015,7 @@ function sleepInRange(rows) {
  *                nothing outside the windows is counted.
  * @param windows one per counter day, from dayWindows().
  */
-function summariseRange(rows, windows) {
+function summariseRange(rows, windows, weightOf) {
   var sum = {
     days: windows.length,
     daysWithRows: 0,
@@ -6019,6 +6033,10 @@ function summariseRange(rows, windows) {
     rows: 0
   };
 
+  if (typeof weightOf === 'function') {   // Stage 18a: replayDay's weighted figures, summed
+    sum.weightedByProject = userMap();
+    sum.weighted = 0;
+  }
   var buckets = bucketByWindow(rows, windows);
   var prayed = prayerDays(rows, windows);
   var newestFirst = (rows || []).slice().reverse();     // sessionLead's order
@@ -6032,7 +6050,7 @@ function summariseRange(rows, windows) {
      * start. Alone, a session that crossed the line lost everything after it:
      * work 21:44 to End day 02:00 reported 2.27h, not 4.27h. The window's own
      * end stops an unclosed clock; replayDay() pulls it back to now for today. */
-    var day = replayDay(dayRows.concat(sessionLead(newestFirst, w.startMs)), w.endMs, w.startMs);
+    var day = replayDay(dayRows.concat(sessionLead(newestFirst, w.startMs)), w.endMs, w.startMs, weightOf);
 
     sum.worked += day.worked;
     sum.paused += day.paused;
@@ -6047,6 +6065,12 @@ function summariseRange(rows, windows) {
     Object.keys(day.bySubtask).forEach(function (id) {
       sum.bySubtask[id] = (sum.bySubtask[id] || 0) + day.bySubtask[id];
     });
+    if (sum.weightedByProject) {
+      Object.keys(day.weightedByProject).forEach(function (p) {
+        sum.weightedByProject[p] = (sum.weightedByProject[p] || 0) + day.weightedByProject[p];
+      });
+      sum.weighted += day.weighted;
+    }
 
     /* Counted per day, not over the raw range, and that is what makes them
      * LOCAL-day counts. Karachi is five hours ahead of UTC, so 27 Aug's seven M
@@ -6937,7 +6961,8 @@ function reviewPrompt(win, now, prior, cats, pace) {
                tf.done + ' finished (' + tf.onTime + ' by their deadline, ' + tf.late + ' after it, ' +
                tf.noDeadline + ' with none), ' + tf.stopped + ' stopped to come back to, ' + tf.dropped +
                ' dropped' + (tf.doneFromAll ? ', ' + tf.doneFromAll + ' marked done without being worked on' : '') +
-               (tf.backlogDays ? ', and planned tasks waited ' + tf.backlogDays + ' days in the Backlog' : '') + '.');
+               (tf.backlogDays ? ', and planned tasks waited ' + tf.backlogDays + ' days in the Backlog' : '') +
+               (tf.stoppedDays ? '; stopped tasks waited ' + tf.stoppedDays + ' days' : '') + '.');
     if (tf.drops && tf.drops.length) lines.push('Dropped: ' + tf.drops.join('; ') + '.');
   }
 
@@ -7149,7 +7174,7 @@ function taskFigures(rows, windows, sum, ctx) {
   var now = typeof ctx.now === 'number' ? ctx.now : Date.now();
   var inRange = rowsInWindows(rows, windows);
   var out = { done: 0, stopped: 0, dropped: 0, doneFromAll: 0, onTime: 0, late: 0, noDeadline: 0,
-              skipped: 0, drops: [], backlogDays: 0, backlogTasks: 0, weighted: 0, byProject: [] };
+              skipped: 0, drops: [], backlogDays: 0, backlogTasks: 0, stoppedDays: 0, weighted: 0, byProject: [] };
   function nameOf(r) {
     var names = r.node_id ? nodeNames(index, r.node_id) : null;
     var t = names ? names.detail || names.project : String(r.detail || r.project || '').trim();
@@ -7173,34 +7198,51 @@ function taskFigures(rows, windows, sum, ctx) {
     }
   });
 
-  // Weighted hours per project: each task's time by its weight, the rest by 1.
-  var taskMs = userMap();
-  var weighted = userMap();
+  // Weighted hours (Saad, fix round): a project's hours are wall clock, each moment
+  // at the highest weight among its tasks running then; the total is worked time at
+  // the highest weight running, so it never exceeds worked x the top weight.
   Object.keys(sum.bySubtask || {}).forEach(function (id) {
-    var names = nodeNames(index, id);
-    var ms = sum.bySubtask[id] || 0;
-    if (!names || !(ms > 0)) return;
     var meta = metas[id] || null;
-    if (meta && meta.skipped) out.skipped += 1;
-    taskMs[names.project] = (taskMs[names.project] || 0) + ms;
-    weighted[names.project] = (weighted[names.project] || 0) + ms * taskWeight(meta);
+    if ((sum.bySubtask[id] || 0) > 0 && nodeNames(index, id) && meta && meta.skipped) out.skipped += 1;
   });
+  var wsum = summariseRange(rows, windows, function (id) { return taskWeight(metas[id] || null); });
   Object.keys(sum.byProject || {}).forEach(function (p) {
     var ms = sum.byProject[p] || 0;
     if (!(ms > 0)) return;
-    var w = (weighted[p] || 0) + Math.max(0, ms - (taskMs[p] || 0));
-    out.byProject.push({ name: p, ms: ms, weighted: Math.round(w) });
-    out.weighted += Math.round(w);
+    var w = wsum.weightedByProject[p];
+    out.byProject.push({ name: p, ms: ms, weighted: Math.round(isFinite(w) ? w : ms) });
   });
+  out.weighted = Math.round(wsum.weighted);
   out.byProject.sort(function (a, b) { return b.ms - a.ms; });
 
-  // Backlog days: each day of the period a planned task waited from an earlier day.
+  // Backlog days: each day of the period a planned task waited from an earlier day
+  // and was not stopped, as Home shows it. A day a task began stopped (its newest
+  // Stop after its newest start) is a stopped day instead, planned or not.
   var ends = userMap();
+  var stops = userMap();
+  var starts = userMap();
   (rows || []).forEach(function (r) {
-    if ((r.type === 'subdone' || r.type === 'subdrop') && r.node_id) {
-      var t = instantOf(r.at);
+    if (!r.node_id) return;
+    var t = instantOf(r.at);
+    if (r.type === 'subdone' || r.type === 'subdrop') {
       if (!(ends[r.node_id] >= t)) ends[r.node_id] = t;
+    } else if (r.type === 'substop') {
+      (stops[r.node_id] = stops[r.node_id] || []).push(t);
+    } else if (r.type === 'work' || r.type === 'voice') {
+      (starts[r.node_id] = starts[r.node_id] || []).push(t);
     }
+  });
+  /** Was task `id` stopped when window `w` began? */
+  function stoppedAt(id, w) {
+    var last = function (list) {
+      return (list || []).reduce(function (m, t) { return t < w.startMs && t > m ? t : m; }, -Infinity);
+    };
+    var s0 = last(stops[id]);
+    return isFinite(s0) && s0 > last(starts[id]) && !(ends[id] < w.startMs);
+  }
+  windows.forEach(function (w) {
+    if (w.startMs > now) return;
+    Object.keys(stops).forEach(function (id) { if (stoppedAt(id, w)) out.stoppedDays += 1; });
   });
   Object.keys(plans).forEach(function (id) {
     var plan = plans[id];
@@ -7213,7 +7255,7 @@ function taskFigures(rows, windows, sum, ctx) {
       end = isFinite(g) ? g : n && n.gone_at ? Date.parse(n.gone_at) : Infinity;
     }
     var days = windows.filter(function (w) {
-      return w.ymd > from && w.startMs < end && w.startMs <= now;
+      return w.ymd > from && w.startMs < end && w.startMs <= now && !stoppedAt(id, w);
     }).length;
     if (days) {
       out.backlogDays += days;
@@ -7231,6 +7273,7 @@ function reportTaskLine(t) {
               Number(t.stopped || 0) + ' stopped', Number(t.dropped || 0) + ' dropped'];
   if (Number(t.doneFromAll)) bits.push(Number(t.doneFromAll) + ' done from All tasks (not worked on)');
   if (Number(t.backlogDays)) bits.push('Backlog ' + Number(t.backlogDays) + (Number(t.backlogDays) === 1 ? ' day' : ' days'));
+  if (Number(t.stoppedDays)) bits.push('stopped ' + Number(t.stoppedDays) + (Number(t.stoppedDays) === 1 ? ' day' : ' days'));
   if (Number(t.weighted)) bits.push(reviewDuration(Number(t.weighted)) + ' weighted');
   var line = 'Tasks: ' + bits.join(' · ');
   if (Array.isArray(t.drops) && t.drops.length) line += '. Dropped: ' + t.drops.map(String).join(', ');
@@ -11957,6 +12000,8 @@ function watchGoogle() {
             if (dlg.open) paintGoogle();
             paintPlan();
           });
+          // A sync ran: a "+" sub-task may have been refused (fix round).
+          readSubRequests().then(function (changed) { if (changed) paintTasksPage(); });
         })
     .subscribe();
 }
@@ -11991,7 +12036,7 @@ function tasksConnected() {
  * the Stage 13 set is read instead, so an app ahead of its SQL still shows the tree. */
 var TASK_NODE_COLS = 'id,google_id,list_id,parent_google_id,kind,title,position,due,g_status,gone_at';
 var TASK_NODE_SENT = ',g_completed_at,g_reopened_at,pb_pushed_at,pb_completed_at,pb_due,pb_due_sent_at';
-var TASK_NODE_DROP = ',pb_deleted_for';         // Stage 18a: a Drop deleted it in Google
+var TASK_NODE_DROP = ',pb_deleted_for,push_refused';   // Stage 18a: what Google did with a Drop
 
 /** Open and done rows first, then the newest gone ones. A failed read keeps the last. */
 async function readTaskNodes() {
@@ -12051,6 +12096,7 @@ async function tasksOnOpen() {
   paintTasks();
   scheduleFiling();
   scheduleItems(0);
+  readSubRequests().then(function (changed) { if (changed) paintTasksPage(); });
   syncTasks(false);
 }
 
@@ -12422,8 +12468,8 @@ function rowActs(leaf, listId) {
   var id = leaf.node.id;
   var title = leaf.node.title || '(untitled)';
   var inAll = listId === 'tasksAll';
-  // From All tasks and not running: never worked on. Read at the tap.
-  function fromAll() { return inAll && !runningIds()[id]; }
+  // From All tasks and never worked on, any day (neverWorked). Read at the tap.
+  function fromAll() { return inAll && neverWorked(id); }
   var upcoming = listId === 'planList' || listId === 'tasksPlanned';
   if (upcoming) {
     box.appendChild(smallBtn('Start', 'item-start-btn', 'Start working on: ' + title,
@@ -12442,7 +12488,9 @@ function rowActs(leaf, listId) {
   }
   if (leafActsHere(id)) {
     box.append(smallBtn('Done', 'item-done-btn', 'Done: ' + title, function () { finishTask(id, fromAll()); }),
-               smallBtn('Drop', 'item-drop-btn', 'Drop: ' + title, function () { dropTask(id, fromAll()); }));
+               smallBtn('Drop', 'item-drop-btn', 'Drop: ' + title, function () {
+                 if (confirmDrop(title)) dropTask(id, fromAll());
+               }));
   }
   if (upcoming) {
     box.append(smallBtn('Remove', 'item-unplan-btn', 'Remove from plan: ' + title, function () { planToday(id, false); }),
@@ -12676,8 +12724,20 @@ function paintTasksPage() {
           sub.appendChild(shut);
         }
       });
-      pending.forEach(function (title) {
-        sub.appendChild(taskLine(title, 'adding to Google Tasks…', 'task-pending'));
+      pending.forEach(function (x) {
+        if (!x.refused) {
+          sub.appendChild(taskLine(x.title, 'adding to Google Tasks…', 'task-pending'));
+          return;
+        }
+        // Refused CHANGE_TRIES times (tasks-sync): his to retry or remove.
+        var bad = taskLine(x.title, 'Google refused — tap to retry or remove', 'task-pending task-refused');
+        var acts = document.createElement('span');
+        acts.className = 'task-acts';
+        acts.append(smallBtn('Retry', 'item-start-btn', 'Retry adding: ' + x.title,
+                             function () { retrySubtask(p.node.id, x); }),
+                    smallBtn('Remove', 'item-unplan-btn', 'Remove: ' + x.title, function () { removeSubtask(x); }));
+        bad.appendChild(acts);
+        sub.appendChild(bad);
       });
       li.appendChild(sub);
     }
@@ -12690,6 +12750,18 @@ function paintTasksPage() {
   if (taskDlg && taskDlg.open) paintTaskDlg();
 }
 
+/** What Google did with Drop `d` of `node` (18a): 'deleted' once Google took it,
+ *  'refused' after CHANGE_TRIES refusals, 'removing' meanwhile; '' for a Drop
+ *  that never asked (before 18a). Only gone_at says it was deleted. */
+function dropInGoogle(node, d) {
+  if (!d || d.mark !== 'drop' || typeof dropDeletes !== 'function' || !dropDeletes(d.text)) return '';
+  if (node && node.gone_at) return 'deleted';
+  return node && typeof triesFor === 'function' && triesFor(node, 'delete', d.rid) >= CHANGE_TRIES ? 'refused' : 'removing';
+}
+
+var DROP_WORDS = { deleted: 'deleted in Google', refused: 'Google refused the delete',
+                   removing: 'removing from Google Tasks…' };
+
 /** Closed here and still Reopen-able: not deleted in Google, or deleted by its Drop (18a). */
 function reopenable(node) {
   return !node.gone_at || Boolean(node.pb_deleted_for);
@@ -12701,7 +12773,9 @@ function subAddBtn(node) {
                   function () { openItemDlg(node.id, 'sub'); });
 }
 
-/** Sub-tasks added by hand under project `node` that the mirror does not show yet. */
+/** Sub-tasks added by hand under project `node` that the mirror does not show
+ *  yet: [{title, rid, refused}]. One per title, the newest ask; a removed one
+ *  (a SUBNEW_OFF row) is gone. refused: tasks-sync gave up on it. */
 function pendingSubs(node) {
   var have = userMap();
   var out = [];
@@ -12711,15 +12785,52 @@ function pendingSubs(node) {
   var parked = userMap();
   parkedAll().forEach(function (x) { if (x && x.rid) parked[x.rid] = 1; });
   var rows = sessionLog().concat(outboxOurs().filter(function (it) { return it.action === 'log'; }).map(queuedRow));
-  rows.forEach(function (r) {
-    if (!r || r.type !== SUBNEW_TYPE || r.node_id !== node.id || !r.rid || have[r.rid] || parked[r.rid]) return;
+  var off = userMap();
+  rows.forEach(function (r) { if (r && r.type === SUBNEW_OFF && r.detail) off[r.detail] = 1; });
+  rows.slice().sort(function (a, b) { return instantOf(b.at) - instantOf(a.at); }).forEach(function (r) {
+    if (!r || r.type !== SUBNEW_TYPE || r.node_id !== node.id || !r.rid || have[r.rid] || parked[r.rid] || off[r.rid]) return;
     have[r.rid] = 1;
     var title = String(r.raw_text || '').trim();
     if (!title || kids.some(function (k) { return sameTitle(k.title, title); })) return;
-    if (out.some(function (t) { return sameTitle(t, title); })) return;
-    out.push(title);
+    if (out.some(function (t) { return sameTitle(t.title, title); })) return;
+    var req = subRequests[r.rid];
+    out.push({ title: title, rid: r.rid, refused: Boolean(req && req.state === 'failed') });
   });
   return out;
+}
+
+var SUBNEW_OFF = 'subnewoff';           // a refused "+" sub-task taken away: detail = its subnew rid
+var subRequests = userMap();             // subnew rid -> its subtask_requests row, as last read
+
+/** Read what tasks-sync made of today's "+" sub-tasks. True when something changed. */
+async function readSubRequests() {
+  if (!supabaseReady()) return false;
+  var rids = sessionLog().filter(function (r) { return r && r.type === SUBNEW_TYPE && r.rid; })
+    .map(function (r) { return r.rid; }).slice(0, 200);
+  if (!rids.length) return false;
+  var res = await sb.from('subtask_requests').select('rid,state,why').in('rid', rids);
+  if (res.error) return false;                 // before its SQL: every one stays "adding…"
+  var next = userMap();
+  (res.data || []).forEach(function (r) { next[r.rid] = r; });
+  var changed = JSON.stringify(next) !== JSON.stringify(subRequests);
+  subRequests = next;
+  return changed;
+}
+
+/** Take a refused "+" sub-task away, on every device. */
+function removeSubtask(x) {
+  var at = new Date().toISOString();
+  var step = { type: SUBNEW_OFF, raw_text: x.title, project: '', detail: x.rid, node_id: null,
+               rid: 'sno-' + x.rid, at: at, local_time: humanLocal() };
+  noteLocalRow(SUBNEW_OFF, x.title, '', x.rid, null, at).rid = step.rid;
+  runWrites([step]);
+  paintTasksPage();
+}
+
+/** Ask again: the refused one is taken away, and a new "+" row asks Google afresh. */
+function retrySubtask(projectId, x) {
+  removeSubtask(x);
+  addSubtask(projectId, x.title);
 }
 
 /* All tasks shows what is left, like the taskboard; Show done brings back the
@@ -12759,7 +12870,7 @@ function doneHereLine(node) {
   var meta = document.createElement('div');
   meta.className = 'plan-meta';
   meta.textContent = shutMeta(node) || (node.g_status === 'completed' && !node.gone_at ? ''
-                                       : dropped ? (node.pb_deleted_for ? 'Dropped, deleted in Google' : 'Dropped in ProBeing')
+                                       : dropped ? dropMeta(node)
                                        : 'Done in ProBeing');
   box.appendChild(meta);
   if (hasItems(node.id)) box.appendChild(itemsBlock(node.id));
@@ -12993,7 +13104,7 @@ $('taskStartBtn').addEventListener('click', function () {
 function closeFromBox(mark) {
   var id = taskDlgNode;
   var key = (replayDay(named(sessionLog())).subtaskKeys || {})[id];
-  var fromAll = Boolean(taskDlgOpener && taskDlgOpener.list === 'tasksAll') && !key;
+  var fromAll = Boolean(taskDlgOpener && taskDlgOpener.list === 'tasksAll') && !key && neverWorked(id);
   var ok = key ? nowClose(id, key, mark) : mark === 'drop' ? dropTask(id, fromAll) : finishTask(id, fromAll);
   if (!ok) {
     $('taskDlgNote').textContent = 'This task is no longer open.';
@@ -13003,7 +13114,10 @@ function closeFromBox(mark) {
 }
 
 $('taskDoneBtn').addEventListener('click', function () { closeFromBox('done'); });
-$('taskDropBtn').addEventListener('click', function () { closeFromBox('drop'); });
+$('taskDropBtn').addEventListener('click', function () {
+  var leaf = leafById(taskDlgNode);
+  if (confirmDrop(leaf ? String(leaf.node.title || '').trim() || '(untitled)' : 'this task')) closeFromBox('drop');
+});
 
 $('taskCloseBtn').addEventListener('click', closeTaskDlg);
 // Escape: closed here, so focus goes back to the task whatever the browser does.
@@ -13017,6 +13131,16 @@ taskDlg.addEventListener('cancel', function (e) { e.preventDefault(); closeTaskD
 var PRIORITIES = [['high', 'High', 3], ['normal', 'Normal', 2], ['low', 'Low', 1]];
 var EFFORTS = [['s', 'S', 1], ['m', 'M', 2], ['l', 'L', 3]];
 var metaRows = [];                       // every taskmeta row, as last read
+var workedIds = null;                    // open task id -> 1 if it ever had a work row; null = not known
+
+/** Never worked on, any day: known only once the read said so (fix round). A
+ *  running task, or one with a work row on this device, has been worked on. */
+function neverWorked(id) {
+  if (!workedIds || workedIds[id] || runningIds()[id]) return false;
+  return !sessionLog().concat(startRowsRead).some(function (r) {
+    return r && r.node_id === id && START_TYPES.indexOf(r.type) !== -1;
+  });
+}
 
 function weightOf(list, key) {
   var hit = list.filter(function (x) { return x[0] === key; })[0];
@@ -13629,6 +13753,19 @@ async function readItems() {
         .not('node_id', 'is', null).order('at', { ascending: false }).order('rid');
     });
     if (!mr.error) metaRows = mr.data || [];
+    // Fix round: which open tasks ever had a work row, for "(not worked on)". Unknown on a failed read.
+    var open = taskLeaves(currentNodes()).filter(leafOpen).map(function (l) { return l.node.id; });
+    var worked = userMap();
+    var workedOk = true;
+    for (var c = 0; c < open.length && workedOk; c += 100) {
+      var chunk = open.slice(c, c + 100);
+      var wr = await readPages(function () {
+        return sb.from('events').select('rid,node_id').in('type', START_TYPES).in('node_id', chunk).order('rid');
+      });
+      if (wr.error) workedOk = false;
+      else (wr.data || []).forEach(function (r) { worked[r.node_id] = 1; });
+    }
+    workedIds = workedOk ? worked : null;
     // Edit queue 4: Stops, then any start since under those tasks. A failed read keeps the last.
     var sr = await readPages(function () {
       return sb.from('events').select('type,rid,node_id,at').eq('type', STOP_TYPE)
@@ -13971,6 +14108,12 @@ function leafActsHere(id) {
   return itemsRead && Boolean(openLeafById(id)) && !openItemCount(id);
 }
 
+/** The line under a dropped task on Tasks: what Google did with it (18a). */
+function dropMeta(node) {
+  var how = dropInGoogle(node, directMarks(directAll())[node.id]);
+  return how ? 'Dropped — ' + DROP_WORDS[how] : 'Dropped in ProBeing';
+}
+
 /** Drop on task `id`: hidden here, and deleted in Google by tasks-sync (18a;
  *  DROP_DELETE_MARK says so on the row). False when it is not open here. */
 function dropTask(id, fromAll) {
@@ -13990,7 +14133,7 @@ function dropTask(id, fromAll) {
   runWrites([{ type: 'subdrop', raw_text: text, project: e.project, detail: e.detail, node_id: id,
                rid: rid, at: at, local_time: humanLocal() }]);
   paintTasks();
-  flash('Dropped: ' + title + '. It is deleted in Google Tasks; Reopen it in What\'s done.', 'ok');
+  flash('Dropped: ' + title + ' — removing from Google Tasks… Reopen it in What\'s done.', 'ok');
   askNote(closeLink(rid, e, id));
   return true;
 }
@@ -14201,7 +14344,16 @@ function doneEntries(tree) {
     var p = up(n);
     if (!p) return;
     out.push({ project: p.id, kind: 'drop', id: n.id, title: title(n), under: '', ms: instantOf(d.at),
-               fromAll: String(d.text || '').indexOf(ALL_DROP_PREFIX) === 0 });
+               fromAll: String(d.text || '').indexOf(ALL_DROP_PREFIX) === 0,
+               google: typeof dropInGoogle === 'function' ? dropInGoogle(n, d) : '' });
+  });
+  // Listed in Google again after ProBeing deleted it: Google won, the drop is undone (tasks-sync).
+  nodes.forEach(function (n) {
+    var d = n && n.id ? direct[n.id] : null;
+    if (!d || d.mark !== 'open' || typeof BACK_IN_GOOGLE !== 'string' || String(d.text || '').indexOf(BACK_IN_GOOGLE) !== 0) return;
+    var p = up(n);
+    if (!p) return;
+    out.push({ project: p.id, kind: 'back', id: n.id, title: title(n), under: '', ms: instantOf(d.at) });
   });
   if (tree.entries && tree.entries.length) {
     var ends = entryMarks(tree.entries);
@@ -14266,6 +14418,8 @@ function whatsDone(tree, windows, bySubtask) {
              count: lines.length, days: days };
   });
 }
+
+var BACK_IN_GOOGLE = 'Back in Google: ';   // tasks-sync's Reopen row when Google lists a deleted task again
 
 /** Was the Done at `ms` pressed on All tasks (18a)? Its own row says so. */
 function fromAllDone(d, ms) {
@@ -14410,12 +14564,14 @@ function doneLine(l) {
   li.className = 'done-' + l.kind;
   var what = document.createElement('span');
   what.className = 'what';
-  what.textContent = (l.kind === 'item' ? '• ' : l.kind === 'drop' ? '✕ ' : '✓ ') + l.title;
-  if (l.kind === 'drop' || l.fromAll) {
+  what.textContent = (l.kind === 'item' ? '• ' : l.kind === 'drop' ? '✕ ' : l.kind === 'back' ? '↺ ' : '✓ ') + l.title;
+  if (l.kind === 'drop' || l.kind === 'back' || l.fromAll) {
     var how = document.createElement('span');
     how.className = 'done-how';
-    how.textContent = l.kind === 'drop' ? (l.fromAll ? 'dropped from All tasks, not worked on' : 'dropped')
-                                         : 'done from All tasks, not worked on';
+    how.textContent = l.kind === 'back' ? 'back in Google, open again'
+      : l.kind === 'drop' ? (l.fromAll ? 'dropped from All tasks, not worked on' : 'dropped') +
+                            (l.google ? ' · ' + DROP_WORDS[l.google] : '')
+      : 'done from All tasks, not worked on';
     what.appendChild(how);
   }
   (l.notes || []).forEach(function (text) {
