@@ -437,8 +437,10 @@ function prayerIsQaza(name, t, offsetMin) {
 var LEAD_MAX_MS = 48 * 3600000;
 
 /** Rows that move the work clock or name a project, plus `awake` for the idle
- *  cap and `subdone`/`subdrop` for the sub-task clock. No M, prayer or wake. */
-var LEAD_TYPES = ['work', 'voice', 'done', 'break', 'resume', 'off', 'sleep', 'awake', 'subdone', 'subdrop'];
+ *  cap and `subdone`/`subdrop`/`substop`/`pin`/`unpin` for the task clocks
+ *  (Stage 18a). No M, prayer or wake. */
+var LEAD_TYPES = ['work', 'voice', 'done', 'break', 'resume', 'off', 'sleep', 'awake', 'subdone', 'subdrop',
+                  'substop', 'pin', 'unpin'];
 
 /** An open clock stops counting this long after the last work-session row: the
  *  night checks span 23:30 to 11:00 (11.5 h), so anything longer was forgotten. */
@@ -447,7 +449,8 @@ var IDLE_MAX_MS = 12 * 3600000;
 /** Rows that show the session is still being tended. `awake` is a Yes to the
  *  night check (wrapup writes it). Not M, prayer or wake: they say he is up, not
  *  that the clock left running is still work. */
-var IDLE_RESET_TYPES = ['work', 'voice', 'done', 'break', 'resume', 'awake', 'subdone', 'subdrop'];
+var IDLE_RESET_TYPES = ['work', 'voice', 'done', 'break', 'resume', 'awake', 'subdone', 'subdrop',
+                        'substop', 'pin', 'unpin'];
 
 /**
  * The lead-in for a day starting at `beforeMs`: rows of LEAD_TYPES earlier than
@@ -581,12 +584,22 @@ function replayDay(log, endMs, fromMs) {
   var dayClosed = false;                    // ended for the night, or asleep
   var lastT = 0;
   var order = [];                           // projects, most recently started last
-  /* Stage 14b: the one sub-task being worked on (a task_nodes id), and the
-   * project key of the row that named it. Credited only while the clock runs,
-   * so a break pauses it and resume carries on (C2). */
-  var curSub = '';
-  var curSubKey = '';
+  /* Stage 18a: every task being worked on (task_nodes id -> the project key of
+   * the row that started it), each with its own clock until its Done, Stop,
+   * Drop, its project's Stop or End day. Credited only while the clock runs, so
+   * a break pauses them all and resume carries them on. `pinned` is the one
+   * task that alone collects time while it runs; the rest are stalled. */
+  var subs = userMap();
+  var subOrder = [];                        // running task ids, most recently started last
+  var pinned = '';
   var bySubtask = userMap();
+
+  function dropSub(id) {
+    if (!subs[id]) return;
+    delete subs[id];
+    subOrder.splice(subOrder.indexOf(id), 1);
+    if (pinned === id) pinned = '';
+  }
 
   /* Never credit past this instant. A device clock running behind the server
    * makes real rows look like the future, and the day would inflate until the
@@ -614,8 +627,10 @@ function replayDay(log, endMs, fromMs) {
       var span = until - from;
       if (clock) {
         worked += span;
-        if (curSub) bySubtask[curSub] = (bySubtask[curSub] || 0) + span;
-        var names = Object.keys(active);
+        // A pin: only that task and its project collect time (Stage 18a).
+        var running = pinned ? [pinned] : subOrder;
+        running.forEach(function (id) { bySubtask[id] = (bySubtask[id] || 0) + span; });
+        var names = pinned ? [subs[pinned]] : Object.keys(active);
         if (!names.length) unattributed += span;
         names.forEach(function (p) {
           byProject[p] = (byProject[p] || 0) + span;
@@ -647,9 +662,13 @@ function replayDay(log, endMs, fromMs) {
       // Adds, never replaces — that is the whole point of multitasking.
       var name = String(row.project || text).trim();
       if (name) { active[name] = 1; remember(name); }
-      // A filed entry names its sub-task; one that is not filed ends it.
-      curSub = row.node_id ? String(row.node_id) : '';
-      curSubKey = curSub ? name : '';
+      // A filed entry starts its task's clock beside the others (Stage 18a).
+      if (row.node_id && name) {
+        var sid = String(row.node_id);
+        if (subs[sid]) subOrder.splice(subOrder.indexOf(sid), 1);
+        subs[sid] = name;
+        subOrder.push(sid);
+      }
       clock = true;
       underWay = true;
       dayClosed = false;
@@ -657,7 +676,7 @@ function replayDay(log, endMs, fromMs) {
     } else if (row.type === 'done') {
       var finished = String(row.project || text).trim();
       delete active[finished];
-      if (curSub && finished === curSubKey) curSub = '';   // Stop on its project
+      subOrder.slice().forEach(function (id) { if (subs[id] === finished) dropSub(id); });   // Stop on its project
       var idx = order.indexOf(finished);
       if (idx !== -1) order.splice(idx, 1);
     } else if (row.type === 'resume') {
@@ -702,11 +721,18 @@ function replayDay(log, endMs, fromMs) {
       if (row.type === 'off') {
         active = userMap();
         order = [];
-        curSub = '';
+        subs = userMap();
+        subOrder = [];
+        pinned = '';
       }
-    } else if (row.type === 'subdone' || row.type === 'subdrop') {
-      // Finished (its Done, or its last item closed) or dropped: only that sub-task stops.
-      if (row.node_id && String(row.node_id) === curSub) curSub = '';
+    } else if (row.type === 'subdone' || row.type === 'subdrop' || row.type === 'substop') {
+      // Finished, dropped or stopped: only that task's clock stops.
+      if (row.node_id) dropSub(String(row.node_id));
+    } else if (row.type === 'pin') {
+      // One pin at a time; a task that is not running cannot be pinned.
+      if (row.node_id && subs[String(row.node_id)]) pinned = String(row.node_id);
+    } else if (row.type === 'unpin') {
+      if (!row.node_id || String(row.node_id) === pinned) pinned = '';
     }
     // wake / awake / M / prayer do not move the work clock
   });
@@ -715,6 +741,9 @@ function replayDay(log, endMs, fromMs) {
 
   var activeProjects = order.filter(function (p) { return active[p]; });
   var current = activeProjects.length ? activeProjects[activeProjects.length - 1] : '';
+  var curSub = pinned || (subOrder.length ? subOrder[subOrder.length - 1] : '');
+  var subKeys = userMap();
+  subOrder.forEach(function (id) { subKeys[id] = subs[id]; });
 
   return {
     project: current,                       // the most recent one, for a one-line readout
@@ -729,9 +758,12 @@ function replayDay(log, endMs, fromMs) {
     breakReason: Object.keys(reasons).join(REASON_SEP),
     activeReasons: Object.keys(reasons),
     byReason: byReason,
-    bySubtask: bySubtask,                   // task_nodes id -> ms; sum <= worked
-    currentSubtask: curSub,                 // '' when none
-    subtaskProject: curSub ? curSubKey : '' // the project key it was named under
+    bySubtask: bySubtask,                   // task_nodes id -> ms; each <= worked, the sum may exceed it
+    currentSubtask: curSub,                 // the pinned task, else the newest running; '' when none
+    subtaskProject: curSub ? subs[curSub] : '', // the project key it was named under
+    runningSubtasks: subOrder.slice(),      // every running task, most recently started last
+    subtaskKeys: subKeys,                   // running task id -> its project key
+    pinned: pinned                          // '' when nothing is pinned
   };
 }
 
