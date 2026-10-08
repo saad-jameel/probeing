@@ -666,10 +666,10 @@
    }
   },
   {
-   "name": "a browser window with no tab seen is private",
+   "name": "an unseen browser window with no rule is unclear (not private)",
    "seg": {
     "app": "chrome.exe",
-    "title": "Some private page - Google Chrome",
+    "title": "Some page - Google Chrome",
     "host": "",
     "path": "",
     "incognito": false
@@ -693,7 +693,205 @@
     ]
    },
    "want": {
-    "category": "private",
+    "category": "unclear",
+    "project": "",
+    "key": ""
+   }
+  },
+  {
+   "name": "an unseen browser window: Shorts by its title",
+   "seg": {
+    "app": "chrome.exe",
+    "title": "Funny cat - YouTube Shorts - Google Chrome",
+    "host": "",
+    "path": "",
+    "incognito": false
+   },
+   "cfg": {
+    "lists": null,
+    "rules": [
+     {
+      "keyword": "docker",
+      "project": "OneNet"
+     },
+     {
+      "keyword": "neuravue",
+      "project": "NeuraVue"
+     }
+    ],
+    "projects": [
+     "ProBeing",
+     "OneNet",
+     "NeuraVue"
+    ]
+   },
+   "want": {
+    "category": "distraction",
+    "project": "",
+    "key": ""
+   }
+  },
+  {
+   "name": "an unseen browser window: a YouTube talk is not Shorts",
+   "seg": {
+    "app": "chrome.exe",
+    "title": "A talk - YouTube - Google Chrome",
+    "host": "",
+    "path": "",
+    "incognito": false
+   },
+   "cfg": {
+    "lists": null,
+    "rules": [
+     {
+      "keyword": "docker",
+      "project": "OneNet"
+     },
+     {
+      "keyword": "neuravue",
+      "project": "NeuraVue"
+     }
+    ],
+    "projects": [
+     "ProBeing",
+     "OneNet",
+     "NeuraVue"
+    ]
+   },
+   "want": {
+    "category": "unclear",
+    "project": "",
+    "key": ""
+   }
+  },
+  {
+   "name": "an unseen browser window: Instagram by its title",
+   "seg": {
+    "app": "msedge.exe",
+    "title": "Instagram - Microsoft Edge",
+    "host": "",
+    "path": "",
+    "incognito": false
+   },
+   "cfg": {
+    "lists": null,
+    "rules": [
+     {
+      "keyword": "docker",
+      "project": "OneNet"
+     },
+     {
+      "keyword": "neuravue",
+      "project": "NeuraVue"
+     }
+    ],
+    "projects": [
+     "ProBeing",
+     "OneNet",
+     "NeuraVue"
+    ]
+   },
+   "want": {
+    "category": "distraction",
+    "project": "",
+    "key": ""
+   }
+  },
+  {
+   "name": "an unseen browser window: a project keyword in its title",
+   "seg": {
+    "app": "chrome.exe",
+    "title": "probeing/app.js at main - Google Chrome",
+    "host": "",
+    "path": "",
+    "incognito": false
+   },
+   "cfg": {
+    "lists": null,
+    "rules": [
+     {
+      "keyword": "docker",
+      "project": "OneNet"
+     },
+     {
+      "keyword": "neuravue",
+      "project": "NeuraVue"
+     }
+    ],
+    "projects": [
+     "ProBeing",
+     "OneNet",
+     "NeuraVue"
+    ]
+   },
+   "want": {
+    "category": "work",
+    "project": "ProBeing",
+    "key": "probeing"
+   }
+  },
+  {
+   "name": "an unseen browser window: Meet by its title",
+   "seg": {
+    "app": "chrome.exe",
+    "title": "Meet - abc-defg-hij - Google Chrome",
+    "host": "",
+    "path": "",
+    "incognito": false
+   },
+   "cfg": {
+    "lists": null,
+    "rules": [
+     {
+      "keyword": "docker",
+      "project": "OneNet"
+     },
+     {
+      "keyword": "neuravue",
+      "project": "NeuraVue"
+     }
+    ],
+    "projects": [
+     "ProBeing",
+     "OneNet",
+     "NeuraVue"
+    ]
+   },
+   "want": {
+    "category": "meeting",
+    "project": "",
+    "key": ""
+   }
+  },
+  {
+   "name": "a seen window is never judged by its title (x.com is not \"X\")",
+   "seg": {
+    "app": "chrome.exe",
+    "title": "Home / X",
+    "host": "example.com",
+    "path": "/",
+    "incognito": false
+   },
+   "cfg": {
+    "lists": null,
+    "rules": [
+     {
+      "keyword": "docker",
+      "project": "OneNet"
+     },
+     {
+      "keyword": "neuravue",
+      "project": "NeuraVue"
+     }
+    ],
+    "projects": [
+     "ProBeing",
+     "OneNet",
+     "NeuraVue"
+    ]
+   },
+   "want": {
+    "category": "unclear",
     "project": "",
     "key": ""
    }
@@ -1084,6 +1282,70 @@
      "start": "2026-10-12T05:20:00.000Z",
      "end": "2026-10-12T05:30:00.000Z",
      "app": "notepad.exe",
+     "domain": "",
+     "category": "unclear",
+     "project": "",
+     "key": ""
+    }
+   ]
+  },
+  {
+   "name": "an unseen browser window keeps no title and is never sent",
+   "cut": {
+    "from": "2026-10-12T05:00:00.000Z",
+    "to": "2026-10-12T05:40:00.000Z",
+    "spans": [
+     [
+      "2026-10-12T05:00:00.000Z",
+      "2026-10-12T05:40:00.000Z"
+     ]
+    ]
+   },
+   "cfg": {
+    "lists": null,
+    "rules": [
+     {
+      "keyword": "docker",
+      "project": "OneNet"
+     },
+     {
+      "keyword": "neuravue",
+      "project": "NeuraVue"
+     }
+    ],
+    "projects": [
+     "ProBeing",
+     "OneNet",
+     "NeuraVue"
+    ]
+   },
+   "events": {
+    "afk": [
+     {
+      "timestamp": "2026-10-12T05:00:00+00:00",
+      "duration": 2400,
+      "data": {
+       "status": "not-afk"
+      }
+     }
+    ],
+    "window": [
+     {
+      "timestamp": "2026-10-12T05:00:00+00:00",
+      "duration": 600,
+      "data": {
+       "app": "chrome.exe",
+       "title": "Quarterly plan draft - Google Chrome"
+      }
+     }
+    ],
+    "web": []
+   },
+   "want": [
+    {
+     "start": "2026-10-12T05:00:00.000Z",
+     "end": "2026-10-12T05:10:00.000Z",
+     "app": "chrome.exe",
      "domain": "",
      "category": "unclear",
      "project": "",

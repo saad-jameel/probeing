@@ -167,6 +167,8 @@ function Act-EntryHits($entry, $seg, [bool]$withTitle) {
     $sh = Act-Str (Get-Prop $seg 'host')
     # A private site (mybank.com) also counts when only the title names it.
     if ($withTitle -and $h -and (Act-Str (Get-Prop $seg 'title')).ToLowerInvariant().Contains($h)) { return $true }
+    # A browser window the extension did not see: the site's name in its title.
+    if (-not $sh -and $h -and (Act-IsBrowser (Get-Prop $seg 'app'))) { return (Act-TitleNamesSite $h $path (Get-Prop $seg 'title')) }
     if (-not $sh -or -not $h) { return $false }
     if ($sh -cne $h -and -not $sh.EndsWith('.' + $h, [System.StringComparison]::Ordinal)) { return $false }
     if (-not $path) { return $true }
@@ -177,6 +179,17 @@ function Act-EntryHits($entry, $seg, [bool]$withTitle) {
   if ((Act-Norm (Get-Prop $seg 'app')).Contains($w)) { return $true }
   if ((Act-Norm (Get-Prop $seg 'host')).Contains($w)) { return $true }
   return ($withTitle -and (Act-Norm (Get-Prop $seg 'title')).Contains($w))
+}
+
+function Act-TitleNamesSite($h, $path, $title) {
+  $t = (Act-Str $title).ToLowerInvariant()
+  $label = ([string]$h).Split('.')[0]
+  if ($label.Length -lt 3 -or -not ($t -cmatch ('(^|[^a-z0-9])' + $label + '([^a-z0-9]|$)'))) { return $false }
+  $parts = ([string]$path).Split('/')
+  $part = ''
+  if ($parts.Length -gt 1) { $part = $parts[1] }
+  if (-not $part) { return $true }
+  return (($part -cmatch '^[a-z0-9-]{3,}$') -and ($t -cmatch ('(^|[^a-z0-9])' + $part + '([^a-z0-9]|$)')))
 }
 
 function Act-ListHit($list, $seg, [bool]$withTitle) {
@@ -217,9 +230,7 @@ function Act-TitleKey($app, $title) {
 
 function Act-Classify($seg, $cfg) {
   $lists = Act-Lists (Get-Prop $cfg 'lists')
-  # A browser window the extension did not see (an incognito tab, most often) is private too.
   if ((Get-Prop $seg 'incognito') -eq $true -or ((Act-Str (Get-Prop $seg 'title')) -match $ACT_PRIVATE_TITLE) -or
-      ((Act-IsBrowser (Get-Prop $seg 'app')) -and -not (Act-Str (Get-Prop $seg 'host'))) -or
       (Act-ListHit $lists['private'] $seg $true)) {
     return @{ category = 'private'; project = ''; key = '' }
   }
@@ -387,7 +398,10 @@ function Act-Blocks($pieces, $cfg) {
     $domain = $p.host
     if ($c.category -eq 'private') { $domain = '' }
     $title = ''
-    if ($c.category -eq 'unclear' -and (Act-TitleSendable $p.app $p.title)) { $title = Act-ScrubTitle $p.title }
+    # A browser window the extension did not see: its title is never sent.
+    if ($c.category -eq 'unclear' -and (Act-TitleSendable $p.app $p.title) -and -not ((Act-IsBrowser $p.app) -and -not $p.host)) {
+      $title = Act-ScrubTitle $p.title
+    }
     $b = @{ start = [double]$p.start; end = [double]$p.end; app = (Act-CleanApp $p.app); domain = (Act-Str $domain);
             category = $c.category; project = $c.project; key = $c.key; title = $title; i = $i }
     $b.id = Act-Identity $b

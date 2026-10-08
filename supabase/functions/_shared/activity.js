@@ -138,6 +138,8 @@ function actEntryHits(entry, seg, withTitle) {
     var h = String(seg.host || '');
     // A private site (mybank.com) also counts when only the title names it.
     if (withTitle === true && host && String(seg.title || '').toLowerCase().indexOf(host) !== -1) return true;
+    // A browser window the extension did not see: the site's name in its title.
+    if (!h && host && actIsBrowser(seg.app)) return actTitleNamesSite(host, path, seg.title);
     if (!h || !host) return false;
     if (h !== host && h.slice(-(host.length + 1)) !== '.' + host) return false;
     return !path || String(seg.path || '').indexOf(path) === 0;
@@ -146,6 +148,16 @@ function actEntryHits(entry, seg, withTitle) {
   if (w.length < 3) return false;
   return actNorm(seg.app).indexOf(w) !== -1 || actNorm(seg.host).indexOf(w) !== -1 ||
          (withTitle === true && actNorm(seg.title).indexOf(w) !== -1);
+}
+
+/** Does a title name a site: its first label as a word ("YouTube" for youtube.com), and its
+ *  path's first part too when the entry has one ("Shorts")? Labels under 3 letters never match. */
+function actTitleNamesSite(host, path, title) {
+  var t = String(title == null ? '' : title).toLowerCase();
+  var label = String(host).split('.')[0];
+  if (label.length < 3 || !new RegExp('(^|[^a-z0-9])' + label + '([^a-z0-9]|$)').test(t)) return false;
+  var part = String(path || '').split('/')[1] || '';
+  return !part || (/^[a-z0-9-]{3,}$/.test(part) && new RegExp('(^|[^a-z0-9])' + part + '([^a-z0-9]|$)').test(t));
 }
 
 /** The first entry of `list` that matches, or ''. */
@@ -198,9 +210,7 @@ function actRuleHit(seg, rules) {
  */
 function actClassify(seg, cfg) {
   var lists = actLists(cfg && cfg.lists);
-  // A browser window the extension did not see (an incognito tab, most often) is private too.
-  if (seg.incognito === true || ACT_PRIVATE_TITLE.test(String(seg.title || '')) || (actIsBrowser(seg.app) && !seg.host) ||
-      actListHit(lists['private'], seg, true)) {
+  if (seg.incognito === true || ACT_PRIVATE_TITLE.test(String(seg.title || '')) || actListHit(lists['private'], seg, true)) {
     return { category: 'private', project: '', key: '' };
   }
   if (actListHit(lists.distract, seg, false)) return { category: 'distraction', project: '', key: '' };
@@ -338,7 +348,8 @@ function actBlocks(pieces, cfg) {
     var c = actClassify(p, cfg);
     var b = { start: p.start, end: p.end, app: actCleanApp(p.app), domain: c.category === 'private' ? '' : (p.host || ''),
               category: c.category, project: c.project, key: c.key,
-              title: c.category === 'unclear' && actTitleSendable(p.app, p.title) ? actScrubTitle(p.title) : '' };
+              title: c.category === 'unclear' && actTitleSendable(p.app, p.title) && !(actIsBrowser(p.app) && !p.host)
+                     ? actScrubTitle(p.title) : '' };     // a browser window the extension did not see: never sent
     b.id = actIdentity(b);
     return b;
   }).sort(function (x, y) { return x.start - y.start; });
@@ -594,6 +605,7 @@ globalThis.ProBeingActivity = {
   actUrlParts: actUrlParts,
   actScrubTitle: actScrubTitle,
   actTitleSendable: actTitleSendable,
+  actIsBrowser: actIsBrowser,
   ACT_PRIVATE_TITLE: ACT_PRIVATE_TITLE,
   actTie: actTie,
   actSkipTies: actSkipTies,

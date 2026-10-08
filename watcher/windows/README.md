@@ -10,10 +10,11 @@ What never leaves the laptop: full web addresses, page text, and window titles.
 The one exception: a block no rule could place sends its window title to Gemini
 once, to guess the project, with links, folder paths, addresses, ids and long
 numbers cut out first; only the project comes back, and the title is not stored.
-Terminal and file-window titles are never sent. Anything on your private list
-(banking, passwords, chats), every incognito or InPrivate window, and any browser
-window the extension did not see, is sent only as "private", with no site and no
-title.
+Terminal and file-window titles are never sent, nor the title of a browser window
+the ActivityWatch extension did not see (that one is judged by its title on the
+laptop, else left for you in the catch-up sheet). Anything on your private list
+(banking, passwords, chats) and every incognito or InPrivate window is sent only
+as "private", with no site and no title.
 
 Nothing is installed. It is three PowerShell files and one scheduled task.
 

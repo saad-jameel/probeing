@@ -308,7 +308,8 @@ function classifyItems(items, lists) {
     var app = A.actCleanApp(it.app);
     var domain = A.actCleanDomain(it.domain);
     var raw = String(it.title == null ? '' : it.title);
-    if (!title || !A.actTitleSendable(app, raw) || A.ACT_PRIVATE_TITLE.test(raw) ||
+    // A browser window with no site is one the extension did not see: its title is never sent.
+    if (!title || !A.actTitleSendable(app, raw) || A.ACT_PRIVATE_TITLE.test(raw) || (A.actIsBrowser(app) && !domain) ||
         A.actListHit(priv, { app: app, host: domain, title: raw }, true)) return;
     var blocks = (Array.isArray(it.blocks) ? it.blocks : []).map(function (x) { return Date.parse(String(x)); })
       .filter(function (t) { return isFinite(t); }).slice(0, 200);
