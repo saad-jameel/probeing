@@ -707,6 +707,55 @@
         </div>
       </div>
 
+      <!-- Stage 18b: the laptop watcher (watcher/windows/). -->
+      <div class="dlg-block">
+        <h3>Laptop activity <button type="button" class="help-btn" data-help="helpWatch"
+          data-title="Laptop activity" aria-label="About laptop activity">?</button></h3>
+        <template id="helpWatch">
+        <p class="hint">A small script on your Windows laptop reads ActivityWatch every 5 minutes,
+          <strong>only while you are working</strong>, and sends time blocks: when, which app, which
+          site (its name only), which project, and whether it was work, a meeting, a distraction or
+          private. Never a web address, never page text. A window title leaves the laptop only when no
+          keyword places it, once, for Gemini to name the project; it is not stored.</p>
+        <p class="hint">On a distraction for 10 minutes you get a push. No answer in 5 minutes and it
+          becomes a break from when it started; back in a work app, the work resumes by itself. If
+          another device was working across the same span, you are asked instead.</p>
+        <p class="hint">Pair once: press the button, copy the line, paste it into PowerShell on the
+          laptop. The line is shown only now; ProBeing keeps a fingerprint, not the token.</p>
+        </template>
+        <div class="dlg-actions" style="justify-content: flex-start">
+          <button type="button" id="watchPairBtn" class="btn">Pair this laptop</button>
+        </div>
+        <div id="watchPairBox" hidden>
+          <textarea id="watchPairLine" rows="4" readonly aria-label="The line to paste into PowerShell"></textarea>
+          <div class="dlg-actions" style="justify-content: flex-start">
+            <button type="button" id="watchCopyBtn" class="btn">Copy</button>
+          </div>
+        </div>
+        <p id="watchResult" class="hint"></p>
+        <div id="watchList" class="cat-list"></div>
+        <label class="check">
+          <input id="watchNudgeOn" type="checkbox" checked>
+          <span>Distraction push and auto-break (all devices)</span>
+        </label>
+        <p id="watchNudgeResult" class="hint"></p>
+        <details id="watchListsDetails" class="sub-details">
+        <summary>Lists</summary>
+        <label class="hint" for="watchDistract">Distractions, one per line (a site, a site/path, or an app word)</label>
+        <textarea id="watchDistract" rows="4"></textarea>
+        <label class="hint" for="watchMeeting">Meetings</label>
+        <textarea id="watchMeeting" rows="3"></textarea>
+        <label class="hint" for="watchPrivate">Private: sent only as "private", never with a site or title</label>
+        <textarea id="watchPrivate" rows="3"></textarea>
+        <label class="hint" for="watchRules">Project keywords, "keyword = Project" (each project's own name works already)</label>
+        <textarea id="watchRules" rows="4" placeholder="docker = OneNet"></textarea>
+        <div class="dlg-actions" style="justify-content: flex-start">
+          <button type="button" id="watchListsSave" class="btn">Save lists</button>
+        </div>
+        <p id="watchListsResult" class="hint"></p>
+        </details>
+      </div>
+
     <div class="help-row">
       <label class="check">
         <input id="micHide" type="checkbox">
@@ -1004,6 +1053,21 @@
 
 <!-- Stage 13b. The explanation behind a Settings "?", copied in from its <template>.
      The inner box fills the dialog, so a click on the dialog itself is the backdrop. -->
+<!-- Stage 18b: what the laptop saw since he last looked. Non-modal, so M and
+     Prayer stay one tap away under it. Project names are his text (textContent). -->
+<dialog id="catchupDlg" class="dlg catchup-dlg" aria-labelledby="catchupTitle">
+  <form method="dialog">
+    <h2 id="catchupTitle"></h2>
+    <ul id="catchupAsks" class="catchup-list" hidden></ul>
+    <ul id="catchupList" class="catchup-list"></ul>
+    <p id="catchupNote" class="hint"></p>
+    <div class="dlg-actions">
+      <button type="button" id="catchupLaterBtn" class="link-btn">Later</button>
+      <button type="button" id="catchupOkBtn" class="btn btn-accent">Looks right</button>
+    </div>
+  </form>
+</dialog>
+
 <dialog id="helpDlg" class="dlg help-dlg" aria-labelledby="helpTitle">
   <div class="help-inner">
     <h2 id="helpTitle"></h2>
@@ -1019,6 +1083,7 @@
 <script src="vendor/supabase.js"></script>
 <script src="supabase/functions/_shared/day.js"></script>
 <script src="supabase/functions/_shared/tree.js"></script>
+<script src="supabase/functions/_shared/activity.js"></script>
 <script src="app.js"></script>
 </body>
 </html>

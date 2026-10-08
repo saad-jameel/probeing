@@ -2015,7 +2015,8 @@ function renderLogList() {
   // A Stop's substop rows (tree.js STOP_TYPE) are for Upcoming; its `done` row already says it.
   // Stage 18a: a priority/effort answer is a setting, not an entry.
   var entries = todayEntries({ log: lastLog, prayers: todayPrayers }).filter(function (e) {
-    return e.type !== 'substop' && e.type !== 'taskmeta' && e.type !== SUBNEW_OFF;
+    return e.type !== 'substop' && e.type !== 'taskmeta' && e.type !== SUBNEW_OFF &&
+           CATCHUP_TYPES[e.type] !== 1;   // 18b: answers, not entries
   });
   var list = $('logList');
   list.textContent = '';
@@ -2082,6 +2083,7 @@ async function refresh(opts) {
   try {
     var data = await api('today', null, opts);
     renderToday(data);
+    if (catchupOnOpen) { catchupOnOpen = false; maybeCatchUp(); }      // Stage 18b: once per opening
     if (epoch === glanceEpoch) armGlance(data, readAt);
     drainOutbox('read');                  // a read that worked means the way is open
     if (opts && opts.announce) flash('Up to date', 'ok');
@@ -6966,6 +6968,14 @@ function reviewPrompt(win, now, prior, cats, pace) {
     if (tf.drops && tf.drops.length) lines.push('Dropped: ' + tf.drops.join('; ') + '.');
   }
 
+  /* Stage 18b: what the laptop measured. Figures for judging, never for repeating. */
+  var act = now.activity;
+  if (act && act.blocks) {
+    lines.push('');
+    lines.push('MEASURED ON THE LAPTOP while working (worked out already, for you to judge from, not to repeat): ' +
+               reportActivityLine(act).replace(/^Laptop: /, '') + '.');
+  }
+
   /* Edit queue 4: prayers made up late. Named, never counted by the model. */
   var qaza = Array.isArray(now.qaza) ? now.qaza : [];
   if (qaza.length) {
@@ -7008,6 +7018,10 @@ function reviewPrompt(win, now, prior, cats, pace) {
   if (tf && (tf.done || tf.stopped || tf.dropped)) {
     lines.push('Where it matters, say in those same lines whether deadlines were kept and name what ' +
                'was dropped, without any count.');
+  }
+  if (act && act.blocks) {
+    lines.push('Where it matters, say in those same lines whether the laptop time bears out the projects ' +
+               'logged, and whether distractions were a real cost, without any figure.');
   }
   if (notes.length) {
     lines.push('Where the notes above explain why something went as it did — a blocker, ' +
@@ -7988,7 +8002,7 @@ function spanText(win) {
  * without anybody parsing English out of a paragraph. Not one sentence belongs
  * in here.
  */
-function reportStats(sum, prayers, money, tasks) {
+function reportStats(sum, prayers, money, tasks, activity) {
   var stats = {
     worked: sum.worked,
     paused: sum.paused,
@@ -8005,6 +8019,7 @@ function reportStats(sum, prayers, money, tasks) {
   };
   if (money) stats.money = money;              // Stage 11; never shown to Gemini
   if (tasks) stats.tasks = tasks;              // Stage 18a
+  if (activity) stats.activity = activity;     // Stage 18b
   return stats;
 }
 
@@ -8211,6 +8226,13 @@ function renderReports(rows) {
       tl.textContent = taskLine;            // task titles are his text (rule 5)
       li.appendChild(tl);
     }
+    var actLine = reportActivityLine(stats.activity);
+    if (actLine) {
+      var al = document.createElement('p');
+      al.className = 'report-figs report-tasks';
+      al.textContent = actLine;             // project names are his text (rule 5)
+      li.appendChild(al);
+    }
     var prayers = prayerTable(stats.prayerBreakdown);
     if (prayers) li.appendChild(prayers);
     li.appendChild(body);
@@ -8263,8 +8285,9 @@ async function generateReport(win) {
 
   var prayed = prayerStats(got.rows, got.windows);       // the saved breakdown, and Qaza for the prompt
   var taskFigs = await reportTaskFigures(got.rows, got.windows, got.sum);   // Stage 18a
+  var actFigs = await reportActivityFigures(got.rows, got.windows);          // Stage 18b, null with no laptop
   var prompt = reviewPrompt(win, { sum: got.sum, tasks: got.tasks, notes: got.notes, qaza: prayed.qaza,
-                                   taskFigs: taskFigs }, got.earlier, projectCategories, got.pace);
+                                   taskFigs: taskFigs, activity: actFigs }, got.earlier, projectCategories, got.pace);
 
   /* Money is read before the one call, so a failed read costs no call, and a
    * failure stops the report: it is written once, and must not miss the money. */
@@ -8302,7 +8325,7 @@ async function generateReport(win) {
   }
 
   await saveReport(win, answer,
-                   reportStats(got.sum, prayed, money, taskFigs),
+                   reportStats(got.sum, prayed, money, taskFigs, actFigs),
                    lastGeminiModel);
   return '';
 }
@@ -8316,6 +8339,46 @@ async function reportTaskFigures(rows, windows, sum) {
   await readTaskPlans();
   var metas = metaByNode(metaAll().concat((rows || []).filter(function (r) { return r.type === META_TYPE; })));
   return taskFigures(rows, windows, sum, { nodes: currentNodes(), plans: taskPlans, metas: metas });
+}
+
+/** Stage 18b: the laptop's figures for a report's windows: time per project while
+ *  working, meetings, unplaced, distraction (activity.js actFigures). Null when
+ *  nothing was watched; a database without the tables is the same. Any other
+ *  failure stops the report, which is written once. */
+async function reportActivityFigures(rows, windows) {
+  var startMs = windows[0].startMs;
+  var endMs = windows[windows.length - 1].endMs;
+  var res = await sb.from('activity_blocks').select('id,started_at,ended_at,category,project')
+    .lt('started_at', new Date(endMs).toISOString()).gte('ended_at', new Date(startMs).toISOString())
+    .order('started_at', { ascending: true }).limit(5000);
+  if (res.error) {
+    if (/^(PGRST205|42P01)$/.test(String(res.error.code))) return null;      // the tables are not there yet
+    throw errorFrom(res.error);
+  }
+  if (!(res.data || []).length) return null;
+  var fixRes = await sb.from('events').select('at,type,detail,project,rid').eq('type', ACT_FIX_TYPE)
+    .gte('at', new Date(startMs).toISOString()).order('at', { ascending: true }).limit(5000);
+  if (fixRes.error) throw errorFrom(fixRes.error);
+  var blocks = actClip(res.data.map(function (r) {
+    return { id: r.id, start: Date.parse(r.started_at), end: Date.parse(r.ended_at), category: r.category, project: r.project || '' };
+  }), [[startMs, endMs]]);
+  var figs = actFigures(blocks, actFixMap(fixRes.data || []), actWalk(rows, startMs, endMs).work);
+  return { byProject: figs.byProject, workMs: figs.workMs, meetingMs: figs.meetingMs, unclearMs: figs.unclearMs,
+           distractMs: figs.distractMs, privateMs: figs.privateMs, blocks: figs.blocks };
+}
+
+/** "Laptop: ProBeing 3h 10m, OneNet 1h · meetings 40m · not placed 20m · distractions 25m"; '' when none. */
+function reportActivityLine(a) {
+  if (!a || typeof a !== 'object' || !a.blocks) return '';
+  var by = a.byProject && typeof a.byProject === 'object' ? a.byProject : {};
+  var names = Object.keys(by).filter(function (k) { return Number(by[k]) > 0; })
+    .sort(function (x, y) { return by[y] - by[x]; });
+  var bits = [names.length ? names.slice(0, 6).map(function (k) { return k + ' ' + reviewDuration(Number(by[k])); }).join(', ')
+                           : 'no project time'];
+  if (Number(a.meetingMs)) bits.push('meetings ' + reviewDuration(Number(a.meetingMs)));
+  if (Number(a.unclearMs)) bits.push('not placed ' + reviewDuration(Number(a.unclearMs)));
+  bits.push('distractions ' + reviewDuration(Number(a.distractMs || 0)));
+  return 'Laptop: ' + bits.join(' · ');
 }
 
 /* HOW MUCH OF THE DAY MUST BE LEFT before a report is written WITHOUT being
@@ -10412,6 +10475,7 @@ $('settingsBtn').addEventListener('click', function () {
   loadPrayerRemind();                // likewise
   loadTaskRemind();                  // likewise
   loadPlanPush();                    // likewise
+  loadWatch();                       // likewise (Stage 18b)
   dlg.showModal();
 });
 
@@ -14801,6 +14865,573 @@ $('planPushTime').addEventListener('change', async function () {
   at.disabled = false;
 });
 
+// ------------------------------------------------ laptop activity (Stage 18b)
+/* The laptop watcher (watcher/windows/). Settings pairs a laptop with a token
+ * shown once, keeping only its sha256 as the widget's pairing does, and edits
+ * the lists and keywords. The catch-up sheet shows the blocks since he last
+ * looked; every answer there is an events row through the outbox (rule 0). */
+
+var WATCH_TOKEN_LEN = 32;
+var CATCHUP_TYPES = { actfix: 1, actseen: 1, actanswer: 1 };   // answers, not entries
+var CATCHUP_MIN_MS = 15 * 60000;          // less unreviewed time than this is not worth the sheet
+var CATCHUP_BACK_MS = 18 * 3600000;       // the sheet never reaches further back
+var CATCHUP_LATER_MS = 30 * 60000;        // Later hides it this long
+var CATCHUP_EVERY_MS = 10 * 60000;        // looked for at most this often
+var CATCHUP_LATER_KEY = 'probeing.catchup.later';
+var CATCHUP_RULE_SOURCES = { hand: 1, fix: 1, gemini: 1 };
+
+/** A fresh watcher token: newPairCode's alphabet and its unbiased draw, twice as long. */
+function newWatchToken() {
+  var n = PAIR_CODE_CHARS.length;
+  var limit = 256 - (256 % n);
+  var out = '';
+  while (out.length < WATCH_TOKEN_LEN) {
+    var buf = new Uint8Array(WATCH_TOKEN_LEN);
+    crypto.getRandomValues(buf);
+    for (var i = 0; i < buf.length && out.length < WATCH_TOKEN_LEN; i++) {
+      if (buf[i] >= limit) continue;
+      out += PAIR_CODE_CHARS.charAt(buf[i] % n);
+    }
+  }
+  return out;
+}
+
+/** The one line he pastes into PowerShell; install.ps1 does the rest. */
+function watchInstallLine(url, key, token) {
+  return 'powershell -NoProfile -ExecutionPolicy Bypass -File "$env:USERPROFILE\\ProBeing-watcher\\install.ps1" ' +
+         '-Url "' + trimUrl(url) + '" -Key "' + String(key || '').trim() + '" -Token "' + pairCodeDisplay(token) + '"';
+}
+
+/** "9:40 am" by this device's clock. */
+function clockAt(ms) {
+  var d = new Date(ms);
+  var h = d.getHours();
+  var m = d.getMinutes();
+  return ((h % 12) || 12) + ':' + (m < 10 ? '0' : '') + m + (h < 12 ? ' am' : ' pm');
+}
+
+/** "3:10 – 4:05 pm" */
+function spanClock(a, b) {
+  var x = clockAt(a);
+  var y = clockAt(b);
+  if (x.slice(-2) === y.slice(-2)) x = x.slice(0, -3);
+  return x + ' – ' + y;
+}
+
+/** The readable stamp of a backdated row: its own instant, not the press. */
+function humanLocalAt(ms) {
+  try {
+    return new Date(ms).toLocaleString(undefined, { weekday: 'short', day: '2-digit', month: 'short',
+                                                    hour: '2-digit', minute: '2-digit' });
+  } catch (e) {
+    return '';
+  }
+}
+
+/** Lines of a textarea, tidied as the server tidies a list. */
+function watchListOf(text) {
+  return actTidyList(String(text || '').split(/\r?\n/));
+}
+
+/** "keyword = Project" lines -> {ok: [{keyword, project}], bad: [line]}. */
+function parseWatchRules(text) {
+  var ok = [];
+  var bad = [];
+  var seen = userMap();
+  String(text || '').split(/\r?\n/).forEach(function (line) {
+    var t = line.trim();
+    if (!t) return;
+    var at = t.indexOf('=');
+    var k = at === -1 ? '' : actNorm(t.slice(0, at));
+    var p = at === -1 ? '' : t.slice(at + 1).trim();
+    if (k.length < ACT_KEY_MIN || k.length > ACT_KEY_MAX || !p || Array.from(p).length > ACT_PROJECT_MAX || seen[k]) {
+      bad.push(t);
+      return;
+    }
+    seen[k] = 1;
+    ok.push({ keyword: k, project: p });
+  });
+  return { ok: ok, bad: bad };
+}
+
+/** What Save must do to the rules table: [{op: 'insert'|'update'|'delete', ...}]. */
+function watchRuleChanges(had, want) {
+  var have = userMap();
+  (had || []).forEach(function (r) { have[r.keyword] = r; });
+  var keep = userMap();
+  var out = [];
+  want.forEach(function (r) {
+    keep[r.keyword] = 1;
+    var h = have[r.keyword];
+    if (!h) out.push({ op: 'insert', keyword: r.keyword, project: r.project });
+    else if (h.project !== r.project) out.push({ op: 'update', keyword: r.keyword, project: r.project });
+  });
+  (had || []).forEach(function (r) { if (!keep[r.keyword]) out.push({ op: 'delete', keyword: r.keyword }); });
+  return out;
+}
+
+var watchRules = [];                      // the rules as Settings last read them
+
+function renderWatchDevices(rows) {
+  var box = $('watchList');
+  box.textContent = '';
+  if (!rows || !rows.length) {
+    var none = document.createElement('p');
+    none.className = 'hint';
+    none.textContent = 'No laptop is paired yet.';
+    box.appendChild(none);
+    return;
+  }
+  rows.forEach(function (r) {
+    var row = document.createElement('div');
+    row.className = 'cat-row';
+    var name = document.createElement('span');
+    name.className = 'cat-name';
+    name.textContent = (r.label || 'Laptop') + ' · ' + (r.last_seen_at
+      ? 'last sent ' + humanYmd(ymdLocal(new Date(r.last_seen_at))) + ', ' + clockAt(Date.parse(r.last_seen_at))
+      : 'nothing sent yet');
+    var kill = document.createElement('button');
+    kill.type = 'button';
+    kill.className = 'link-btn';
+    kill.textContent = 'Revoke';
+    kill.addEventListener('click', function () { revokeWatch(r.id); });
+    row.append(name, kill);
+    box.appendChild(row);
+  });
+}
+
+/** Settings: paired laptops, the switch, the lists and the keywords. */
+async function loadWatch() {
+  var out = $('watchResult');
+  $('watchPairBox').hidden = true;
+  $('watchPairLine').value = '';
+  out.textContent = '';
+  if (!supabaseReady()) { renderWatchDevices([]); out.textContent = 'Sign in to pair a laptop.'; return; }
+  try {
+    // Never the fingerprint: the browser is not even allowed to read it.
+    var devs = await sb.from('watch_devices').select('id,label,kind,created_at,last_seen_at')
+      .order('created_at', { ascending: false });
+    if (devs.error) throw errorFrom(devs.error);
+    renderWatchDevices(devs.data || []);
+    var set = await sb.from('user_settings').select('activity_lists,activity_nudge').eq('user_id', sbUser.id).limit(1);
+    if (set.error) throw errorFrom(set.error);
+    var row = (set.data || [])[0] || null;
+    var lists = actLists(row && row.activity_lists);
+    $('watchDistract').value = lists.distract.join('\n');
+    $('watchMeeting').value = lists.meeting.join('\n');
+    $('watchPrivate').value = lists['private'].join('\n');
+    $('watchNudgeOn').checked = !(row && row.activity_nudge === false);
+    $('watchNudgeOn').disabled = false;
+    var rules = await sb.from('activity_rules').select('keyword,project,source').order('keyword').limit(500);
+    if (rules.error) throw errorFrom(rules.error);
+    watchRules = (rules.data || []).filter(function (r) { return CATCHUP_RULE_SOURCES[r.source] === 1; });
+    $('watchRules').value = watchRules.map(function (r) { return r.keyword + ' = ' + r.project; }).join('\n');
+  } catch (e) {
+    out.textContent = 'Could not read the laptop settings: ' + ((e && e.message) || e);
+  }
+}
+
+async function revokeWatch(id) {
+  var out = $('watchResult');
+  out.textContent = 'Revoking…';
+  try {
+    var res = await sb.from('watch_devices').delete().eq('id', id);
+    if (res.error) throw errorFrom(res.error);
+    $('watchPairBox').hidden = true;
+    $('watchPairLine').value = '';
+    out.textContent = 'Revoked. That laptop can send nothing now; what it sent stays for your reports.';
+    await loadWatch();
+    out.textContent = 'Revoked. That laptop can send nothing now; what it sent stays for your reports.';
+  } catch (e) {
+    out.textContent = '❌ ' + ((e && e.message) || e);
+  }
+}
+
+/* The fingerprint is stored first; the line is shown only once the table has it. */
+$('watchPairBtn').addEventListener('click', async function () {
+  var out = $('watchResult');
+  $('watchPairBox').hidden = true;
+  if (!supabaseReady()) { out.textContent = 'Sign in first.'; return; }
+  if (!pairingSupported()) { out.textContent = 'This browser cannot make a token here. Open ProBeing over https and try again.'; return; }
+  out.textContent = 'Making a token…';
+  try {
+    var token = newWatchToken();
+    var res = await sb.from('watch_devices').insert({ user_id: sbUser.id, secret_sha256: await pairCodeHash(token),
+                                                      label: 'Laptop · ' + humanLocal(), kind: 'laptop' });
+    if (res.error) throw errorFrom(res.error);
+    $('watchPairLine').value = watchInstallLine(cfg.supaUrl, cfg.supaKey, token);     // shown, never logged
+    $('watchPairBox').hidden = false;
+    out.textContent = 'Paste this line into PowerShell on the laptop (watcher/windows/README.md has the steps). ' +
+      'It is shown only now: ProBeing keeps a fingerprint, not the token.';
+    await loadWatch();
+    $('watchPairBox').hidden = false;
+    $('watchPairLine').value = watchInstallLine(cfg.supaUrl, cfg.supaKey, token);
+  } catch (e) {
+    out.textContent = '❌ ' + ((e && e.message) || e);
+  }
+});
+
+$('watchCopyBtn').addEventListener('click', function () {
+  var line = $('watchPairLine').value;
+  if (!line) return;
+  var done = function () { $('watchResult').textContent = 'Copied. Paste it into PowerShell on the laptop.'; };
+  if (navigator.clipboard && typeof navigator.clipboard.writeText === 'function') {
+    navigator.clipboard.writeText(line).then(done, function () { $('watchPairLine').select(); });
+  } else {
+    $('watchPairLine').select();
+  }
+});
+
+$('watchNudgeOn').addEventListener('change', async function () {
+  var box = this;
+  var want = box.checked;
+  var out = $('watchNudgeResult');
+  box.disabled = true;
+  out.textContent = 'Saving…';
+  try {
+    if (!supabaseReady()) throw new Error('Sign in first.');
+    var res = await sb.from('user_settings').upsert({ user_id: sbUser.id, activity_nudge: want }, { onConflict: 'user_id' });
+    if (res.error) throw errorFrom(res.error);
+    out.textContent = want ? 'On, for every device.' : 'Off: no distraction push and no auto break.';
+  } catch (e) {
+    box.checked = !want;
+    out.textContent = 'Not saved: ' + ((e && e.message) || e);
+  }
+  box.disabled = false;
+});
+
+$('watchListsSave').addEventListener('click', async function () {
+  var out = $('watchListsResult');
+  var parsed = parseWatchRules($('watchRules').value);
+  if (parsed.bad.length) {
+    out.textContent = 'Not saved. Write each keyword as "keyword = Project" (4 to 40 letters or digits): ' + parsed.bad.join('; ');
+    return;
+  }
+  out.textContent = 'Saving…';
+  try {
+    if (!supabaseReady()) throw new Error('Sign in first.');
+    var lists = { distract: watchListOf($('watchDistract').value), meeting: watchListOf($('watchMeeting').value),
+                  'private': watchListOf($('watchPrivate').value) };
+    var res = await sb.from('user_settings').upsert({ user_id: sbUser.id, activity_lists: lists }, { onConflict: 'user_id' });
+    if (res.error) throw errorFrom(res.error);
+    // Insert, update and delete, never upsert: the browser may not write a rule's keyword in place.
+    var changes = watchRuleChanges(watchRules, parsed.ok);
+    for (var i = 0; i < changes.length; i++) {
+      var c = changes[i];
+      var r = c.op === 'insert'
+        ? await sb.from('activity_rules').insert({ user_id: sbUser.id, keyword: c.keyword, project: c.project, source: 'hand' })
+        : c.op === 'update'
+          ? await sb.from('activity_rules').update({ project: c.project, source: 'hand', updated_at: new Date().toISOString() })
+            .eq('keyword', c.keyword)
+          : await sb.from('activity_rules').delete().eq('keyword', c.keyword);
+      if (r.error) throw errorFrom(r.error);
+    }
+    await loadWatch();
+    out.textContent = 'Saved, for every device. The laptop uses them from its next run.';
+  } catch (e) {
+    out.textContent = 'Not saved: ' + ((e && e.message) || e);
+  }
+});
+
+/* ── The catch-up sheet ────────────────────────────────────────────────────
+ * Non-modal on purpose: M and Prayer stay one tap away underneath it (rule 4). */
+
+var catchupDlg = $('catchupDlg');
+var catchup = null;                       // {since, until, blocks, fixes, groups, asks, edits, projects}
+var catchupLookedAt = 0;
+var catchupBusy = false;
+var catchupOff = false;                   // the tables are not there: stop asking this visit
+var catchupOnOpen = true;                 // the first read of this visit looks for the sheet
+
+function catchupLaterUntil() {
+  try { return Number(localStorage.getItem(CATCHUP_LATER_KEY)) || 0; } catch (e) { return 0; }
+}
+
+/** Rows this device still holds, of the given types, as rows. */
+function catchupHeld(types) {
+  return outboxMine().map(queuedRow).filter(function (r) { return r && types[r.type] === 1; });
+}
+
+/** Unanswered pushes and questions, and auto breaks since he last looked (Looks right
+ *  accepts one). `rids`: rids that exist; `since`: when he last confirmed. */
+function catchupAsks(nudges, rids, since) {
+  var out = [];
+  (nudges || []).forEach(function (n) {
+    var id = n.id;
+    if (n.state === 'sent' && !rids['an-' + id] && !rids['ab-' + id]) out.push({ kind: 'sent', n: n });
+    else if (n.state === 'question' && !rids['aq-' + id] && !rids['qb-' + id]) out.push({ kind: 'question', n: n });
+    else if (n.state === 'autobreak' && !rids['aw-' + id] && Date.parse(n.streak_start) >= since) out.push({ kind: 'autobreak', n: n });
+  });
+  return out;
+}
+
+/** Everything the sheet needs, read fresh (rule 3). null when there is nothing to show. */
+async function readCatchUp() {
+  var now = Date.now();
+  var seenRes = await sb.from('events').select('detail,at').eq('type', 'actseen').order('at', { ascending: false }).limit(1);
+  if (seenRes.error) throw errorFrom(seenRes.error);
+  var seen = (seenRes.data || []).concat(catchupHeld({ actseen: 1 })).map(function (r) { return instantOf(r.detail); })
+    .filter(function (t) { return isFinite(t); });
+  var since = Math.max(now - CATCHUP_BACK_MS, seen.length ? Math.max.apply(null, seen) : -Infinity);
+  var res = await sb.from('activity_blocks').select('id,device_id,started_at,ended_at,app,domain,category,project,rule_key')
+    .gte('ended_at', new Date(since).toISOString()).order('started_at', { ascending: true }).limit(1000);
+  if (res.error) throw errorFrom(res.error);
+  var blocks = (res.data || []).map(function (r) {
+    return { id: r.id, start: Math.max(Date.parse(r.started_at), since), end: Date.parse(r.ended_at), app: r.app || '',
+             domain: r.domain || '', category: r.category, project: r.project || '', rule_key: r.rule_key || '' };
+  }).filter(function (b) { return b.end > b.start; });
+  var fixRes = await sb.from('events').select('at,type,detail,project,rid').eq('type', 'actfix')
+    .gte('at', new Date(since - 86400000).toISOString()).order('at', { ascending: true }).limit(1000);
+  if (fixRes.error) throw errorFrom(fixRes.error);
+  var fixes = actFixMap((fixRes.data || []).concat(catchupHeld({ actfix: 1 })));
+  var nRes = await sb.from('activity_nudges').select('id,streak_start,what,pushed_at,state,span_end,other_work')
+    .in('state', ['sent', 'question', 'autobreak']).gte('streak_start', new Date(now - CATCHUP_BACK_MS).toISOString())
+    .order('streak_start', { ascending: true }).limit(50);
+  if (nRes.error) throw errorFrom(nRes.error);
+  var nudges = nRes.data || [];
+  var rids = userMap();
+  if (nudges.length) {
+    var want = [];
+    nudges.forEach(function (n) { ['an-', 'ab-', 'aq-', 'qb-', 'aw-'].forEach(function (p) { want.push(p + n.id); }); });
+    var rr = await sb.from('events').select('rid').in('rid', want).limit(500);
+    if (rr.error) throw errorFrom(rr.error);
+    (rr.data || []).forEach(function (r) { rids[r.rid] = 1; });
+    outboxMine().forEach(function (it) { if (it.rid) rids[it.rid] = 1; });
+  }
+  var asks = catchupAsks(nudges, rids, since);
+  var groups = actGroups(blocks, fixes);
+  var total = groups.reduce(function (n, g) { return n + g.ms; }, 0);
+  if (!asks.length && total < CATCHUP_MIN_MS) return null;
+  var until = blocks.reduce(function (m, b) { return Math.max(m, b.end); }, since);
+  return { since: since, until: until, blocks: blocks, fixes: fixes, groups: groups, asks: asks, edits: [] };
+}
+
+/** On opening the app (and coming back to it): the sheet, when there is something to confirm. */
+async function maybeCatchUp(force) {
+  if (catchupOff || catchupBusy || !supabaseReady() || (catchupDlg && catchupDlg.open)) return;
+  var now = Date.now();
+  if (!force && (now - catchupLookedAt < CATCHUP_EVERY_MS || now < catchupLaterUntil())) return;
+  catchupBusy = true;
+  catchupLookedAt = now;
+  try {
+    var got = await readCatchUp();
+    if (!got) return;
+    catchup = got;
+    renderCatchUp();
+    if (typeof catchupDlg.show === 'function') catchupDlg.show(); else catchupDlg.setAttribute('open', '');
+  } catch (e) {
+    // No tables yet (the schema is not run): a missing feature, not an error to show.
+    if (/PGRST205|activity_|does not exist/i.test(String((e && e.message) || e))) catchupOff = true;
+  } finally {
+    catchupBusy = false;
+  }
+}
+
+/** Projects to choose from: his Google projects, keyword targets, and what the blocks name. */
+function catchupProjects(groups) {
+  var out = [];
+  var seen = userMap();
+  function add(p) {
+    var t = String(p || '').trim();
+    if (t && !seen[t.toLowerCase()]) { seen[t.toLowerCase()] = 1; out.push(t); }
+  }
+  currentNodes().forEach(function (n) { if (n.kind === 'project' && !n.gone_at && n.g_status !== 'completed') add(n.title); });
+  watchRules.forEach(function (r) { add(r.project); });
+  (groups || []).forEach(function (g) { add(g.project); });
+  knownNames().forEach(add);
+  return out;
+}
+
+function catchupLabel(g) {
+  var mins = humanDuration(g.ms);
+  if (g.category === 'distraction') return 'Distraction: ' + (g.domains.concat(g.apps)[0] || 'unknown') + ' · ' + mins;
+  if (g.category === 'private') return 'Private · ' + mins;
+  if (g.category === 'meeting') return 'Meeting' + (g.project ? ' · ' + g.project : '') + ' · ' + mins;
+  if (g.category === 'unclear') return 'Not placed · ' + mins;
+  return (g.project || 'Work') + ' · ' + mins;
+}
+
+function catchupAskRow(a) {
+  var li = document.createElement('li');
+  li.className = 'catchup-ask';
+  var text = document.createElement('p');
+  var n = a.n;
+  var start = Date.parse(n.streak_start);
+  var acts = document.createElement('div');
+  acts.className = 'dlg-actions';
+  function btn(label, choice) {
+    var b = document.createElement('button');
+    b.type = 'button';
+    b.className = 'btn';
+    b.textContent = label;
+    b.addEventListener('click', function () { answerCatchUp(a, choice, li); });
+    acts.appendChild(b);
+  }
+  if (a.kind === 'sent') {
+    text.textContent = 'You\'ve been on ' + (n.what || 'a distraction') + ' since ' + clockAt(start) + '.';
+    btn('Take a break', 'break');
+    btn('I\'m working', 'working');
+  } else if (a.kind === 'question') {
+    text.textContent = spanClock(start, Date.parse(n.span_end)) + ' ' + (n.what || 'a distraction') +
+      (n.other_work ? ', while another device showed ' + n.other_work : '') + ': were you working?';
+    btn('Yes, working', 'working');
+    btn('It was a break', 'break');
+  } else {
+    text.textContent = 'A break started at ' + clockAt(start) + ' (' + (n.what || 'a distraction') + ', no answer to the push).';
+    btn('I was working', 'working');
+  }
+  li.append(text, acts);
+  return li;
+}
+
+function catchupGroupRow(g, i, projects) {
+  var li = document.createElement('li');
+  li.className = 'catchup-row';
+  var head = document.createElement('p');
+  var when = document.createElement('span');
+  when.className = 'catchup-when';
+  when.textContent = spanClock(g.start, g.end);
+  var what = document.createElement('span');
+  what.className = 'catchup-what';
+  what.textContent = catchupLabel(g);
+  head.append(when, ' ', what);
+  li.appendChild(head);
+  var where = g.apps.concat(g.domains).join(', ');
+  if (where && g.category !== 'private') {
+    var sub = document.createElement('p');
+    sub.className = 'hint';
+    sub.textContent = where;
+    li.appendChild(sub);
+  }
+  var acts = document.createElement('div');
+  acts.className = 'catchup-acts';
+  if (g.category === 'work' || g.category === 'meeting' || g.category === 'unclear') {
+    var sel = document.createElement('select');
+    sel.className = 'cat-pick';
+    sel.setAttribute('aria-label', 'Project for ' + spanClock(g.start, g.end));
+    var none = document.createElement('option');
+    none.value = '';
+    none.textContent = '— no project —';
+    sel.appendChild(none);
+    projects.forEach(function (p) {
+      var o = document.createElement('option');
+      o.value = p;
+      o.textContent = p;
+      sel.appendChild(o);
+    });
+    sel.value = g.project;
+    sel.addEventListener('change', function () {
+      catchup.edits[i] = Object.assign({}, catchup.edits[i], { project: sel.value });
+    });
+    acts.appendChild(sel);
+  }
+  if (g.category !== 'private') {
+    var brk = document.createElement('button');
+    brk.type = 'button';
+    brk.className = 'link-btn';
+    brk.textContent = 'It was a break';
+    brk.setAttribute('aria-pressed', 'false');
+    brk.addEventListener('click', function () {
+      var on = !(catchup.edits[i] && catchup.edits[i].brk);
+      catchup.edits[i] = Object.assign({}, catchup.edits[i], { brk: on });
+      brk.setAttribute('aria-pressed', String(on));
+      brk.textContent = on ? 'Break ✓' : 'It was a break';
+      li.classList.toggle('catchup-break', on);
+    });
+    acts.appendChild(brk);
+  }
+  if (acts.children.length) li.appendChild(acts);
+  return li;
+}
+
+function renderCatchUp() {
+  var c = catchup;
+  $('catchupTitle').textContent = 'From ' + clockAt(c.since) + ' to ' + clockAt(c.until) + ' you were doing:';
+  var asks = $('catchupAsks');
+  asks.textContent = '';
+  c.asks.forEach(function (a) { asks.appendChild(catchupAskRow(a)); });
+  asks.hidden = !c.asks.length;
+  var list = $('catchupList');
+  list.textContent = '';
+  var projects = catchupProjects(c.groups);
+  c.groups.forEach(function (g, i) { list.appendChild(catchupGroupRow(g, i, projects)); });
+  $('catchupNote').textContent = c.groups.length ? '' : 'Nothing new from the laptop.';
+}
+
+/** A push or question answered from the sheet: written now, through the outbox. */
+function answerCatchUp(a, choice, li) {
+  var n = a.n;
+  var id = n.id;
+  var start = Date.parse(n.streak_start);
+  var steps = [];
+  if (a.kind === 'sent') {
+    steps = choice === 'break'
+      ? [{ type: 'break', raw_text: 'Distraction', at: new Date(start).toISOString(), local_time: humanLocalAt(start), rid: 'ab-' + id }]
+      : [{ type: 'actanswer', raw_text: 'Working — answered the distraction check', detail: 'working', rid: 'an-' + id }];
+  } else if (a.kind === 'question') {
+    var end = Date.parse(n.span_end);
+    steps = choice === 'break'
+      ? [{ type: 'break', raw_text: 'Break (checked later)', at: new Date(start).toISOString(), local_time: humanLocalAt(start), rid: 'qb-' + id },
+         { type: 'resume', raw_text: 'Resume (checked later)', at: new Date(end).toISOString(), local_time: humanLocalAt(end), rid: 'qr-' + id }]
+      : [{ type: 'actanswer', raw_text: 'Working — answered "were you working?"', detail: 'working', rid: 'aq-' + id }];
+  } else {
+    steps = [{ type: 'resume', raw_text: 'Resume (I was working)', at: new Date(start + 1000).toISOString(),
+               local_time: humanLocalAt(start + 1000), rid: 'aw-' + id }];
+  }
+  catchup.asks = catchup.asks.filter(function (x) { return x !== a; });
+  li.textContent = choice === 'break' ? 'Noted: a break.' : 'Noted: working.';
+  runWrites(steps).then(function () { scheduleRefresh(800); });
+}
+
+/** Looks right: the edits as rows (a correction, a break), then "seen up to here". */
+function confirmCatchUp() {
+  var c = catchup;
+  if (!c) return;
+  var steps = [];
+  var learn = [];
+  c.groups.forEach(function (g, i) {
+    var e = c.edits[i];
+    if (!e) return;
+    if (e.project !== undefined && e.project !== g.project) {
+      steps.push({ type: ACT_FIX_TYPE, raw_text: 'Activity ' + spanClock(g.start, g.end) + ' → ' + (e.project || 'no project'),
+                   project: e.project, detail: g.ids.join(',') });
+      if (e.project) {
+        c.blocks.forEach(function (b) {
+          if (g.ids.indexOf(b.id) !== -1 && b.rule_key) learn.push({ keyword: b.rule_key, project: e.project });
+        });
+      }
+    }
+    if (e.brk && g.ids.length) {
+      steps.push({ type: 'break', raw_text: 'Break (checked later)', at: new Date(g.start).toISOString(),
+                   local_time: humanLocalAt(g.start), rid: 'kb-' + g.ids[0] });
+      steps.push({ type: 'resume', raw_text: 'Resume (checked later)', at: new Date(g.end).toISOString(),
+                   local_time: humanLocalAt(g.end), rid: 'kr-' + g.ids[0] });
+    }
+  });
+  steps.push({ type: ACT_SEEN_TYPE, raw_text: 'Laptop activity checked up to ' + clockAt(c.until),
+               detail: new Date(c.until).toISOString(), rid: 'as-' + c.until });
+  closeCatchUp();
+  runWrites(steps).then(function () { scheduleRefresh(800); });
+  // A keyword that placed a block he corrected now points where he said (a setting, not a press).
+  if (supabaseReady()) {
+    learn.forEach(function (r) {
+      sb.from('activity_rules').update({ project: r.project, source: 'fix', updated_at: new Date().toISOString() })
+        .eq('keyword', r.keyword).then(function () {}, function () {});
+    });
+  }
+}
+
+function closeCatchUp() {
+  if (catchupDlg.open) catchupDlg.close();
+  catchup = null;
+}
+
+$('catchupOkBtn').addEventListener('click', confirmCatchUp);
+$('catchupLaterBtn').addEventListener('click', function () {
+  try { localStorage.setItem(CATCHUP_LATER_KEY, String(Date.now() + CATCHUP_LATER_MS)); } catch (e) { /* full disk */ }
+  closeCatchUp();
+});
+
 // -------------------------------------------------------------------- boot
 
 if ('serviceWorker' in navigator) {
@@ -14810,6 +15441,7 @@ if ('serviceWorker' in navigator) {
   // A tapped prayer reminder (sw.js) brings the app forward on Home; a deadline one on Tasks.
   navigator.serviceWorker.addEventListener('message', function (e) {
     if (e.data && (e.data.goto === 'home' || e.data.goto === 'tasks')) showScreen(e.data.goto);
+    if (e.data && e.data.catchup) maybeCatchUp(true);     // a distraction push was tapped
   });
 }
 
@@ -14849,6 +15481,7 @@ document.addEventListener('visibilitychange', function () {
   // Coming back to the app is the commonest moment for the network to be back.
   retrySession();
   drainOutbox('visible');
+  maybeCatchUp();                    // Stage 18b: coming back is opening it
   var now = Date.now();
   if (now - lastVisibleRefresh < VISIBILITY_THROTTLE_MS) return;
   lastVisibleRefresh = now;

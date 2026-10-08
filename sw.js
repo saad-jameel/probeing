@@ -53,14 +53,16 @@
  * v27 (item 19): the buying list on the Money screen.
  * v28 (item 20): the buying list redone: Add on top, the list in its own panel, Move.
  * v29 (item 21): Bought asks for the exact amount and an optional comment.
- * v30 (Stage 18a): several tasks at once with a pin, Upcoming = the plan plus Backlog, priority and effort on Start. */
-var CACHE = 'probeing-shell-v30';
+ * v30 (Stage 18a): several tasks at once with a pin, Upcoming = the plan plus Backlog, priority and effort on Start.
+ * v31 (Stage 18b): activity.js, the laptop's catch-up sheet, and the distraction push with its two buttons. */
+var CACHE = 'probeing-shell-v31';
 var SHELL = [
   './',
   'index.html',
   'styles.css',
   'supabase/functions/_shared/day.js',
   'supabase/functions/_shared/tree.js',
+  'supabase/functions/_shared/activity.js',
   'app.js',
   'vendor/supabase.js',
   'manifest.webmanifest',
@@ -139,6 +141,8 @@ var PRAYER_TAG = /^probeing-prayer-[A-Za-z]+$/;
 // Deadline reminders (prayer-remind's task part): one line per task.
 var TASK_TAG = /^probeing-task-[A-Za-z0-9-]{1,64}$/;
 var PLAN_TAG = 'probeing-plan';
+// Stage 18b: the distraction push (activity-ingest), and its quiet "answered" replacement.
+var DISTRACT_TAG = 'probeing-distract';
 
 self.addEventListener('push', function (event) {
   var data = pushData(event);
@@ -166,6 +170,27 @@ self.addEventListener('push', function (event) {
       renotify: !logged,
       silent: logged
     }));
+    return;
+  }
+
+  /* Stage 18b. Take a break / I'm working answer it with the push's nonce, as
+   * the bedtime check's Yes does; ignored, the server writes the break. */
+  if (data.kind === 'distract' || data.kind === 'distract-answered') {
+    var settled = data.kind === 'distract-answered';
+    var opts = {
+      body: String(data.body || ''),
+      icon: 'icons/icon-192.png',
+      badge: 'icons/favicon-32.png',
+      tag: DISTRACT_TAG,
+      renotify: !settled,
+      silent: settled,
+      requireInteraction: !settled,
+      data: { nudge: data.nudge || '', nonce: data.nonce || '', url: data.url || '', key: data.key || '' }
+    };
+    if (!settled && data.nudge && data.nonce && data.url) {
+      opts.actions = [{ action: 'break', title: 'Take a break' }, { action: 'working', title: 'I\'m working' }];
+    }
+    event.waitUntil(self.registration.showNotification(String(data.title || 'ProBeing'), opts));
     return;
   }
 
@@ -262,6 +287,26 @@ function answerCheck(data) {
     });
 }
 
+/** Post a distraction push's answer with its nonce. The parsed reply, or null. */
+function answerDistract(data, choice) {
+  if (!data || !data.url || !data.nudge || !data.nonce) return Promise.resolve(null);
+  return self.registration.pushManager.getSubscription()
+    .catch(function () { return null; })
+    .then(function (sub) {
+      return fetch(data.url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + data.key, 'apikey': data.key },
+        body: JSON.stringify({ answer: { id: data.nudge, nonce: data.nonce, choice: choice,
+                                         from: (sub && sub.endpoint) || '' } })
+      });
+    }).then(function (res) {
+      if (!res.ok) return null;
+      return res.json().catch(function () { return null; });
+    }).catch(function () {
+      return null;
+    });
+}
+
 // ------------------------------------------------------------- the glance
 /* Stage 7b. The app itself posts and rewrites this notification while it is open
  * (paintGlance in app.js), so nothing in this file creates it; this only answers
@@ -306,6 +351,27 @@ self.addEventListener('notificationclick', function (event) {
     event.notification.close();
     event.waitUntil(showApp().then(function (client) {
       if (client && typeof client.postMessage === 'function') client.postMessage({ goto: 'home' });
+    }));
+    return;
+  }
+
+  // A distraction push: a button answers it from here; the body opens the catch-up sheet.
+  if (event.notification && event.notification.tag === DISTRACT_TAG) {
+    var nd = event.notification.data || {};
+    var choice = event.action === 'break' || event.action === 'working' ? event.action : '';
+    event.notification.close();
+    if (!choice) {
+      event.waitUntil(showApp().then(function (client) {
+        if (client && typeof client.postMessage === 'function') client.postMessage({ goto: 'home', catchup: true });
+      }));
+      return;
+    }
+    event.waitUntil(answerDistract(nd, choice).then(function (reply) {
+      if (reply && reply.ok) return;
+      return self.registration.showNotification('ProBeing', {
+        body: 'Could not record your answer. Open ProBeing to answer it there.',
+        icon: 'icons/icon-192.png', badge: 'icons/favicon-32.png', tag: DISTRACT_TAG
+      });
     }));
     return;
   }

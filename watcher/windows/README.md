@@ -53,8 +53,8 @@ You need ActivityWatch running (the icon near the clock).
 ## If something looks wrong
 
 ```powershell
-& "$env:USERPROFILE\ProBeing-watcher\watch.ps1" -Check      # what it would send now; sends nothing
-& "$env:USERPROFILE\ProBeing-watcher\watch.ps1" -SelfTest   # the built-in checks
+powershell -NoProfile -ExecutionPolicy Bypass -File "$env:USERPROFILE\ProBeing-watcher\watch.ps1" -Check      # what it would send now; sends nothing
+powershell -NoProfile -ExecutionPolicy Bypass -File "$env:USERPROFILE\ProBeing-watcher\watch.ps1" -SelfTest   # the built-in checks
 Get-Content "$env:LOCALAPPDATA\ProBeing\watcher.log" -Tail 20
 ```
 
@@ -63,7 +63,7 @@ The log has times and counts only, never titles or sites.
 ## Stop it
 
 ```powershell
-& "$env:USERPROFILE\ProBeing-watcher\uninstall.ps1"
+powershell -NoProfile -ExecutionPolicy Bypass -File "$env:USERPROFILE\ProBeing-watcher\uninstall.ps1"
 ```
 
 Then Settings → Laptop activity → **Revoke** that laptop, so its token is dead.
