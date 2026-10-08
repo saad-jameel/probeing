@@ -592,9 +592,16 @@ body {
 .loan-people .chip { max-width: 100%; text-align: left; }
 .settle-warn { color: var(--fg); }
 /* Item 19: the buying list. Rule 6: .buy-add sets `display`, so it has its pair. */
-.buy-add { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-top: 8px; }
+.buy-add { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.4fr) auto; gap: 8px; margin-top: 8px; }
 .buy-add[hidden] { display: none; }
-#buyFilter { margin-top: 8px; }
+/* Item 20: the list sits in its own panel, apart from the Add row. */
+.buy-panel { margin-top: 14px; padding: 10px; background: var(--panel-2); border: 1px solid var(--line); border-radius: var(--radius); }
+.buy-item { flex-wrap: wrap; }
+.buy-item .due-line { flex-basis: 100%; }
+.buy-acts { display: flex; gap: 8px; flex-wrap: wrap; }
+.buy-acts[hidden] { display: none; }
+#buyMoveMonth { margin-top: 6px; }
+#buyEarlyText, #buyMoveTitle { overflow-wrap: anywhere; }
 #boughtTags { margin-top: 8px; }
 /* Money on the Review card. No `display` here, so no Rule 6 pair. */
 .review-money { margin-top: 12px; }

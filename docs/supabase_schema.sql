@@ -1393,6 +1393,8 @@ alter table public.entry_filing add column if not exists new_more jsonb;
 -- correction is: note 'Bought' or 'Removed'. Bought also writes an ordinary
 -- cash expense, rid 'bb-' + the thing's rid. A 'buy' row never counts in
 -- spent, got or the wallet; the app before this skips it (its dir is not in/out).
+-- Item 20 (no schema change): Move is a void with note 'Moved' (rid 'bm-' + the
+-- thing's rid) plus the same thing in its new month (rid 'mv-' + the thing's rid).
 -- Run this section on its own; the whole file re-run afterwards is safe too.
 alter table public.money add column if not exists buy_month text;
 alter table public.money drop constraint if exists money_kind_check;

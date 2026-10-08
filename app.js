@@ -599,14 +599,26 @@ async function callSupabase(action, payload) {
    * Item 19: a thing on the buying list ('buy'), the same. */
   if (moneyItem({ action: action })) {
     // Item 19: Bought's void waits for its expense, and goes nowhere if that was refused.
+    // Item 20: a moved thing waits for its void the same way.
     if (payload.after) {
+      var first = payload.moved_from ? 'move off its old month' : 'expense';
       if (parkedAll().some(function (x) { return x && x.rid === payload.after; })) {
-        var noExpense = new Error('its expense was refused');
+        var noExpense = new Error('its ' + first + ' was refused');
         noExpense.fatal = true;
         throw noExpense;
       }
       if (outboxAll().some(function (x) { return x.rid === payload.after; })) {
-        throw new Error('Waiting for its expense to be sent.');
+        throw new Error('Waiting for its ' + first + ' to be sent.');
+      }
+    }
+    // Only one void per thing gets in: if Bought or Remove on another device
+    // took it off first, the move is over and the new month's row is not written.
+    if (payload.moved_from) {
+      var offRow = await sb.from('money').select('rid').eq('voids_rid', String(payload.moved_from)).limit(1);
+      if (offRow.error) throw errorFrom(offRow.error);
+      if (offRow.data && offRow.data.length && offRow.data[0].rid !== payload.after) {
+        moneyLocal = moneyLocal.filter(function (r) { return r.rid !== payload.rid; });
+        return { ok: true, skipped: true };
       }
     }
     // Checked again here: a held item is sent exactly as it was stored.
@@ -6232,8 +6244,9 @@ function perDayTillFirst(left, today) {
  * name in tag, its month in buy_month); it is off the list once a void names it.
  * It never counts in spent, got or the wallet: only Bought's own expense does. */
 var BUY_MONTH_RE = /^\d{4}-(0[1-9]|1[0-2])$/;
-var BUY_RID = { bought: 'bb-', boughtOff: 'bv-', removed: 'br-' };   // + the thing's rid
-var BUY_NOTE = { bought: 'Bought', removed: 'Removed' };            // on the void row
+var BUY_RID = { bought: 'bb-', boughtOff: 'bv-', removed: 'br-',    // + the thing's rid
+                movedOff: 'bm-', moved: 'mv-' };
+var BUY_NOTE = { bought: 'Bought', removed: 'Removed', moved: 'Moved' };   // on the void row
 
 /** Open things, oldest first: {rid, name, amount (rupees), month, at, queued}. Pure. */
 function buyOpen(rows) {
@@ -6244,7 +6257,7 @@ function buyOpen(rows) {
            BUY_MONTH_RE.test(String(r.buy_month || '')) && moneyPaisa(r.amount) > 0;
   }).map(function (r) {
     return { rid: r.rid, name: String(r.tag || ''), amount: moneyPaisa(r.amount) / 100,
-             month: r.buy_month, at: r.at, queued: Boolean(r.queued) };
+             month: r.buy_month, at: r.at, local: String(r.local_time || ''), queued: Boolean(r.queued) };
   }).sort(function (a, b) { return (instantOf(a.at) || 0) - (instantOf(b.at) || 0); });
 }
 
@@ -6264,13 +6277,48 @@ function monthAdd(ym, n) {
   return Math.floor(i / 12) + '-' + String(i % 12 + 1).padStart(2, '0');
 }
 
-/** The month the Money screen's line shows: `chosen` while it has open things,
- *  else the first month from `todayYm` on that has any; '' when none. */
-function buyLineMonth(open, chosen, todayYm) {
-  var has = userMap();
-  (open || []).forEach(function (t) { has[t.month] = 1; });
-  if (chosen && has[chosen] === 1) return chosen;
-  return Object.keys(has).filter(function (m) { return m >= todayYm; }).sort()[0] || '';
+/** The month the Money screen's line shows: always this month (Saad, item 20),
+ *  even at PKR 0; '' only when nothing at all is on the list. */
+function buyLineMonth(open, todayYm) {
+  return (open || []).length ? todayYm : '';
+}
+
+/** Months a thing in `fromYm` can move to: this month on, never its own or a
+ *  past one; `pick` is the default, the month after it (at least this month). */
+function buyMoveMonths(fromYm, todayYm) {
+  var pick = monthAdd(fromYm, 1) > todayYm ? monthAdd(fromYm, 1) : todayYm;
+  var months = [];
+  for (var i = 0; i < 12 || months[months.length - 1] < pick; i++) {
+    var m = monthAdd(todayYm, i);
+    if (m !== fromYm) months.push(m);
+  }
+  return { months: months, pick: pick };
+}
+
+/** Move = a void of the thing (note Moved) and the same thing in month `to`,
+ *  rids made from its own so a resend or a second device writes each once.
+ *  The new row keeps the old press time, so the list keeps its order; it is
+ *  sent after its void, and only if that void is the one that took the thing off. */
+function buyMovePair(t, to, nowIso, nowLocal) {
+  var amount = parseMoneyAmount(t.amount);
+  var off = { rid: BUY_RID.movedOff + t.rid, at: nowIso, local_time: nowLocal, dir: 'plan',
+              amount: amount, tag: t.name, note: BUY_NOTE.moved, buy_month: t.month, voids_rid: t.rid };
+  var moved = { rid: BUY_RID.moved + t.rid, at: t.at, local_time: t.local || nowLocal, dir: 'plan',
+                amount: amount, tag: t.name, note: '', buy_month: to,
+                after: off.rid, moved_from: t.rid };
+  return [off, moved];
+}
+
+/** The light line on "Bought it already?" for a thing planned after this month. */
+var BUY_EARLY_LINES = [
+  function (n, m) { return n + ' was meant for ' + m + '. Couldn’t wait, huh?'; },
+  function (n, m) { return m + ' came early for ' + n + ', it seems.'; },
+  function (n, m) { return 'So much for saving ' + n + ' for ' + m + '.'; },
+  function (n, m) { return n + ' jumped the queue from ' + m + '. Bold.'; }
+];
+function buyEarlyLine(name, ym, i) {
+  var n = BUY_EARLY_LINES.length;
+  return BUY_EARLY_LINES[((Math.floor(Number(i)) || 0) % n + n) % n](name, monthName(ym).split(' ')[0]);
 }
 
 /** "Oct", or "Jan 2027" when it is not this year. */
@@ -8515,6 +8563,8 @@ var settleDlg = $('settleDlg');
 var walletDlg = $('walletDlg');
 var buyDlg = $('buyDlg');
 var boughtDlg = $('boughtDlg');
+var buyMoveDlg = $('buyMoveDlg');
+var buyEarlyDlg = $('buyEarlyDlg');
 
 /** Trimmed, no commas, no repeats whatever the case, at most MONEY_TAGS_MAX. */
 function cleanTags(list) {
@@ -8631,7 +8681,10 @@ function moneyWhat(r) {
   if (r.kind === 'opening') return pre + 'Wallet set to ' + amount;
   if (r.kind === 'buy') {
     var thing = String(r.tag || '');
-    if (r.voids_rid) return (r.note === BUY_NOTE.bought ? 'Bought: ' : 'Off the buying list: ') + thing;
+    if (r.voids_rid) {
+      return (r.note === BUY_NOTE.bought ? 'Bought: ' : r.note === BUY_NOTE.moved ? 'Moved: '
+        : 'Off the buying list: ') + thing;
+    }
     return 'To buy: ' + thing + ' ' + amount + (BUY_MONTH_RE.test(String(r.buy_month || ''))
       ? ' (' + monthName(r.buy_month) + ')' : '');
   }
@@ -8812,6 +8865,7 @@ function sendMoney(payload, action) {
   moneyLocal = moneyLocal.filter(function (r) { return r.rid !== payload.rid; });
   moneyLocal.unshift(row);
   var sent = api(action, payload).then(function (res) {
+    if (res && res.skipped) renderMoney();   // a move another device's Bought or Remove beat
     if (!(res && res.queued)) scheduleMoneyRead();
     return true;
   }, function (err) {
@@ -8920,6 +8974,9 @@ function renderMoney() {
   if (boughtDlg.open && bought.thing && !buyOpen(rows).some(function (t) { return t.rid === bought.thing.rid; })) {
     closeMoneyDlg(boughtDlg);                // the other device took it off meanwhile
   }
+  [[buyMoveDlg, buyMoving], [buyEarlyDlg, buyEarly && buyEarly.thing]].forEach(function (d) {
+    if (d[0].open && d[1] && !buyOpen(rows).some(function (t) { return t.rid === d[1].rid; })) closeMoneyDlg(d[0]);
+  });
 }
 
 /** Every money row, a page at a time: the wallet runs from the first one.
@@ -9489,8 +9546,9 @@ moneyDlgKeys(walletDlg, function () { if (!$('walletSaveBtn').disabled) saveWall
  * made from the thing's own, so two devices or a resend write each row once. */
 var BUY_MONTHS_AHEAD = 12;      // the Add form offers this month and the next 11
 var buyFilter = '';             // the dialog's month, '' = all months
-var buyChosen = '';             // the month last picked there; the line follows it
 var bought = { thing: null, tag: '' };
+var buyMoving = null;           // the thing the Move dialog is for
+var buyEarly = null;            // {thing, opener} while "Bought it already?" is up
 
 function buyTodayYm() { return counterDate(Date.now()).slice(0, 7); }
 
@@ -9502,11 +9560,11 @@ function cleanBuyName(text) {
   return a.join('').trim();
 }
 
-/** The line under Today: hidden while nothing is open from this month on. */
+/** The line under Today: this month's total, hidden only while the list is empty. */
 function paintBuyLine(rows, left) {
   var todayYm = buyTodayYm();
   var open = buyOpen(rows);
-  var month = buyLineMonth(open, buyChosen, todayYm);
+  var month = buyLineMonth(open, todayYm);
   $('buyLineBtn').hidden = !month;
   $('buyLineBtn').dataset.month = month;
   $('buyLineText').textContent = month ? buyLineText(month, buyExpected(open, month), left, todayYm) : '';
@@ -9528,6 +9586,7 @@ function renderBuy() {
   list.textContent = '';
   shown.forEach(function (t) {
     var li = document.createElement('li');
+    li.className = 'buy-item';
     var line = document.createElement('span');
     line.className = 'due-line';
     line.textContent = t.name + ' · PKR ' + formatPkr(t.amount) +          // his words: never markup
@@ -9537,14 +9596,23 @@ function renderBuy() {
     got.className = 'item-btn item-done-btn';
     got.textContent = 'Bought';
     got.setAttribute('aria-label', 'Bought ' + t.name);
-    got.addEventListener('click', function () { openBought(t, got); });
+    got.addEventListener('click', function () { boughtPressed(t, got); });
+    var move = document.createElement('button');
+    move.type = 'button';
+    move.className = 'item-btn';
+    move.textContent = 'Move';
+    move.setAttribute('aria-label', 'Move ' + t.name);
+    move.addEventListener('click', function () { openBuyMove(t, move); });
     var off = document.createElement('button');
     off.type = 'button';
     off.className = 'item-btn';
     off.textContent = 'Remove';
     off.setAttribute('aria-label', 'Remove ' + t.name);
     off.addEventListener('click', function () { removeBuy(t); });
-    li.append(line, got, off);
+    var acts = document.createElement('span');
+    acts.className = 'buy-acts';
+    acts.append(got, move, off);
+    li.append(line, acts);
     list.appendChild(li);
   });
   var n = shown.length;
@@ -9570,9 +9638,9 @@ function paintBuyAdd() {
                               BUY_MONTH_RE.test($('buyMonth').value));
 }
 
-/** `month`: the month to show; '' shows the line's month, else this month. */
+/** `month`: the month to show; '' is this month. */
 function openBuy(opener, month) {
-  buyFilter = month || $('buyLineBtn').dataset.month || buyTodayYm();
+  buyFilter = month || buyTodayYm();
   $('buyName').value = '';
   $('buyAmount').value = '';
   fillBuyMonths(buyFilter);
@@ -9594,7 +9662,7 @@ function addBuy() {
   }
   var payload = { rid: newRid(), at: new Date().toISOString(), local_time: humanLocal(),
                   dir: 'plan', amount: amount, tag: name, note: '', buy_month: month };
-  // The list shows the month it went to; the Money line stays where it was.
+  // The list shows the month it went to; the Money line stays on this month.
   if (buyFilter) buyFilter = month;
   sendMoney(payload, 'buy');
   flash(moneyWhat({ kind: 'buy', amount: amount, tag: name, buy_month: month }), 'ok');
@@ -9617,6 +9685,36 @@ function removeBuy(t) {
   sendMoney(buyOffPayload(t, 'removed'), 'buy');
   flash('Off the buying list: ' + t.name, 'ok');
   if (buyDlg.open) $('buyName').focus();
+}
+
+/** Move: pick a month, then a void and the new month's row, held in this one tap. */
+function openBuyMove(t, opener) {
+  buyMoving = t;
+  var m = buyMoveMonths(t.month, buyTodayYm());
+  $('buyMoveTitle').textContent = 'Move ' + t.name;          // his words: never markup
+  fillSelect($('buyMoveMonth'), m.months.map(function (x) { return [x, monthName(x)]; }), m.pick);
+  openMoneyDlg(buyMoveDlg, opener, $('buyMoveMonth'));
+}
+
+function saveBuyMove() {
+  var t = buyMoving;
+  var to = $('buyMoveMonth').value;
+  if (!t || !BUY_MONTH_RE.test(to) || to === t.month || to < buyTodayYm()) return;
+  var pair = buyMovePair(t, to, new Date().toISOString(), humanLocal());
+  pair.forEach(function (p) { unpark(p.rid); });   // pressed again after a refusal
+  closeMoneyDlg(buyMoveDlg);
+  buyMoving = null;
+  sendMoney(pair[0], 'buy');
+  sendMoney(pair[1], 'buy');
+  flash('Moved ' + t.name + ' to ' + monthName(to), 'ok');
+}
+
+/** Bought on a thing planned after this month asks first; the rest go straight on. */
+function boughtPressed(t, opener) {
+  if (!(t.month > buyTodayYm())) { openBought(t, opener); return; }
+  buyEarly = { thing: t, opener: opener };
+  $('buyEarlyText').textContent = buyEarlyLine(t.name, t.month, Math.random() * BUY_EARLY_LINES.length);
+  openMoneyDlg(buyEarlyDlg, opener, $('buyEarlyNoBtn'));
 }
 
 function paintBoughtTags() {
@@ -9681,14 +9779,12 @@ function saveBought() {
 }
 
 $('buyBtn').addEventListener('click', function () { openBuy($('buyBtn'), ''); });
-$('buyLineBtn').addEventListener('click', function () {
-  openBuy($('buyLineBtn'), $('buyLineBtn').dataset.month);
-});
+$('buyLineBtn').addEventListener('click', function () { openBuy($('buyLineBtn'), buyTodayYm()); });
+// The filter moves the list and the Add form's month, never the Money line.
 $('buyFilter').addEventListener('change', function () {
   buyFilter = $('buyFilter').value;
-  if (buyFilter) { buyChosen = buyFilter; fillBuyMonths(buyFilter); paintBuyAdd(); }
+  if (buyFilter) { fillBuyMonths(buyFilter); paintBuyAdd(); }
   renderBuy();
-  renderMoney();
 });
 $('buyName').addEventListener('input', paintBuyAdd);
 $('buyAmount').addEventListener('input', paintBuyAdd);
@@ -9700,6 +9796,17 @@ $('boughtCancelBtn').addEventListener('click', function () { closeMoneyDlg(bough
 $('boughtSaveBtn').addEventListener('click', saveBought);
 moneyDlgKeys(buyDlg, function () { if (!$('buyAddBtn').disabled) addBuy(); });
 moneyDlgKeys(boughtDlg, function () { if (!$('boughtSaveBtn').disabled) saveBought(); });
+$('buyMoveCancelBtn').addEventListener('click', function () { closeMoneyDlg(buyMoveDlg); });
+$('buyMoveSaveBtn').addEventListener('click', saveBuyMove);
+moneyDlgKeys(buyMoveDlg);
+$('buyEarlyNoBtn').addEventListener('click', function () { closeMoneyDlg(buyEarlyDlg); });
+$('buyEarlyYesBtn').addEventListener('click', function () {
+  var e = buyEarly;
+  closeMoneyDlg(buyEarlyDlg);
+  buyEarly = null;
+  if (e) openBought(e.thing, e.opener);
+});
+moneyDlgKeys(buyEarlyDlg);
 
 // ------------------------------------------------------------------ taskboard
 

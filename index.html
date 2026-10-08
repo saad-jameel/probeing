@@ -456,27 +456,51 @@
   </form>
 </dialog>
 
-<!-- Item 19. Things to buy, by month. Bought logs the expense; Remove spends nothing. -->
-<dialog id="buyDlg" class="dlg">
+<!-- Item 19/20. Add on top; the list in its own panel below, its month filter first.
+     Bought logs the expense; Move shifts it to another month; Remove spends nothing. -->
+<dialog id="buyDlg" class="dlg" aria-label="Buying list">
   <form method="dialog">
-    <div class="dlg-top">
-      <h2>Buying list</h2>
-      <button type="button" id="buyCloseBtn" class="link-btn">Close</button>
-    </div>
-    <select id="buyFilter" aria-label="Month to show"></select>
-    <p id="buySum" class="hint"></p>
-    <ul id="buyList" class="dues-list"></ul>
-    <p id="buyNote" class="hint" hidden></p>
-    <p class="pick-head">Add a thing</p>
     <input id="buyName" type="text" maxlength="40" autocomplete="off" placeholder="What to buy"
            aria-label="What to buy">
     <div class="buy-add">
-      <input id="buyAmount" type="text" inputmode="decimal" autocomplete="off" placeholder="Expected PKR"
+      <input id="buyAmount" type="text" inputmode="decimal" autocomplete="off" placeholder="PKR"
              aria-label="Expected amount in PKR">
       <select id="buyMonth" aria-label="Month to buy it in"></select>
-    </div>
-    <div class="dlg-actions">
       <button type="button" id="buyAddBtn" class="btn btn-accent" disabled>Add</button>
+    </div>
+    <section class="buy-panel" aria-label="Things to buy">
+      <select id="buyFilter" aria-label="Month to show"></select>
+      <p id="buySum" class="hint"></p>
+      <ul id="buyList" class="dues-list"></ul>
+      <p id="buyNote" class="hint" hidden></p>
+    </section>
+    <div class="dlg-actions">
+      <button type="button" id="buyCloseBtn" class="link-btn">Close</button>
+    </div>
+  </form>
+</dialog>
+
+<!-- Move a thing to another month: this month on, never a past one. -->
+<dialog id="buyMoveDlg" class="dlg">
+  <form method="dialog">
+    <h2 id="buyMoveTitle">Move</h2>
+    <label for="buyMoveMonth">To month</label>
+    <select id="buyMoveMonth"></select>
+    <div class="dlg-actions">
+      <button type="button" id="buyMoveCancelBtn" class="link-btn">Cancel</button>
+      <button type="button" id="buyMoveSaveBtn" class="btn btn-accent">Move</button>
+    </div>
+  </form>
+</dialog>
+
+<!-- Bought on a thing planned for a later month asks first. -->
+<dialog id="buyEarlyDlg" class="dlg">
+  <form method="dialog">
+    <h2>Bought it already?</h2>
+    <p id="buyEarlyText"></p>
+    <div class="dlg-actions">
+      <button type="button" id="buyEarlyNoBtn" class="link-btn">Not yet</button>
+      <button type="button" id="buyEarlyYesBtn" class="btn btn-accent">Yes, I bought it</button>
     </div>
   </form>
 </dialog>
