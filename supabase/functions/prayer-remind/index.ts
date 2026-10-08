@@ -14,6 +14,8 @@
 // Feedback 1 (6 Oct): it also pushes "<task>: 30 min left (by 4:30 PM)" once per
 // task and expected finish (remindTasks), on its own toggle, user_settings.task_reminders.
 // With nothing due that costs one more small read, of task_plans.
+// Stage 18a (8 Oct): three pushes per deadline, as the colours change: 1 h left,
+// 30 min left, and once it has passed. Plain pushes, no buttons.
 //
 // Stage 17 (7 Oct): the morning push, "Today: N due, M carried over, P planned" (remindPlan),
 // once per counter day at user_settings.plan_push_time, on its own toggle plan_push.
@@ -190,19 +192,23 @@ function loggedByDay(rows, offsetMin, day) {
 }
 
 /* ── Feedback 1: a task's deadline, 30 minutes ahead. Here and not in a
- *    sibling function, so the one minute cron and one settings read serve both. */
+ *    sibling function, so the one minute cron and one settings read serve both.
+ *    Stage 18a: also 1 h ahead (orange) and when it passes (blinking). */
 
 var TASK_LEFT_MIN = 30;
+var TASK_MARKS_MIN = [60, 30, 0];
 
 /** expected_at values that could be due at `now`, as [from, to] in ms. */
 function taskWindow(now) {
-  var at = now + TASK_LEFT_MIN * 60000;
-  return { from: at - REMIND_LATE_MS, to: at + REMIND_GRACE_MS };
+  var marks = TASK_MARKS_MIN;
+  return { from: now + marks[marks.length - 1] * 60000 - REMIND_LATE_MS,
+           to: now + marks[0] * 60000 + REMIND_GRACE_MS };
 }
 
-/** One reminder per task and expected_at: a moved deadline is a new kind. */
-function taskKind(nodeId, expectedMs) {
-  return 'task-30-' + nodeId + '-' + expectedMs;
+/** One reminder per task, expected_at and mark: a moved deadline is a new kind.
+ *  The 30-minute one keeps its feedback 1 name, so one already sent is not sent again. */
+function taskKind(nodeId, expectedMs, mark) {
+  return 'task-' + (mark === undefined ? TASK_LEFT_MIN : mark) + '-' + nodeId + '-' + expectedMs;
 }
 
 /** A Web Push Topic is at most 32 URL-safe characters. */
@@ -211,12 +217,13 @@ function taskTopic(nodeId) {
 }
 
 /**
- * Deadline reminders to send at `now`: [{kind, day, node, up, expected}].
+ * Deadline reminders to send at `now`: [{kind, day, node, up, expected, mark}],
+ * mark 60, 30 or 0 (minutes left; 0 = passed).
  * plans: task_plans rows; nodes: id -> task_nodes row; ups: list|google_id ->
  * project row; finished: id -> true when finished in ProBeing; sent: {sentKey:
  * true}; on: the toggle (only `false` turns it off); listId: the list shown.
- * A finish set or moved after its 30-minute mark (expected_set_at; updated_at
- * before that column exists) was never 30 minutes away: none.
+ * A finish set or moved after a mark (expected_set_at; updated_at before that
+ * column exists) was never that far away: no push for that mark.
  */
 function dueTaskReminders(plans, nodes, ups, finished, sent, now, on, listId, offsetMin) {
   if (on === false) return [];
@@ -224,29 +231,39 @@ function dueTaskReminders(plans, nodes, ups, finished, sent, now, on, listId, of
   (plans || []).forEach(function (p) {
     var t = Date.parse(String((p && p.expected_at) || ''));
     if (!isFinite(t)) return;
-    var at = t - TASK_LEFT_MIN * 60000;
-    if (at > now + REMIND_GRACE_MS || now - at > REMIND_LATE_MS) return;
+    // The latest mark that is due now; an earlier one missed is not sent late.
+    var mark = null;
+    TASK_MARKS_MIN.forEach(function (m) {
+      var at = t - m * 60000;
+      if (!(at > now + REMIND_GRACE_MS || now - at > REMIND_LATE_MS)) mark = m;
+    });
+    if (mark === null) return;
     // When the finish itself was set (a trigger keeps it); updated_at moves on a Planned toggle too.
     var set = Date.parse(String(p.expected_set_at || p.updated_at || ''));
-    if (isFinite(set) && set > at) return;
+    if (isFinite(set) && set > t - mark * 60000) return;
     var n = nodes[p.node_id];
     if (!n || n.gone_at || n.g_status === 'completed' || finished[n.id]) return;
     if (listId && String(n.list_id) !== String(listId)) return;
     var up = n.kind === 'subtask' ? ups[(n.list_id || '') + '|' + n.parent_google_id] || null : null;
     if (up && up.gone_at) return;
-    var kind = taskKind(n.id, t);
+    var kind = taskKind(n.id, t, mark);
     var day = ymd(localDate(t, offsetMin, 0));
     if (sent[sentKey(kind, day)]) return;
-    out.push({ kind: kind, day: day, node: n, up: up, expected: t });
+    out.push({ kind: kind, day: day, node: n, up: up, expected: t, mark: mark });
   });
   return out;
 }
 
-/** The push's JSON for a deadline. sw.js opens the Tasks tab on a tap. */
+/** The push's JSON for a deadline. sw.js opens the Tasks tab on a tap. One tag
+ *  per task, so each push replaces the one before it. */
 function taskPayload(r, offsetMin) {
   var title = Array.from(String(r.node.title || '').trim() || '(untitled)').slice(0, 120).join('');
-  return { kind: 'task', tag: 'probeing-task-' + r.node.id, goto: 'tasks',
-           title: title + ': 30 min left (by ' + clock12(r.expected, offsetMin).toUpperCase() + ')',
+  var clock = clock12(r.expected, offsetMin).toUpperCase();
+  var mark = r.mark === undefined ? TASK_LEFT_MIN : r.mark;
+  var words = mark === 0 ? ': past its deadline (' + clock + ')'
+            : mark === 60 ? ': 1 h left (by ' + clock + ')'
+            : ': ' + mark + ' min left (by ' + clock + ')';
+  return { kind: 'task', tag: 'probeing-task-' + r.node.id, goto: 'tasks', title: title + words,
            body: r.up ? String(r.up.title || '').trim().slice(0, 120) : '' };
 }
 
@@ -443,7 +460,10 @@ async function remindTasks(sb: ReturnType<typeof admin>, owner: string, now: num
     nodeRows.forEach((n) => {
       if (dropped[n.id] || Tree.finishedAt(n, ridsOf[n.id] || [], newest, direct[n.id]) !== null) finished[n.id] = true;
     });
-    const kinds = plans.map((p: { node_id: string; expected_at: string }) => taskKind(p.node_id, Date.parse(p.expected_at)));
+    const kinds: string[] = [];
+    plans.forEach((p: { node_id: string; expected_at: string }) => {
+      TASK_MARKS_MIN.forEach((m) => kinds.push(taskKind(p.node_id, Date.parse(p.expected_at), m)));
+    });
     const already: Record<string, boolean> = {};
     must(await sb.from('reminders_sent').select('kind, day').eq('user_id', owner).in('kind', kinds).limit(500))
       .forEach((r) => { already[sentKey(r.kind, String(r.day).slice(0, 10))] = true; });
