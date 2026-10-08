@@ -950,14 +950,6 @@ body {
 .done-list .done-note { display: block; margin-top: 2px; color: var(--muted); font-size: 13px; overflow-wrap: anywhere; }
 .done-list .done-note[hidden] { display: none; }
 
-/* Stage 16: What's done. A fixed height, so switching project does not resize it.
-   Only #doneProjects (.pick-grid, which has its pair) and #doneNote are ever hidden (rule 6). */
-.done-dlg { height: min(85vh, 85dvh); }
-.done-ranges .pick { flex: 1 1 25%; padding: 8px 4px; font-size: 14px; }
-.done-projects .pick { flex: 1 1 40%; padding: 8px 6px; font-size: 14px; }
-.done-list .when { white-space: normal; text-align: right; max-width: 45%; overflow-wrap: anywhere; }
-.done-list li.done-item .what { color: var(--muted); }
-
 /* Stage 18a: Working on as project headings, one line per running task: title,
    deadline, time, then ✓ ⏸ ✕ 📌 and + item; its items below. The .proj-list li
    rule reaches these too, so the overrides are written at a higher specificity.
@@ -1000,3 +992,11 @@ body {
 .backlog summary { cursor: pointer; color: var(--muted); font-size: 14px; font-weight: 600; }
 .done-list .done-how { display: block; margin-top: 2px; color: var(--muted); font-size: 12.5px; }
 .done-list .done-how[hidden] { display: none; }
+
+/* Stage 16: What's done. A fixed height, so switching project does not resize it.
+   Only #doneProjects (.pick-grid, which has its pair) and #doneNote are ever hidden (rule 6). */
+.done-dlg { height: min(85vh, 85dvh); }
+.done-ranges .pick { flex: 1 1 25%; padding: 8px 4px; font-size: 14px; }
+.done-projects .pick { flex: 1 1 40%; padding: 8px 6px; font-size: 14px; }
+.done-list .when { white-space: normal; text-align: right; max-width: 45%; overflow-wrap: anywhere; }
+.done-list li.done-item .what { color: var(--muted); }

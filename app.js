@@ -2312,11 +2312,18 @@ function leafById(id) {
 }
 
 /** The running tasks of tile `name` (a replayDay of named rows), newest first:
- *  [{id, leaf, ms}]. A task the mirror does not know is left to the entry line. */
+ *  [{id, leaf, ms}]. A task the mirror does not know, or a project with sub-tasks
+ *  (an entry filed on the project), is left to the entry line. */
 function tileTasks(name, day) {
   var keys = day.subtaskKeys || {};
+  var nodes = Array.isArray(taskNodes) ? taskNodes : [];
   return (day.runningSubtasks || []).slice().reverse().filter(function (id) {
-    return keys[id] === name && Boolean(leafById(id));
+    var leaf = keys[id] === name ? leafById(id) : null;
+    if (!leaf) return false;
+    return leaf.node.kind === 'subtask' || !nodes.some(function (n) {
+      return n.kind === 'subtask' && !n.gone_at && n.list_id === leaf.node.list_id &&
+             n.parent_google_id === leaf.node.google_id;
+    });
   }).map(function (id) {
     return { id: id, leaf: leafById(id), ms: day.bySubtask[id] || 0 };
   });
@@ -2376,7 +2383,7 @@ function iconBtn(icon, cls, label, onTap) {
   b.addEventListener('click', function () {
     if (b.disabled) return;
     coolDown(b);
-    onTap(b);
+    onTap();
   });
   return b;
 }
@@ -2428,7 +2435,7 @@ function nowEntryRow(name, loose, withTasks, rows) {
   var acts = document.createElement('span');
   acts.className = 'now-acts';
   if (tileEntry(name, rows)) {
-    acts.appendChild(iconBtn('✓', 'act-done', 'Done: ' + name, function (b) { tileClose(b, name); }));
+    acts.appendChild(iconBtn('✓', 'act-done', 'Done: ' + name, function () { tileClose(null, name); }));
   }
   acts.appendChild(iconBtn('⏸', 'act-stop', withTasks ? 'Stop all of ' + name : 'Stop: ' + name, function () {
     stopAndAsk(name);
@@ -12408,7 +12415,9 @@ function rowActs(leaf, listId) {
   if (!leafOpen(leaf)) return box;
   var id = leaf.node.id;
   var title = leaf.node.title || '(untitled)';
-  var fromAll = listId === 'tasksAll';
+  var inAll = listId === 'tasksAll';
+  // From All tasks and not running: never worked on. Read at the tap.
+  function fromAll() { return inAll && !runningIds()[id]; }
   var upcoming = listId === 'planList' || listId === 'tasksPlanned';
   if (upcoming) {
     box.appendChild(smallBtn('Start', 'item-start-btn', 'Start working on: ' + title,
@@ -12418,7 +12427,7 @@ function rowActs(leaf, listId) {
     box.appendChild(smallBtn('Plan for today', 'item-plan-btn', 'Plan for today: ' + title,
                              function () { planToday(id, true); }));
   }
-  if (fromAll) {
+  if (inAll) {
     var on = plannedFor(planOf(id), counterDate(Date.now()));
     var plan = smallBtn(on ? 'Planned ✓' : 'Plan', 'item-plan-btn', (on ? 'Remove from plan: ' : 'Plan for today: ') + title,
                         function () { planToday(id, !on); });
@@ -12426,8 +12435,8 @@ function rowActs(leaf, listId) {
     box.appendChild(plan);
   }
   if (leafActsHere(id)) {
-    box.append(smallBtn('Done', 'item-done-btn', 'Done: ' + title, function () { finishTask(id, fromAll); }),
-               smallBtn('Drop', 'item-drop-btn', 'Drop: ' + title, function () { dropTask(id, fromAll); }));
+    box.append(smallBtn('Done', 'item-done-btn', 'Done: ' + title, function () { finishTask(id, fromAll()); }),
+               smallBtn('Drop', 'item-drop-btn', 'Drop: ' + title, function () { dropTask(id, fromAll()); }));
   }
   if (upcoming) {
     box.append(smallBtn('Remove', 'item-unplan-btn', 'Remove from plan: ' + title, function () { planToday(id, false); }),
@@ -12978,7 +12987,7 @@ $('taskStartBtn').addEventListener('click', function () {
 function closeFromBox(mark) {
   var id = taskDlgNode;
   var key = (replayDay(named(sessionLog())).subtaskKeys || {})[id];
-  var fromAll = Boolean(taskDlgOpener && taskDlgOpener.list === 'tasksAll');
+  var fromAll = Boolean(taskDlgOpener && taskDlgOpener.list === 'tasksAll') && !key;
   var ok = key ? nowClose(id, key, mark) : mark === 'drop' ? dropTask(id, fromAll) : finishTask(id, fromAll);
   if (!ok) {
     $('taskDlgNote').textContent = 'This task is no longer open.';
