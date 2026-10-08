@@ -8,9 +8,12 @@ distraction, unclear, private).
 
 What never leaves the laptop: full web addresses, page text, and window titles.
 The one exception: a block no rule could place sends its window title to Gemini
-once, to guess the project; the title is not stored. Anything on your private list
-(banking, passwords, chats, and every incognito tab) is sent only as "private",
-with no site and no title.
+once, to guess the project, with links, folder paths, addresses, ids and long
+numbers cut out first; only the project comes back, and the title is not stored.
+Terminal and file-window titles are never sent. Anything on your private list
+(banking, passwords, chats), every incognito or InPrivate window, and any browser
+window the extension did not see, is sent only as "private", with no site and no
+title.
 
 Nothing is installed. It is three PowerShell files and one scheduled task.
 
@@ -31,11 +34,12 @@ You need ActivityWatch running (the icon near the clock).
 3. **Paste that line into PowerShell** and press Enter. It runs five steps and
    says what it did:
    - checks ActivityWatch answers,
-   - keeps the token encrypted for your Windows account only,
-   - runs the self test (`selftest: 31 ok, 0 failed`, or similar — any FAIL line
-     means stop and send Claude the output),
+   - runs the self test (`selftest: N ok, 0 failed` — any FAIL line means stop
+     and send Claude the output),
    - asks ProBeing once ("Paired as: Laptop · …"), sending nothing,
+   - only then keeps the token, encrypted for your Windows account only,
    - adds the task "ProBeing watcher", every 5 minutes while you are signed in.
+   If a step fails, nothing is left behind.
 
 4. **Check it works.** Start work in ProBeing, wait 10 minutes, then open
    Settings → Laptop activity: your laptop shows "last sent" with a time.

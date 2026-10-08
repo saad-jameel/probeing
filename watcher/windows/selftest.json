@@ -53,6 +53,80 @@
   {
    "in": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
    "out": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+  },
+  {
+   "in": "C:\\Users\\saad\\Documents\\Tax return 2026.xlsx - Excel",
+   "out": "return 2026.xlsx - Excel"
+  },
+  {
+   "in": "saad-wsl@LAPTOP-7Q: ~/clients/acme-contract",
+   "out": ""
+  },
+  {
+   "in": "Pay 4111 1111 1111 1111 exp 09/28",
+   "out": "Pay exp"
+  },
+  {
+   "in": "Call 0300-123-4567 back",
+   "out": "Call back"
+  },
+  {
+   "in": "docs.google.com/document/d/1AbCdEfGhIjK/edit - Chrome",
+   "out": "- Chrome"
+  },
+  {
+   "in": "Shared doc docs.google.com - Chrome",
+   "out": "Shared doc - Chrome"
+  },
+  {
+   "in": "Ticket 9f8e7d6c5b4a3f2e1d0c review",
+   "out": "Ticket review"
+  },
+  {
+   "in": "Inbox - saad@aeyron.com - Gmail",
+   "out": "Inbox - - Gmail"
+  }
+ ],
+ "sendable": [
+  {
+   "app": "Notepad.exe",
+   "title": "rover rig notes - Notepad",
+   "want": true
+  },
+  {
+   "app": "WindowsTerminal.exe",
+   "title": "build output",
+   "want": false
+  },
+  {
+   "app": "explorer.exe",
+   "title": "Downloads",
+   "want": false
+  },
+  {
+   "app": "Code.exe",
+   "title": "C:\\Users\\saad\\plan.txt - Code",
+   "want": false
+  },
+  {
+   "app": "Code.exe",
+   "title": "saad@box: ~/src",
+   "want": false
+  },
+  {
+   "app": "mintty.exe",
+   "title": "MINGW64",
+   "want": false
+  },
+  {
+   "app": "Notepad.exe",
+   "title": "123456789 - Notepad",
+   "want": true
+  },
+  {
+   "app": "Notepad.exe",
+   "title": "12345678",
+   "want": false
   }
  ],
  "classify": [
@@ -587,6 +661,142 @@
    },
    "want": {
     "category": "unclear",
+    "project": "",
+    "key": ""
+   }
+  },
+  {
+   "name": "a browser window with no tab seen is private",
+   "seg": {
+    "app": "chrome.exe",
+    "title": "Some private page - Google Chrome",
+    "host": "",
+    "path": "",
+    "incognito": false
+   },
+   "cfg": {
+    "lists": null,
+    "rules": [
+     {
+      "keyword": "docker",
+      "project": "OneNet"
+     },
+     {
+      "keyword": "neuravue",
+      "project": "NeuraVue"
+     }
+    ],
+    "projects": [
+     "ProBeing",
+     "OneNet",
+     "NeuraVue"
+    ]
+   },
+   "want": {
+    "category": "private",
+    "project": "",
+    "key": ""
+   }
+  },
+  {
+   "name": "Edge InPrivate by its title",
+   "seg": {
+    "app": "msedge.exe",
+    "title": "Some page - [InPrivate] - Microsoft Edge",
+    "host": "example.com",
+    "path": "/",
+    "incognito": false
+   },
+   "cfg": {
+    "lists": null,
+    "rules": [
+     {
+      "keyword": "docker",
+      "project": "OneNet"
+     },
+     {
+      "keyword": "neuravue",
+      "project": "NeuraVue"
+     }
+    ],
+    "projects": [
+     "ProBeing",
+     "OneNet",
+     "NeuraVue"
+    ]
+   },
+   "want": {
+    "category": "private",
+    "project": "",
+    "key": ""
+   }
+  },
+  {
+   "name": "Chrome Incognito by its title",
+   "seg": {
+    "app": "chrome.exe",
+    "title": "New Tab - Incognito",
+    "host": "example.com",
+    "path": "/",
+    "incognito": false
+   },
+   "cfg": {
+    "lists": null,
+    "rules": [
+     {
+      "keyword": "docker",
+      "project": "OneNet"
+     },
+     {
+      "keyword": "neuravue",
+      "project": "NeuraVue"
+     }
+    ],
+    "projects": [
+     "ProBeing",
+     "OneNet",
+     "NeuraVue"
+    ]
+   },
+   "want": {
+    "category": "private",
+    "project": "",
+    "key": ""
+   }
+  },
+  {
+   "name": "a private site named only in the title",
+   "seg": {
+    "app": "Outlook.exe",
+    "title": "Statement from mybank.com",
+    "host": "",
+    "path": "",
+    "incognito": false
+   },
+   "cfg": {
+    "lists": {
+     "private": [
+      "mybank.com"
+     ]
+    },
+    "rules": [
+     {
+      "keyword": "docker",
+      "project": "OneNet"
+     },
+     {
+      "keyword": "neuravue",
+      "project": "NeuraVue"
+     }
+    ],
+    "projects": [
+     "ProBeing",
+     "OneNet",
+     "NeuraVue"
+    ]
+   },
+   "want": {
+    "category": "private",
     "project": "",
     "key": ""
    }

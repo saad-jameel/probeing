@@ -1014,6 +1014,8 @@ body {
 .catchup-acts .cat-pick { flex: 1 1 60%; min-width: 0; }
 .catchup-row.catchup-break .catchup-what { text-decoration: line-through; color: var(--muted); }
 .catchup-ask .dlg-actions { justify-content: flex-start; margin-top: 8px; }
+/* Looks right stays in reach however long the list is. */
+.catchup-dlg form > .dlg-actions { position: sticky; bottom: 0; background: var(--panel); padding: 10px 0 2px; margin-top: 10px; }
 #watchPairLine { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 12px; }
 
 /* Stage 16: What's done. A fixed height, so switching project does not resize it.

@@ -513,6 +513,20 @@ function userMap() {
   return Object.create(null);
 }
 
+/* Stage 18b: rows written later for an earlier instant, by the laptop watcher (ab-/ar-/aw-)
+ * or the catch-up sheet and its questions (kb-/kr-/qb-/qr-). */
+
+/** Two rows at the same instant: a backdated one replays first (two of them by rid), so his
+ *  own row decides that instant whatever order the table returned them in; else 0. */
+function rowTie(x, y) {
+  var late = /^(ab|ar|aw|kb|kr|qb|qr)-/;
+  var bx = late.test(String((x && x.rid) || ''));
+  var by = late.test(String((y && y.rid) || ''));
+  if (bx !== by) return bx ? -1 : 1;
+  if (bx) return String(x.rid) < String(y.rid) ? -1 : String(x.rid) > String(y.rid) ? 1 : 0;
+  return 0;
+}
+
 /* Point 6: the project comes from what you typed, not from a picker. Walk
  * today's rows in order and replay the day: a tracker entry names the project
  * and starts the clock, break/off/sleep stop it, resume starts it again.
@@ -552,7 +566,7 @@ function replayDay(log, endMs, fromMs, weightOf) {
   }).filter(function (x) {
     return !isNaN(instantOf(x.r.at));
   }).sort(function (a, b) {
-    return (instantOf(a.r.at) - instantOf(b.r.at)) || (b.i - a.i);
+    return (instantOf(a.r.at) - instantOf(b.r.at)) || rowTie(a.r, b.r) || (b.i - a.i);
   }).map(function (x) {
     return x.r;
   });

@@ -70,17 +70,38 @@ function actUrlParts(url) {
   return { host: host, path: m[3].toLowerCase() || '/' };
 }
 
-/** A title fit to leave the laptop for Gemini: no links, addresses or long numbers. */
+/** A title fit to leave the laptop for Gemini: no links, paths, addresses, ids or long numbers. */
 function actScrubTitle(t) {
   var s = String(t == null ? '' : t)
     .replace(/[a-z][a-z0-9+.-]*:\/\/\S+/gi, ' ')
-    .replace(/\S+@\S+\.\S+/g, ' ')
-    .replace(/[0-9]{5,}/g, ' ')
+    .replace(/\S*[\\\/]\S*/g, ' ')
+    .replace(/\S*@\S*/g, ' ')
+    .replace(ACT_BARE_DOMAIN, ' ')
+    .replace(/[0-9](?:[ .\-]?[0-9]){5,}/g, ' ')
+    .replace(/\b(?=[A-Za-z0-9_-]*[0-9])(?=[A-Za-z0-9_-]*[A-Za-z])[A-Za-z0-9_-]{12,}\b/g, ' ')
     .replace(/[\u0000-\u001f]/g, ' ')
     .replace(/[ \u00a0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000\ufeff]+/g, ' ')
     .replace(/^ +| +$/g, '');      // the same classes as watch.ps1, so the two agree
   return actCut(s, ACT_TITLE_MAX);
 }
+
+/* A site named without http (docs.google.com). */
+var ACT_BARE_DOMAIN = /\b(?:[a-z0-9-]+\.)+(?:com|org|net|io|dev|app|co|pk|gov|edu|me|ai|info|biz|uk|us|in|xyz|site|online|tech|cloud)\b/gi;
+
+/* Apps whose titles are paths or commands: never sent to Gemini. */
+var ACT_NO_TITLE_APPS = ['windowsterminal', 'cmd', 'powershell', 'pwsh', 'powershellise', 'explorer', 'conhost', 'wt',
+                         'mintty', 'bash', 'wsl', 'ubuntu', 'terminal', 'alacritty', 'putty', 'kitty', 'gitbash', 'wezterm'];
+
+/** May this unclear title go to Gemini? Not a terminal's or a file window's, and not one that looks like a path. */
+function actTitleSendable(app, title) {
+  if (ACT_NO_TITLE_APPS.indexOf(actNorm(String(app || '').replace(/\.exe$/i, ''))) !== -1) return false;
+  var raw = String(title == null ? '' : title);
+  if (/[A-Za-z]:\\|~\/|(^|\s)\/[A-Za-z]|\\\\|@[A-Za-z0-9_.-]+:/.test(raw)) return false;
+  return /[A-Za-z\u0080-\uffff]{3}/.test(actScrubTitle(raw));
+}
+
+/* A browser's own private window, said in its title. */
+var ACT_PRIVATE_TITLE = /incognito|inprivate|private browsing/i;
 
 function actIsBrowser(app) {
   return ACT_BROWSERS.indexOf(actNorm(String(app || '').replace(/\.exe$/i, ''))) !== -1;
@@ -115,6 +136,8 @@ function actEntryHits(entry, seg, withTitle) {
     var host = (slash === -1 ? e : e.slice(0, slash)).replace(/^www\./, '');
     var path = slash === -1 ? '' : e.slice(slash);
     var h = String(seg.host || '');
+    // A private site (mybank.com) also counts when only the title names it.
+    if (withTitle === true && host && String(seg.title || '').toLowerCase().indexOf(host) !== -1) return true;
     if (!h || !host) return false;
     if (h !== host && h.slice(-(host.length + 1)) !== '.' + host) return false;
     return !path || String(seg.path || '').indexOf(path) === 0;
@@ -175,7 +198,9 @@ function actRuleHit(seg, rules) {
  */
 function actClassify(seg, cfg) {
   var lists = actLists(cfg && cfg.lists);
-  if (seg.incognito === true || actListHit(lists['private'], seg, true)) {
+  // A browser window the extension did not see (an incognito tab, most often) is private too.
+  if (seg.incognito === true || ACT_PRIVATE_TITLE.test(String(seg.title || '')) || (actIsBrowser(seg.app) && !seg.host) ||
+      actListHit(lists['private'], seg, true)) {
     return { category: 'private', project: '', key: '' };
   }
   if (actListHit(lists.distract, seg, false)) return { category: 'distraction', project: '', key: '' };
@@ -313,7 +338,7 @@ function actBlocks(pieces, cfg) {
     var c = actClassify(p, cfg);
     var b = { start: p.start, end: p.end, app: actCleanApp(p.app), domain: c.category === 'private' ? '' : (p.host || ''),
               category: c.category, project: c.project, key: c.key,
-              title: c.category === 'unclear' ? actScrubTitle(p.title) : '' };
+              title: c.category === 'unclear' && actTitleSendable(p.app, p.title) ? actScrubTitle(p.title) : '' };
     b.id = actIdentity(b);
     return b;
   }).sort(function (x, y) { return x.start - y.start; });
@@ -369,6 +394,34 @@ function actSanitize(b, lists, now) {
 var ACT_IDLE_MAX_MS = 12 * 3600000;
 var ACT_TENDED = ['work', 'voice', 'done', 'break', 'resume', 'awake', 'subdone', 'subdrop', 'substop', 'pin', 'unpin'];
 var ACT_AUTO_RID = /^ab-/;
+
+/* Rows written later for an earlier instant: the watcher's (ab-/ar-/aw-) and the sheet's or
+ * a question's (kb-/kr-/qb-/qr-). On a tie with his own row they go first, so his row decides. */
+var ACT_BACKDATED = /^(ab|ar|aw|kb|kr|qb|qr)-/;
+
+/** Order of two rows at the same instant: backdated ones first, those by rid; else 0. */
+function actTie(x, y) {
+  var bx = ACT_BACKDATED.test(String((x && x.rid) || ''));
+  var by = ACT_BACKDATED.test(String((y && y.rid) || ''));
+  if (bx !== by) return bx ? -1 : 1;
+  if (bx) return String(x.rid) < String(y.rid) ? -1 : String(x.rid) > String(y.rid) ? 1 : 0;
+  return 0;
+}
+
+var ACT_STATE = { work: 1, voice: 1, resume: 1, 'break': 1, off: 1, sleep: 1 };
+
+/** Backdated rows to write (steps {type, at}), less any at an instant where one of his own
+ *  state rows already is: his row decides that instant. */
+function actSkipTies(steps, rows) {
+  var mine = {};
+  (rows || []).forEach(function (r) {
+    if (r && ACT_STATE[r.type] && !ACT_BACKDATED.test(String(r.rid || ''))) mine['t' + Date.parse(String(r.at))] = 1;
+  });
+  return (steps || []).filter(function (w) {
+    var t = typeof w.at === 'number' ? w.at : Date.parse(String(w.at));
+    return !(ACT_STATE[w.type] && mine['t' + t]);
+  });
+}
 var ACT_AUTO_WATCH_MS = 4 * 3600000;     // an auto break is watched this long at most
 
 /**
@@ -379,7 +432,7 @@ var ACT_AUTO_WATCH_MS = 4 * 3600000;     // an auto break is watched this long a
 function actWalk(rows, fromMs, toMs) {
   var list = (rows || []).map(function (r, i) { return { r: r, t: Date.parse(String(r && r.at)), i: i }; })
     .filter(function (x) { return isFinite(x.t); })
-    .sort(function (a, b) { return (a.t - b.t) || (a.i - b.i); });
+    .sort(function (a, b) { return (a.t - b.t) || actTie(a.r, b.r) || (a.i - b.i); });
   var clock = false;
   var closed = false;
   var auto = null;
@@ -540,6 +593,10 @@ globalThis.ProBeingActivity = {
   actCleanDomain: actCleanDomain,
   actUrlParts: actUrlParts,
   actScrubTitle: actScrubTitle,
+  actTitleSendable: actTitleSendable,
+  ACT_PRIVATE_TITLE: ACT_PRIVATE_TITLE,
+  actTie: actTie,
+  actSkipTies: actSkipTies,
   actLists: actLists,
   actTidyList: actTidyList,
   actListHit: actListHit,

@@ -57,6 +57,13 @@ function Get-Prop($obj, [string]$name) {
   return $v
 }
 
+# A list to loop over. @($x) on a List[object] throws in 5.1 ("Argument types do not match").
+function As-Seq($x) {
+  if ($null -eq $x) { return ,@() }
+  if ($x -is [System.Collections.IEnumerable] -and -not ($x -is [string]) -and -not ($x -is [System.Collections.IDictionary])) { return ,$x }
+  return ,@($x)
+}
+
 function Act-Str($s) { if ($null -eq $s) { return '' } return [string]$s }
 
 function Act-Norm($s) {
@@ -98,12 +105,32 @@ function Act-UrlParts($url) {
 function Act-ScrubTitle($t) {
   $s = Act-Str $t
   $s = $s -replace '[a-z][a-z0-9+.-]*://\S+', ' '
-  $s = $s -creplace '\S+@\S+\.\S+', ' '
-  $s = $s -creplace '[0-9]{5,}', ' '
+  $s = $s -creplace '\S*[\\/]\S*', ' '
+  $s = $s -creplace '\S*@\S*', ' '
+  $s = $s -replace $ACT_BARE_DOMAIN, ' '
+  $s = $s -creplace '[0-9](?:[ .\-]?[0-9]){5,}', ' '
+  $s = $s -creplace '\b(?=[A-Za-z0-9_-]*[0-9])(?=[A-Za-z0-9_-]*[A-Za-z])[A-Za-z0-9_-]{12,}\b', ' '
   $s = $s -creplace '[\u0000-\u001f]', ' '
   $s = ($s -creplace '[ \u00a0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000\ufeff]+', ' ').Trim(' ')
   return Act-Cut $s $ACT_TITLE_MAX
 }
+
+# A site named without http (docs.google.com).
+$ACT_BARE_DOMAIN = '\b(?:[a-z0-9-]+\.)+(?:com|org|net|io|dev|app|co|pk|gov|edu|me|ai|info|biz|uk|us|in|xyz|site|online|tech|cloud)\b'
+
+# Apps whose titles are paths or commands: never sent to Gemini.
+$ACT_NO_TITLE_APPS = @('windowsterminal', 'cmd', 'powershell', 'pwsh', 'powershellise', 'explorer', 'conhost', 'wt',
+                       'mintty', 'bash', 'wsl', 'ubuntu', 'terminal', 'alacritty', 'putty', 'kitty', 'gitbash', 'wezterm')
+
+function Act-TitleSendable($app, $title) {
+  if ($ACT_NO_TITLE_APPS -contains (Act-Norm ((Act-Str $app) -replace '\.exe$', ''))) { return $false }
+  $raw = Act-Str $title
+  if ($raw -cmatch '[A-Za-z]:\\|~/|(^|\s)/[A-Za-z]|\\\\|@[A-Za-z0-9_.-]+:') { return $false }
+  return ((Act-ScrubTitle $raw) -cmatch '[A-Za-z\u0080-\uffff]{3}')
+}
+
+# A browser's own private window, said in its title.
+$ACT_PRIVATE_TITLE = 'incognito|inprivate|private browsing'
 
 function Act-IsBrowser($app) {
   $n = Act-Norm ((Act-Str $app) -replace '\.exe$', '')
@@ -112,7 +139,7 @@ function Act-IsBrowser($app) {
 
 function Act-TidyList($list) {
   $out = New-Object System.Collections.Generic.List[string]
-  foreach ($x in @($list)) {
+  foreach ($x in (As-Seq $list)) {
     if ($null -eq $x) { continue }
     $e = Act-Cut ((Act-Str $x).Trim().ToLowerInvariant()) $ACT_ENTRY_MAX
     if ($e -and -not $out.Contains($e) -and $out.Count -lt $ACT_LIST_MAX) { $out.Add($e) }
@@ -138,6 +165,8 @@ function Act-EntryHits($entry, $seg, [bool]$withTitle) {
     if ($slash -eq -1) { $h = $e; $path = '' } else { $h = $e.Substring(0, $slash); $path = $e.Substring($slash) }
     $h = $h -creplace '^www\.', ''
     $sh = Act-Str (Get-Prop $seg 'host')
+    # A private site (mybank.com) also counts when only the title names it.
+    if ($withTitle -and $h -and (Act-Str (Get-Prop $seg 'title')).ToLowerInvariant().Contains($h)) { return $true }
     if (-not $sh -or -not $h) { return $false }
     if ($sh -cne $h -and -not $sh.EndsWith('.' + $h, [System.StringComparison]::Ordinal)) { return $false }
     if (-not $path) { return $true }
@@ -151,7 +180,7 @@ function Act-EntryHits($entry, $seg, [bool]$withTitle) {
 }
 
 function Act-ListHit($list, $seg, [bool]$withTitle) {
-  foreach ($e in @($list)) { if (Act-EntryHits $e $seg $withTitle) { return $e } }
+  foreach ($e in (As-Seq $list)) { if (Act-EntryHits $e $seg $withTitle) { return $e } }
   return ''
 }
 
@@ -188,7 +217,10 @@ function Act-TitleKey($app, $title) {
 
 function Act-Classify($seg, $cfg) {
   $lists = Act-Lists (Get-Prop $cfg 'lists')
-  if ((Get-Prop $seg 'incognito') -eq $true -or (Act-ListHit $lists['private'] $seg $true)) {
+  # A browser window the extension did not see (an incognito tab, most often) is private too.
+  if ((Get-Prop $seg 'incognito') -eq $true -or ((Act-Str (Get-Prop $seg 'title')) -match $ACT_PRIVATE_TITLE) -or
+      ((Act-IsBrowser (Get-Prop $seg 'app')) -and -not (Act-Str (Get-Prop $seg 'host'))) -or
+      (Act-ListHit $lists['private'] $seg $true)) {
     return @{ category = 'private'; project = ''; key = '' }
   }
   if (Act-ListHit $lists['distract'] $seg $false) { return @{ category = 'distraction'; project = ''; key = '' } }
@@ -208,7 +240,7 @@ function Act-Classify($seg, $cfg) {
 function Act-MergeSpans($list) {
   $items = New-Object System.Collections.Generic.List[object]
   $i = 0
-  foreach ($x in @($list)) {
+  foreach ($x in (As-Seq $list)) {
     if ($null -ne $x -and [double]$x[1] -gt [double]$x[0]) { $items.Add(@{ a = [double]$x[0]; b = [double]$x[1]; i = $i }) }
     $i++
   }
@@ -227,7 +259,7 @@ function Act-MergeSpans($list) {
 
 function Act-Intersect([double]$a, [double]$b, $spans) {
   $out = New-Object System.Collections.Generic.List[object]
-  foreach ($s in @($spans)) {
+  foreach ($s in (As-Seq $spans)) {
     if ($null -eq $s) { continue }
     $x = [Math]::Max($a, [double]$s[0])
     $y = [Math]::Min($b, [double]$s[1])
@@ -332,7 +364,7 @@ function Act-Identity($b) {
 
 function Act-Join($list) {
   $out = New-Object System.Collections.Generic.List[object]
-  foreach ($b in @($list)) {
+  foreach ($b in (As-Seq $list)) {
     if ($null -eq $b) { continue }
     if ($out.Count -gt 0) {
       $last = $out[$out.Count - 1]
@@ -349,13 +381,13 @@ function Act-Join($list) {
 function Act-Blocks($pieces, $cfg) {
   $made = New-Object System.Collections.Generic.List[object]
   $i = 0
-  foreach ($p in @($pieces)) {
+  foreach ($p in (As-Seq $pieces)) {
     if ($null -eq $p) { continue }
     $c = Act-Classify $p $cfg
     $domain = $p.host
     if ($c.category -eq 'private') { $domain = '' }
     $title = ''
-    if ($c.category -eq 'unclear') { $title = Act-ScrubTitle $p.title }
+    if ($c.category -eq 'unclear' -and (Act-TitleSendable $p.app $p.title)) { $title = Act-ScrubTitle $p.title }
     $b = @{ start = [double]$p.start; end = [double]$p.end; app = (Act-CleanApp $p.app); domain = (Act-Str $domain);
             category = $c.category; project = $c.project; key = $c.key; title = $title; i = $i }
     $b.id = Act-Identity $b
@@ -382,7 +414,7 @@ function Act-Blocks($pieces, $cfg) {
 # What is sent: these seven fields, never the title.
 function Act-Payload($blocks) {
   $out = New-Object System.Collections.Generic.List[object]
-  foreach ($b in @($blocks)) {
+  foreach ($b in (As-Seq $blocks)) {
     if ($null -eq $b) { continue }
     $out.Add([ordered]@{ start = (Act-Iso $b.start); end = (Act-Iso $b.end); app = $b.app; domain = $b.domain;
                          category = $b.category; project = $b.project; key = $b.key })
@@ -404,6 +436,10 @@ function Run-SelfTest {
   foreach ($c in @($fx.scrub)) {
     $s = Act-ScrubTitle $c.in
     if (Same $s $c.out) { $ok++ } else { $bad++; Write-Output ('FAIL scrub ' + $c.in + ' -> ' + $s) }
+  }
+  foreach ($c in @($fx.sendable)) {
+    $r = Act-TitleSendable $c.app $c.title
+    if ($r -eq $c.want) { $ok++ } else { $bad++; Write-Output ('FAIL sendable ' + $c.title + ' -> ' + $r) }
   }
   foreach ($c in @($fx.classify)) {
     $r = Act-Classify $c.seg $c.cfg
@@ -549,7 +585,8 @@ try {
     $last = $blocks[$blocks.Length - 1]
     if ($now - $last.end -gt $OPEN_MS) { $sentUntil = $last.end } else { $sentUntil = $last.start }
     foreach ($b in $blocks) {
-      if ($b.category -ne 'unclear' -or -not $b.title) { continue }
+      # In the watcher's own break it only looks for the way back: no titles kept for Gemini.
+      if ($b.category -ne 'unclear' -or -not $b.title -or $cfg.autoBreak -eq $true) { continue }
       $k = Act-TitleKey $b.app $b.title
       $have = $pending[$k]
       $starts = @()

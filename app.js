@@ -10475,7 +10475,7 @@ $('settingsBtn').addEventListener('click', function () {
   loadPrayerRemind();                // likewise
   loadTaskRemind();                  // likewise
   loadPlanPush();                    // likewise
-  loadWatch();                       // likewise (Stage 18b)
+  loadWatch().catch(function () { /* its own line says what failed */ });   // likewise (Stage 18b)
   dlg.showModal();
 });
 
@@ -14878,7 +14878,7 @@ var CATCHUP_BACK_MS = 18 * 3600000;       // the sheet never reaches further bac
 var CATCHUP_LATER_MS = 30 * 60000;        // Later hides it this long
 var CATCHUP_EVERY_MS = 10 * 60000;        // looked for at most this often
 var CATCHUP_LATER_KEY = 'probeing.catchup.later';
-var CATCHUP_RULE_SOURCES = { hand: 1, fix: 1, gemini: 1 };
+var CATCHUP_RULE_SOURCES = { hand: 1, fix: 1 };
 
 /** A fresh watcher token: newPairCode's alphabet and its unbiased draw, twice as long. */
 function newWatchToken() {
@@ -15024,7 +15024,7 @@ async function loadWatch() {
     $('watchNudgeOn').disabled = false;
     var rules = await sb.from('activity_rules').select('keyword,project,source').order('keyword').limit(500);
     if (rules.error) throw errorFrom(rules.error);
-    watchRules = (rules.data || []).filter(function (r) { return CATCHUP_RULE_SOURCES[r.source] === 1; });
+    watchRules = (rules.data || []).filter(function (r) { return CATCHUP_RULE_SOURCES[r.source] === 1; });   // his and his corrections'
     $('watchRules').value = watchRules.map(function (r) { return r.keyword + ' = ' + r.project; }).join('\n');
   } catch (e) {
     out.textContent = 'Could not read the laptop settings: ' + ((e && e.message) || e);
@@ -15188,7 +15188,9 @@ async function readCatchUp() {
     .in('state', ['sent', 'question', 'autobreak']).gte('streak_start', new Date(now - CATCHUP_BACK_MS).toISOString())
     .order('streak_start', { ascending: true }).limit(50);
   if (nRes.error) throw errorFrom(nRes.error);
-  var nudges = nRes.data || [];
+  // A day that has turned closed its pushes and questions with it.
+  var dayStart = counterDayStart(now);
+  var nudges = (nRes.data || []).filter(function (n) { return Date.parse(n.streak_start) >= dayStart; });
   var rids = userMap();
   if (nudges.length) {
     var want = [];
@@ -15380,7 +15382,7 @@ function answerCatchUp(a, choice, li) {
   }
   catchup.asks = catchup.asks.filter(function (x) { return x !== a; });
   li.textContent = choice === 'break' ? 'Noted: a break.' : 'Noted: working.';
-  runWrites(steps).then(function () { scheduleRefresh(800); });
+  runWrites(actSkipTies(steps, sessionLog())).then(function () { scheduleRefresh(800); });
 }
 
 /** Looks right: the edits as rows (a correction, a break), then "seen up to here". */
@@ -15397,7 +15399,8 @@ function confirmCatchUp() {
                    project: e.project, detail: g.ids.join(',') });
       if (e.project) {
         c.blocks.forEach(function (b) {
-          if (g.ids.indexOf(b.id) !== -1 && b.rule_key) learn.push({ keyword: b.rule_key, project: e.project });
+          var k = g.ids.indexOf(b.id) !== -1 ? catchupRuleKey(b) : '';
+          if (k && !learn.some(function (r) { return r.keyword === k; })) learn.push({ keyword: k, project: e.project });
         });
       }
     }
@@ -15411,14 +15414,28 @@ function confirmCatchUp() {
   steps.push({ type: ACT_SEEN_TYPE, raw_text: 'Laptop activity checked up to ' + clockAt(c.until),
                detail: new Date(c.until).toISOString(), rid: 'as-' + c.until });
   closeCatchUp();
-  runWrites(steps).then(function () { scheduleRefresh(800); });
-  // A keyword that placed a block he corrected now points where he said (a setting, not a press).
-  if (supabaseReady()) {
-    learn.forEach(function (r) {
-      sb.from('activity_rules').update({ project: r.project, source: 'fix', updated_at: new Date().toISOString() })
-        .eq('keyword', r.keyword).then(function () {}, function () {});
-    });
-  }
+  runWrites(actSkipTies(steps, sessionLog())).then(function () { scheduleRefresh(800); });
+  // What he corrected becomes a rule: the block's site, else its app (a setting, not a press).
+  if (supabaseReady()) learn.forEach(learnRule);
+}
+
+/** The rule a correction teaches: the site's name, else the app's; never a title's words.
+ *  Not a browser, a terminal or a file window, which hold every kind of work. */
+function catchupRuleKey(b) {
+  var k = b.domain ? actNorm(b.domain)
+        : actIsBrowser(b.app) || ACT_NO_TITLE_APPS.indexOf(actNorm(String(b.app || '').replace(/\.exe$/i, ''))) !== -1 ? ''
+        : actNorm(String(b.app || '').replace(/\.exe$/i, ''));
+  return k.length >= ACT_KEY_MIN && k.length <= ACT_KEY_MAX ? k : '';
+}
+
+/** Insert the rule, or point an existing one at the new project. Best effort. */
+function learnRule(r) {
+  sb.from('activity_rules').insert({ user_id: sbUser.id, keyword: r.keyword, project: r.project, source: 'fix' })
+    .then(function (res) {
+      if (!res.error || res.error.code !== '23505') return;
+      return sb.from('activity_rules').update({ project: r.project, source: 'fix', updated_at: new Date().toISOString() })
+        .eq('keyword', r.keyword);
+    }).then(function () {}, function () {});
 }
 
 function closeCatchUp() {

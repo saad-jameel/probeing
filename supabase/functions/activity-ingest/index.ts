@@ -11,7 +11,8 @@
 //                             distraction check runs (nudgeStep)
 //   {op: 'classify', items} -> unclear window titles, ONE Gemini call for the
 //                             batch, counted in gemini_usage; a title is used
-//                             for that call and never stored
+//                             for that call and never stored, and only the
+//                             project comes back (no keyword from a title)
 // and a distraction push's buttons call it with {answer: {id, nonce, choice}},
 // the nonce standing in for a sign-in as wrapup's check does.
 //
@@ -74,12 +75,6 @@ var RESPONSE_TYPES = ['work', 'voice', 'resume', 'break', 'off', 'sleep', 'done'
 var SERVER_RIDS = /^(ab|ar|aw|an|aq|qb|qr|kb|kr|as)-|^wrapup-/;
 var STATE_TYPES = ['work', 'voice', 'resume', 'break', 'off', 'sleep', 'done', 'awake', 'subdone', 'subdrop',
                    'substop', 'pin', 'unpin', 'actanswer'];
-
-/* Words that never make a rule: they name an app or a page, not a project. */
-var KEY_STOP = ['chrome', 'google', 'microsoft', 'windows', 'visual', 'studio', 'code', 'explorer', 'edge',
-                'firefox', 'browser', 'untitled', 'document', 'documents', 'file', 'files', 'folder', 'home',
-                'page', 'search', 'settings', 'window', 'desktop', 'download', 'downloads', 'youtube', 'github',
-                'mail', 'inbox', 'terminal', 'powershell', 'notepad', 'word', 'excel'];
 
 /** sha256 is taken of this: letters and digits, upper case (as app.js watchTokenHash). */
 function tokenText(t) {
@@ -159,8 +154,9 @@ function nudgeStep(d) {
   if (ab) {
     var back = (d.blocks || []).filter(function (b) {
       var long = b.end - b.start;
+      // Unclear counts only on a laptop: a phone's browser is unclear while he scrolls.
       return b.start >= ab.at && ((b.category === 'work' || b.category === 'meeting') ? long >= RESUME_WORK_MS
-             : b.category === 'unclear' && long >= RESUME_UNCLEAR_MS);
+             : b.category === 'unclear' && b.kind !== 'phone' && long >= RESUME_UNCLEAR_MS);
     }).sort(function (a, b) { return a.start - b.start; })[0];
     if (back) {
       out.write.push({ type: 'resume', at: Math.max(back.start, ab.at + 1000), rid: 'ar-' + ab.rid.slice(3),
@@ -231,6 +227,19 @@ function nudgePayload(p, nudgeId, nonce, url, key, offsetMin) {
            body: 'No answer in 5 min and it counts as a break from ' + clock12(p.start, offsetMin) + '.' };
 }
 
+var ANSWER_OPEN_MS = 30 * MIN_MS;
+
+/** Is a push still open to its buttons? A question until answered; a push or an auto
+ *  break for 30 minutes, and only while no state row of his came after it. */
+function answerOpen(n, now, rows) {
+  if (n.state === 'question') return true;
+  if (n.state !== 'sent' && n.state !== 'autobreak') return false;
+  if (!(now - n.pushed_at <= ANSWER_OPEN_MS)) return false;
+  return !(rows || []).some(function (r) {
+    return r.at > n.pushed_at && RESPONSE_TYPES.indexOf(r.type) !== -1 && !SERVER_RIDS.test(String(r.rid || ''));
+  });
+}
+
 /** The rows an answer writes, by the nudge's state. choice: 'break' or 'working'. */
 function answerRows(n, choice, now) {
   if (choice === 'break') {
@@ -260,21 +269,19 @@ function classifyPrompt(items, projects) {
   });
   lines.push('');
   lines.push('Answer a JSON array with one object per activity, in order: {"n": its number, "project": a ' +
-             'project name from the list or "", "keyword": one word copied from that activity\'s title that ' +
-             'shows the project, or ""}. Pick a project only when the title clearly belongs to it; never ' +
+             'project name from the list or ""}. Pick a project only when the title clearly belongs to it; never ' +
              'guess from the app or website alone.');
   return lines.join('\n');
 }
 
 var CLASSIFY_SCHEMA = {
   type: 'ARRAY',
-  items: { type: 'OBJECT', properties: { n: { type: 'INTEGER' }, project: { type: 'STRING' }, keyword: { type: 'STRING' } },
-           required: ['n', 'project'] }
+  items: { type: 'OBJECT', properties: { n: { type: 'INTEGER' }, project: { type: 'STRING' } }, required: ['n', 'project'] }
 };
 
-/** Gemini's answer -> [{key, project, keyword}] for items it placed. Names are
- *  checked against the list; a keyword must be in the title and not a stop word. */
-function readClassify(text, items, projects, lists) {
+/** Gemini's answer -> [{key, project}] for items it placed, names checked against
+ *  the list. Nothing from a title is kept (Saad, 9 Oct): no keyword comes back. */
+function readClassify(text, items, projects) {
   var got;
   try { got = JSON.parse(String(text || '')); } catch (e) { return []; }
   if (!Array.isArray(got)) return [];
@@ -285,16 +292,13 @@ function readClassify(text, items, projects, lists) {
     var it = g && items[Number(g.n) - 1];
     var project = g && canon['p' + String(g.project || '').trim().toLowerCase()];
     if (!it || !project) return;
-    var k = A.actNorm(g.keyword);
-    var ok = k.length >= A.ACT_KEY_MIN && k.length <= A.ACT_KEY_MAX && A.actNorm(it.title).indexOf(k) !== -1 &&
-             KEY_STOP.indexOf(k) === -1 && k !== A.actNorm(String(it.app || '').replace(/\.exe$/i, '')) &&
-             !A.actListHit(A.actLists(lists)['private'], { app: k, host: '', title: k }, true);
-    out.push({ key: it.key, project: project, keyword: ok ? k : '' });
+    out.push({ key: it.key, project: project });
   });
   return out;
 }
 
-/** Items fit to send: private ones dropped, titles scrubbed, at most CLASSIFY_MAX. */
+/** Items fit to send: private ones, terminals, file windows and path-like titles dropped,
+ *  titles scrubbed, at most CLASSIFY_MAX. */
 function classifyItems(items, lists) {
   var priv = A.actLists(lists)['private'];
   var out = [];
@@ -303,7 +307,9 @@ function classifyItems(items, lists) {
     var title = A.actScrubTitle(it.title);
     var app = A.actCleanApp(it.app);
     var domain = A.actCleanDomain(it.domain);
-    if (!title || A.actListHit(priv, { app: app, host: domain, title: title }, true)) return;
+    var raw = String(it.title == null ? '' : it.title);
+    if (!title || !A.actTitleSendable(app, raw) || A.ACT_PRIVATE_TITLE.test(raw) ||
+        A.actListHit(priv, { app: app, host: domain, title: raw }, true)) return;
     var blocks = (Array.isArray(it.blocks) ? it.blocks : []).map(function (x) { return Date.parse(String(x)); })
       .filter(function (t) { return isFinite(t); }).slice(0, 200);
     out.push({ key: String(it.key || '').slice(0, 300), title: title, app: app, domain: domain, blocks: blocks });
@@ -421,17 +427,21 @@ async function writeRow(sb: Sb, owner: string, zone: string, w: Record<string, a
   return !res.error;
 }
 
-function blockOf(r: Record<string, any>) {
+function blockOf(r: Record<string, any>, kinds?: Record<string, string>) {
   return { id: r.id, device_id: r.device_id, start: ms(r.started_at), end: ms(r.ended_at), category: r.category,
-           project: r.project || '', app: r.app || '', domain: r.domain || '', rule_key: r.rule_key || '' };
+           project: r.project || '', app: r.app || '', domain: r.domain || '', rule_key: r.rule_key || '',
+           kind: (kinds && kinds[r.device_id]) || 'laptop' };
 }
 
 /** The distraction check after an ingest: decisions, rows, pushes. */
 async function runNudges(sb: Sb, owner: string, now: number, set: Record<string, any>, req: Request) {
   const rows = (await readRows(sb, owner, now - READ_BACK_MS));
   const walk = A.actWalk(rows, now - READ_BACK_MS, now);
+  const kinds: Record<string, string> = {};
+  must(await sb.from('watch_devices').select('id, kind').eq('user_id', owner).limit(50)).forEach((d) => { kinds[d.id] = d.kind; });
   const blocks = must(await sb.from('activity_blocks').select('*').eq('user_id', owner)
-    .gte('ended_at', iso(now - 6 * 3600000)).order('started_at', { ascending: true }).limit(2000)).map(blockOf);
+    .gte('ended_at', iso(now - 6 * 3600000)).order('started_at', { ascending: true }).limit(2000))
+    .map((r) => blockOf(r, kinds));
   const nudgeRows = must(await sb.from('activity_nudges').select('id, device_id, streak_start, pushed_at, state, span_end')
     .eq('user_id', owner).gte('streak_start', iso(now - 12 * 3600000)).limit(500));
   const nudges = nudgeRows.map((n) => ({ id: n.id, device_id: n.device_id, streak_start: ms(n.streak_start),
@@ -440,7 +450,8 @@ async function runNudges(sb: Sb, owner: string, now: number, set: Record<string,
                            rows: rows.map((r) => ({ at: ms(r.at), type: r.type, rid: r.rid || '' })) });
   const report: Record<string, unknown> = { decided: step.decide.length, wrote: [], pushed: [] };
 
-  for (const w of step.write) {
+  // A backdated row never lands on an instant one of his own state rows already decides.
+  for (const w of A.actSkipTies(step.write, rows)) {
     await writeRow(sb, owner, set.zone, w);
     (report.wrote as string[]).push(w.rid);
   }
@@ -482,9 +493,14 @@ async function opConfig(sb: Sb, dev: Record<string, any>, body: Record<string, a
   let from = ms(body.from);
   if (!isFinite(from) || from < now - CONFIG_BACK_MS) from = now - CONFIG_BACK_MS;
   const { walk, spans } = await watchSpans(sb, dev.user_id, Math.min(from, now), now);
+  // The day is over (End day, Sleep): a push still waiting is closed, never turned into a break.
+  if (walk.closed) {
+    await sb.from('activity_nudges').update({ state: 'closed', decided_at: iso(now) })
+      .eq('user_id', dev.user_id).eq('state', 'sent');
+  }
   const { projects, rules } = await readProjects(sb, dev.user_id, now);
   return reply(200, { ok: true, device: dev.label, now: iso(now), lists: set.lists, projects,
-                      rules: rules.map((r) => ({ keyword: r.keyword, project: r.project })),
+                      rules: rules.filter((r) => r.source !== 'gemini').map((r) => ({ keyword: r.keyword, project: r.project })),
                       spans: spans.map((s) => [iso(s[0]), iso(s[1])]), working: walk.working,
                       autoBreak: Boolean(walk.autoBreak) });
 }
@@ -553,6 +569,8 @@ async function opClassify(sb: Sb, dev: Record<string, any>, body: Record<string,
   const set = await readSettings(sb, owner, now);
   const items = classifyItems(body.items, set.lists);
   if (!items.length) return reply(200, { ok: true, act: 'nothing', results: [] });
+  // In the watcher's own break it only looks for the way back: no titles to Gemini.
+  if ((await watchSpans(sb, owner, now, now)).walk.autoBreak) return reply(200, { ok: true, act: 'paused', results: [] });
   const { projects } = await readProjects(sb, owner, now);
   if (!projects.length) return reply(200, { ok: true, act: 'no-projects', results: [] });
   const key = Deno.env.get('GEMINI_API_KEY') || '';
@@ -569,21 +587,16 @@ async function opClassify(sb: Sb, dev: Record<string, any>, body: Record<string,
     if (g.day) await spendDay(sb, owner, day, capAll);
     return reply(200, { ok: true, act: g.day ? 'budget' : 'failed', error: g.error, results: [] });
   }
-  const results = readClassify(g.text, items, projects, set.lists);
+  const results = readClassify(g.text, items, projects);
   for (const r of results) {
     const it = items.filter((x) => x.key === r.key)[0];
     if (it && it.blocks.length) {
-      await sb.from('activity_blocks').update({ category: 'work', project: r.project, rule_key: r.keyword, updated_at: iso(now) })
+      await sb.from('activity_blocks').update({ category: 'work', project: r.project, rule_key: '', updated_at: iso(now) })
         .eq('device_id', dev.id).eq('category', 'unclear').in('started_at', it.blocks.map(iso));
-    }
-    if (r.keyword) {
-      // A rule he made or corrected is never replaced by Gemini's.
-      await sb.from('activity_rules').upsert({ user_id: owner, keyword: r.keyword, project: r.project, source: 'gemini' },
-                                             { onConflict: 'user_id,keyword', ignoreDuplicates: true });
     }
   }
   return reply(200, { ok: true, act: 'filed', calls: 1, model,
-                      results: results.map((r) => ({ key: r.key, project: r.project, keyword: r.keyword })) });
+                      results: results.map((r) => ({ key: r.key, project: r.project })) });
 }
 
 /** A push's button, from sw.js. The nonce is the credential. */
@@ -599,8 +612,12 @@ async function opAnswer(sb: Sb, ans: Record<string, any>, now: number) {
   const pinned = (Deno.env.get('ALLOWED_USER_ID') || '').trim();
   if (pinned && pinned !== n.user_id) return reply(403, { ok: false, error: 'not this account' });
   const set = await readSettings(sb, n.user_id, now);
-  const nudge = { id: n.id, state: n.state, streak_start: ms(n.streak_start), span_end: ms(n.span_end) };
-  for (const w of answerRows(nudge, choice, now)) await writeRow(sb, n.user_id, set.zone, w);
+  const nudge = { id: n.id, state: n.state, streak_start: ms(n.streak_start), span_end: ms(n.span_end), pushed_at: ms(n.pushed_at) };
+  const rows = await readRows(sb, n.user_id, Math.min(nudge.streak_start, now) - 60000);
+  if (!answerOpen(nudge, now, rows.map((r) => ({ at: ms(r.at), type: r.type, rid: r.rid || '' })))) {
+    return reply(200, { ok: true, over: true, message: 'That one\'s over' });
+  }
+  for (const w of A.actSkipTies(answerRows(nudge, choice, now), rows)) await writeRow(sb, n.user_id, set.zone, w);
   await sb.from('activity_nudges').update({ state: choice, decided_at: iso(now) }).eq('id', id);
   // Retire it on the other devices, quietly, under the same tag.
   await pushAll(sb, n.user_id, JSON.stringify({ kind: 'distract-answered', tag: 'probeing-distract',
@@ -618,13 +635,14 @@ Deno.serve(async (req: Request): Promise<Response> => {
   } catch (_e) {
     return reply(400, { ok: false, error: 'send JSON' });
   }
+  if (!body || typeof body !== 'object' || Array.isArray(body)) return reply(400, { ok: false, error: 'send a JSON object' });
   const sb = admin();
   const now = Date.now();
   try {
     if (body && body.answer && typeof body.answer === 'object') return await opAnswer(sb, body.answer, now);
 
     const token = tokenText(req.headers.get('x-device-token') || '');
-    if (token.length < 24) return reply(401, { ok: false, error: 'pair this laptop in Settings first' });
+    if (token.length < 24) return reply(401, { ok: false, error: 'pair this device in Settings first' });
     const dev = must(await sb.from('watch_devices').select('id, user_id, label, kind')
       .eq('secret_sha256', await sha256Hex(token)).limit(1))[0];
     if (!dev) return reply(401, { ok: false, error: 'this token is not paired (revoked?)' });

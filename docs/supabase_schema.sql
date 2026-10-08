@@ -1552,15 +1552,16 @@ exception when duplicate_object then null; end $$;
 
 revoke insert, update, delete, truncate on table public.activity_blocks from anon, authenticated;
 
--- activity_rules: keyword -> project. His own ('hand'), from a correction in the
--- catch-up popup ('fix'), or learned from Gemini ('gemini', server only). The
--- keyword is squashed: lower case, letters and digits ("probeing").
+-- activity_rules: keyword -> project. His own ('hand'), or from a correction in the
+-- catch-up sheet ('fix', the block's site or app name). Never words from a window
+-- title, and never from Gemini (Saad, 9 Oct). The keyword is squashed: lower case,
+-- letters and digits ("probeing").
 create table if not exists public.activity_rules (
   id          uuid        primary key default gen_random_uuid(),
   user_id     uuid        not null default auth.uid() references auth.users on delete cascade,
   keyword     text        not null check (keyword ~ '^[0-9a-z\u0080-￿]{4,40}$'),
   project     text        not null check (char_length(project) between 1 and 120),
-  source      text        not null default 'hand' check (source in ('hand', 'fix', 'gemini')),
+  source      text        not null default 'hand' check (source in ('hand', 'fix')),
   created_at  timestamptz not null default now(),
   updated_at  timestamptz not null default now(),
   constraint activity_rules_user_keyword_key unique (user_id, keyword)

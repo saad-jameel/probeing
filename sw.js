@@ -367,6 +367,12 @@ self.addEventListener('notificationclick', function (event) {
       return;
     }
     event.waitUntil(answerDistract(nd, choice).then(function (reply) {
+      if (reply && reply.ok && reply.over) {
+        return self.registration.showNotification('ProBeing', {
+          body: 'That one\'s over — nothing was changed.', icon: 'icons/icon-192.png', badge: 'icons/favicon-32.png',
+          tag: DISTRACT_TAG, silent: true
+        });
+      }
       if (reply && reply.ok) return;
       return self.registration.showNotification('ProBeing', {
         body: 'Could not record your answer. Open ProBeing to answer it there.',
