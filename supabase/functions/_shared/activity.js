@@ -155,7 +155,9 @@ function actEntryHits(entry, seg, withTitle) {
 function actTitleNamesSite(host, path, title) {
   var t = String(title == null ? '' : title).toLowerCase();
   var label = String(host).split('.')[0];
-  if (label.length < 3 || !new RegExp('(^|[^a-z0-9])' + label + '([^a-z0-9]|$)').test(t)) return false;
+  // His entry is text, not a pattern: "(abc.com" must not throw.
+  var lit = label.replace(/[.*+?^${}()|[\]\\\/-]/g, '\\$&');
+  if (label.length < 3 || !new RegExp('(^|[^a-z0-9])' + lit + '([^a-z0-9]|$)').test(t)) return false;
   var part = String(path || '').split('/')[1] || '';
   return !part || (/^[a-z0-9-]{3,}$/.test(part) && new RegExp('(^|[^a-z0-9])' + part + '([^a-z0-9]|$)').test(t));
 }

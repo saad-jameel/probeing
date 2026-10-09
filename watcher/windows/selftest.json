@@ -1035,6 +1035,122 @@
     "project": "",
     "key": ""
    }
+  },
+  {
+   "name": "a malformed list entry matches nothing, and does not throw",
+   "seg": {
+    "app": "chrome.exe",
+    "title": "abc news",
+    "host": "",
+    "path": "",
+    "incognito": false
+   },
+   "cfg": {
+    "lists": {
+     "distract": [
+      "(abc.com",
+      "[x.com",
+      "a+b.com"
+     ],
+     "private": [
+      "(bank.com"
+     ]
+    },
+    "rules": [
+     {
+      "keyword": "docker",
+      "project": "OneNet"
+     },
+     {
+      "keyword": "neuravue",
+      "project": "NeuraVue"
+     }
+    ],
+    "projects": [
+     "ProBeing",
+     "OneNet",
+     "NeuraVue"
+    ]
+   },
+   "want": {
+    "category": "unclear",
+    "project": "",
+    "key": ""
+   }
+  },
+  {
+   "name": "a list entry is text, not a pattern: (abc.com names a literal (abc",
+   "seg": {
+    "app": "chrome.exe",
+    "title": "(abc) home",
+    "host": "",
+    "path": "",
+    "incognito": false
+   },
+   "cfg": {
+    "lists": {
+     "distract": [
+      "(abc.com"
+     ]
+    },
+    "rules": [
+     {
+      "keyword": "docker",
+      "project": "OneNet"
+     },
+     {
+      "keyword": "neuravue",
+      "project": "NeuraVue"
+     }
+    ],
+    "projects": [
+     "ProBeing",
+     "OneNet",
+     "NeuraVue"
+    ]
+   },
+   "want": {
+    "category": "distraction",
+    "project": "",
+    "key": ""
+   }
+  },
+  {
+   "name": "a+b.com is literal: aab is not a+b",
+   "seg": {
+    "app": "chrome.exe",
+    "title": "aab news",
+    "host": "",
+    "path": "",
+    "incognito": false
+   },
+   "cfg": {
+    "lists": {
+     "distract": [
+      "a+b.com"
+     ]
+    },
+    "rules": [
+     {
+      "keyword": "docker",
+      "project": "OneNet"
+     },
+     {
+      "keyword": "neuravue",
+      "project": "NeuraVue"
+     }
+    ],
+    "projects": [
+     "ProBeing",
+     "OneNet",
+     "NeuraVue"
+    ]
+   },
+   "want": {
+    "category": "unclear",
+    "project": "",
+    "key": ""
+   }
   }
  ],
  "pipeline": [

@@ -184,7 +184,8 @@ function Act-EntryHits($entry, $seg, [bool]$withTitle) {
 function Act-TitleNamesSite($h, $path, $title) {
   $t = (Act-Str $title).ToLowerInvariant()
   $label = ([string]$h).Split('.')[0]
-  if ($label.Length -lt 3 -or -not ($t -cmatch ('(^|[^a-z0-9])' + $label + '([^a-z0-9]|$)'))) { return $false }
+  # His entry is text, not a pattern: "(abc.com" must not throw.
+  if ($label.Length -lt 3 -or -not ($t -cmatch ('(^|[^a-z0-9])' + [regex]::Escape($label) + '([^a-z0-9]|$)'))) { return $false }
   $parts = ([string]$path).Split('/')
   $part = ''
   if ($parts.Length -gt 1) { $part = $parts[1] }

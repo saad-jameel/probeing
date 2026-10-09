@@ -168,17 +168,15 @@ public final class PhoneRules {
     static boolean titleNamesSite(String host, String path, String title) {
         String t = (title == null ? "" : title).toLowerCase(Locale.ROOT);
         String label = host.split("\\.", -1)[0];
-        try {
-            if (label.length() < 3 || !Pattern.compile("(^|[^a-z0-9])" + label + "([^a-z0-9]|$)").matcher(t).find()) {
-                return false;
-            }
-            String[] parts = (path == null ? "" : path).split("/", -1);
-            String part = parts.length > 1 ? parts[1] : "";
-            return part.isEmpty() || (part.matches("[a-z0-9-]{3,}")
-                    && Pattern.compile("(^|[^a-z0-9])" + part + "([^a-z0-9]|$)").matcher(t).find());
-        } catch (RuntimeException e) {
-            return false;       // an entry that is not a valid pattern names nothing
+        // His entry is text, not a pattern: "(abc.com" must not throw.
+        if (label.length() < 3
+                || !Pattern.compile("(^|[^a-z0-9])" + Pattern.quote(label) + "([^a-z0-9]|$)").matcher(t).find()) {
+            return false;
         }
+        String[] parts = (path == null ? "" : path).split("/", -1);
+        String part = parts.length > 1 ? parts[1] : "";
+        return part.isEmpty() || (part.matches("[a-z0-9-]{3,}")
+                && Pattern.compile("(^|[^a-z0-9])" + part + "([^a-z0-9]|$)").matcher(t).find());
     }
 
     static boolean entryHits(String entry, Seg seg, boolean withTitle) {
