@@ -223,6 +223,7 @@ body {
 }
 /* Stage 18c: links that open the Android app look like the buttons beside them. */
 a.btn, a.link-btn { display: inline-block; text-decoration: none; }
+a.btn[hidden], a.link-btn[hidden] { display: none; }
 
 /* ----------------------------------------------------------------- chips */
 
@@ -1019,6 +1020,9 @@ a.btn, a.link-btn { display: inline-block; text-decoration: none; }
 /* Looks right stays in reach however long the list is. */
 .catchup-dlg form > .dlg-actions { position: sticky; bottom: 0; background: var(--panel); padding: 10px 0 2px; margin-top: 10px; }
 #watchPairLine { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 12px; }
+/* Stage 18c: the whole phone code shows on a 360 px screen. */
+#phonePairCode { width: 100%; box-sizing: border-box; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 13px; word-break: break-all; resize: none; }
 
 /* Stage 16: What's done. A fixed height, so switching project does not resize it.
    Only #doneProjects (.pick-grid, which has its pair) and #doneNote are ever hidden (rule 6). */

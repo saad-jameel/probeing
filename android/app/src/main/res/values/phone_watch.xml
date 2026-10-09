@@ -10,6 +10,7 @@
     <string name="phone_usage_missing">This phone has no Usage access page to open. Look under Settings, Apps, Special app access.</string>
     <string name="phone_paired_as">Paired as: %1$s.</string>
     <string name="phone_not_paired">Not paired. In ProBeing: Settings, Laptop and phone activity, Pair this phone.</string>
+    <string name="phone_key_lost">Not paired: this phone can no longer open its stored code (restored or reinstalled?). Pair it again.</string>
     <string name="phone_last_run">Last run %1$s: %2$s</string>
     <string name="phone_offer">ProBeing just made a code for this phone. Press Pair only if you pressed \"Pair this phone\" a moment ago.</string>
     <string name="phone_offer_replace">ProBeing just made a new code for this phone. Pair replaces the current pairing. Press it only if you pressed \"Pair this phone\" a moment ago.</string>

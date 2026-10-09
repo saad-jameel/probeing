@@ -8,6 +8,7 @@ import java.util.Comparator;
 import java.util.Date;
 import java.util.HashMap;
 import java.util.HashSet;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
@@ -285,6 +286,8 @@ public final class PhoneRules {
      * The package is matched like a laptop title (private words only) and never
      * sent; a private block carries no app name at all.
      */
+    static final String OTHER_APP = "Other app";
+
     public static String[] classifyApp(String pkg, String label, Cfg cfg) {
         String name = cleanApp(label == null || label.isEmpty() ? pkg : label);
         Seg seg = new Seg();
@@ -296,6 +299,8 @@ public final class PhoneRules {
         priv.addAll(Arrays.asList(PHONE_PRIVATE));
         if (!listHit(priv, seg, true).isEmpty()) return new String[]{"private", "", "", ""};
         if (isCallApp(pkg)) return new String[]{"meeting", "Phone call", "", ""};
+        // No name to show: never the package itself.
+        if (label == null || label.trim().isEmpty()) return new String[]{"unclear", OTHER_APP, "", ""};
         // The package is matched only for privacy: rules see the app's name, like a laptop app.
         seg.title = "";
         String[] c = classify(seg, cfg);
@@ -439,11 +444,18 @@ public final class PhoneRules {
         public final long time;
         public final int type;
         public final String pkg;
+        /** The activity (screen) inside the app; "" when unknown. */
+        public final String cls;
 
         public Event(long time, int type, String pkg) {
+            this(time, type, pkg, "");
+        }
+
+        public Event(long time, int type, String pkg, String cls) {
             this.time = time;
             this.type = type;
             this.pkg = pkg == null ? "" : pkg;
+            this.cls = cls == null ? "" : cls;
         }
     }
 
@@ -462,9 +474,12 @@ public final class PhoneRules {
 
     /**
      * The app in front, piece by piece, cut to [from, to] and to `spans` (when he
-     * was working). An app still in front at the end runs to `to`. The screen
-     * going off or locking ends it; a launcher or the system UI (`ignore`) is
-     * not time on anything.
+     * was working). Each screen (activity) is tracked: an app moving to its next
+     * screen stays on, and with two apps resumed (split screen) the newest counts,
+     * then the other again once it closes. Only one app counts at a time, so a
+     * split screen or a picture-in-picture video (paused to Android) is
+     * undercounted. The screen going off or locking ends it; a launcher or the
+     * system UI (`ignore`) is not time on anything. An app still in front runs to `to`.
      */
     public static List<Piece> pieces(List<Event> events, Set<String> ignore, long from, long to, List<long[]> spans) {
         List<long[]> allowed = new ArrayList<>();
@@ -474,24 +489,41 @@ public final class PhoneRules {
             if (b > a) allowed.add(new long[]{a, b});
         }
         List<Piece> raw = new ArrayList<>();
+        // Resumed screens, oldest first; the last one is in front.
+        LinkedHashMap<String, String> resumed = new LinkedHashMap<>();
+        // A screen paused and resumed again: its old instance's STOPPED may still come.
+        Set<String> pausedSince = new HashSet<>();
+        Set<String> staleStop = new HashSet<>();
         String cur = null;
         long since = 0;
         for (Event e : events) {
             if (e.time > to) break;
+            String key = e.pkg + "/" + e.cls;
             if (e.type == RESUMED) {
-                if (cur != null && cur.equals(e.pkg)) continue;
-                if (cur != null) raw.add(new Piece(since, e.time, cur));
-                cur = ignore.contains(e.pkg) || e.pkg.isEmpty() ? null : e.pkg;
-                since = e.time;
-            } else if (e.type == PAUSED || e.type == STOPPED) {
-                if (cur != null && cur.equals(e.pkg)) {
-                    raw.add(new Piece(since, e.time, cur));
-                    cur = null;
-                }
+                resumed.remove(key);
+                resumed.put(key, e.pkg);
+                if (pausedSince.remove(key)) staleStop.add(key);
+            } else if (e.type == PAUSED) {
+                resumed.remove(key);
+                pausedSince.add(key);
+            } else if (e.type == STOPPED) {
+                if (staleStop.remove(key)) continue;           // the old instance stopping, not this one
+                resumed.remove(key);
+                pausedSince.remove(key);
             } else if (e.type == SCREEN_OFF || e.type == KEYGUARD_SHOWN || e.type == SHUTDOWN) {
-                if (cur != null) raw.add(new Piece(since, e.time, cur));
-                cur = null;
+                resumed.clear();
+                pausedSince.clear();
+                staleStop.clear();
+            } else {
+                continue;
             }
+            String front = null;
+            for (String p : resumed.values()) front = p;
+            if (front != null && (ignore.contains(front) || front.isEmpty())) front = null;
+            if (front == null ? cur == null : front.equals(cur)) continue;
+            if (cur != null) raw.add(new Piece(since, e.time, cur));
+            cur = front;
+            since = e.time;
         }
         if (cur != null) raw.add(new Piece(since, to, cur));
         List<Piece> out = new ArrayList<>();

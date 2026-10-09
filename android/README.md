@@ -181,7 +181,8 @@ in ProBeing's Settings.
   front and left, and when the screen went off or locked. Nothing else: no screen
   content, no notification text, no phone-state, contacts or call log permission.
 - Sent per block: start, end, the app's name, a category, and a project only when
-  one of your keywords names the app. Never the package name.
+  one of your keywords names the app. Never the package name: an app with no
+  name Android will show this app goes as "Other app".
 - **Private:** your private list (WhatsApp, Signal, Telegram, banking words …),
   matched on the app's name and its package, plus phone-only words (wallet,
   PayPal, Easypaisa, JazzCash, SadaPay, NayaPay, authenticator, Messages). A
@@ -194,6 +195,9 @@ in ProBeing's Settings.
   call"). A call only counts while its screen is on: with the phone at your ear
   the screen is off and Android records nothing. Knowing about calls with the
   screen off needs the phone-state permission, which this app does not ask for.
+- One app counts at a time. In split screen the newest one counts, and the
+  other again once it closes; a picture-in-picture video is paused to Android
+  and does not count. Both undercount, and the phone cannot tell more.
 - Everything else is "unclear" (Chrome, which also runs ProBeing itself, lands
   here), shown in the catch-up sheet for you to file. No window titles exist on
   the phone, so nothing goes to Gemini.
@@ -207,11 +211,20 @@ distraction is on screen the watcher also schedules its own extra runs: at the
 distraction's 10-minute mark, then 5½ minutes after that. Simulated against the
 server's real rules (`claudeWorkingDocs/tests/stage18c_phone.js`): the push comes
 **10 to 15½ minutes** into a distraction (15½ only when it began just after a
-run), and the break **5½ minutes** after the push. Android may run the 15-minute
-job up to 5 minutes early or late, and delays all background work in battery
-saver or for an app it judges rarely used, so on a real phone allow a few minutes
-more. The extra runs happen while the screen is on, which is when Android is
-least strict.
+run), and the break **5½ minutes** after the push.
+
+**On a real phone the push can be later than that, and Android decides, not
+ProBeing.** It moves each run up to 5 minutes either way, and holds background
+work back for apps it judges little used (its "standby buckets"), in battery
+saver, and through the phone maker's own battery killers. To keep it on time:
+Settings → Apps → ProBeing → Battery → **Unrestricted**.
+
+WorkManager adds four permissions of its own, none of which needs asking:
+`WAKE_LOCK`, `ACCESS_NETWORK_STATE`, `RECEIVE_BOOT_COMPLETED` (to reschedule
+after a restart) and `FOREGROUND_SERVICE` (declared by the library, unused here).
+
+The app's files are not backed up (`allowBackup="false"`): a restored phone
+must pair again, and the Phone activity screen says so.
 
 ### Notes for whoever changes this
 

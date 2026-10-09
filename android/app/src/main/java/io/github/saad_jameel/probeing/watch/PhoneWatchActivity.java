@@ -109,7 +109,9 @@ public class PhoneWatchActivity extends Activity {
 
     private void refresh() {
         boolean usage = UsageReader.allowed(this);
-        boolean paired = store.hasToken();
+        // Opened, not just present: a token whose Keystore key is gone is no pairing.
+        boolean paired = store.paired();
+        boolean lost = !paired && store.hasToken();
         TextView status = findViewById(R.id.phone_status);
         StringBuilder sb = new StringBuilder();
         sb.append(usage ? getString(R.string.phone_usage_on) : getString(R.string.phone_usage_off)).append('\n');
@@ -117,7 +119,7 @@ public class PhoneWatchActivity extends Activity {
             String label = store.label();
             sb.append(getString(R.string.phone_paired_as, label.isEmpty() ? "this phone" : label)).append('\n');
         } else {
-            sb.append(getString(R.string.phone_not_paired)).append('\n');
+            sb.append(getString(lost ? R.string.phone_key_lost : R.string.phone_not_paired)).append('\n');
         }
         if (store.lastRun() > 0) {
             sb.append(getString(R.string.phone_last_run, ago(store.lastRun()), store.lastNote()));

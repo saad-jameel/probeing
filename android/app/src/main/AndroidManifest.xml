@@ -57,9 +57,12 @@
 
     
 
+    <!-- ADDED BY HAND (Stage 18c): allowBackup was "true". No backup of this
+         app's files, so a sealed watcher token never lands on another phone
+         (where its Keystore key does not exist). Everything else lives in Chrome. -->
     <application
         android:name="Application"
-        android:allowBackup="true"
+        android:allowBackup="false"
         android:icon="@mipmap/ic_launcher"
         android:label="@string/appName"
         

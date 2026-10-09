@@ -15003,11 +15003,7 @@ function renderWatchDevices(rows) {
 /** Settings: paired laptops, the switch, the lists and the keywords. */
 async function loadWatch() {
   var out = $('watchResult');
-  $('watchPairBox').hidden = true;
-  $('watchPairLine').value = '';
-  $('phonePairBox').hidden = true;
-  $('phonePairCode').value = '';
-  $('phoneFinishLink').href = '#';
+  forgetPairCodes();
   out.textContent = '';
   if (!supabaseReady()) { renderWatchDevices([]); out.textContent = 'Sign in to pair a laptop.'; return; }
   try {
@@ -15129,6 +15125,17 @@ $('phoneCopyBtn').addEventListener('click', function () {
     $('phonePairCode').select();
   }
 });
+
+/** The laptop line and the phone code are shown once: gone as soon as Settings closes. */
+function forgetPairCodes() {
+  $('watchPairBox').hidden = true;
+  $('watchPairLine').value = '';
+  $('phonePairBox').hidden = true;
+  $('phonePairCode').value = '';
+  $('phoneFinishLink').href = '#';
+}
+
+$('settingsDlg').addEventListener('close', forgetPairCodes);
 
 $('watchNudgeOn').addEventListener('change', async function () {
   var box = this;

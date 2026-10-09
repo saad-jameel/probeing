@@ -96,7 +96,7 @@ public final class WatchWorker extends Worker {
         long now = System.currentTimeMillis();
         String token = store.token();
         if (token.isEmpty()) {
-            store.noteRun(now, "Not paired.");
+            store.noteRun(now, store.hasToken() ? "This phone can no longer open its code. Pair it again." : "Not paired.");
             return -1;
         }
         if (!UsageReader.allowed(ctx)) {

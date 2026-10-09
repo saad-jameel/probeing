@@ -59,7 +59,7 @@ final class UsageReader {
             int t = e.getEventType();
             if (t == PhoneRules.RESUMED || t == PhoneRules.PAUSED || t == PhoneRules.STOPPED
                     || t == PhoneRules.SCREEN_OFF || t == PhoneRules.KEYGUARD_SHOWN || t == PhoneRules.SHUTDOWN) {
-                out.add(new PhoneRules.Event(e.getTimeStamp(), t, e.getPackageName()));
+                out.add(new PhoneRules.Event(e.getTimeStamp(), t, e.getPackageName(), e.getClassName()));
             }
         }
         return out;
@@ -82,19 +82,19 @@ final class UsageReader {
         return out;
     }
 
-    /** Each package's name as the launcher shows it; the package itself when hidden. */
+    /** Each package's name as the launcher shows it; "" when hidden (sent as "Other app"). */
     static Map<String, String> labels(Context context, List<PhoneRules.Piece> pieces) {
         Map<String, String> out = new HashMap<>();
         PackageManager pm = context.getPackageManager();
         for (PhoneRules.Piece p : pieces) {
             if (out.containsKey(p.pkg)) continue;
-            String name = p.pkg;
+            String name = "";
             try {
                 ApplicationInfo ai = pm.getApplicationInfo(p.pkg, 0);
                 CharSequence l = pm.getApplicationLabel(ai);
                 if (l != null && l.length() > 0) name = l.toString();
             } catch (Exception e) {
-                // Not visible to this app: keep the package name.
+                // Not visible to this app: no name.
             }
             out.put(p.pkg, name);
         }
