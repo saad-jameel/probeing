@@ -13,6 +13,7 @@ import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 import java.util.TimeZone;
+import java.util.regex.Pattern;
 
 /**
  * The phone watcher's logic (Stage 18c), with no Android in it so a plain JDK
@@ -44,6 +45,12 @@ public final class PhoneRules {
             "whatsapp", "messenger", "signal", "telegram"};
     static final String[] DEFAULT_MEETING = {"meet.google.com", "zoom.us", "zoom", "teams.microsoft.com", "teams",
             "discord"};
+
+    static final String[] BROWSERS = {"chrome", "msedge", "brave", "firefox", "opera", "vivaldi"};
+
+    /** A browser's own private window, said in its title (ACT_PRIVATE_TITLE). */
+    static final Pattern PRIVATE_TITLE = Pattern.compile("incognito|inprivate|private browsing",
+            Pattern.CASE_INSENSITIVE);
 
     /** Apps that are a website on the laptop, so his site entries reach them. */
     static final String[][] APP_SITES = {
@@ -153,6 +160,27 @@ public final class PhoneRules {
         public boolean anyPath;
     }
 
+    static boolean isBrowser(String app) {
+        return Arrays.asList(BROWSERS).contains(norm((app == null ? "" : app).replaceFirst("(?i)\\.exe$", "")));
+    }
+
+    /** As actTitleNamesSite: the site's first label as a word in the title, and its path's first part too. */
+    static boolean titleNamesSite(String host, String path, String title) {
+        String t = (title == null ? "" : title).toLowerCase(Locale.ROOT);
+        String label = host.split("\\.", -1)[0];
+        try {
+            if (label.length() < 3 || !Pattern.compile("(^|[^a-z0-9])" + label + "([^a-z0-9]|$)").matcher(t).find()) {
+                return false;
+            }
+            String[] parts = (path == null ? "" : path).split("/", -1);
+            String part = parts.length > 1 ? parts[1] : "";
+            return part.isEmpty() || (part.matches("[a-z0-9-]{3,}")
+                    && Pattern.compile("(^|[^a-z0-9])" + part + "([^a-z0-9]|$)").matcher(t).find());
+        } catch (RuntimeException e) {
+            return false;       // an entry that is not a valid pattern names nothing
+        }
+    }
+
     static boolean entryHits(String entry, Seg seg, boolean withTitle) {
         String e = trim(entry).toLowerCase(Locale.ROOT);
         if (e.isEmpty()) return false;
@@ -161,6 +189,11 @@ public final class PhoneRules {
             String host = (slash == -1 ? e : e.substring(0, slash)).replaceFirst("^www\\.", "");
             String path = slash == -1 ? "" : e.substring(slash);
             String h = seg.host == null ? "" : seg.host;
+            // A private site also counts when only the title names it.
+            if (withTitle && !host.isEmpty() && (seg.title == null ? "" : seg.title).toLowerCase(Locale.ROOT)
+                    .contains(host)) return true;
+            // A browser window the extension did not see: the site's name in its title.
+            if (h.isEmpty() && !host.isEmpty() && isBrowser(seg.app)) return titleNamesSite(host, path, seg.title);
             if (h.isEmpty() || host.isEmpty()) return false;
             if (!h.equals(host) && !h.endsWith("." + host)) return false;
             return path.isEmpty() || seg.anyPath || (seg.path == null ? "" : seg.path).startsWith(path);
@@ -223,7 +256,8 @@ public final class PhoneRules {
 
     /** {category, project, key}: private first, then distraction, then meeting, then the rules. */
     public static String[] classify(Seg seg, Cfg cfg) {
-        if (seg.incognito || !listHit(cfg.lists.get("private"), seg, true).isEmpty()) {
+        if (seg.incognito || PRIVATE_TITLE.matcher(seg.title == null ? "" : seg.title).find()
+                || !listHit(cfg.lists.get("private"), seg, true).isEmpty()) {
             return new String[]{"private", "", ""};
         }
         if (!listHit(cfg.lists.get("distract"), seg, false).isEmpty()) return new String[]{"distraction", "", ""};
