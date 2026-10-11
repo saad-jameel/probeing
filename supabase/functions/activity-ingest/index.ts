@@ -95,6 +95,9 @@ var NIGHT_FROM_H = 21;                 // a sleep from 9 pm (the Sleep button's 
 var QUIET_BACK_MS = 40 * 3600000;      // blocks read for the asleep/break checks and the nights
 var NIGHTS_BACK_MS = 36 * 3600000;     // nights recounted on each run
 var ASK_KINDS = ['awake', 'resume'];
+var ASK_QUIET_MS = 30 * MIN_MS;        // after "Still asleep" or "It was a break", not asked again this long
+/* A row of his of these types after the use a question is about ends the question. */
+var ASK_ENDS = ['work', 'voice', 'resume', 'break', 'off', 'sleep', 'wake'];
 
 /** sha256 is taken of this: letters and digits, upper case (as app.js watchTokenHash). */
 function tokenText(t) {
@@ -233,14 +236,16 @@ function nudgeStep(d) {
 /* ── Item 23: asleep or on a break ─────────────────────────────────────── */
 
 /** The Fajr that ends the night a sleep at `at` began, or null for a nap. A night starts
- *  at 9 pm or after midnight. fajrAfter(t): the first Fajr after t. */
-function nightEnd(at, fajrAfter, offsetMin) {
+ *  at 9 pm or after midnight, or is any sleep still going past midnight (`until`: its end,
+ *  or now). fajrAfter(t): the first Fajr after t. */
+function nightEnd(at, fajrAfter, offsetMin, until) {
   var f = fajrAfter(at);
   if (!isFinite(f) || !(f > at)) return null;
   var local = at + offsetMin * MIN_MS;
   var hour = Math.floor((((local % 86400000) + 86400000) % 86400000) / 3600000);
   var sameDate = Math.floor(local / 86400000) === Math.floor((f + offsetMin * MIN_MS) / 86400000);
-  return hour >= NIGHT_FROM_H || sameDate ? f : null;
+  var midnight = (Math.floor(local / 86400000) + 1) * 86400000 - offsetMin * MIN_MS;
+  return hour >= NIGHT_FROM_H || sameDate || until > midnight ? f : null;
 }
 
 /** Blocks by device, each cut to [from, to]; `keep` picks which. */
@@ -261,8 +266,14 @@ function inUseSpans(list, a, z) {
   return A.actIntersect(a, z, A.actMergeSpans(list.map(function (b) { return [b.start, b.end]; })));
 }
 
-/** Is an awake or back-to-work question still about the state he is in? */
-function askOpen(n, walk) {
+/** Is an awake or back-to-work question still about the state he is in? Not once any
+ *  state row of his (a nap, a wake, End day...) came after the use it is about. */
+function askOpen(n, walk, rows) {
+  var own = ['nw-', 'nr-', 'na-'].map(function (x) { return x + n.id; });
+  var moved = (rows || []).some(function (r) {
+    return r.at > n.streak_start && ASK_ENDS.indexOf(r.type) !== -1 && own.indexOf(String(r.rid || '')) === -1;
+  });
+  if (moved) return false;
   if (n.kind === 'awake') return Boolean(walk && walk.asleep && walk.asleep.at === n.ref_at);
   if (n.kind === 'resume') return Boolean(walk && walk.onBreak && walk.onBreak.at === n.ref_at);
   return false;
@@ -271,8 +282,9 @@ function askOpen(n, walk) {
 /**
  * Asleep or on a break. d: {now, walk (actWalk), blocks [{device_id, kind, start, end,
  * category}] (any mode), nudges [{id, kind, device_id, streak_start, pushed_at, decided_at,
- * state, ref_at}] (ms), rows [{at, type, rid}], nightEnd(at) -> Fajr or null}.
- * Returns {push: [{kind, device_id, dev, start, end, ref}], decide: [{id, state}],
+ * state, ref_at}] (ms), rows [{at, type, rid}], nightEnd(at, until) -> Fajr or null,
+ * checks (his switch; false: no questions, open ones closed; nights still kept)}.
+ * Returns {push: [{kind, device_id, dev, start, end, ref, push}], decide: [{id, state}],
  * nights: [{sleep_at, woke_at, fajr_at, first_at, last_at, minutes, kinds}]}.
  */
 function quietStep(d) {
@@ -287,14 +299,17 @@ function quietStep(d) {
     if (n.state !== 'sent') return;
     var to = hasRid(rows, 'nw-' + n.id) ? 'awake' : hasRid(rows, 'nr-' + n.id) ? 'resumed'
            : hasRid(rows, 'na-' + n.id) ? (n.kind === 'awake' ? 'asleep' : 'break')
-           : askOpen(n, walk) ? '' : 'closed';
+           : d.checks !== false && askOpen(n, walk, rows) ? '' : 'closed';
     if (to) { out.decide.push({ id: n.id, state: to }); state[n.id] = to; }
   });
 
-  // One open question per sleep or break; a run that began before the last push or answer is not asked about again.
+  // One open question per sleep or break; a run that began before the last push or answer is not
+  // asked about again, nor anything for 30 minutes after "Still asleep" / "It was a break". The
+  // first use is asked about; it is pushed only when some use is recent (a late phone run: the sheet only).
   function ask(kind, ref, from, thr, keep) {
     var mine = nudges.filter(function (n) { return n.kind === kind && n.ref_at === ref; });
     if (mine.some(function (n) { return state[n.id] === 'sent'; })) return;
+    if (mine.some(function (n) { return (n.state === 'asleep' || n.state === 'break') && now < n.decided_at + ASK_QUIET_MS; })) return;
     var after = -Infinity;
     mine.forEach(function (n) {
       after = Math.max(after, n.streak_start, isFinite(n.pushed_at) ? n.pushed_at : -Infinity,
@@ -303,28 +318,30 @@ function quietStep(d) {
     });
     var by = cutByDevice(d.blocks, from, now, keep);
     var best = null;
+    var fresh = false;
     Object.keys(by).forEach(function (k) {
       A.actUseRuns(by[k], USE_GAP_MS).forEach(function (r) {
-        if (r.start <= after || r.end < now - USE_FRESH_MS) return;
+        if (r.start <= after) return;
         if (A.actSpansMs(inUseSpans(by[k], Math.max(thr, r.start), r.end)) < USE_MIN_MS) return;
+        if (r.end >= now - USE_FRESH_MS) fresh = true;
         if (!best || r.start < best.start) {
           best = { kind: kind, device_id: k.slice(1), dev: by[k][0].kind || 'laptop', start: r.start, end: r.end, ref: ref };
         }
       });
     });
-    if (best) out.push.push(best);
+    if (best) out.push.push(Object.assign(best, { push: fresh }));
   }
-  if (walk.asleep) {
-    var f = d.nightEnd(walk.asleep.at);
+  if (walk.asleep && d.checks !== false) {
+    var f = d.nightEnd(walk.asleep.at, now);
     ask('awake', walk.asleep.at, walk.asleep.at, f === null ? walk.asleep.at : f, null);
   }
-  if (walk.onBreak) {
+  if (walk.onBreak && d.checks !== false) {
     ask('resume', walk.onBreak.at, walk.onBreak.since, walk.onBreak.since, function (b) { return b.category === 'work'; });
   }
 
   // Disturbed nights: use before Fajr while asleep, brief checks left out, all devices together.
   (walk.sleeps || []).forEach(function (s) {
-    var fajr = d.nightEnd(s.at);
+    var fajr = d.nightEnd(s.at, s.end === null ? now : s.end);
     if (fajr === null || s.at < now - NIGHTS_BACK_MS) return;
     var end = Math.min(fajr, s.end === null ? now : s.end, now);
     var spans = [];
@@ -562,7 +579,8 @@ async function readSettings(sb: Sb, owner: string, now: number) {
     if (isFinite(off)) offset = off;
   } catch (_e) { /* Karachi */ }
   const place = row ? { lat: row.lat, lng: row.lng, zone, method: row.method, asr: row.asr_school } : null;
-  return { lists: A.actLists(row && row.activity_lists), on: !(row && row.activity_nudge === false), zone, offset, place };
+  return { lists: A.actLists(row && row.activity_lists), on: !(row && row.activity_nudge === false),
+           checks: !(row && row.activity_checks === false), zone, offset, place };
 }
 
 /** The first Fajr after t at his saved place (day.js: Isha's time ends at the next Fajr). */
@@ -662,8 +680,9 @@ async function runQuiet(sb: Sb, owner: string, now: number, set: Record<string, 
     .map((n) => ({ id: n.id, kind: n.kind, device_id: n.device_id, streak_start: ms(n.streak_start), pushed_at: ms(n.pushed_at),
                    decided_at: ms(n.decided_at), state: n.state, ref_at: ms(n.ref_at) }));
   const fajrAfter = fajrAfterFn(set);
-  const step = quietStep({ now, walk, blocks, nudges, rows: rows.map((r) => ({ at: ms(r.at), type: r.type, rid: r.rid || '' })),
-                           nightEnd: (t: number) => nightEnd(t, fajrAfter, Day.zoneOffsetMin(set.zone, t, set.offset)) });
+  const step = quietStep({ now, walk, blocks, nudges, checks: set.checks,
+                           rows: rows.map((r) => ({ at: ms(r.at), type: r.type, rid: r.rid || '' })),
+                           nightEnd: (t: number, until: number) => nightEnd(t, fajrAfter, Day.zoneOffsetMin(set.zone, t, set.offset), until) });
   const report: Record<string, unknown> = { decided: step.decide.length, pushed: [], nights: 0 };
   for (const d of step.decide) {
     await sb.from('activity_nudges').update({ state: d.state, decided_at: iso(now) }).eq('id', d.id).eq('user_id', owner);
@@ -676,9 +695,10 @@ async function runQuiet(sb: Sb, owner: string, now: number, set: Record<string, 
       user_id: owner, device_id: p.device_id, kind: p.kind, ref_at: iso(p.ref), streak_start: iso(p.start), what: p.dev,
       pushed_at: iso(now), nonce_sha256: await sha256Hex(nonce), state: 'sent'
     }).select('id');
-    if (claim.error) continue;                       // another run claimed this one
+    if (claim.error) continue;                       // another run claimed this one (one open per sleep or break)
     const id = String((claim.data || [])[0]?.id || '');
-    // Kept even when no device got it: the app's catch-up sheet asks it instead.
+    // A use that ended long ago is asked in the app's sheet only; one no device got waits there too.
+    if (!p.push) { (report.pushed as unknown[]).push({ kind: p.kind, sheetOnly: true }); continue; }
     const sent = await pushAll(sb, owner, JSON.stringify(askPayload(p, id, nonce, fnUrl(req), anon, set.offset)),
                                { ttl: 1800, topic: 'probeing-watch-ask', urgency: 'high' });
     (report.pushed as unknown[]).push({ kind: p.kind, ...sent });
@@ -843,8 +863,8 @@ async function opClassify(sb: Sb, dev: Record<string, any>, body: Record<string,
   const set = await readSettings(sb, owner, now);
   const items = classifyItems(body.items, set.lists);
   if (!items.length) return reply(200, { ok: true, act: 'nothing', results: [] });
-  // In the watcher's own break it only looks for the way back: no titles to Gemini.
-  if ((await watchSpans(sb, owner, now, now)).walk.autoBreak) return reply(200, { ok: true, act: 'paused', results: [] });
+  // A title goes to Gemini only while he is working now (item 23): never asleep, on a break or after End day.
+  if (!(await watchSpans(sb, owner, now, now)).walk.working) return reply(200, { ok: true, act: 'paused', results: [] });
   const { projects } = await readProjects(sb, owner, now);
   if (!projects.length) return reply(200, { ok: true, act: 'no-projects', results: [] });
   const key = Deno.env.get('GEMINI_API_KEY') || '';
@@ -881,7 +901,8 @@ async function answerAsk(sb: Sb, n: Record<string, any>, choice: string, set: Re
   const ask = { id: n.id, kind: n.kind, streak_start: ms(n.streak_start), ref_at: ms(n.ref_at) };
   const rows = await readRows(sb, n.user_id, now - READ_BACK_MS);
   const walk = A.actWalk(rows, now - READ_BACK_MS, now);
-  if (n.state !== 'sent' || !askOpen(ask, walk)) return reply(200, { ok: true, over: true, message: 'That one\'s over' });
+  const mine = rows.map((r) => ({ at: ms(r.at), type: r.type, rid: r.rid || '' }));
+  if (n.state !== 'sent' || !askOpen(ask, walk, mine)) return reply(200, { ok: true, over: true, message: 'That one\'s over' });
   for (const w of A.actSkipTies(askRows(ask, choice, now), rows)) await writeRow(sb, n.user_id, set.zone, w);
   const state = choice === 'awake' ? 'awake' : choice === 'resume' ? 'resumed' : choice;
   await sb.from('activity_nudges').update({ state, decided_at: iso(now) }).eq('id', n.id);

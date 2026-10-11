@@ -543,7 +543,7 @@ if ($SelfTest) { Run-SelfTest }
 $CLASSIFY_BATCH = 8                     # this many unclear titles waiting: ask now
 $CLASSIFY_WAIT_MS = 60 * 60000          # ... or the oldest has waited this long
 $CLASSIFY_MAX = 20
-$PENDING_MAX_MS = 12 * 3600000          # an unclear title not answered by then is let go
+$PENDING_MAX_MS = 24 * 3600000          # an unclear title not answered by then is let go
 $KNOWN_MAX_MS = 7 * 86400000            # Gemini's answers are reused this long
 $FIRST_LOOK_MS = 30 * 60000             # the first run looks back this far
 $LOOK_MAX_MS = 24 * 3600000
@@ -682,12 +682,12 @@ try {
     $sentUntil = [Math]::Max($from, $now - $OPEN_MS)
   }
 
-  # Unclear titles: one Gemini call for a batch, on the server's budget.
+  # Unclear titles: one Gemini call for a batch, on the server's budget, only while working (kept till then).
   foreach ($k in @($pending.Keys)) { if ($now - [double](Get-Prop $pending[$k] 'first') -gt $PENDING_MAX_MS) { $pending.Remove($k) } }
   foreach ($k in @($known.Keys)) { if ($now - [double](Get-Prop $known[$k] 'at') -gt $KNOWN_MAX_MS) { $known.Remove($k) } }
   $oldest = $now
   foreach ($k in $pending.Keys) { $oldest = [Math]::Min($oldest, [double](Get-Prop $pending[$k] 'first')) }
-  if ($pending.Count -ge $CLASSIFY_BATCH -or ($pending.Count -gt 0 -and $now - $oldest -ge $CLASSIFY_WAIT_MS)) {
+  if ($cfg.working -eq $true -and ($pending.Count -ge $CLASSIFY_BATCH -or ($pending.Count -gt 0 -and $now - $oldest -ge $CLASSIFY_WAIT_MS))) {
     $keys = @($pending.Keys | Sort-Object { [double](Get-Prop $pending[$_] 'first') } | Select-Object -First $CLASSIFY_MAX)
     $items = @()
     foreach ($k in $keys) {

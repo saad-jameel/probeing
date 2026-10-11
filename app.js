@@ -15120,7 +15120,7 @@ async function loadWatch() {
       .order('created_at', { ascending: false });
     if (devs.error) throw errorFrom(devs.error);
     renderWatchDevices(devs.data || []);
-    var set = await sb.from('user_settings').select('activity_lists,activity_nudge').eq('user_id', sbUser.id).limit(1);
+    var set = await sb.from('user_settings').select('activity_lists,activity_nudge,activity_checks').eq('user_id', sbUser.id).limit(1);
     if (set.error) throw errorFrom(set.error);
     var row = (set.data || [])[0] || null;
     var lists = actLists(row && row.activity_lists);
@@ -15129,6 +15129,8 @@ async function loadWatch() {
     $('watchPrivate').value = lists['private'].join('\n');
     $('watchNudgeOn').checked = !(row && row.activity_nudge === false);
     $('watchNudgeOn').disabled = false;
+    $('watchChecksOn').checked = !(row && row.activity_checks === false);
+    $('watchChecksOn').disabled = false;
     var rules = await sb.from('activity_rules').select('keyword,project,source').order('keyword').limit(500);
     if (rules.error) throw errorFrom(rules.error);
     watchRules = (rules.data || []).filter(function (r) { return CATCHUP_RULE_SOURCES[r.source] === 1; });   // his and his corrections'
@@ -15256,6 +15258,25 @@ $('watchNudgeOn').addEventListener('change', async function () {
     var res = await sb.from('user_settings').upsert({ user_id: sbUser.id, activity_nudge: want }, { onConflict: 'user_id' });
     if (res.error) throw errorFrom(res.error);
     out.textContent = want ? 'On, for every device.' : 'Off: no distraction push and no auto break.';
+  } catch (e) {
+    box.checked = !want;
+    out.textContent = 'Not saved: ' + ((e && e.message) || e);
+  }
+  box.disabled = false;
+});
+
+/* Item 23: the awake and back-to-work questions, one switch for every device. */
+$('watchChecksOn').addEventListener('change', async function () {
+  var box = this;
+  var want = box.checked;
+  var out = $('watchChecksResult');
+  box.disabled = true;
+  out.textContent = 'Saving…';
+  try {
+    if (!supabaseReady()) throw new Error('Sign in first.');
+    var res = await sb.from('user_settings').upsert({ user_id: sbUser.id, activity_checks: want }, { onConflict: 'user_id' });
+    if (res.error) throw errorFrom(res.error);
+    out.textContent = want ? 'On, for every device.' : 'Off: no "awake?" or "back to work?". Disturbed nights are still kept.';
   } catch (e) {
     box.checked = !want;
     out.textContent = 'Not saved: ' + ((e && e.message) || e);
@@ -15640,7 +15661,10 @@ function askAtOf(n) {
 /** Is an awake or back-to-work question still about the state he is in? The toggles say. */
 function askStillOpen(n) {
   var ref = Date.parse(n.ref_at);
+  var use = Date.parse(n.streak_start);
   if (!isFinite(ref)) return false;
+  // Any change of his after the use it is about (a nap, a wake, End day) ends it.
+  if (toggles.sleep.at > use || toggles.work.at > use) return false;
   if (n.kind === 'awake') return toggles.sleep.state === 'asleep' && toggles.sleep.at <= ref + 60000;
   return toggles.sleep.state !== 'asleep' && toggles.work.state === 'break' && toggles.work.at <= ref + 60000;
 }

@@ -718,7 +718,7 @@
           <strong>while you are working</strong> (bare while asleep or on a break, below), and sends time blocks: when, which app, which
           site (its name only), which project, and whether it was work, a meeting, a distraction or
           private. Never a web address, never page text. A window title leaves the laptop only when no
-          keyword places it, once, for Gemini to name the project; it is not stored.</p>
+          keyword places it, once, for Gemini to name the project, and only while you are working; it is not stored.</p>
         <p class="hint">On a distraction for 10 minutes you get a push. No answer in 5 minutes and it
           becomes a break from when it started; back in a work app, the work resumes by itself. If
           another device was working across the same span, you are asked instead.</p>
@@ -728,7 +728,8 @@
           I'm awake records waking from when the use began. Before Fajr there is no push; the minutes show
           in Review as a disturbed night. On a break and in a work app for 5 minutes: a push asks
           <strong>back to work?</strong>, and Resume records you back from when the work began. A push you
-          missed is asked when you next open ProBeing.</p>
+          missed is asked when you next open ProBeing. <strong>Sleep and break checks</strong> turns these two
+          questions off; disturbed nights are still kept.</p>
         <p class="hint"><strong>Teach ProBeing</strong> lists apps and sites from the last 7 days that no rule placed,
           most time first. Work (then pick the project), Meeting, Distraction, Private or Ignore files them from then
           on, on both devices. Only the app's or site's name is kept, never a window title.</p>
@@ -769,6 +770,11 @@
           <span>Distraction push and auto-break (all devices)</span>
         </label>
         <p id="watchNudgeResult" class="hint"></p>
+        <label class="check">
+          <input id="watchChecksOn" type="checkbox" checked>
+          <span>Sleep and break checks (all devices)</span>
+        </label>
+        <p id="watchChecksResult" class="hint"></p>
         <details id="watchListsDetails" class="sub-details">
         <summary>Lists</summary>
         <label class="hint" for="watchDistract">Distractions, one per line (a site, a site/path, or an app word)</label>

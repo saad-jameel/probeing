@@ -1703,3 +1703,12 @@ revoke insert, update, delete, truncate on table public.activity_nights from ano
 -- so the Teach list stops offering them. Never a title.
 alter table public.user_settings add column if not exists activity_ignore jsonb
   check (activity_ignore is null or (jsonb_typeof(activity_ignore) = 'array' and jsonb_array_length(activity_ignore) <= 300));
+
+-- At most one open question per kind per sleep or break (ref_at is that row's
+-- instant): two devices reporting at once cannot both push one.
+create unique index if not exists activity_nudges_open_ask_idx on public.activity_nudges (user_id, kind, ref_at)
+  where state = 'sent' and kind in ('awake', 'resume');
+
+-- His switch for the sleep and break checks (the awake / back-to-work questions).
+-- Off: no question and no push; disturbed nights are still kept.
+alter table public.user_settings add column if not exists activity_checks boolean not null default true;

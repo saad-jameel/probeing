@@ -16,6 +16,8 @@ What never leaves the laptop: full web addresses, page text, and window titles.
 The one exception: a block no rule could place sends its window title to Gemini
 once, to guess the project, with links, folder paths, addresses, ids and long
 numbers cut out first; only the project comes back, and the title is not stored.
+It is sent only while you are working; until then it waits on the laptop, and is
+dropped after 24 hours.
 Terminal and file-window titles are never sent, nor the title of a browser window
 the ActivityWatch extension did not see (that one is judged by its title on the
 laptop, else left for you in the catch-up sheet). Anything on your private list
