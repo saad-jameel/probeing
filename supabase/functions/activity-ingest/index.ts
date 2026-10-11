@@ -16,6 +16,15 @@
 // and a distraction push's buttons call it with {answer: {id, nonce, choice}},
 // the nonce standing in for a sign-in as wrapup's check does.
 //
+// Item 23 (11 Oct): asleep or on a break, the devices still send blocks, kept
+// bare (time, category, project; mode 'sleep' or 'break'). Asleep and in use 5
+// minutes after Fajr (any time, in a nap): a push "awake?" whose I'm awake writes
+// a wake back to when the use began. Before Fajr: no push, the minutes are kept
+// as a disturbed night (activity_nights). On a break and in a work app 5 minutes:
+// a push "back to work?" whose Resume writes a resume back to when the work began.
+// Unanswered, they wait for the app's catch-up sheet. Every authenticated call
+// marks the device as seen (Settings: "connected · last checked").
+//
 // No cron: the laptop's own 5-minute run is the clock. A push goes out when a
 // distraction has run 10 minutes; 5 minutes later, with no answer and still on
 // it, a break is written back to when it started (or, when another device shows
@@ -25,16 +34,18 @@
 // Deployed by hand (verify_jwt stays on; the laptop sends the anon key):
 //   npx supabase functions deploy activity-ingest --project-ref <ref> --use-api
 // Secrets: ALLOWED_USER_ID, GEMINI_API_KEY, GEMINI_MODEL, VAPID_PRIVATE_KEY (set
-// for the other functions); GEMINI_DAILY optional. Needs the "stage 18b" part of
-// docs/supabase_schema.sql.
+// for the other functions); GEMINI_DAILY optional. Needs the "stage 18b" and
+// "item 23" parts of docs/supabase_schema.sql.
 
 import { createClient } from 'jsr:@supabase/supabase-js@2';
+import '../_shared/day.js';
 import '../_shared/activity.js';
 import { pushAll } from '../_shared/push.ts';
 import { usageDay, takeCall, spendDay } from '../_shared/usage.ts';
 
 // activity.js is a classic script, so it hands its functions over on globalThis.
 const A = (globalThis as unknown as { ProBeingActivity: Record<string, any> }).ProBeingActivity;
+const Day = (globalThis as unknown as { ProBeingDay: Record<string, any> }).ProBeingDay;
 
 const CORS: Record<string, string> = {
   'Access-Control-Allow-Origin': '*',
@@ -72,9 +83,18 @@ var PROJECTS_MAX = 60;
  * he stopped scrolling. Not the server's own rows or the popup's backdated ones. */
 var RESPONSE_TYPES = ['work', 'voice', 'resume', 'break', 'off', 'sleep', 'done', 'subdone', 'subdrop', 'substop',
                       'pin', 'unpin', 'actanswer'];
-var SERVER_RIDS = /^(ab|ar|aw|an|aq|qb|qr|kb|kr|as)-|^wrapup-/;
-var STATE_TYPES = ['work', 'voice', 'resume', 'break', 'off', 'sleep', 'done', 'awake', 'subdone', 'subdrop',
+var SERVER_RIDS = /^(ab|ar|aw|an|aq|qb|qr|kb|kr|as|nw|nr|na)-|^wrapup-/;
+var STATE_TYPES = ['work', 'voice', 'resume', 'break', 'off', 'sleep', 'wake', 'done', 'awake', 'subdone', 'subdrop',
                    'substop', 'pin', 'unpin', 'actanswer'];
+
+/* Item 23. */
+var USE_GAP_MS = MIN_MS;               // a gap this small does not end a run of use
+var USE_MIN_MS = 5 * MIN_MS;           // a shorter run is a brief check: it never counts
+var USE_FRESH_MS = 25 * MIN_MS;        // a run must reach this close to now to be pushed (the phone sends every 15-20 min)
+var NIGHT_FROM_H = 21;                 // a sleep from 9 pm (the Sleep button's line) or after midnight is a night
+var QUIET_BACK_MS = 40 * 3600000;      // blocks read for the asleep/break checks and the nights
+var NIGHTS_BACK_MS = 36 * 3600000;     // nights recounted on each run
+var ASK_KINDS = ['awake', 'resume'];
 
 /** sha256 is taken of this: letters and digits, upper case (as app.js watchTokenHash). */
 function tokenText(t) {
@@ -210,6 +230,139 @@ function nudgeStep(d) {
   return out;
 }
 
+/* ── Item 23: asleep or on a break ─────────────────────────────────────── */
+
+/** The Fajr that ends the night a sleep at `at` began, or null for a nap. A night starts
+ *  at 9 pm or after midnight. fajrAfter(t): the first Fajr after t. */
+function nightEnd(at, fajrAfter, offsetMin) {
+  var f = fajrAfter(at);
+  if (!isFinite(f) || !(f > at)) return null;
+  var local = at + offsetMin * MIN_MS;
+  var hour = Math.floor((((local % 86400000) + 86400000) % 86400000) / 3600000);
+  var sameDate = Math.floor(local / 86400000) === Math.floor((f + offsetMin * MIN_MS) / 86400000);
+  return hour >= NIGHT_FROM_H || sameDate ? f : null;
+}
+
+/** Blocks by device, each cut to [from, to]; `keep` picks which. */
+function cutByDevice(blocks, from, to, keep) {
+  var by = {};
+  (blocks || []).forEach(function (b) {
+    if (!b.device_id || (keep && !keep(b))) return;
+    var a = Math.max(b.start, from);
+    var z = Math.min(b.end, to);
+    if (!(z > a)) return;
+    (by['d' + b.device_id] = by['d' + b.device_id] || []).push(Object.assign({}, b, { start: a, end: z }));
+  });
+  return by;
+}
+
+/** One device's time in use within [a, z], as spans. */
+function inUseSpans(list, a, z) {
+  return A.actIntersect(a, z, A.actMergeSpans(list.map(function (b) { return [b.start, b.end]; })));
+}
+
+/** Is an awake or back-to-work question still about the state he is in? */
+function askOpen(n, walk) {
+  if (n.kind === 'awake') return Boolean(walk && walk.asleep && walk.asleep.at === n.ref_at);
+  if (n.kind === 'resume') return Boolean(walk && walk.onBreak && walk.onBreak.at === n.ref_at);
+  return false;
+}
+
+/**
+ * Asleep or on a break. d: {now, walk (actWalk), blocks [{device_id, kind, start, end,
+ * category}] (any mode), nudges [{id, kind, device_id, streak_start, pushed_at, decided_at,
+ * state, ref_at}] (ms), rows [{at, type, rid}], nightEnd(at) -> Fajr or null}.
+ * Returns {push: [{kind, device_id, dev, start, end, ref}], decide: [{id, state}],
+ * nights: [{sleep_at, woke_at, fajr_at, first_at, last_at, minutes, kinds}]}.
+ */
+function quietStep(d) {
+  var out = { push: [], decide: [], nights: [] };
+  var walk = d.walk || {};
+  var rows = d.rows || [];
+  var nudges = (d.nudges || []).filter(function (n) { return ASK_KINDS.indexOf(n.kind) !== -1; });
+  var now = d.now;
+  var state = {};
+  nudges.forEach(function (n) {
+    state[n.id] = n.state;
+    if (n.state !== 'sent') return;
+    var to = hasRid(rows, 'nw-' + n.id) ? 'awake' : hasRid(rows, 'nr-' + n.id) ? 'resumed'
+           : hasRid(rows, 'na-' + n.id) ? (n.kind === 'awake' ? 'asleep' : 'break')
+           : askOpen(n, walk) ? '' : 'closed';
+    if (to) { out.decide.push({ id: n.id, state: to }); state[n.id] = to; }
+  });
+
+  // One open question per sleep or break; a run that began before the last push or answer is not asked about again.
+  function ask(kind, ref, from, thr, keep) {
+    var mine = nudges.filter(function (n) { return n.kind === kind && n.ref_at === ref; });
+    if (mine.some(function (n) { return state[n.id] === 'sent'; })) return;
+    var after = -Infinity;
+    mine.forEach(function (n) {
+      after = Math.max(after, n.streak_start, isFinite(n.pushed_at) ? n.pushed_at : -Infinity,
+                       isFinite(n.decided_at) ? n.decided_at : -Infinity);
+      if (state[n.id] !== n.state) after = Math.max(after, now);
+    });
+    var by = cutByDevice(d.blocks, from, now, keep);
+    var best = null;
+    Object.keys(by).forEach(function (k) {
+      A.actUseRuns(by[k], USE_GAP_MS).forEach(function (r) {
+        if (r.start <= after || r.end < now - USE_FRESH_MS) return;
+        if (A.actSpansMs(inUseSpans(by[k], Math.max(thr, r.start), r.end)) < USE_MIN_MS) return;
+        if (!best || r.start < best.start) {
+          best = { kind: kind, device_id: k.slice(1), dev: by[k][0].kind || 'laptop', start: r.start, end: r.end, ref: ref };
+        }
+      });
+    });
+    if (best) out.push.push(best);
+  }
+  if (walk.asleep) {
+    var f = d.nightEnd(walk.asleep.at);
+    ask('awake', walk.asleep.at, walk.asleep.at, f === null ? walk.asleep.at : f, null);
+  }
+  if (walk.onBreak) {
+    ask('resume', walk.onBreak.at, walk.onBreak.since, walk.onBreak.since, function (b) { return b.category === 'work'; });
+  }
+
+  // Disturbed nights: use before Fajr while asleep, brief checks left out, all devices together.
+  (walk.sleeps || []).forEach(function (s) {
+    var fajr = d.nightEnd(s.at);
+    if (fajr === null || s.at < now - NIGHTS_BACK_MS) return;
+    var end = Math.min(fajr, s.end === null ? now : s.end, now);
+    var spans = [];
+    var kinds = [];
+    var by = cutByDevice(d.blocks, s.at, end, null);
+    Object.keys(by).forEach(function (k) {
+      A.actUseRuns(by[k], USE_GAP_MS).forEach(function (r) {
+        if (r.ms < USE_MIN_MS) return;
+        inUseSpans(by[k], r.start, r.end).forEach(function (p) { spans.push(p); });
+        var kd = by[k][0].kind || 'laptop';
+        if (kinds.indexOf(kd) === -1) kinds.push(kd);
+      });
+    });
+    var merged = A.actMergeSpans(spans);
+    out.nights.push({ sleep_at: s.at, woke_at: s.end, fajr_at: fajr, first_at: merged.length ? merged[0][0] : null,
+                      last_at: merged.length ? merged[merged.length - 1][1] : null,
+                      minutes: Math.round(A.actSpansMs(merged) / MIN_MS), kinds: kinds.sort().join(',') });
+  });
+  return out;
+}
+
+/** The backdated instant an answer writes: the use, never before the sleep or break row. */
+function askAt(n) {
+  return Math.max(n.streak_start, n.ref_at + 1000);
+}
+
+/** The rows an awake or back-to-work answer writes. choice: awake/asleep or resume/break. */
+function askRows(n, choice, now) {
+  if (n.kind === 'awake') {
+    return choice === 'awake'
+      ? [{ type: 'wake', at: askAt(n), rid: 'nw-' + n.id, text: 'Wake up (I was awake — answered the check)' }]
+      : [{ type: 'actanswer', at: now, rid: 'na-' + n.id, text: 'Still asleep — answered the check', detail: 'asleep' }];
+  }
+  return choice === 'resume'
+    ? [{ type: 'resume', at: askAt(n), rid: 'nr-' + n.id, text: 'Resume (back at work — answered the check)' }]
+    : [{ type: 'actanswer', at: now, rid: 'na-' + n.id, text: 'Still on a break — answered the check', detail: 'break' }];
+}
+
 /** "6:12 pm" at `offsetMin`. */
 function clock12(ms, offsetMin) {
   var mins = Math.floor(ms / 60000) + offsetMin;
@@ -225,6 +378,20 @@ function nudgePayload(p, nudgeId, nonce, url, key, offsetMin) {
   return { kind: 'distract', tag: 'probeing-distract', nudge: nudgeId, nonce: nonce, url: url, key: key, goto: 'home',
            title: 'You\'ve been on ' + A.actCut(p.what, 60) + ' for ' + mins + ' min — take a break?',
            body: 'No answer in 5 min and it counts as a break from ' + clock12(p.start, offsetMin) + '.' };
+}
+
+/** The awake or back-to-work push. sw.js shows it with two buttons under one tag. */
+function askPayload(p, nudgeId, nonce, url, key, offsetMin) {
+  var at = clock12(Math.max(p.start, p.ref + 1000), offsetMin);
+  var dev = p.dev === 'laptop' ? 'laptop' : 'phone';
+  var base = { kind: 'watch-ask', ask: p.kind, tag: 'probeing-watch-ask', nudge: nudgeId, nonce: nonce, url: url, key: key,
+               goto: 'home' };
+  if (p.kind === 'awake') {
+    return Object.assign(base, { title: 'You\'re marked asleep but using your ' + dev + ' — awake?',
+                                 body: 'I\'m awake records waking at ' + at + '.' });
+  }
+  return Object.assign(base, { title: 'Still on break but you look like you\'re working — back to work?',
+                               body: 'Resume records you back at ' + at + '.' });
 }
 
 var ANSWER_OPEN_MS = 30 * MIN_MS;
@@ -325,6 +492,24 @@ function keepPlaced(fresh, had) {
   return Object.assign({}, fresh, { category: 'work', project: had.project, key: had.rule_key || '' });
 }
 
+/** Clean blocks cut to when they may be kept: whole while watched (mode work), bare while
+ *  asleep or on a break (item 23: time, category, a work project); the rest dropped. */
+function keptPieces(clean, walk) {
+  var full = A.actClip(clean, walk.watch || []).map(function (b) { return Object.assign({}, b, { mode: 'work' }); });
+  function bare(spans, mode) {
+    return A.actClip(clean, spans || []).map(function (b) {
+      var named = b.category === 'work' || b.category === 'meeting';
+      return Object.assign({}, b, { app: '', domain: '', key: '', project: named ? b.project : '', mode: mode });
+    });
+  }
+  return full.concat(bare(walk.sleep, 'sleep'), bare(walk.rest, 'break'));
+}
+
+/** What the watchers are told about now: work, sleep, break or off. */
+function modeOf(walk) {
+  return walk.working ? 'work' : walk.asleep ? 'sleep' : (walk.onBreak || walk.autoBreak) ? 'break' : 'off';
+}
+
 function isDailyRefusal(msg) {
   var s = String(msg || '');
   if (!/quota|rate.?limit|RESOURCE_EXHAUSTED|exceeded/i.test(s)) return false;
@@ -376,7 +561,17 @@ async function readSettings(sb: Sb, owner: string, now: number) {
     const off = Math.round((asUtc - Math.floor(now / 60000) * 60000) / 60000);
     if (isFinite(off)) offset = off;
   } catch (_e) { /* Karachi */ }
-  return { lists: A.actLists(row && row.activity_lists), on: !(row && row.activity_nudge === false), zone, offset };
+  const place = row ? { lat: row.lat, lng: row.lng, zone, method: row.method, asr: row.asr_school } : null;
+  return { lists: A.actLists(row && row.activity_lists), on: !(row && row.activity_nudge === false), zone, offset, place };
+}
+
+/** The first Fajr after t at his saved place (day.js: Isha's time ends at the next Fajr). */
+function fajrAfterFn(set: Record<string, any>) {
+  Day.setPrayerPlace(set.place);
+  return (t: number) => {
+    const off = Day.zoneOffsetMin(set.zone, t, set.offset);
+    return Day.prayerEndOf('Isha', Day.prayerDate(t, off), off);
+  };
 }
 
 /** Rows that move the clock or answer a push, oldest first, from `from`. */
@@ -431,20 +626,90 @@ async function writeRow(sb: Sb, owner: string, zone: string, w: Record<string, a
 function blockOf(r: Record<string, any>, kinds?: Record<string, string>) {
   return { id: r.id, device_id: r.device_id, start: ms(r.started_at), end: ms(r.ended_at), category: r.category,
            project: r.project || '', app: r.app || '', domain: r.domain || '', rule_key: r.rule_key || '',
-           kind: (kinds && kinds[r.device_id]) || 'laptop' };
+           kind: (kinds && kinds[r.device_id]) || 'laptop', mode: r.mode || 'work' };
+}
+
+async function deviceKinds(sb: Sb, owner: string) {
+  const kinds: Record<string, string> = {};
+  must(await sb.from('watch_devices').select('id, kind').eq('user_id', owner).limit(50)).forEach((d) => { kinds[d.id] = d.kind; });
+  return kinds;
+}
+
+function newNonce(): string {
+  return Array.from(crypto.getRandomValues(new Uint8Array(32))).map((b) => b.toString(16).padStart(2, '0')).join('');
+}
+
+function fnUrl(req: Request): string {
+  return String(Deno.env.get('SUPABASE_URL') || new URL(req.url).origin).replace(/\/+$/, '') + '/functions/v1/activity-ingest';
+}
+
+/** Item 23: retire an answered or closed question on every device, quietly. */
+async function retireAsk(sb: Sb, owner: string, title: string, skip?: string) {
+  await pushAll(sb, owner, JSON.stringify({ kind: 'watch-ask-answered', tag: 'probeing-watch-ask', title, body: '' }),
+                { ttl: 300, topic: 'probeing-watch-ask', urgency: 'normal' }, skip || '');
+}
+
+/** Item 23: the awake and back-to-work checks, and the disturbed nights, after an ingest. */
+async function runQuiet(sb: Sb, owner: string, now: number, set: Record<string, any>, req: Request) {
+  const rows = await readRows(sb, owner, now - READ_BACK_MS);
+  const walk = A.actWalk(rows, now - READ_BACK_MS, now);
+  const kinds = await deviceKinds(sb, owner);
+  const blocks = must(await sb.from('activity_blocks').select('*').eq('user_id', owner)
+    .gte('ended_at', iso(now - QUIET_BACK_MS)).order('started_at', { ascending: true }).limit(5000))
+    .map((r) => blockOf(r, kinds));
+  const nudges = must(await sb.from('activity_nudges').select('id, kind, device_id, streak_start, pushed_at, decided_at, state, ref_at')
+    .eq('user_id', owner).in('kind', ASK_KINDS).gte('streak_start', iso(now - QUIET_BACK_MS)).limit(500))
+    .map((n) => ({ id: n.id, kind: n.kind, device_id: n.device_id, streak_start: ms(n.streak_start), pushed_at: ms(n.pushed_at),
+                   decided_at: ms(n.decided_at), state: n.state, ref_at: ms(n.ref_at) }));
+  const fajrAfter = fajrAfterFn(set);
+  const step = quietStep({ now, walk, blocks, nudges, rows: rows.map((r) => ({ at: ms(r.at), type: r.type, rid: r.rid || '' })),
+                           nightEnd: (t: number) => nightEnd(t, fajrAfter, Day.zoneOffsetMin(set.zone, t, set.offset)) });
+  const report: Record<string, unknown> = { decided: step.decide.length, pushed: [], nights: 0 };
+  for (const d of step.decide) {
+    await sb.from('activity_nudges').update({ state: d.state, decided_at: iso(now) }).eq('id', d.id).eq('user_id', owner);
+  }
+  if (step.decide.length) await retireAsk(sb, owner, 'Noted');
+  const anon = Deno.env.get('SUPABASE_ANON_KEY') || '';
+  for (const p of step.push) {
+    const nonce = newNonce();
+    const claim = await sb.from('activity_nudges').insert({
+      user_id: owner, device_id: p.device_id, kind: p.kind, ref_at: iso(p.ref), streak_start: iso(p.start), what: p.dev,
+      pushed_at: iso(now), nonce_sha256: await sha256Hex(nonce), state: 'sent'
+    }).select('id');
+    if (claim.error) continue;                       // another run claimed this one
+    const id = String((claim.data || [])[0]?.id || '');
+    // Kept even when no device got it: the app's catch-up sheet asks it instead.
+    const sent = await pushAll(sb, owner, JSON.stringify(askPayload(p, id, nonce, fnUrl(req), anon, set.offset)),
+                               { ttl: 1800, topic: 'probeing-watch-ask', urgency: 'high' });
+    (report.pushed as unknown[]).push({ kind: p.kind, ...sent });
+  }
+  for (const n of step.nights) {
+    if (n.minutes > 0) {
+      const up = await sb.from('activity_nights').upsert({
+        user_id: owner, sleep_at: iso(n.sleep_at), woke_at: n.woke_at === null ? null : iso(n.woke_at), fajr_at: iso(n.fajr_at),
+        first_at: iso(n.first_at), last_at: iso(n.last_at), minutes: n.minutes, kinds: n.kinds, updated_at: iso(now)
+      }, { onConflict: 'user_id,sleep_at' });
+      if (up.error) throw new Error(up.error.message);
+      report.nights = Number(report.nights) + 1;
+    } else {
+      // A wake moved earlier, or a run now counts as brief: the night is not disturbed after all.
+      await sb.from('activity_nights').delete().eq('user_id', owner).eq('sleep_at', iso(n.sleep_at));
+    }
+  }
+  return report;
 }
 
 /** The distraction check after an ingest: decisions, rows, pushes. */
 async function runNudges(sb: Sb, owner: string, now: number, set: Record<string, any>, req: Request) {
   const rows = (await readRows(sb, owner, now - READ_BACK_MS));
   const walk = A.actWalk(rows, now - READ_BACK_MS, now);
-  const kinds: Record<string, string> = {};
-  must(await sb.from('watch_devices').select('id, kind').eq('user_id', owner).limit(50)).forEach((d) => { kinds[d.id] = d.kind; });
+  const kinds = await deviceKinds(sb, owner);
+  // Only fully watched blocks: a bare one (asleep, a break) is item 23's.
   const blocks = must(await sb.from('activity_blocks').select('*').eq('user_id', owner)
     .gte('ended_at', iso(now - 6 * 3600000)).order('started_at', { ascending: true }).limit(2000))
-    .map((r) => blockOf(r, kinds));
+    .map((r) => blockOf(r, kinds)).filter((b) => b.mode === 'work');
   const nudgeRows = must(await sb.from('activity_nudges').select('id, device_id, streak_start, pushed_at, state, span_end')
-    .eq('user_id', owner).gte('streak_start', iso(now - 12 * 3600000)).limit(500));
+    .eq('user_id', owner).eq('kind', 'distract').gte('streak_start', iso(now - 12 * 3600000)).limit(500));
   const nudges = nudgeRows.map((n) => ({ id: n.id, device_id: n.device_id, streak_start: ms(n.streak_start),
                                          pushed_at: ms(n.pushed_at), state: n.state }));
   const step = nudgeStep({ now, on: set.on, walk, blocks, nudges,
@@ -482,27 +747,28 @@ async function runNudges(sb: Sb, owner: string, now: number, set: Record<string,
   return report;
 }
 
-/** The working spans the laptop may watch, from `from` to now. */
+/** The spans the devices may watch, from `from` to now: watch (whole) and quiet (bare, item 23). */
 async function watchSpans(sb: Sb, owner: string, from: number, now: number) {
   const rows = await readRows(sb, owner, from - READ_BACK_MS);
   const walk = A.actWalk(rows, from, now);
-  return { walk, spans: walk.watch as number[][] };
+  return { walk, spans: walk.watch as number[][], quiet: A.actMergeSpans((walk.sleep || []).concat(walk.rest || [])) as number[][] };
 }
 
 async function opConfig(sb: Sb, dev: Record<string, any>, body: Record<string, any>, now: number) {
   const set = await readSettings(sb, dev.user_id, now);
   let from = ms(body.from);
   if (!isFinite(from) || from < now - CONFIG_BACK_MS) from = now - CONFIG_BACK_MS;
-  const { walk, spans } = await watchSpans(sb, dev.user_id, Math.min(from, now), now);
-  // The day is over (End day, Sleep): a push still waiting is closed, never turned into a break.
+  const { walk, spans, quiet } = await watchSpans(sb, dev.user_id, Math.min(from, now), now);
+  // The day is over (End day, Sleep): a distraction push still waiting is closed, never turned into a break.
   if (walk.closed) {
     await sb.from('activity_nudges').update({ state: 'closed', decided_at: iso(now) })
-      .eq('user_id', dev.user_id).eq('state', 'sent');
+      .eq('user_id', dev.user_id).eq('kind', 'distract').eq('state', 'sent');
   }
   const { projects, rules } = await readProjects(sb, dev.user_id, now);
   return reply(200, { ok: true, device: dev.label, now: iso(now), lists: set.lists, projects,
                       rules: rules.filter((r) => r.source !== 'gemini').map((r) => ({ keyword: r.keyword, project: r.project })),
                       spans: spans.map((s) => [iso(s[0]), iso(s[1])]), working: walk.working,
+                      quiet: quiet.map((s) => [iso(s[0]), iso(s[1])]), mode: modeOf(walk),
                       autoBreak: Boolean(walk.autoBreak) });
 }
 
@@ -514,31 +780,38 @@ async function opIngest(sb: Sb, dev: Record<string, any>, body: Record<string, a
   let stored = 0;
   if (clean.length) {
     const from = Math.min(...clean.map((b: any) => b.start));
-    const { spans } = await watchSpans(sb, dev.user_id, from, now);
-    const pieces = A.actClip(clean, spans);
+    const { walk } = await watchSpans(sb, dev.user_id, from, now);
+    // Cut again here by the server's own clock: whole while watched, bare asleep or on a break.
+    const pieces = keptPieces(clean, walk);
     if (pieces.length) {
       const had: Record<string, any> = {};
       must(await sb.from('activity_blocks').select('*').eq('device_id', dev.id)
         .in('started_at', pieces.map((p: any) => iso(p.start))).limit(1000))
         .forEach((r) => { had[String(ms(r.started_at))] = blockOf(r); });
       const rows = pieces.map((p: any) => {
-        const b = keepPlaced(p, had[String(p.start)]);
+        const b = p.mode === 'work' ? keepPlaced(p, had[String(p.start)]) : p;
         return { user_id: dev.user_id, device_id: dev.id, started_at: iso(b.start), ended_at: iso(b.end), app: b.app,
-                 domain: b.domain, category: b.category, project: b.project, rule_key: b.key, updated_at: iso(now) };
+                 domain: b.domain, category: b.category, project: b.project, rule_key: b.key, mode: p.mode,
+                 updated_at: iso(now) };
       });
       const up = await sb.from('activity_blocks').upsert(rows, { onConflict: 'device_id,started_at' });
       if (up.error) return reply(500, { ok: false, error: up.error.message });
       stored = rows.length;
     }
   }
-  await sb.from('watch_devices').update({ last_seen_at: iso(now) }).eq('id', dev.id);
   let nudges: Record<string, unknown> = {};
   try {
     nudges = await runNudges(sb, dev.user_id, now, set, req);
   } catch (e) {
     nudges = { error: String((e as Error)?.message || e) };
   }
-  return reply(200, { ok: true, stored, skipped: list.length - clean.length, nudges });
+  let quiet: Record<string, unknown> = {};
+  try {
+    quiet = await runQuiet(sb, dev.user_id, now, set, req);
+  } catch (e) {
+    quiet = { error: String((e as Error)?.message || e) };
+  }
+  return reply(200, { ok: true, stored, skipped: list.length - clean.length, nudges, quiet });
 }
 
 async function askGemini(key: string, model: string, prompt: string) {
@@ -600,12 +873,29 @@ async function opClassify(sb: Sb, dev: Record<string, any>, body: Record<string,
                       results: results.map((r) => ({ key: r.key, project: r.project })) });
 }
 
+/** Item 23: I'm awake / Still asleep, Resume / It was a break. Open only while he is
+ *  still in the sleep or break it asked about; late, "That one's over". */
+async function answerAsk(sb: Sb, n: Record<string, any>, choice: string, set: Record<string, any>, now: number, from: string) {
+  const ok = n.kind === 'awake' ? ['awake', 'asleep'] : ['resume', 'break'];
+  if (ok.indexOf(choice) === -1) return reply(400, { ok: false, error: 'not an answer to this check' });
+  const ask = { id: n.id, kind: n.kind, streak_start: ms(n.streak_start), ref_at: ms(n.ref_at) };
+  const rows = await readRows(sb, n.user_id, now - READ_BACK_MS);
+  const walk = A.actWalk(rows, now - READ_BACK_MS, now);
+  if (n.state !== 'sent' || !askOpen(ask, walk)) return reply(200, { ok: true, over: true, message: 'That one\'s over' });
+  for (const w of A.actSkipTies(askRows(ask, choice, now), rows)) await writeRow(sb, n.user_id, set.zone, w);
+  const state = choice === 'awake' ? 'awake' : choice === 'resume' ? 'resumed' : choice;
+  await sb.from('activity_nudges').update({ state, decided_at: iso(now) }).eq('id', n.id);
+  const at = clock12(askAt(ask), set.offset);
+  await retireAsk(sb, n.user_id, choice === 'awake' ? 'Awake from ' + at : choice === 'resume' ? 'Back at work from ' + at : 'Noted', from);
+  return reply(200, { ok: true, state });
+}
+
 /** A push's button, from sw.js. The nonce is the credential. */
 async function opAnswer(sb: Sb, ans: Record<string, any>, now: number) {
   const id = String(ans.id || '');
   const nonce = String(ans.nonce || '');
-  const choice = ans.choice === 'break' ? 'break' : ans.choice === 'working' ? 'working' : '';
-  if (!UUID.test(id) || !nonce || !choice) return reply(401, { ok: false, error: 'not a check of yours' });
+  const said = ['break', 'working', 'awake', 'asleep', 'resume'].indexOf(String(ans.choice)) !== -1 ? String(ans.choice) : '';
+  if (!UUID.test(id) || !nonce || !said) return reply(401, { ok: false, error: 'not a check of yours' });
   const n = must(await sb.from('activity_nudges').select('*').eq('id', id).limit(1))[0];
   if (!n || !n.nonce_sha256 || (await sha256Hex(nonce)) !== n.nonce_sha256) {
     return reply(401, { ok: false, error: 'not a check of yours' });
@@ -613,6 +903,9 @@ async function opAnswer(sb: Sb, ans: Record<string, any>, now: number) {
   const pinned = (Deno.env.get('ALLOWED_USER_ID') || '').trim();
   if (pinned && pinned !== n.user_id) return reply(403, { ok: false, error: 'not this account' });
   const set = await readSettings(sb, n.user_id, now);
+  if (ASK_KINDS.indexOf(n.kind) !== -1) return await answerAsk(sb, n, said, set, now, String(ans.from || ''));
+  const choice = said === 'break' || said === 'working' ? said : '';
+  if (!choice) return reply(400, { ok: false, error: 'not an answer to this check' });
   const nudge = { id: n.id, state: n.state, streak_start: ms(n.streak_start), span_end: ms(n.span_end), pushed_at: ms(n.pushed_at) };
   const rows = await readRows(sb, n.user_id, Math.min(nudge.streak_start, now) - 60000);
   if (!answerOpen(nudge, now, rows.map((r) => ({ at: ms(r.at), type: r.type, rid: r.rid || '' })))) {
@@ -649,6 +942,8 @@ Deno.serve(async (req: Request): Promise<Response> => {
     if (!dev) return reply(401, { ok: false, error: 'this token is not paired (revoked?)' });
     const pinned = (Deno.env.get('ALLOWED_USER_ID') || '').trim();
     if (pinned && pinned !== dev.user_id) return reply(403, { ok: false, error: 'not this account' });
+    // Item 22: any call it makes says it is connected, working or not.
+    await sb.from('watch_devices').update({ last_seen_at: iso(now) }).eq('id', dev.id);
 
     if (body.op === 'config') return await opConfig(sb, dev, body, now);
     if (body.op === 'ingest') return await opIngest(sb, dev, body, now, req);

@@ -1629,3 +1629,77 @@ exception when duplicate_object then null; end $$;
 revoke all on table public.activity_nudges from anon, authenticated;
 grant select (id, user_id, device_id, streak_start, what, pushed_at, state, span_end, other_work, decided_at, created_at)
   on public.activity_nudges to authenticated;
+
+-- ============================================================ item 23 (11 Oct)
+-- Watching extends to sleep and breaks, but only bare: a block kept while asleep
+-- or on a break is its time, category and (work or meeting) project; no app,
+-- site or keyword (mode 'sleep' / 'break'). New events rid prefixes, no schema
+-- change: nw- (a wake back to first use, "I'm awake"), nr- (a resume back to the
+-- work, "Resume"), na- (an actanswer: "Still asleep" / "It was a break").
+-- Safe to run twice.
+
+alter table public.activity_blocks add column if not exists mode text not null default 'work';
+
+do $$ begin
+  alter table public.activity_blocks add constraint activity_blocks_mode check (mode in ('work', 'break', 'sleep'));
+exception when duplicate_object then null; end $$;
+
+-- A bare block names nothing: the table refuses it even if a bug tried.
+do $$ begin
+  alter table public.activity_blocks add constraint activity_blocks_bare
+    check (mode = 'work' or (app = '' and domain = '' and rule_key = ''));
+exception when duplicate_object then null; end $$;
+
+-- activity_nudges carries the two new questions: kind 'awake' and 'resume', with
+-- ref_at = the sleep or break row they are about.
+alter table public.activity_nudges add column if not exists kind text not null default 'distract';
+alter table public.activity_nudges add column if not exists ref_at timestamptz;
+
+do $$ begin
+  alter table public.activity_nudges add constraint activity_nudges_kind check (kind in ('distract', 'awake', 'resume'));
+exception when duplicate_object then null; end $$;
+
+alter table public.activity_nudges drop constraint if exists activity_nudges_state_check;
+alter table public.activity_nudges add constraint activity_nudges_state_check check (state in ('sent', 'working', 'break',
+  'answered', 'left', 'autobreak', 'question', 'stale', 'closed', 'awake', 'asleep', 'resumed'));
+
+-- One per device, kind and start: an awake run and a distraction streak never collide.
+alter table public.activity_nudges drop constraint if exists activity_nudges_streak_key;
+do $$ begin
+  alter table public.activity_nudges add constraint activity_nudges_kind_streak_key
+    unique (user_id, device_id, kind, streak_start);
+exception when duplicate_object or duplicate_table then null; end $$;
+
+grant select (kind, ref_at) on public.activity_nudges to authenticated;
+
+-- activity_nights: a disturbed night. Asleep (a night sleep: from 9 pm or after
+-- midnight) and a device in use before Fajr, 5 minutes or more at a time. One
+-- row per sleep, recounted by activity-ingest; a night that turns out undisturbed
+-- (a wake moved earlier) is deleted. Read by Review and the reports.
+create table if not exists public.activity_nights (
+  user_id    uuid        not null references auth.users on delete cascade,
+  sleep_at   timestamptz not null,
+  woke_at    timestamptz,
+  fajr_at    timestamptz not null,
+  first_at   timestamptz not null,
+  last_at    timestamptz not null,
+  minutes    integer     not null check (minutes between 1 and 1440),
+  kinds      text        not null default '' check (kinds in ('', 'laptop', 'phone', 'laptop,phone')),
+  updated_at timestamptz not null default now(),
+  primary key (user_id, sleep_at),
+  constraint activity_nights_span check (last_at > first_at and first_at >= sleep_at and last_at <= fajr_at)
+);
+
+alter table public.activity_nights enable row level security;
+
+do $$ begin
+  create policy "read own nights" on public.activity_nights
+    for select using (auth.uid() = user_id);
+exception when duplicate_object then null; end $$;
+
+revoke insert, update, delete, truncate on table public.activity_nights from anon, authenticated;
+
+-- Teach ProBeing: names he chose to Ignore (a site, or an app as a squashed word),
+-- so the Teach list stops offering them. Never a title.
+alter table public.user_settings add column if not exists activity_ignore jsonb
+  check (activity_ignore is null or (jsonb_typeof(activity_ignore) = 'array' and jsonb_array_length(activity_ignore) <= 300));
