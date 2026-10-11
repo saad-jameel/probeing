@@ -294,6 +294,8 @@
          without costing you a single number. -->
     <div id="reviewFigures" class="sum-row three" hidden></div>
     <p id="reviewSleep" class="review-sleep"></p>
+    <!-- Item 23: disturbed nights and unsorted apps, from the watchers; his app names as text. -->
+    <p id="reviewWatch" class="review-sleep" hidden></p>
     <!-- Each prayer by mode, and the days it was missed. -->
     <div id="reviewPrayers" hidden></div>
     <!-- Money in and out for the range, added up here; never sent to Gemini. -->
@@ -713,13 +715,23 @@
           data-title="Laptop and phone activity" aria-label="About laptop and phone activity">?</button></h3>
         <template id="helpWatch">
         <p class="hint">A small script on your Windows laptop reads ActivityWatch every 5 minutes,
-          <strong>only while you are working</strong>, and sends time blocks: when, which app, which
+          <strong>while you are working</strong> (bare while asleep or on a break, below), and sends time blocks: when, which app, which
           site (its name only), which project, and whether it was work, a meeting, a distraction or
           private. Never a web address, never page text. A window title leaves the laptop only when no
           keyword places it, once, for Gemini to name the project; it is not stored.</p>
         <p class="hint">On a distraction for 10 minutes you get a push. No answer in 5 minutes and it
           becomes a break from when it started; back in a work app, the work resumes by itself. If
           another device was working across the same span, you are asked instead.</p>
+        <p class="hint">Asleep or on a break, the laptop and phone still send, but only whether they were in use
+          and what kind of use: no app, no site, no title, and nothing goes to Gemini. Marked asleep and
+          using one for 5 minutes after Fajr (any time in a nap): a push asks <strong>awake?</strong>, and
+          I'm awake records waking from when the use began. Before Fajr there is no push; the minutes show
+          in Review as a disturbed night. On a break and in a work app for 5 minutes: a push asks
+          <strong>back to work?</strong>, and Resume records you back from when the work began. A push you
+          missed is asked when you next open ProBeing.</p>
+        <p class="hint"><strong>Teach ProBeing</strong> lists apps and sites from the last 7 days that no rule placed,
+          most time first. Work (then pick the project), Meeting, Distraction, Private or Ignore files them from then
+          on, on both devices. Only the app's or site's name is kept, never a window title.</p>
         <p class="hint">Pair once: press the button, copy the line, paste it into PowerShell on the
           laptop. The line is shown only now; ProBeing keeps a fingerprint, not the token.</p>
         <p class="hint">The phone (the ProBeing Android app, version 4 or later) does the same with Android's
@@ -771,6 +783,13 @@
           <button type="button" id="watchListsSave" class="btn">Save lists</button>
         </div>
         <p id="watchListsResult" class="hint"></p>
+        </details>
+        <!-- Item 23: apps and sites no rule placed; a choice is kept by name only. -->
+        <details id="teachDetails" class="sub-details">
+        <summary>Teach ProBeing</summary>
+        <p class="hint">Apps and sites from the last 7 days that no rule placed. One tap files them from now on.</p>
+        <ul id="teachList" class="catchup-list"></ul>
+        <p id="teachResult" class="hint"></p>
         </details>
       </div>
 

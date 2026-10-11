@@ -2083,6 +2083,7 @@ async function refresh(opts) {
   try {
     var data = await api('today', null, opts);
     renderToday(data);
+    catchupPrune();                       // item 23: answered on another device, or over
     if (catchupOnOpen) { catchupOnOpen = false; maybeCatchUp(); }      // Stage 18b: once per opening
     if (epoch === glanceEpoch) armGlance(data, readAt);
     drainOutbox('read');                  // a read that worked means the way is open
@@ -6974,6 +6975,12 @@ function reviewPrompt(win, now, prior, cats, pace) {
     lines.push('MEASURED ON THE LAPTOP while working (worked out already, for you to judge from, not to repeat): ' +
                reportActivityLine(act).replace(/^Laptop: /, '') + '.');
   }
+  /* Item 23: nights he used a device before Fajr while marked asleep. */
+  if (act && act.nights && act.nights.count) {
+    lines.push('');
+    lines.push('DISTURBED NIGHTS (worked out already, for you to judge from, not to repeat): ' + nightsLine(act.nights) +
+               ', before Fajr while marked asleep.');
+  }
 
   /* Edit queue 4: prayers made up late. Named, never counted by the model. */
   var qaza = Array.isArray(now.qaza) ? now.qaza : [];
@@ -7503,6 +7510,8 @@ function clearReview() {
   $('reviewFigures').hidden = true;
   $('reviewFigures').textContent = '';
   $('reviewSleep').textContent = '';
+  $('reviewWatch').textContent = '';
+  $('reviewWatch').hidden = true;
   showPrayerTable($('reviewPrayers'), null);
   showMoneyFigures($('reviewMoney'), null, '');
   $('reviewProse').textContent = '';
@@ -7736,6 +7745,7 @@ async function runReview(force) {
   }
 
   renderReviewFigures(sum);
+  paintReviewWatch(got.windows[0].startMs, got.windows[got.windows.length - 1].endMs, mine);   // item 23, not awaited
   var prayed = prayerStats(got.rows, got.windows);
   showPrayerTable($('reviewPrayers'), prayed);
   /* Published for the dialog's Save to find later — see reviewRegroup. Called
@@ -8232,6 +8242,13 @@ function renderReports(rows) {
       al.textContent = actLine;             // project names are his text (rule 5)
       li.appendChild(al);
     }
+    var nightLine = nightsLine(stats.activity && stats.activity.nights);     // item 23
+    if (nightLine) {
+      var nl = document.createElement('p');
+      nl.className = 'report-figs report-tasks';
+      nl.textContent = nightLine + '.';
+      li.appendChild(nl);
+    }
     var prayers = prayerTable(stats.prayerBreakdown);
     if (prayers) li.appendChild(prayers);
     li.appendChild(body);
@@ -8347,23 +8364,104 @@ async function reportTaskFigures(rows, windows, sum) {
 async function reportActivityFigures(rows, windows) {
   var startMs = windows[0].startMs;
   var endMs = windows[windows.length - 1].endMs;
-  var res = await sb.from('activity_blocks').select('id,started_at,ended_at,category,project')
+  // '*': a database without item 23's `mode` reads as all watched.
+  var res = await sb.from('activity_blocks').select('*')
     .lt('started_at', new Date(endMs).toISOString()).gte('ended_at', new Date(startMs).toISOString())
     .order('started_at', { ascending: true }).limit(5000);
   if (res.error) {
     if (/^(PGRST205|42P01)$/.test(String(res.error.code))) return null;      // the tables are not there yet
     throw errorFrom(res.error);
   }
-  if (!(res.data || []).length) return null;
+  var nights = nightsSummary(await readNights(startMs, endMs));             // item 23
+  if (!(res.data || []).length && !nights) return null;
   var fixRes = await sb.from('events').select('at,type,detail,project,rid').eq('type', ACT_FIX_TYPE)
     .gte('at', new Date(startMs).toISOString()).order('at', { ascending: true }).limit(5000);
   if (fixRes.error) throw errorFrom(fixRes.error);
-  var blocks = actClip(res.data.map(function (r) {
-    return { id: r.id, start: Date.parse(r.started_at), end: Date.parse(r.ended_at), category: r.category, project: r.project || '' };
+  var work = actWalk(rows, startMs, endMs).work;
+  // A bare block (asleep, a break) counts only where the day says he was working after all.
+  var blocks = actClip((res.data || []).map(function (r) {
+    return { id: r.id, start: Date.parse(r.started_at), end: Date.parse(r.ended_at), category: r.category, project: r.project || '',
+             mode: r.mode || 'work' };
+  }).filter(function (b) {
+    return b.mode === 'work' || (b.category !== 'distraction' && actSpansMs(actIntersect(b.start, b.end, work)) > 0);
   }), [[startMs, endMs]]);
-  var figs = actFigures(blocks, actFixMap(fixRes.data || []), actWalk(rows, startMs, endMs).work);
-  return { byProject: figs.byProject, workMs: figs.workMs, meetingMs: figs.meetingMs, unclearMs: figs.unclearMs,
-           distractMs: figs.distractMs, privateMs: figs.privateMs, blocks: figs.blocks };
+  var figs = actFigures(blocks, actFixMap(fixRes.data || []), work);
+  var out = { byProject: figs.byProject, workMs: figs.workMs, meetingMs: figs.meetingMs, unclearMs: figs.unclearMs,
+              distractMs: figs.distractMs, privateMs: figs.privateMs, blocks: figs.blocks };
+  if (nights) out.nights = nights;
+  return out;
+}
+
+/* Item 23: disturbed nights (activity_nights, kept by activity-ingest) and unsorted
+ * apps, for Review and the reports. */
+
+/** activity_nights rows -> {count, minutes, kinds}, or null with none. */
+function nightsSummary(rows) {
+  var count = 0;
+  var minutes = 0;
+  var kinds = [];
+  (rows || []).forEach(function (r) {
+    var m = Math.round(Number(r && r.minutes));
+    if (!(m > 0)) return;
+    count += 1;
+    minutes += m;
+    String(r.kinds || '').split(',').forEach(function (k) { if (k && kinds.indexOf(k) === -1) kinds.push(k); });
+  });
+  return count ? { count: count, minutes: minutes, kinds: kinds.sort() } : null;
+}
+
+/** "2 disturbed nights, 35 min on the phone after sleeping"; '' with none. */
+function nightsLine(s) {
+  if (!s || !(Number(s.count) > 0)) return '';
+  var kinds = Array.isArray(s.kinds) ? s.kinds : [];
+  var on = kinds.length > 1 ? 'the phone and laptop' : kinds[0] === 'laptop' ? 'the laptop' : 'the phone';
+  var m = Math.round(Number(s.minutes) || 0);
+  return s.count + ' disturbed night' + (s.count === 1 ? '' : 's') + ', ' +
+         (m < 60 ? m + ' min' : humanDuration(m * 60000)) + ' on ' + on + ' after sleeping';
+}
+
+/** The nights whose sleep began in [startMs, endMs). Null when the table is not there yet. */
+async function readNights(startMs, endMs) {
+  var res = await sb.from('activity_nights').select('sleep_at,minutes,kinds')
+    .gte('sleep_at', new Date(startMs).toISOString()).lt('sleep_at', new Date(endMs).toISOString()).limit(400);
+  if (res.error) {
+    if (/^(PGRST205|42P01)$/.test(String(res.error.code))) return null;
+    throw errorFrom(res.error);
+  }
+  return res.data || [];
+}
+
+/** Review's line under the sleep: disturbed nights, and unsorted apps with a way to label them. */
+async function paintReviewWatch(startMs, endMs, mine) {
+  var box = $('reviewWatch');
+  box.textContent = '';
+  box.hidden = true;
+  if (!supabaseReady()) return;
+  var nights = null;
+  var unsorted = [];
+  var failed = '';
+  try {
+    nights = nightsSummary(await readNights(startMs, endMs));
+    unsorted = teachRows(await readTeach(startMs, endMs));
+  } catch (e) {
+    if (!/PGRST205|42703|42P01|does not exist/i.test(String((e && e.message) || e))) failed = String((e && e.message) || e);
+  }
+  if (!mine()) return;
+  var line = nightsLine(nights);
+  if (line) box.append(line + '.');
+  if (unsorted.length) {
+    var ms = unsorted.reduce(function (n, r) { return n + r.ms; }, 0);
+    if (line) box.appendChild(document.createElement('br'));
+    box.append(unsorted.length + (unsorted.length === 1 ? ' app' : ' apps') + ' took ' + reviewDuration(ms) + ' unsorted — ');
+    var go = document.createElement('button');
+    go.type = 'button';
+    go.className = 'link-btn';
+    go.textContent = 'label them';
+    go.addEventListener('click', openTeach);
+    box.appendChild(go);
+  }
+  if (failed && !line && !unsorted.length) box.append('Could not read the watchers\' figures: ' + failed);
+  box.hidden = !box.childNodes.length;
 }
 
 /** "Laptop: ProBeing 3h 10m, OneNet 1h · meetings 40m · not placed 20m · distractions 25m"; '' when none. */
@@ -14971,24 +15069,35 @@ function watchRuleChanges(had, want) {
 
 var watchRules = [];                      // the rules as Settings last read them
 
+/* Item 22: every call a device makes marks it seen, working or not. The phone runs every
+ * 15-20 minutes and Android may hold it longer, so an hour of quiet is still connected. */
+var WATCH_CONNECTED_MS = 60 * 60000;
+
+/** "connected · last checked 3:40 pm", or how long it has been quiet. */
+function watchSeenText(lastSeen, now) {
+  var t = Date.parse(lastSeen || '');
+  if (!isFinite(t)) return 'not connected yet';
+  if (now - t <= WATCH_CONNECTED_MS) return 'connected · last checked ' + clockAt(t);
+  return 'not heard from since ' + humanYmd(ymdLocal(new Date(t))) + ', ' + clockAt(t);
+}
+
 function renderWatchDevices(rows) {
   var box = $('watchList');
   box.textContent = '';
   if (!rows || !rows.length) {
     var none = document.createElement('p');
     none.className = 'hint';
-    none.textContent = 'No laptop is paired yet.';
+    none.textContent = 'No laptop or phone is paired yet.';
     box.appendChild(none);
     return;
   }
+  var now = Date.now();
   rows.forEach(function (r) {
     var row = document.createElement('div');
     row.className = 'cat-row';
     var name = document.createElement('span');
     name.className = 'cat-name';
-    name.textContent = (r.label || (r.kind === 'phone' ? 'Phone' : 'Laptop')) + ' · ' + (r.last_seen_at
-      ? 'last sent ' + humanYmd(ymdLocal(new Date(r.last_seen_at))) + ', ' + clockAt(Date.parse(r.last_seen_at))
-      : 'nothing sent yet');
+    name.textContent = (r.label || (r.kind === 'phone' ? 'Phone' : 'Laptop')) + ' · ' + watchSeenText(r.last_seen_at, now);
     var kill = document.createElement('button');
     kill.type = 'button';
     kill.className = 'link-btn';
@@ -15187,6 +15296,211 @@ $('watchListsSave').addEventListener('click', async function () {
   }
 });
 
+/* ── Teach ProBeing (item 23) ──────────────────────────────────────────────
+ * Apps and sites seen lately that no rule placed. Each choice is kept by name
+ * only, never a title: Work = a keyword rule, Meeting / Distraction / Private =
+ * an entry in that list, Ignore = user_settings.activity_ignore. The laptop and
+ * the phone read them on their next run. A setting, so written straight away. */
+
+var TEACH_BACK_MS = 7 * 86400000;
+var TEACH_SHOW_MAX = 30;
+var TEACH_IGNORE_MAX = 300;
+var TEACH_LISTS = { meeting: 'meeting', distraction: 'distract', 'private': 'private' };
+var teach = null;                         // {blocks, fixes, lists, rules, ignore, projects}
+
+/** What a block can be taught by: its site, else its app as a squashed word; null for a
+ *  browser with no site, a terminal or file window, or a phone app with no name. */
+function teachName(b) {
+  if (b.domain) {
+    var d = actCleanDomain(b.domain);
+    return d ? { entry: d, label: d, site: true } : null;
+  }
+  var app = String(b.app || '').replace(/\.exe$/i, '').trim();
+  var w = actNorm(app);
+  if (w.length < 3 || w === 'otherapp' || actIsBrowser(b.app) || ACT_NO_TITLE_APPS.indexOf(w) !== -1) return null;
+  return { entry: w, label: app, site: false };
+}
+
+/** Unplaced time by name, most first: [{entry, label, site, ms}]. blocks: unclear ones
+ *  (start, end ms); cfg: {lists, rules, projects} as the watchers classify with; a name
+ *  a rule now places, or one he ignored, is left out. */
+function teachList(blocks, fixes, cfg, ignore) {
+  var by = userMap();
+  var skip = userMap();
+  (ignore || []).forEach(function (e) { skip[String(e)] = 1; });
+  (blocks || []).forEach(function (raw) {
+    var b = actFixed(raw, fixes);
+    if (b.category !== 'unclear' || (b.mode && b.mode !== 'work') || !(b.end > b.start)) return;
+    var n = teachName(b);
+    if (!n || skip[n.entry]) return;
+    if (!by[n.entry]) {
+      var placed = actClassify({ app: b.app, host: b.domain || '', path: '', title: '' }, cfg).category !== 'unclear';
+      by[n.entry] = { entry: n.entry, label: n.label, site: n.site, ms: 0, placed: placed };
+    }
+    by[n.entry].ms += b.end - b.start;
+  });
+  return Object.keys(by).map(function (k) { return by[k]; }).filter(function (x) { return !x.placed; })
+    .sort(function (a, b) { return (b.ms - a.ms) || (a.label < b.label ? -1 : a.label > b.label ? 1 : 0); })
+    .map(function (x) { return { entry: x.entry, label: x.label, site: x.site, ms: x.ms }; });
+}
+
+/** Everything teachList needs for [sinceMs, untilMs) (0: until now), read fresh (rule 3). */
+async function readTeach(sinceMs, untilMs) {
+  var q = sb.from('activity_blocks').select('id,started_at,ended_at,app,domain,category,mode')
+    .eq('category', 'unclear').eq('mode', 'work').gte('ended_at', new Date(sinceMs).toISOString());
+  if (untilMs) q = q.lt('started_at', new Date(untilMs).toISOString());
+  var res = await q.order('started_at', { ascending: true }).limit(5000);
+  if (res.error) throw errorFrom(res.error);
+  var blocks = (res.data || []).map(function (r) {
+    return { id: r.id, start: Math.max(Date.parse(r.started_at), sinceMs),
+             end: untilMs ? Math.min(Date.parse(r.ended_at), untilMs) : Date.parse(r.ended_at),
+             app: r.app || '', domain: r.domain || '', category: r.category, project: '', mode: r.mode };
+  });
+  var fixRes = await sb.from('events').select('at,type,detail,project,rid').eq('type', ACT_FIX_TYPE)
+    .gte('at', new Date(sinceMs).toISOString()).order('at', { ascending: true }).limit(5000);
+  if (fixRes.error) throw errorFrom(fixRes.error);
+  var set = await sb.from('user_settings').select('activity_lists,activity_ignore').eq('user_id', sbUser.id).limit(1);
+  if (set.error) throw errorFrom(set.error);
+  var row = (set.data || [])[0] || null;
+  var rules = await sb.from('activity_rules').select('keyword,project,source').limit(500);
+  if (rules.error) throw errorFrom(rules.error);
+  return { blocks: blocks, fixes: actFixMap((fixRes.data || []).concat(catchupHeld({ actfix: 1 }))),
+           lists: row && row.activity_lists, ignore: Array.isArray(row && row.activity_ignore) ? row.activity_ignore : [],
+           rules: (rules.data || []).map(function (r) { return { keyword: r.keyword, project: r.project }; }),
+           projects: catchupProjects([]) };
+}
+
+function teachRows(t) {
+  return teachList(t.blocks, t.fixes, { lists: t.lists, rules: t.rules, projects: t.projects }, t.ignore);
+}
+
+async function loadTeach() {
+  var out = $('teachResult');
+  $('teachList').textContent = '';
+  if (!supabaseReady()) { out.textContent = 'Sign in first.'; return; }
+  out.textContent = 'Reading…';
+  try {
+    teach = await readTeach(Date.now() - TEACH_BACK_MS, 0);
+    renderTeach();
+  } catch (e) {
+    out.textContent = /PGRST205|42703|activity_|does not exist/i.test(String((e && e.message) || e))
+      ? 'Not set up yet: the database needs the item 23 part of the schema.' : 'Could not read: ' + ((e && e.message) || e);
+  }
+}
+
+function renderTeach() {
+  var list = $('teachList');
+  list.textContent = '';
+  var rows = teachRows(teach);
+  $('teachResult').textContent = !rows.length ? 'Nothing unsorted in the last 7 days.'
+    : rows.length > TEACH_SHOW_MAX ? 'The ' + TEACH_SHOW_MAX + ' with the most time.' : '';
+  rows.slice(0, TEACH_SHOW_MAX).forEach(function (r) { list.appendChild(teachRow(r)); });
+}
+
+function teachRow(r) {
+  var li = document.createElement('li');
+  li.className = 'teach-row';
+  var head = document.createElement('p');
+  var what = document.createElement('span');
+  what.className = 'catchup-what';
+  what.textContent = r.label;                 // an app's or site's name: textContent (rule 5)
+  head.append(what, ' · ' + humanDuration(r.ms));
+  li.appendChild(head);
+  var acts = document.createElement('div');
+  acts.className = 'catchup-acts';
+  var key = actNorm(r.entry);
+  var ruleOk = key.length >= ACT_KEY_MIN && key.length <= ACT_KEY_MAX;
+  function btn(label, fn, off) {
+    var b = document.createElement('button');
+    b.type = 'button';
+    b.className = 'link-btn';
+    b.textContent = label;
+    b.disabled = Boolean(off);
+    if (off) b.title = 'Too short a name to make a rule of';
+    b.addEventListener('click', fn);
+    acts.appendChild(b);
+  }
+  btn('Work', function () {
+    var sel = document.createElement('select');
+    sel.className = 'cat-pick';
+    sel.setAttribute('aria-label', 'Project for ' + r.label);
+    var none = document.createElement('option');
+    none.value = '';
+    none.textContent = 'Which project?';
+    sel.appendChild(none);
+    teach.projects.forEach(function (p) {
+      var o = document.createElement('option');
+      o.value = p;
+      o.textContent = p;
+      sel.appendChild(o);
+    });
+    sel.addEventListener('change', function () { if (sel.value) teachSave(r, 'work', sel.value, li); });
+    acts.textContent = '';
+    acts.appendChild(sel);
+    sel.focus();
+  }, !ruleOk);
+  btn('Meeting', function () { teachSave(r, 'meeting', '', li); });
+  btn('Distraction', function () { teachSave(r, 'distraction', '', li); });
+  btn('Private', function () { teachSave(r, 'private', '', li); });
+  btn('Ignore', function () { teachSave(r, 'ignore', '', li); });
+  li.appendChild(acts);
+  return li;
+}
+
+/** One choice, written now. The lists and ignore are read fresh first, so nothing else is lost. */
+async function teachSave(r, kind, project, li) {
+  li.textContent = 'Saving…';
+  try {
+    if (!supabaseReady()) throw new Error('Sign in first.');
+    if (kind === 'work') {
+      var key = actNorm(r.entry);
+      var ins = await sb.from('activity_rules').insert({ user_id: sbUser.id, keyword: key, project: project, source: 'hand' });
+      if (ins.error && ins.error.code === '23505') {
+        ins = await sb.from('activity_rules').update({ project: project, source: 'hand', updated_at: new Date().toISOString() })
+          .eq('keyword', key);
+      }
+      if (ins.error) throw errorFrom(ins.error);
+    } else {
+      var set = await sb.from('user_settings').select('activity_lists,activity_ignore').eq('user_id', sbUser.id).limit(1);
+      if (set.error) throw errorFrom(set.error);
+      var row = (set.data || [])[0] || null;
+      var patch = { user_id: sbUser.id };
+      if (kind === 'ignore') {
+        var ign = Array.isArray(row && row.activity_ignore) ? row.activity_ignore.slice() : [];
+        if (ign.indexOf(r.entry) === -1) ign.push(r.entry);
+        patch.activity_ignore = ign.slice(-TEACH_IGNORE_MAX);
+      } else {
+        var lists = actLists(row && row.activity_lists);
+        var name = TEACH_LISTS[kind];
+        if (lists[name].indexOf(r.entry) === -1) {
+          if (lists[name].length >= ACT_LIST_MAX) throw new Error('That list is full (' + ACT_LIST_MAX + '). Remove one under Lists first.');
+          lists[name].push(r.entry);
+        }
+        patch.activity_lists = lists;
+      }
+      var up = await sb.from('user_settings').upsert(patch, { onConflict: 'user_id' });
+      if (up.error) throw errorFrom(up.error);
+    }
+    li.textContent = r.label + ' → ' + (kind === 'work' ? project : kind === 'ignore' ? 'ignored' : kind) +
+      '. The laptop and phone use it from their next run.';
+    // The Lists editor must not save an older copy over this.
+    loadWatch().catch(function () { /* its own line says what failed */ });
+  } catch (e) {
+    li.textContent = 'Not saved: ' + ((e && e.message) || e);
+  }
+}
+
+/** From Review's "label them": Settings, open at the Teach list. */
+function openTeach() {
+  $('settingsBtn').click();
+  var box = $('teachDetails');
+  if (!box.open) box.open = true;           // its toggle event reads the list
+  else loadTeach();
+  if (typeof box.scrollIntoView === 'function') box.scrollIntoView({ block: 'start' });
+}
+
+$('teachDetails').addEventListener('toggle', function () { if (this.open) loadTeach(); });
+
 /* ── The catch-up sheet ────────────────────────────────────────────────────
  * Non-modal on purpose: M and Prayer stay one tap away underneath it (rule 4). */
 
@@ -15207,11 +15521,16 @@ function catchupHeld(types) {
 }
 
 /** Unanswered pushes and questions, and auto breaks since he last looked (Looks right
- *  accepts one). `rids`: rids that exist; `since`: when he last confirmed. */
+ *  accepts one). `rids`: rids that exist; `since`: when he last confirmed. Item 23 adds
+ *  the awake and back-to-work questions (kind 'awake' / 'resume'). */
 function catchupAsks(nudges, rids, since) {
   var out = [];
   (nudges || []).forEach(function (n) {
     var id = n.id;
+    if (n.kind === 'awake' || n.kind === 'resume') {
+      if (n.state === 'sent' && !rids['nw-' + id] && !rids['nr-' + id] && !rids['na-' + id]) out.push({ kind: n.kind, n: n });
+      return;
+    }
     if (n.state === 'sent' && !rids['an-' + id] && !rids['ab-' + id]) out.push({ kind: 'sent', n: n });
     else if (n.state === 'question' && !rids['aq-' + id] && !rids['qb-' + id]) out.push({ kind: 'question', n: n });
     else if (n.state === 'autobreak' && !rids['aw-' + id] && Date.parse(n.streak_start) >= since) out.push({ kind: 'autobreak', n: n });
@@ -15227,8 +15546,9 @@ async function readCatchUp() {
   var seen = (seenRes.data || []).concat(catchupHeld({ actseen: 1 })).map(function (r) { return instantOf(r.detail); })
     .filter(function (t) { return isFinite(t); });
   var since = Math.max(now - CATCHUP_BACK_MS, seen.length ? Math.max.apply(null, seen) : -Infinity);
+  // Only fully watched blocks: asleep or on a break they are bare, and not his to sort (item 23).
   var res = await sb.from('activity_blocks').select('id,device_id,started_at,ended_at,app,domain,category,project,rule_key')
-    .gte('ended_at', new Date(since).toISOString()).order('started_at', { ascending: true }).limit(1000);
+    .eq('mode', 'work').gte('ended_at', new Date(since).toISOString()).order('started_at', { ascending: true }).limit(1000);
   if (res.error) throw errorFrom(res.error);
   var blocks = (res.data || []).map(function (r) {
     return { id: r.id, start: Math.max(Date.parse(r.started_at), since), end: Date.parse(r.ended_at), app: r.app || '',
@@ -15238,17 +15558,20 @@ async function readCatchUp() {
     .gte('at', new Date(since - 86400000).toISOString()).order('at', { ascending: true }).limit(1000);
   if (fixRes.error) throw errorFrom(fixRes.error);
   var fixes = actFixMap((fixRes.data || []).concat(catchupHeld({ actfix: 1 })));
-  var nRes = await sb.from('activity_nudges').select('id,streak_start,what,pushed_at,state,span_end,other_work')
+  var nRes = await sb.from('activity_nudges').select('id,kind,ref_at,streak_start,what,pushed_at,state,span_end,other_work')
     .in('state', ['sent', 'question', 'autobreak']).gte('streak_start', new Date(now - CATCHUP_BACK_MS).toISOString())
     .order('streak_start', { ascending: true }).limit(50);
   if (nRes.error) throw errorFrom(nRes.error);
-  // A day that has turned closed its pushes and questions with it.
+  // A day that has turned closed its pushes and questions with it; an awake or back-to-work
+  // question lasts while its sleep or break does (askStillOpen).
   var dayStart = counterDayStart(now);
-  var nudges = (nRes.data || []).filter(function (n) { return Date.parse(n.streak_start) >= dayStart; });
+  var nudges = (nRes.data || []).filter(function (n) {
+    return n.kind === 'awake' || n.kind === 'resume' ? askStillOpen(n) : Date.parse(n.streak_start) >= dayStart;
+  });
   var rids = userMap();
   if (nudges.length) {
     var want = [];
-    nudges.forEach(function (n) { ['an-', 'ab-', 'aq-', 'qb-', 'aw-'].forEach(function (p) { want.push(p + n.id); }); });
+    nudges.forEach(function (n) { ['an-', 'ab-', 'aq-', 'qb-', 'aw-', 'nw-', 'nr-', 'na-'].forEach(function (p) { want.push(p + n.id); }); });
     var rr = await sb.from('events').select('rid').in('rid', want).limit(500);
     if (rr.error) throw errorFrom(rr.error);
     (rr.data || []).forEach(function (r) { rids[r.rid] = 1; });
@@ -15307,8 +15630,36 @@ function catchupLabel(g) {
   return (g.project || 'Work') + ' · ' + mins;
 }
 
+/* Item 23: the awake and back-to-work questions. */
+
+/** The instant an answer backdates to: the use, never before the sleep or break row. */
+function askAtOf(n) {
+  return Math.max(Date.parse(n.streak_start), Date.parse(n.ref_at) + 1000);
+}
+
+/** Is an awake or back-to-work question still about the state he is in? The toggles say. */
+function askStillOpen(n) {
+  var ref = Date.parse(n.ref_at);
+  if (!isFinite(ref)) return false;
+  if (n.kind === 'awake') return toggles.sleep.state === 'asleep' && toggles.sleep.at <= ref + 60000;
+  return toggles.sleep.state !== 'asleep' && toggles.work.state === 'break' && toggles.work.at <= ref + 60000;
+}
+
+/* A distraction push he already answered by acting: a row of his after it (as activity-ingest answerOpen). */
+var ASK_RESPONSE_TYPES = { work: 1, voice: 1, resume: 1, 'break': 1, off: 1, sleep: 1, done: 1, subdone: 1, subdrop: 1,
+                           substop: 1, pin: 1, unpin: 1, actanswer: 1 };
+var ASK_SERVER_RIDS = /^(ab|ar|aw|an|aq|qb|qr|kb|kr|as|nw|nr|na)-|^wrapup-/;
+
+function distractActedOn(n) {
+  var pushed = Date.parse(n.pushed_at);
+  return sessionLog().some(function (r) {
+    return instantOf(r.at) > pushed && ASK_RESPONSE_TYPES[r.type] === 1 && !ASK_SERVER_RIDS.test(String(r.rid || ''));
+  });
+}
+
 function catchupAskRow(a) {
   var li = document.createElement('li');
+  a.li = li;
   li.className = 'catchup-ask';
   var text = document.createElement('p');
   var n = a.n;
@@ -15323,7 +15674,19 @@ function catchupAskRow(a) {
     b.addEventListener('click', function () { answerCatchUp(a, choice, li); });
     acts.appendChild(b);
   }
-  if (a.kind === 'sent') {
+  if (a.kind === 'awake' || a.kind === 'resume') {
+    var at = askAtOf(n);
+    var dev = n.what === 'laptop' ? 'laptop' : 'phone';
+    if (a.kind === 'awake') {
+      text.textContent = 'You were marked asleep, but your ' + dev + ' was in use from ' + clockAt(at) + '.';
+      btn('I was awake at ' + clockAt(at), 'awake');
+      btn('Still asleep', 'asleep');
+    } else {
+      text.textContent = 'On a break, but your ' + dev + ' showed work from ' + clockAt(at) + '.';
+      btn('Back at ' + clockAt(at), 'resume');
+      btn('It was a break', 'break');
+    }
+  } else if (a.kind === 'sent') {
     text.textContent = 'You\'ve been on ' + (n.what || 'a distraction') + ' since ' + clockAt(start) + '.';
     btn('Take a break', 'break');
     btn('I\'m working', 'working');
@@ -15402,7 +15765,9 @@ function catchupGroupRow(g, i, projects) {
 
 function renderCatchUp() {
   var c = catchup;
-  $('catchupTitle').textContent = 'From ' + clockAt(c.since) + ' to ' + clockAt(c.until) + ' you were doing:';
+  // Questions first (item 23); the title speaks for the list under them.
+  $('catchupTitle').textContent = c.groups.length || !c.asks.length
+    ? 'From ' + clockAt(c.since) + ' to ' + clockAt(c.until) + ' you were doing:' : 'Missed while you were away';
   var asks = $('catchupAsks');
   asks.textContent = '';
   c.asks.forEach(function (a) { asks.appendChild(catchupAskRow(a)); });
@@ -15411,7 +15776,22 @@ function renderCatchUp() {
   list.textContent = '';
   var projects = catchupProjects(c.groups);
   c.groups.forEach(function (g, i) { list.appendChild(catchupGroupRow(g, i, projects)); });
-  $('catchupNote').textContent = c.groups.length ? '' : 'Nothing new from the laptop.';
+  $('catchupNote').textContent = c.groups.length || c.asks.length ? '' : 'Nothing new from the laptop.';
+}
+
+/** A read landed while the sheet is open: a question answered on another device, or one
+ *  no longer about where he is, leaves it. */
+function catchupPrune() {
+  if (!catchup || !catchupDlg.open) return;
+  var rids = userMap();
+  sessionLog().forEach(function (r) { if (r.rid) rids[r.rid] = 1; });
+  catchup.asks = catchup.asks.filter(function (a) {
+    var answered = !catchupAsks([a.n], rids, -Infinity).length;
+    var over = (a.kind === 'awake' || a.kind === 'resume') && !askStillOpen(a.n);
+    if (!answered && !over) return true;
+    if (a.li) a.li.textContent = answered ? 'Answered on another device.' : 'That one\'s over.';
+    return false;
+  });
 }
 
 /** A push or question answered from the sheet: written now, through the outbox. */
@@ -15420,6 +15800,31 @@ function answerCatchUp(a, choice, li) {
   var id = n.id;
   var start = Date.parse(n.streak_start);
   var steps = [];
+  // Late: the sleep or break it asked about is over, or he already acted on the push.
+  if ((a.kind === 'awake' || a.kind === 'resume') ? !askStillOpen(n) : a.kind === 'sent' && distractActedOn(n)) {
+    catchup.asks = catchup.asks.filter(function (x) { return x !== a; });
+    li.textContent = 'That one\'s over — nothing was changed.';
+    return;
+  }
+  if (a.kind === 'awake' || a.kind === 'resume') {
+    var at = askAtOf(n);
+    var back = { at: new Date(at).toISOString(), local_time: humanLocalAt(at) };
+    if (choice === 'awake') {
+      steps = [Object.assign({ type: 'wake', raw_text: 'Wake up (I was awake — answered the check)', rid: 'nw-' + id }, back)];
+      setToggle('sleep', 'awake', at);
+    } else if (choice === 'resume') {
+      steps = [Object.assign({ type: 'resume', raw_text: 'Resume (back at work — answered the check)', rid: 'nr-' + id }, back)];
+      setToggle('work', 'working', at);
+    } else {
+      steps = [{ type: 'actanswer', raw_text: a.kind === 'awake' ? 'Still asleep — answered the check' : 'Still on a break — answered the check',
+                 detail: choice, rid: 'na-' + id }];
+    }
+    catchup.asks = catchup.asks.filter(function (x) { return x !== a; });
+    li.textContent = choice === 'awake' ? 'Noted: awake from ' + clockAt(at) + '.' : choice === 'resume'
+      ? 'Noted: back at work from ' + clockAt(at) + '.' : choice === 'asleep' ? 'Noted: still asleep.' : 'Noted: a break.';
+    runWrites(actSkipTies(steps, sessionLog())).then(function () { scheduleRefresh(800); });
+    return;
+  }
   if (a.kind === 'sent') {
     steps = choice === 'break'
       ? [{ type: 'break', raw_text: 'Distraction', at: new Date(start).toISOString(), local_time: humanLocalAt(start), rid: 'ab-' + id }]

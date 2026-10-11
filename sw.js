@@ -55,8 +55,9 @@
  * v29 (item 21): Bought asks for the exact amount and an optional comment.
  * v30 (Stage 18a): several tasks at once with a pin, Upcoming = the plan plus Backlog, priority and effort on Start.
  * v31 (Stage 18b): activity.js, the laptop's catch-up sheet, and the distraction push with its two buttons.
- * v33 (item 24): a prayer past its time offers the three modes as well as Qaza. */
-var CACHE = 'probeing-shell-v33';
+ * v33 (item 24): a prayer past its time offers the three modes as well as Qaza.
+ * v34 (item 23): the awake and back-to-work pushes, missed questions first in the sheet, Teach ProBeing. */
+var CACHE = 'probeing-shell-v34';
 var SHELL = [
   './',
   'index.html',
@@ -144,6 +145,12 @@ var TASK_TAG = /^probeing-task-[A-Za-z0-9-]{1,64}$/;
 var PLAN_TAG = 'probeing-plan';
 // Stage 18b: the distraction push (activity-ingest), and its quiet "answered" replacement.
 var DISTRACT_TAG = 'probeing-distract';
+// Item 23: "awake?" and "back to work?" (activity-ingest), one at a time, and their quiet replacement.
+var ASK_TAG = 'probeing-watch-ask';
+var ASK_ACTIONS = {
+  awake: [{ action: 'awake', title: 'I\'m awake' }, { action: 'asleep', title: 'Still asleep' }],
+  resume: [{ action: 'resume', title: 'Resume' }, { action: 'break', title: 'It was a break' }]
+};
 
 self.addEventListener('push', function (event) {
   var data = pushData(event);
@@ -192,6 +199,24 @@ self.addEventListener('push', function (event) {
       opts.actions = [{ action: 'break', title: 'Take a break' }, { action: 'working', title: 'I\'m working' }];
     }
     event.waitUntil(self.registration.showNotification(String(data.title || 'ProBeing'), opts));
+    return;
+  }
+
+  /* Item 23. A button answers with the push's nonce; ignored, it waits in the app's sheet. */
+  if (data.kind === 'watch-ask' || data.kind === 'watch-ask-answered') {
+    var done = data.kind === 'watch-ask-answered';
+    var askOpts = {
+      body: String(data.body || ''),
+      icon: 'icons/icon-192.png',
+      badge: 'icons/favicon-32.png',
+      tag: ASK_TAG,
+      renotify: !done,
+      silent: done,
+      requireInteraction: !done,
+      data: { nudge: data.nudge || '', nonce: data.nonce || '', url: data.url || '', key: data.key || '', ask: data.ask || '' }
+    };
+    if (!done && data.nudge && data.nonce && data.url && ASK_ACTIONS[data.ask]) askOpts.actions = ASK_ACTIONS[data.ask];
+    event.waitUntil(self.registration.showNotification(String(data.title || 'ProBeing'), askOpts));
     return;
   }
 
@@ -378,6 +403,33 @@ self.addEventListener('notificationclick', function (event) {
       return self.registration.showNotification('ProBeing', {
         body: 'Could not record your answer. Open ProBeing to answer it there.',
         icon: 'icons/icon-192.png', badge: 'icons/favicon-32.png', tag: DISTRACT_TAG
+      });
+    }));
+    return;
+  }
+
+  // Item 23: awake? / back to work?: a button answers it here; the body opens the sheet, which asks it.
+  if (event.notification && event.notification.tag === ASK_TAG) {
+    var ad = event.notification.data || {};
+    var pick = (ASK_ACTIONS[ad.ask] || []).some(function (a) { return a.action === event.action; }) ? event.action : '';
+    event.notification.close();
+    if (!pick) {
+      event.waitUntil(showApp().then(function (client) {
+        if (client && typeof client.postMessage === 'function') client.postMessage({ goto: 'home', catchup: true });
+      }));
+      return;
+    }
+    event.waitUntil(answerDistract(ad, pick).then(function (reply) {
+      if (reply && reply.ok && reply.over) {
+        return self.registration.showNotification('ProBeing', {
+          body: 'That one\'s over — nothing was changed.', icon: 'icons/icon-192.png', badge: 'icons/favicon-32.png',
+          tag: ASK_TAG, silent: true
+        });
+      }
+      if (reply && reply.ok) return;
+      return self.registration.showNotification('ProBeing', {
+        body: 'Could not record your answer. Open ProBeing to answer it there.',
+        icon: 'icons/icon-192.png', badge: 'icons/favicon-32.png', tag: ASK_TAG
       });
     }));
     return;

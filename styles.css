@@ -1005,8 +1005,9 @@ a.btn[hidden], a.link-btn[hidden] { display: none; }
 .done-list .done-how[hidden] { display: none; }
 
 /* Stage 18b: the catch-up sheet. Opened non-modal, so it sits at the bottom and
-   the M and Prayer tiles above it stay tappable (rule 4). */
-.catchup-dlg[open] { position: fixed; inset: auto 0 0 0; margin: 0 auto 8px; max-height: 60vh; max-height: 60dvh; z-index: 20; }
+   the M and Prayer tiles above it stay tappable (rule 4). Item 23 puts the missed
+   questions first in it; 55% of the screen keeps the tile row clear on a phone. */
+.catchup-dlg[open] { position: fixed; inset: auto 0 0 0; margin: 0 auto 8px; max-height: 55vh; max-height: 55dvh; z-index: 20; }
 .catchup-list { list-style: none; margin: 10px 0 0; padding: 0; }
 .catchup-list > li { padding: 8px 0; border-top: 1px solid var(--line); }
 .catchup-list > li p { margin: 0; overflow-wrap: anywhere; }
