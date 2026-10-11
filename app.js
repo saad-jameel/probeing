@@ -44,7 +44,7 @@ var PROJECT_NAMES_KEY = 'probeing.projects'; // project names seen lately, reuse
 var GEMINI_DAY_KEY = 'probeing.geminiday';   // today's Gemini call count, against the free tier
 
 // callSupabase('prayer') refuses anything outside PRAYER_NAMES (in day.js), this
-// and PRAYER_QAZA (day.js, edit queue 4: offered alone once a prayer's time has ended).
+// and PRAYER_QAZA (day.js, edit queue 4: offered after these once a prayer's time has ended).
 var PRAYER_MODES = ['Takbeer-e-oola', 'Partial Jamat', 'Individual'];
 
 /* The chips are BREAK REASONS, not notes.
@@ -3648,23 +3648,22 @@ function prayerWaitLabel(name, now) {
   return name + ' · ' + glanceClock(prayerOpensAt(name, now));
 }
 
-/** Edit queue 4: its time has ended, same prayer day; only Qaza is offered. */
+/** Edit queue 4: its time has ended, same prayer day; Qaza joins the three. */
 function prayerLate(name, now) {
   return prayerIsQaza(name, now);
 }
 
 /** The modes `name` may be logged with at `now`. */
 function prayerModesFor(name, now) {
-  return name && prayerLate(name, now) ? [PRAYER_QAZA] : PRAYER_MODES;
+  // Item 24: the three stay offered too, for a prayer prayed in time but logged late.
+  return name && prayerLate(name, now) ? PRAYER_MODES.concat([PRAYER_QAZA]) : PRAYER_MODES;
 }
 
-/** Pick `name` and, when Qaza is its only mode, that too: one tap fewer. */
-function pickPrayer(name, now) {
+function pickPrayer(name) {
   pickedPrayer = name;
-  var modes = prayerModesFor(name, now);
-  pickedMode = modes.length === 1 ? modes[0] : null;
+  pickedMode = null;
   $('modeWrap').hidden = false;
-  $('prayerSaveBtn').disabled = !pickedMode;
+  $('prayerSaveBtn').disabled = true;
 }
 
 /** Point 6: Home shows the five prayers as ticks, not as log lines. Read-only —
@@ -3756,7 +3755,7 @@ function renderPrayerPicks() {
     var waiting = !row && prayerWaiting(name, now);
     var label = row ? name + (row.mode ? ' · ' + row.mode : '')
                     : waiting ? prayerWaitLabel(name, now)
-                    : prayerLate(name, now) ? name + ' · ' + PRAYER_QAZA : name;
+                    : prayerLate(name, now) ? name + ' · time ended' : name;
 
     var b = pickButton(label, pickedPrayer === name, Boolean(row), function () {
       if (row) { flash(name + ' is already logged today.', 'warn'); return; }
@@ -3764,7 +3763,7 @@ function renderPrayerPicks() {
         flash(name + ' begins at ' + glanceClock(prayerOpensAt(name, now)) + '.', 'warn');
         return;
       }
-      pickPrayer(name, now);
+      pickPrayer(name);
       renderPrayerPicks();
       renderModePicks();
     });
@@ -3781,10 +3780,10 @@ function renderModePicks() {
   box.textContent = '';
 
   var modes = prayerModesFor(pickedPrayer, Date.now());
-  // The clock moved past the end since the pick: a mode no longer offered is not kept.
+  // The prayer day turned since the pick: Qaza is no longer offered, so not kept.
   if (pickedMode && modes.indexOf(pickedMode) === -1) {
-    pickedMode = modes.length === 1 ? modes[0] : null;
-    $('prayerSaveBtn').disabled = !pickedMode;
+    pickedMode = null;
+    $('prayerSaveBtn').disabled = true;
   }
   modes.forEach(function (mode) {
     box.appendChild(pickButton(mode, pickedMode === mode, false, function () {
@@ -3803,7 +3802,7 @@ function openPrayerPicker(preset) {
   pickedMode = null;
   $('modeWrap').hidden = true;
   $('prayerSaveBtn').disabled = true;
-  if (ok) pickPrayer(preset, Date.now());
+  if (ok) pickPrayer(preset);
   renderPrayerPicks();
   renderModePicks();
   prayerDlg.showModal();
@@ -3826,7 +3825,7 @@ $('prayerSaveBtn').addEventListener('click', function () {
   var refused = loggedToday(pickedPrayer) ? ' is already logged today.'
     : prayerWaiting(pickedPrayer, Date.now()) ? ' has not begun yet.'
     : prayerModesFor(pickedPrayer, Date.now()).indexOf(pickedMode) === -1
-      ? (pickedMode === PRAYER_QAZA ? ' is still in its time.' : '\'s time has ended: log it as Qaza.') : '';
+      ? ' is still in its time: Qaza is for after it ends.' : '';
   if (refused) {
     flash(pickedPrayer + refused, 'warn');
     pickedPrayer = null;

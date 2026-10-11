@@ -54,8 +54,9 @@
  * v28 (item 20): the buying list redone: Add on top, the list in its own panel, Move.
  * v29 (item 21): Bought asks for the exact amount and an optional comment.
  * v30 (Stage 18a): several tasks at once with a pin, Upcoming = the plan plus Backlog, priority and effort on Start.
- * v31 (Stage 18b): activity.js, the laptop's catch-up sheet, and the distraction push with its two buttons. */
-var CACHE = 'probeing-shell-v32';
+ * v31 (Stage 18b): activity.js, the laptop's catch-up sheet, and the distraction push with its two buttons.
+ * v33 (item 24): a prayer past its time offers the three modes as well as Qaza. */
+var CACHE = 'probeing-shell-v33';
 var SHELL = [
   './',
   'index.html',
