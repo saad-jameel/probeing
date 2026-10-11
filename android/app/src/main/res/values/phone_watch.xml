@@ -2,7 +2,7 @@
 <!-- Stage 18c. Its own file, not strings.xml: Bubblewrap overwrites that one. -->
 <resources>
     <string name="phone_watch_title">Phone activity</string>
-    <string name="phone_explainer">While you are working in ProBeing (not on a break, not after End day), this phone tells ProBeing which app was on screen and from when to when: every 15 minutes, and every few minutes while a distraction is on. Only the app\'s name and the times. Never what is on the screen, never notification text. Banking, wallets, chats and messages go only as \"private\", with no name.\n\nYouTube, Instagram, X, TikTok and Facebook are distractions here: 10 minutes on one and you get a push; ignore it 5 minutes and it becomes a break from when it started, unless your laptop shows work in the same minutes (then ProBeing asks you later).</string>
+    <string name="phone_explainer">While you are working in ProBeing (not after End day), this phone tells ProBeing which app was on screen and from when to when: every 15 minutes, and every few minutes while a distraction is on. Only the app\'s name and the times. Never what is on the screen, never notification text. Banking, wallets, chats and messages go only as \"private\", with no name.\n\nYouTube, Instagram, X, TikTok and Facebook are distractions here: 10 minutes on one and you get a push; ignore it 5 minutes and it becomes a break from when it started, unless your laptop shows work in the same minutes (then ProBeing asks you later).\n\nAsleep or on a break, it sends only whether the phone was in use and what kind of use (work, distraction and so on), never the app\'s name. Marked asleep and using the phone 5 minutes after Fajr: a push asks if you are awake. On a break and in a work app 5 minutes: a push asks if you are back at work.</string>
     <string name="phone_usage_on">Usage access: allowed.</string>
     <string name="phone_usage_off">Usage access: not allowed yet. Press the button, find ProBeing, switch it on.</string>
     <string name="phone_usage_btn">Allow usage access</string>
@@ -25,7 +25,8 @@
     <string name="phone_pair_unknown">ProBeing does not know this code (revoked, or mistyped).</string>
     <string name="phone_pair_store">this phone could not store it safely.</string>
     <string name="phone_send_btn">Send now</string>
-    <string name="phone_send_queued">Asked for a run now. Come back in a minute for the result.</string>
+    <string name="phone_send_queued">Sending… this screen updates by itself.</string>
+    <string name="phone_send_slow">Still waiting for Android to run it (it needs a connection). This screen keeps checking.</string>
     <string name="phone_stop_btn">Stop watching on this phone</string>
     <string name="phone_stopped">Stopped, and the code is forgotten. Revoke this phone in ProBeing\'s Settings too.</string>
 </resources>

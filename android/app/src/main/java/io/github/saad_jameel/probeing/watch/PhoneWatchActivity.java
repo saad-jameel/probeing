@@ -36,6 +36,27 @@ public class PhoneWatchActivity extends Activity {
 
     private PhoneStore store;
     private String offered = "";
+    /** When Send now was pressed (0: not waiting), so the screen can say when that run lands. */
+    private long sendAt = 0;
+    private static final long POLL_MS = 3000;
+    private static final long SEND_SLOW_MS = 60000;
+
+    // Item 22: re-read the run's outcome every few seconds while this screen is visible.
+    private final Runnable poll = new Runnable() {
+        @Override
+        public void run() {
+            refresh();
+            if (sendAt > 0) {
+                if (store.lastRun() >= sendAt) {
+                    sendAt = 0;
+                    say(getString(R.string.phone_last_run, ago(store.lastRun()), store.lastNote()));
+                } else if (System.currentTimeMillis() - sendAt > SEND_SLOW_MS) {
+                    say(getString(R.string.phone_send_slow));
+                }
+            }
+            main.postDelayed(this, POLL_MS);
+        }
+    };
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -67,6 +88,7 @@ public class PhoneWatchActivity extends Activity {
         findViewById(R.id.phone_send_btn).setOnClickListener(new View.OnClickListener() {
             @Override
             public void onClick(View v) {
+                sendAt = System.currentTimeMillis();
                 WatchWorker.runNow(PhoneWatchActivity.this);
                 say(getString(R.string.phone_send_queued));
             }
@@ -93,6 +115,14 @@ public class PhoneWatchActivity extends Activity {
     protected void onResume() {
         super.onResume();
         refresh();
+        main.removeCallbacks(poll);
+        main.postDelayed(poll, POLL_MS);
+    }
+
+    @Override
+    protected void onPause() {
+        super.onPause();
+        main.removeCallbacks(poll);
     }
 
     /** A token handed over by ProBeing's Settings waits for his Pair press. */
