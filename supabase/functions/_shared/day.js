@@ -422,7 +422,7 @@ function prayerEndOf(name, ymd, offsetMin) {
   return prayerTimes({ y: n.getUTCFullYear(), m: n.getUTCMonth() + 1, d: n.getUTCDate() }, offsetMin).Fajr;
 }
 
-/** Past its time but still in its own prayer day: only Qaza may be logged. */
+/** Past its time but still in its own prayer day: Qaza may be logged, as well as the three modes (item 24). */
 function prayerIsQaza(name, t, offsetMin) {
   var end = prayerEndOf(name, prayerDate(t, offsetMin), offsetMin);
   return isFinite(end) && t >= end;
