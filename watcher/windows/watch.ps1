@@ -6,6 +6,8 @@
   ProBeing: start, end, app, site name, project, category. Never a URL, never
   page text. A window title leaves this laptop only for a block no rule could
   place, to let Gemini name its project; private ones never leave at all.
+  Asleep or on a break (item 23), a block is sent bare: its time, category and
+  project only.
 
   The logic is a line-by-line copy of the sender half of
   supabase/functions/_shared/activity.js: change one, change the other.
@@ -426,6 +428,37 @@ function Act-Blocks($pieces, $cfg) {
   return ,$res.ToArray()
 }
 
+# Asleep or on a break (item 23): the parts inside $quiet made bare (no app, site, keyword
+# or title; a project only for work and meetings); bare neighbours alike join. As actQuiet.
+function Act-Quiet($blocks, $quiet) {
+  $q = Act-MergeSpans $quiet
+  $out = New-Object System.Collections.Generic.List[object]
+  foreach ($b in (As-Seq $blocks)) {
+    if ($null -eq $b) { continue }
+    $keep = {
+      param([double]$a, [double]$z, [bool]$bare)
+      if (-not ($z -gt $a)) { return }
+      $x = $b.Clone()
+      $x.start = $a
+      $x.end = $z
+      if ($bare) {
+        $x.app = ''; $x.domain = ''; $x.key = ''; $x.title = ''
+        if ($x.category -ne 'work' -and $x.category -ne 'meeting') { $x.project = '' }
+        $x.id = 'quiet|' + $x.category + '|' + $x.project
+      }
+      $out.Add($x)
+    }
+    $at = [double]$b.start
+    foreach ($p in (Act-Intersect ([double]$b.start) ([double]$b.end) $q)) {
+      & $keep $at $p[0] $false
+      & $keep $p[0] $p[1] $true
+      $at = $p[1]
+    }
+    & $keep $at ([double]$b.end) $false
+  }
+  return Act-Join $out.ToArray()
+}
+
 # What is sent: these seven fields, never the title.
 function Act-Payload($blocks) {
   $out = New-Object System.Collections.Generic.List[object]
@@ -464,9 +497,11 @@ function Run-SelfTest {
   foreach ($c in @($fx.pipeline)) {
     $cut = @{ from = (Act-Ms $c.cut.from); to = (Act-Ms $c.cut.to); spans = @() }
     $sp = New-Object System.Collections.Generic.List[object]
+    $qp = New-Object System.Collections.Generic.List[object]
     foreach ($s in @($c.cut.spans)) { $sp.Add([double[]]@((Act-Ms $s[0]), (Act-Ms $s[1]))) }
-    $cut.spans = $sp.ToArray()
-    $got = Act-Payload (Act-Blocks (Act-Segments $c.events $cut) $c.cfg)
+    foreach ($s in @($c.cut.quiet)) { if ($null -ne $s) { $q2 = [double[]]@((Act-Ms $s[0]), (Act-Ms $s[1])); $sp.Add($q2); $qp.Add($q2) } }
+    $cut.spans = Act-MergeSpans $sp
+    $got = Act-Payload (Act-Quiet (Act-Blocks (Act-Segments $c.events $cut) $c.cfg) $qp.ToArray())
     $want = @($c.want)
     $same = ($got.Length -eq $want.Length)
     for ($i = 0; $same -and $i -lt $got.Length; $i++) {
@@ -475,6 +510,26 @@ function Run-SelfTest {
       }
     }
     if ($same) { $ok++ } else { $bad++; Write-Output ('FAIL pipeline ' + $c.name + ': ' + (ConvertTo-Json @($got) -Depth 6 -Compress)) }
+  }
+  foreach ($c in @($fx.quiet)) {
+    $bl = New-Object System.Collections.Generic.List[object]
+    foreach ($x in @($c.blocks)) {
+      $h = @{ start = (Act-Ms $x.start); end = (Act-Ms $x.end); app = (Act-Str $x.app); domain = (Act-Str $x.domain);
+              category = (Act-Str $x.category); project = (Act-Str $x.project); key = (Act-Str $x.key); title = (Act-Str $x.title) }
+      $h.id = Act-Identity $h
+      $bl.Add($h)
+    }
+    $qs = New-Object System.Collections.Generic.List[object]
+    foreach ($s in @($c.quiet)) { if ($null -ne $s) { $qs.Add([double[]]@((Act-Ms $s[0]), (Act-Ms $s[1]))) } }
+    $got = Act-Payload (Act-Quiet $bl.ToArray() $qs.ToArray())
+    $want = @($c.want)
+    $same = ($got.Length -eq $want.Length)
+    for ($i = 0; $same -and $i -lt $got.Length; $i++) {
+      foreach ($k in @('start', 'end', 'app', 'domain', 'category', 'project', 'key')) {
+        if (-not (Same $got[$i][$k] (Get-Prop $want[$i] $k))) { $same = $false }
+      }
+    }
+    if ($same) { $ok++ } else { $bad++; Write-Output ('FAIL quiet ' + $c.name + ': ' + (ConvertTo-Json @($got) -Depth 6 -Compress)) }
   }
   Write-Output ('selftest: ' + $ok + ' ok, ' + $bad + ' failed')
   if ($bad) { exit 1 }
@@ -565,11 +620,18 @@ try {
   $spanList = New-Object System.Collections.Generic.List[object]
   foreach ($s in @($cfg.spans)) { if ($null -ne $s) { $spanList.Add([double[]]@((Act-Ms $s[0]), (Act-Ms $s[1]))) } }
   $spans = Act-MergeSpans $spanList
+  # Item 23: asleep or on a break, read too, but sent bare.
+  $quietList = New-Object System.Collections.Generic.List[object]
+  foreach ($s in @($cfg.quiet)) {
+    if ($null -ne $s) { $q2 = [double[]]@((Act-Ms $s[0]), (Act-Ms $s[1])); $quietList.Add($q2); $spanList.Add($q2) }
+  }
+  $quiet = Act-MergeSpans $quietList
+  $allSpans = Act-MergeSpans $spanList
   $knownNames = @{}
   foreach ($k in $known.Keys) { $knownNames[$k] = Get-Prop $known[$k] 'project' }
 
   $blocks = @()
-  if ((Act-Intersect $from $now $spans).Length -gt 0) {
+  if ((Act-Intersect $from $now $allSpans).Length -gt 0) {
     $buckets = Get-AW '/api/0/buckets/'
     $win = $null; $afk = $null; $webIds = @()
     foreach ($p in $buckets.PSObject.Properties) {
@@ -583,14 +645,14 @@ try {
     foreach ($id in $webIds) { foreach ($e in (Get-Events $id $look $now)) { $webEvents.Add($e) } }
     $events = @{ window = (Get-Events $win $look $now); afk = (Get-Events $afk $look $now); web = $webEvents.ToArray() }
     $classCfg = @{ lists = $cfg.lists; rules = $cfg.rules; projects = $cfg.projects; known = $knownNames }
-    $blocks = Act-Blocks (Act-Segments $events @{ from = $from; to = $now; spans = $spans }) $classCfg
+    $blocks = Act-Quiet (Act-Blocks (Act-Segments $events @{ from = $from; to = $now; spans = $allSpans }) $classCfg) $quiet
   }
 
   $counts = @{}
   foreach ($b in $blocks) { $counts[$b.category] = 1 + [int]$counts[$b.category] }
   $summary = ($counts.Keys | Sort-Object | ForEach-Object { $_ + ' ' + $counts[$_] }) -join ', '
   if ($Check) {
-    Write-Output ('Paired as: ' + $cfg.device + '. Working now: ' + $cfg.working + '.')
+    Write-Output ('Paired as: ' + $cfg.device + '. Working now: ' + $cfg.working + '. Now: ' + $cfg.mode + '.')
     Write-Output ('Would send ' + $blocks.Length + ' blocks (' + $summary + '). Nothing was sent.')
     exit 0
   }

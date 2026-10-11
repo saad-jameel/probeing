@@ -396,6 +396,42 @@ public final class PhoneRules {
         return out;
     }
 
+    /**
+     * Asleep or on a break (item 23): the parts inside `quiet` made bare (no app,
+     * site or keyword; a project only for work and meetings); bare neighbours
+     * alike join. A copy of actQuiet in activity.js.
+     */
+    public static List<Block> quiet(List<Block> blocks, List<long[]> quiet) {
+        List<long[]> q = mergeSpans(quiet);
+        List<Block> out = new ArrayList<>();
+        for (Block b : blocks) {
+            long at = b.start;
+            for (long[] p : intersect(b.start, b.end, q)) {
+                keepPiece(out, b, at, p[0], false);
+                keepPiece(out, b, p[0], p[1], true);
+                at = p[1];
+            }
+            keepPiece(out, b, at, b.end, false);
+        }
+        return join(out);
+    }
+
+    private static void keepPiece(List<Block> out, Block b, long a, long z, boolean bare) {
+        if (z <= a) return;
+        Block x = b.copy();
+        x.start = a;
+        x.end = z;
+        if (x.id.isEmpty()) x.id = identity(x);
+        if (bare) {
+            x.app = "";
+            x.domain = "";
+            x.key = "";
+            if (!x.category.equals("work") && !x.category.equals("meeting")) x.project = "";
+            x.id = "quiet|" + x.category + "|" + x.project;
+        }
+        out.add(x);
+    }
+
     /* ── Spans ([start, end] in ms) ───────────────────────────────────────── */
 
     public static List<long[]> mergeSpans(List<long[]> list) {

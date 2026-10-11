@@ -6,6 +6,12 @@ End day or Sleep), this reads ActivityWatch on the laptop and sends ProBeing sho
 like `github.com`), which project, and what kind of time it was (work, meeting,
 distraction, unclear, private).
 
+Asleep or on a break (not after End day), it sends only **bare** blocks: from when
+to when, the kind of time, and a work project if a rule named one. No app, no
+site, no title, and nothing goes to Gemini. They let ProBeing ask "awake?" when
+you use the laptop after Fajr while marked asleep, and "back to work?" when you
+are in a work app on a break.
+
 What never leaves the laptop: full web addresses, page text, and window titles.
 The one exception: a block no rule could place sends its window title to Gemini
 once, to guess the project, with links, folder paths, addresses, ids and long
@@ -43,7 +49,7 @@ You need ActivityWatch running (the icon near the clock).
    If a step fails, nothing is left behind.
 
 4. **Check it works.** Start work in ProBeing, wait 10 minutes, then open
-   Settings → Laptop activity: your laptop shows "last sent" with a time.
+   Settings → Laptop activity: your laptop shows "connected · last checked" with a time.
 
 ## Day to day
 

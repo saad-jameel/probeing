@@ -1550,6 +1550,734 @@
      "key": ""
     }
    ]
+  },
+  {
+   "name": "a working half hour, then asleep (item 23)",
+   "cut": {
+    "from": "2026-10-12T05:00:00.000Z",
+    "to": "2026-10-12T05:40:00.000Z",
+    "spans": [
+     [
+      "2026-10-12T05:00:00.000Z",
+      "2026-10-12T05:20:00.000Z"
+     ]
+    ],
+    "quiet": [
+     [
+      "2026-10-12T05:20:00.000Z",
+      "2026-10-12T05:40:00.000Z"
+     ]
+    ]
+   },
+   "cfg": {
+    "lists": null,
+    "rules": [
+     {
+      "keyword": "docker",
+      "project": "OneNet"
+     },
+     {
+      "keyword": "neuravue",
+      "project": "NeuraVue"
+     }
+    ],
+    "projects": [
+     "ProBeing",
+     "OneNet",
+     "NeuraVue"
+    ]
+   },
+   "events": {
+    "afk": [
+     {
+      "timestamp": "2026-10-12T04:50:00+00:00",
+      "duration": 2400,
+      "data": {
+       "status": "not-afk"
+      }
+     },
+     {
+      "timestamp": "2026-10-12T05:30:00+00:00",
+      "duration": 600,
+      "data": {
+       "status": "afk"
+      }
+     }
+    ],
+    "window": [
+     {
+      "timestamp": "2026-10-12T05:00:00.000000+00:00",
+      "duration": 480,
+      "data": {
+       "app": "Code.exe",
+       "title": "app.js - proBeing - Visual Studio Code"
+      }
+     },
+     {
+      "timestamp": "2026-10-12T05:08:00.000000+00:00",
+      "duration": 120,
+      "data": {
+       "app": "WhatsApp.exe",
+       "title": "Chat with a friend"
+      }
+     },
+     {
+      "timestamp": "2026-10-12T05:10:00.000000+00:00",
+      "duration": 120,
+      "data": {
+       "app": "Code.exe",
+       "title": "day.js - proBeing - Visual Studio Code"
+      }
+     },
+     {
+      "timestamp": "2026-10-12T05:12:00.000000+00:00",
+      "duration": 780,
+      "data": {
+       "app": "chrome.exe",
+       "title": "Shorts - YouTube - Google Chrome"
+      }
+     },
+     {
+      "timestamp": "2026-10-12T05:25:00.000000+00:00",
+      "duration": 30,
+      "data": {
+       "app": "Code.exe",
+       "title": "app.js - proBeing - Visual Studio Code"
+      }
+     },
+     {
+      "timestamp": "2026-10-12T05:25:30.000000+00:00",
+      "duration": 270,
+      "data": {
+       "app": "chrome.exe",
+       "title": "neuravue/vision: the repo - Google Chrome"
+      }
+     },
+     {
+      "timestamp": "2026-10-12T05:30:00.000000+00:00",
+      "duration": 600,
+      "data": {
+       "app": "WindowsTerminal.exe",
+       "title": "away from keyboard"
+      }
+     }
+    ],
+    "web": [
+     {
+      "timestamp": "2026-10-12T05:12:20.000000+00:00",
+      "duration": 760,
+      "data": {
+       "url": "https://www.youtube.com/shorts/Zz9?feature=share",
+       "title": "Shorts",
+       "incognito": false
+      }
+     },
+     {
+      "timestamp": "2026-10-12T05:25:30.000000+00:00",
+      "duration": 270,
+      "data": {
+       "url": "https://github.com/neuravue/vision/pull/7?token=SECRET",
+       "title": "neuravue/vision",
+       "incognito": false
+      }
+     }
+    ]
+   },
+   "want": [
+    {
+     "start": "2026-10-12T05:00:00.000Z",
+     "end": "2026-10-12T05:08:00.000Z",
+     "app": "Code.exe",
+     "domain": "",
+     "category": "work",
+     "project": "ProBeing",
+     "key": "probeing"
+    },
+    {
+     "start": "2026-10-12T05:08:00.000Z",
+     "end": "2026-10-12T05:10:00.000Z",
+     "app": "WhatsApp.exe",
+     "domain": "",
+     "category": "private",
+     "project": "",
+     "key": ""
+    },
+    {
+     "start": "2026-10-12T05:10:00.000Z",
+     "end": "2026-10-12T05:12:20.000Z",
+     "app": "Code.exe",
+     "domain": "",
+     "category": "work",
+     "project": "ProBeing",
+     "key": "probeing"
+    },
+    {
+     "start": "2026-10-12T05:12:20.000Z",
+     "end": "2026-10-12T05:20:00.000Z",
+     "app": "chrome.exe",
+     "domain": "youtube.com",
+     "category": "distraction",
+     "project": "",
+     "key": ""
+    },
+    {
+     "start": "2026-10-12T05:20:00.000Z",
+     "end": "2026-10-12T05:25:30.000Z",
+     "app": "",
+     "domain": "",
+     "category": "distraction",
+     "project": "",
+     "key": ""
+    },
+    {
+     "start": "2026-10-12T05:25:30.000Z",
+     "end": "2026-10-12T05:30:00.000Z",
+     "app": "",
+     "domain": "",
+     "category": "work",
+     "project": "NeuraVue",
+     "key": ""
+    }
+   ]
+  }
+ ],
+ "quiet": [
+  {
+   "name": "a work block across a sleep span",
+   "blocks": [
+    {
+     "start": "2026-10-12T05:00:00.000Z",
+     "end": "2026-10-12T05:30:00.000Z",
+     "app": "Code.exe",
+     "domain": "",
+     "category": "work",
+     "project": "ProBeing",
+     "key": "probeing",
+     "title": ""
+    }
+   ],
+   "quiet": [
+    [
+     "2026-10-12T05:10:00.000Z",
+     "2026-10-12T05:20:00.000Z"
+    ]
+   ],
+   "want": [
+    {
+     "start": "2026-10-12T05:00:00.000Z",
+     "end": "2026-10-12T05:10:00.000Z",
+     "app": "Code.exe",
+     "domain": "",
+     "category": "work",
+     "project": "ProBeing",
+     "key": "probeing"
+    },
+    {
+     "start": "2026-10-12T05:10:00.000Z",
+     "end": "2026-10-12T05:20:00.000Z",
+     "app": "",
+     "domain": "",
+     "category": "work",
+     "project": "ProBeing",
+     "key": ""
+    },
+    {
+     "start": "2026-10-12T05:20:00.000Z",
+     "end": "2026-10-12T05:30:00.000Z",
+     "app": "Code.exe",
+     "domain": "",
+     "category": "work",
+     "project": "ProBeing",
+     "key": "probeing"
+    }
+   ]
+  },
+  {
+   "name": "bare neighbours alike join",
+   "blocks": [
+    {
+     "start": "2026-10-12T05:00:00.000Z",
+     "end": "2026-10-12T05:05:00.000Z",
+     "app": "chrome.exe",
+     "domain": "youtube.com",
+     "category": "distraction",
+     "project": "",
+     "key": "",
+     "title": ""
+    },
+    {
+     "start": "2026-10-12T05:05:00.000Z",
+     "end": "2026-10-12T05:12:00.000Z",
+     "app": "chrome.exe",
+     "domain": "x.com",
+     "category": "distraction",
+     "project": "",
+     "key": "",
+     "title": ""
+    }
+   ],
+   "quiet": [
+    [
+     "2026-10-12T04:00:00.000Z",
+     "2026-10-12T06:00:00.000Z"
+    ]
+   ],
+   "want": [
+    {
+     "start": "2026-10-12T05:00:00.000Z",
+     "end": "2026-10-12T05:12:00.000Z",
+     "app": "",
+     "domain": "",
+     "category": "distraction",
+     "project": "",
+     "key": ""
+    }
+   ]
+  },
+  {
+   "name": "a private block names no app",
+   "blocks": [
+    {
+     "start": "2026-10-12T05:00:00.000Z",
+     "end": "2026-10-12T05:10:00.000Z",
+     "app": "WhatsApp.exe",
+     "domain": "",
+     "category": "private",
+     "project": "",
+     "key": "",
+     "title": ""
+    }
+   ],
+   "quiet": [
+    [
+     "2026-10-12T05:00:00.000Z",
+     "2026-10-12T05:10:00.000Z"
+    ]
+   ],
+   "want": [
+    {
+     "start": "2026-10-12T05:00:00.000Z",
+     "end": "2026-10-12T05:10:00.000Z",
+     "app": "",
+     "domain": "",
+     "category": "private",
+     "project": "",
+     "key": ""
+    }
+   ]
+  },
+  {
+   "name": "nothing quiet: unchanged",
+   "blocks": [
+    {
+     "start": "2026-10-12T05:00:00.000Z",
+     "end": "2026-10-12T05:10:00.000Z",
+     "app": "Code.exe",
+     "domain": "",
+     "category": "work",
+     "project": "ProBeing",
+     "key": "probeing",
+     "title": ""
+    },
+    {
+     "start": "2026-10-12T05:10:00.000Z",
+     "end": "2026-10-12T05:20:00.000Z",
+     "app": "chrome.exe",
+     "domain": "youtube.com",
+     "category": "distraction",
+     "project": "",
+     "key": "",
+     "title": ""
+    }
+   ],
+   "quiet": [],
+   "want": [
+    {
+     "start": "2026-10-12T05:00:00.000Z",
+     "end": "2026-10-12T05:10:00.000Z",
+     "app": "Code.exe",
+     "domain": "",
+     "category": "work",
+     "project": "ProBeing",
+     "key": "probeing"
+    },
+    {
+     "start": "2026-10-12T05:10:00.000Z",
+     "end": "2026-10-12T05:20:00.000Z",
+     "app": "chrome.exe",
+     "domain": "youtube.com",
+     "category": "distraction",
+     "project": "",
+     "key": ""
+    }
+   ]
+  },
+  {
+   "name": "unclear loses its title and has no project",
+   "blocks": [
+    {
+     "start": "2026-10-12T05:00:00.000Z",
+     "end": "2026-10-12T05:10:00.000Z",
+     "app": "notepad.exe",
+     "domain": "",
+     "category": "unclear",
+     "project": "",
+     "key": "",
+     "title": "plans.txt - Notepad"
+    }
+   ],
+   "quiet": [
+    [
+     "2026-10-12T05:00:00.000Z",
+     "2026-10-12T05:10:00.000Z"
+    ]
+   ],
+   "want": [
+    {
+     "start": "2026-10-12T05:00:00.000Z",
+     "end": "2026-10-12T05:10:00.000Z",
+     "app": "",
+     "domain": "",
+     "category": "unclear",
+     "project": "",
+     "key": ""
+    }
+   ]
+  },
+  {
+   "name": "a meeting keeps its project, not its keyword",
+   "blocks": [
+    {
+     "start": "2026-10-12T05:00:00.000Z",
+     "end": "2026-10-12T05:20:00.000Z",
+     "app": "Zoom.exe",
+     "domain": "zoom.us",
+     "category": "meeting",
+     "project": "OneNet",
+     "key": "onenet",
+     "title": ""
+    }
+   ],
+   "quiet": [
+    [
+     "2026-10-12T05:00:00.000Z",
+     "2026-10-12T05:20:00.000Z"
+    ]
+   ],
+   "want": [
+    {
+     "start": "2026-10-12T05:00:00.000Z",
+     "end": "2026-10-12T05:20:00.000Z",
+     "app": "",
+     "domain": "",
+     "category": "meeting",
+     "project": "OneNet",
+     "key": ""
+    }
+   ]
+  },
+  {
+   "name": "a quiet span that only touches the end",
+   "blocks": [
+    {
+     "start": "2026-10-12T05:00:00.000Z",
+     "end": "2026-10-12T05:10:00.000Z",
+     "app": "Code.exe",
+     "domain": "",
+     "category": "work",
+     "project": "ProBeing",
+     "key": "probeing",
+     "title": ""
+    }
+   ],
+   "quiet": [
+    [
+     "2026-10-12T05:10:00.000Z",
+     "2026-10-12T05:20:00.000Z"
+    ]
+   ],
+   "want": [
+    {
+     "start": "2026-10-12T05:00:00.000Z",
+     "end": "2026-10-12T05:10:00.000Z",
+     "app": "Code.exe",
+     "domain": "",
+     "category": "work",
+     "project": "ProBeing",
+     "key": "probeing"
+    }
+   ]
+  },
+  {
+   "name": "quiet at both ends, watched between",
+   "blocks": [
+    {
+     "start": "2026-10-12T05:00:00.000Z",
+     "end": "2026-10-12T05:30:00.000Z",
+     "app": "Code.exe",
+     "domain": "",
+     "category": "work",
+     "project": "ProBeing",
+     "key": "probeing",
+     "title": ""
+    }
+   ],
+   "quiet": [
+    [
+     "2026-10-12T04:50:00.000Z",
+     "2026-10-12T05:05:00.000Z"
+    ],
+    [
+     "2026-10-12T05:25:00.000Z",
+     "2026-10-12T05:40:00.000Z"
+    ]
+   ],
+   "want": [
+    {
+     "start": "2026-10-12T05:00:00.000Z",
+     "end": "2026-10-12T05:05:00.000Z",
+     "app": "",
+     "domain": "",
+     "category": "work",
+     "project": "ProBeing",
+     "key": ""
+    },
+    {
+     "start": "2026-10-12T05:05:00.000Z",
+     "end": "2026-10-12T05:25:00.000Z",
+     "app": "Code.exe",
+     "domain": "",
+     "category": "work",
+     "project": "ProBeing",
+     "key": "probeing"
+    },
+    {
+     "start": "2026-10-12T05:25:00.000Z",
+     "end": "2026-10-12T05:30:00.000Z",
+     "app": "",
+     "domain": "",
+     "category": "work",
+     "project": "ProBeing",
+     "key": ""
+    }
+   ]
+  },
+  {
+   "name": "bare work and bare distraction stay apart",
+   "blocks": [
+    {
+     "start": "2026-10-12T05:00:00.000Z",
+     "end": "2026-10-12T05:05:00.000Z",
+     "app": "Code.exe",
+     "domain": "",
+     "category": "work",
+     "project": "ProBeing",
+     "key": "probeing",
+     "title": ""
+    },
+    {
+     "start": "2026-10-12T05:05:00.000Z",
+     "end": "2026-10-12T05:10:00.000Z",
+     "app": "chrome.exe",
+     "domain": "youtube.com",
+     "category": "distraction",
+     "project": "",
+     "key": "",
+     "title": ""
+    }
+   ],
+   "quiet": [
+    [
+     "2026-10-12T05:00:00.000Z",
+     "2026-10-12T05:10:00.000Z"
+    ]
+   ],
+   "want": [
+    {
+     "start": "2026-10-12T05:00:00.000Z",
+     "end": "2026-10-12T05:05:00.000Z",
+     "app": "",
+     "domain": "",
+     "category": "work",
+     "project": "ProBeing",
+     "key": ""
+    },
+    {
+     "start": "2026-10-12T05:05:00.000Z",
+     "end": "2026-10-12T05:10:00.000Z",
+     "app": "",
+     "domain": "",
+     "category": "distraction",
+     "project": "",
+     "key": ""
+    }
+   ]
+  },
+  {
+   "name": "a gap of 30 seconds joins, of two minutes does not",
+   "blocks": [
+    {
+     "start": "2026-10-12T05:00:00.000Z",
+     "end": "2026-10-12T05:04:00.000Z",
+     "app": "chrome.exe",
+     "domain": "x.com",
+     "category": "distraction",
+     "project": "",
+     "key": "",
+     "title": ""
+    },
+    {
+     "start": "2026-10-12T05:04:30.000Z",
+     "end": "2026-10-12T05:08:00.000Z",
+     "app": "chrome.exe",
+     "domain": "youtube.com",
+     "category": "distraction",
+     "project": "",
+     "key": "",
+     "title": ""
+    },
+    {
+     "start": "2026-10-12T05:10:00.000Z",
+     "end": "2026-10-12T05:15:00.000Z",
+     "app": "chrome.exe",
+     "domain": "x.com",
+     "category": "distraction",
+     "project": "",
+     "key": "",
+     "title": ""
+    }
+   ],
+   "quiet": [
+    [
+     "2026-10-12T05:00:00.000Z",
+     "2026-10-12T05:30:00.000Z"
+    ]
+   ],
+   "want": [
+    {
+     "start": "2026-10-12T05:00:00.000Z",
+     "end": "2026-10-12T05:08:00.000Z",
+     "app": "",
+     "domain": "",
+     "category": "distraction",
+     "project": "",
+     "key": ""
+    },
+    {
+     "start": "2026-10-12T05:10:00.000Z",
+     "end": "2026-10-12T05:15:00.000Z",
+     "app": "",
+     "domain": "",
+     "category": "distraction",
+     "project": "",
+     "key": ""
+    }
+   ]
+  },
+  {
+   "name": "overlapping quiet spans merge first",
+   "blocks": [
+    {
+     "start": "2026-10-12T05:00:00.000Z",
+     "end": "2026-10-12T05:30:00.000Z",
+     "app": "Code.exe",
+     "domain": "",
+     "category": "work",
+     "project": "ProBeing",
+     "key": "probeing",
+     "title": ""
+    }
+   ],
+   "quiet": [
+    [
+     "2026-10-12T05:20:00.000Z",
+     "2026-10-12T05:25:00.000Z"
+    ],
+    [
+     "2026-10-12T05:10:00.000Z",
+     "2026-10-12T05:22:00.000Z"
+    ]
+   ],
+   "want": [
+    {
+     "start": "2026-10-12T05:00:00.000Z",
+     "end": "2026-10-12T05:10:00.000Z",
+     "app": "Code.exe",
+     "domain": "",
+     "category": "work",
+     "project": "ProBeing",
+     "key": "probeing"
+    },
+    {
+     "start": "2026-10-12T05:10:00.000Z",
+     "end": "2026-10-12T05:25:00.000Z",
+     "app": "",
+     "domain": "",
+     "category": "work",
+     "project": "ProBeing",
+     "key": ""
+    },
+    {
+     "start": "2026-10-12T05:25:00.000Z",
+     "end": "2026-10-12T05:30:00.000Z",
+     "app": "Code.exe",
+     "domain": "",
+     "category": "work",
+     "project": "ProBeing",
+     "key": "probeing"
+    }
+   ]
+  },
+  {
+   "name": "two projects in a row stay apart",
+   "blocks": [
+    {
+     "start": "2026-10-12T05:00:00.000Z",
+     "end": "2026-10-12T05:05:00.000Z",
+     "app": "Code.exe",
+     "domain": "",
+     "category": "work",
+     "project": "ProBeing",
+     "key": "probeing",
+     "title": ""
+    },
+    {
+     "start": "2026-10-12T05:05:00.000Z",
+     "end": "2026-10-12T05:10:00.000Z",
+     "app": "Docker.exe",
+     "domain": "",
+     "category": "work",
+     "project": "OneNet",
+     "key": "docker",
+     "title": ""
+    }
+   ],
+   "quiet": [
+    [
+     "2026-10-12T05:00:00.000Z",
+     "2026-10-12T05:10:00.000Z"
+    ]
+   ],
+   "want": [
+    {
+     "start": "2026-10-12T05:00:00.000Z",
+     "end": "2026-10-12T05:05:00.000Z",
+     "app": "",
+     "domain": "",
+     "category": "work",
+     "project": "ProBeing",
+     "key": ""
+    },
+    {
+     "start": "2026-10-12T05:05:00.000Z",
+     "end": "2026-10-12T05:10:00.000Z",
+     "app": "",
+     "domain": "",
+     "category": "work",
+     "project": "OneNet",
+     "key": ""
+    }
+   ]
   }
  ]
 }

@@ -27,7 +27,8 @@ import java.util.concurrent.TimeUnit;
  * One run of the phone watcher, the same steps as the laptop's watch.ps1: ask
  * ProBeing when he was working, read which app was on screen in those minutes,
  * send the blocks. Android runs it every 15 minutes (its floor), and sooner
- * while a distraction is on screen (PhoneRules.followUpMs).
+ * while a distraction is on screen (PhoneRules.followUpMs). Asleep or on a
+ * break (item 23) it reads too, and sends the blocks bare (PhoneRules.quiet).
  */
 public final class WatchWorker extends Worker {
 
@@ -110,32 +111,27 @@ public final class WatchWorker extends Worker {
             JSONObject cfg = Ingest.config(token, from);
             String label = cfg.optString("device", "");
             if (!label.isEmpty()) store.setLabel(label);
-            List<long[]> spans = new ArrayList<>();
-            JSONArray s = cfg.optJSONArray("spans");
-            for (int i = 0; s != null && i < s.length(); i++) {
-                JSONArray p = s.optJSONArray(i);
-                if (p == null) continue;
-                long a = parseIso(p.optString(0));
-                long b = parseIso(p.optString(1));
-                if (a > 0 && b > a) spans.add(new long[]{a, b});
-            }
+            List<long[]> quiet = spansOf(cfg.optJSONArray("quiet"));
+            List<long[]> spans = spansOf(cfg.optJSONArray("spans"));
+            spans.addAll(quiet);
             spans = PhoneRules.mergeSpans(spans);
             if (PhoneRules.intersect(from, now, spans).isEmpty()) {
                 store.noteSent(now, Math.max(from, now - 2 * PhoneRules.MIN));
-                store.noteRun(now, "Not working, so nothing was read.");
+                store.noteRun(now, "Not working, on a break or asleep, so nothing was read.");
                 return -1;
             }
             List<PhoneRules.Event> events = UsageReader.events(ctx, from - EVENTS_BEFORE_MS, now);
             List<PhoneRules.Piece> pieces = PhoneRules.pieces(events, UsageReader.ignored(ctx), from, now, spans);
-            List<PhoneRules.Block> blocks = PhoneRules.phoneBlocks(pieces, UsageReader.labels(ctx, pieces),
-                    cfgOf(cfg));
+            // Asleep or on a break: the same blocks, bare (time, category, a work project).
+            List<PhoneRules.Block> blocks = PhoneRules.quiet(PhoneRules.phoneBlocks(pieces,
+                    UsageReader.labels(ctx, pieces), cfgOf(cfg)), quiet);
             int stored = 0;
             for (int i = 0; i < blocks.size(); i += INGEST_MAX) {
                 JSONObject res = Ingest.ingest(token, blocks.subList(i, Math.min(blocks.size(), i + INGEST_MAX)));
                 stored += res.optInt("stored", 0);
             }
             store.noteSent(now, PhoneRules.nextFrom(blocks, from, now));
-            store.noteRun(now, blocks.isEmpty() ? "Working, nothing on screen to send."
+            store.noteRun(now, blocks.isEmpty() ? "Nothing on screen to send."
                     : "Sent " + blocks.size() + " blocks (" + counts(blocks) + "), stored " + stored + ".");
             return cfg.optBoolean("working", false) ? PhoneRules.followUpMs(blocks, now) : -1;
         } catch (Ingest.Failed f) {
@@ -175,6 +171,19 @@ public final class WatchWorker extends Worker {
         List<String> out = new ArrayList<>();
         for (int i = 0; i < a.length(); i++) out.add(a.optString(i, ""));
         return out;
+    }
+
+    /** [[start, end], ...] as the config answer carries them, merged. */
+    private static List<long[]> spansOf(JSONArray s) {
+        List<long[]> out = new ArrayList<>();
+        for (int i = 0; s != null && i < s.length(); i++) {
+            JSONArray p = s.optJSONArray(i);
+            if (p == null) continue;
+            long a = parseIso(p.optString(0));
+            long b = parseIso(p.optString(1));
+            if (a > 0 && b > a) out.add(new long[]{a, b});
+        }
+        return PhoneRules.mergeSpans(out);
     }
 
     private static long parseIso(String s) {

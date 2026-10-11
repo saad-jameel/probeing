@@ -9,6 +9,8 @@
  * Privacy (Saad, 9 Oct): a block is start, end, app, site (host only), project,
  * category and the rule keyword that matched. Never a URL, never page text. A
  * window title stays on the laptop except for an unclear block sent to Gemini.
+ * Item 23 (11 Oct): asleep or on a break, a block is only its time, category and
+ * project (actQuiet); no app, site or title.
  */
 
 'use strict';
@@ -408,9 +410,10 @@ var ACT_IDLE_MAX_MS = 12 * 3600000;
 var ACT_TENDED = ['work', 'voice', 'done', 'break', 'resume', 'awake', 'subdone', 'subdrop', 'substop', 'pin', 'unpin'];
 var ACT_AUTO_RID = /^ab-/;
 
-/* Rows written later for an earlier instant: the watcher's (ab-/ar-/aw-) and the sheet's or
- * a question's (kb-/kr-/qb-/qr-). On a tie with his own row they go first, so his row decides. */
-var ACT_BACKDATED = /^(ab|ar|aw|kb|kr|qb|qr)-/;
+/* Rows written later for an earlier instant: the watcher's (ab-/ar-/aw-), the sheet's or
+ * a question's (kb-/kr-/qb-/qr-), and an awake or back-to-work answer's (nw-/nr-, item 23).
+ * On a tie with his own row they go first, so his row decides. */
+var ACT_BACKDATED = /^(ab|ar|aw|kb|kr|qb|qr|nw|nr)-/;
 
 /** Order of two rows at the same instant: backdated ones first, those by rid; else 0. */
 function actTie(x, y) {
@@ -421,7 +424,7 @@ function actTie(x, y) {
   return 0;
 }
 
-var ACT_STATE = { work: 1, voice: 1, resume: 1, 'break': 1, off: 1, sleep: 1 };
+var ACT_STATE = { work: 1, voice: 1, resume: 1, 'break': 1, off: 1, sleep: 1, wake: 1 };
 
 /** Backdated rows to write (steps {type, at}), less any at an instant where one of his own
  *  state rows already is: his row decides that instant. */
@@ -436,11 +439,16 @@ function actSkipTies(steps, rows) {
   });
 }
 var ACT_AUTO_WATCH_MS = 4 * 3600000;     // an auto break is watched this long at most
+var ACT_SLEEP_WATCH_MS = 24 * 3600000;   // a sleep is watched (quietly) this long at most
 
 /**
  * rows: event rows (any types, oldest first; ties keep their order). Returns
  * {work: spans, watch: spans (work plus open auto breaks), working, autoBreak:
  * {at, rid} or null, closed}, spans cut to [fromMs, toMs].
+ * Item 23 adds the quiet spans, watched for time and category only: sleep (a
+ * sleep row until a wake) and rest (a break of his, not the day's end, while
+ * awake), plus asleep {at, rid}, onBreak {at, since, rid} (since: the break row
+ * or the wake after a nap, whichever is later) and sleeps [{at, end, rid}].
  */
 function actWalk(rows, fromMs, toMs) {
   var list = (rows || []).map(function (r, i) { return { r: r, t: Date.parse(String(r && r.at)), i: i }; })
@@ -453,6 +461,13 @@ function actWalk(rows, fromMs, toMs) {
   var prev = -Infinity;
   var work = [];
   var watch = [];
+  var ws = 'off';                         // the work side as the app's toggle has it: on, break, off
+  var brk = null;                         // the break row that opened the current break
+  var since = 0;                          // when the current break became one he is awake for
+  var asleep = null;
+  var sleepList = [];
+  var sleep = [];
+  var rest = [];
   function emit(a, b) {
     if (b > toMs) b = toMs;
     if (a < fromMs) a = fromMs;
@@ -463,27 +478,106 @@ function actWalk(rows, fromMs, toMs) {
       var stop = Math.min(b, auto.t + ACT_AUTO_WATCH_MS);
       if (stop > a) watch.push([a, stop]);
     }
+    if (asleep) {
+      var s1 = Math.min(b, asleep.t + ACT_SLEEP_WATCH_MS);
+      if (s1 > a) sleep.push([a, s1]);
+    } else if (!clock && ws === 'break' && brk) {
+      var r0 = auto ? Math.max(a, auto.t + ACT_AUTO_WATCH_MS) : a;
+      var r1 = Math.min(b, brk.t + ACT_IDLE_MAX_MS);
+      if (r1 > r0) rest.push([r0, r1]);
+    }
   }
   list.forEach(function (x) {
     if (prev > -Infinity) emit(prev, x.t);
     prev = x.t;
     var type = x.r.type;
+    var rid = String(x.r.rid || '');
     if (type === 'work' || type === 'voice' || type === 'resume') {
       clock = true; closed = false; auto = null;
+      ws = 'on'; brk = null;
+      if (asleep) { asleep.end = x.t; asleep = null; }
     } else if (type === 'break') {
       if (!closed) {
         clock = false;
-        auto = ACT_AUTO_RID.test(String(x.r.rid || '')) ? { t: x.t, rid: String(x.r.rid) } : null;
+        auto = ACT_AUTO_RID.test(rid) ? { t: x.t, rid: rid } : null;
       }
+      if (ws !== 'off') { ws = 'break'; brk = { t: x.t, rid: rid }; since = x.t; }
     } else if (type === 'off' || type === 'sleep') {
       clock = false; closed = true; auto = null;
+      if (type === 'off') { ws = 'off'; brk = null; }
+      if (type === 'sleep') {
+        if (ws === 'on') { ws = 'off'; brk = null; }
+        if (!asleep) { asleep = { t: x.t, rid: rid, end: null }; sleepList.push(asleep); }
+      }
+    } else if (type === 'wake') {
+      if (asleep) { asleep.end = x.t; asleep = null; since = x.t; }
     }
     if (ACT_TENDED.indexOf(type) !== -1 && x.t > tended) tended = x.t;
   });
   if (prev > -Infinity) emit(prev, toMs);
   var idle = tended && toMs >= tended + ACT_IDLE_MAX_MS;
+  var autoBreak = auto && !clock ? { at: auto.t, rid: auto.rid } : null;
+  // The watcher's own break is its business for its first hours (18b); after that it is a break like any.
+  var autoOn = autoBreak && toMs < autoBreak.at + ACT_AUTO_WATCH_MS;
+  var onBreak = !clock && !asleep && !autoOn && ws === 'break' && brk && toMs < brk.t + ACT_IDLE_MAX_MS
+    ? { at: brk.t, since: Math.max(brk.t, since, autoBreak ? autoBreak.at + ACT_AUTO_WATCH_MS : 0), rid: brk.rid } : null;
   return { work: actMergeSpans(work), watch: actMergeSpans(watch), working: clock && !idle,
-           autoBreak: auto && !clock ? { at: auto.t, rid: auto.rid } : null, closed: closed };
+           autoBreak: autoBreak, closed: closed,
+           sleep: actMergeSpans(sleep), rest: actMergeSpans(rest),
+           asleep: asleep && toMs < asleep.t + ACT_SLEEP_WATCH_MS ? { at: asleep.t, rid: asleep.rid } : null,
+           onBreak: onBreak,
+           sleeps: sleepList.filter(function (s) { return (s.end === null || s.end > fromMs) && s.t < toMs; })
+             .map(function (s) { return { at: s.t, end: s.end, rid: s.rid }; }) };
+}
+
+/**
+ * Blocks with the parts inside `quiet` (sleep or a break) made bare: no app,
+ * site, keyword or title, and only work and meetings keep a project. Bare
+ * neighbours alike join. watch.ps1 Act-Quiet and PhoneRules.quiet are copies.
+ */
+function actQuiet(blocks, quiet) {
+  var q = actMergeSpans(quiet || []);
+  var out = [];
+  (blocks || []).forEach(function (b) {
+    var at = b.start;
+    function keep(a, z, bare) {
+      if (!(z > a)) return;
+      var x = Object.assign({}, b, { start: a, end: z });
+      if (bare) {
+        x.app = ''; x.domain = ''; x.key = ''; x.title = '';
+        if (x.category !== 'work' && x.category !== 'meeting') x.project = '';
+        x.id = 'quiet|' + x.category + '|' + x.project;
+      }
+      out.push(x);
+    }
+    actIntersect(b.start, b.end, q).forEach(function (p) {
+      keep(at, p[0], false);
+      keep(p[0], p[1], true);
+      at = p[1];
+    });
+    keep(at, b.end, false);
+  });
+  return actJoin(out);
+}
+
+/**
+ * Runs of use on one device: blocks (any category) whose gaps are at most
+ * `gapMs`, as {start, end, ms (time in use), device}. `blocks` must be one
+ * device's; they are sorted here.
+ */
+function actUseRuns(blocks, gapMs) {
+  var out = [];
+  (blocks || []).filter(function (b) { return b && b.end > b.start; }).slice()
+    .sort(function (a, b) { return a.start - b.start; }).forEach(function (b) {
+      var last = out[out.length - 1];
+      if (last && b.start - last.end <= gapMs) {
+        last.ms += Math.max(0, b.end - Math.max(b.start, last.end));
+        last.end = Math.max(last.end, b.end);
+      } else {
+        out.push({ start: b.start, end: b.end, ms: b.end - b.start, device: b.device_id || '' });
+      }
+    });
+  return out;
 }
 
 /** Blocks cut to `spans`; a block in two spans becomes two pieces. */
@@ -625,6 +719,8 @@ globalThis.ProBeingActivity = {
   actPayload: actPayload,
   actSanitize: actSanitize,
   actWalk: actWalk,
+  actQuiet: actQuiet,
+  actUseRuns: actUseRuns,
   actClip: actClip,
   actFixMap: actFixMap,
   actFixed: actFixed,
