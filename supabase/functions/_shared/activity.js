@@ -10,7 +10,8 @@
  * category and the rule keyword that matched. Never a URL, never page text. A
  * window title stays on the laptop except for an unclear block sent to Gemini.
  * Item 23 (11 Oct): asleep or on a break, a block is only its time, category and
- * project (actQuiet); no app, site or title.
+ * project (actQuiet); no app, site or title. Item 28 (12 Oct): the same while awake
+ * with the day not started or ended.
  */
 
 'use strict';
@@ -411,9 +412,9 @@ var ACT_TENDED = ['work', 'voice', 'done', 'break', 'resume', 'awake', 'subdone'
 var ACT_AUTO_RID = /^ab-/;
 
 /* Rows written later for an earlier instant: the watcher's (ab-/ar-/aw-), the sheet's or
- * a question's (kb-/kr-/qb-/qr-), and an awake or back-to-work answer's (nw-/nr-, item 23).
- * On a tie with his own row they go first, so his row decides. */
-var ACT_BACKDATED = /^(ab|ar|aw|kb|kr|qb|qr|nw|nr)-/;
+ * a question's (kb-/kr-/qb-/qr-), an awake or back-to-work answer's (nw-/nr-, item 23)
+ * and a Start answer's (ns-, item 28). On a tie with his own row they go first, so his row decides. */
+var ACT_BACKDATED = /^(ab|ar|aw|kb|kr|qb|qr|nw|nr|ns)-/;
 
 /** Order of two rows at the same instant: backdated ones first, those by rid; else 0. */
 function actTie(x, y) {
@@ -449,6 +450,8 @@ var ACT_AUTO_WATCH_MS = 4 * 3600000;     // an auto break is watched this long a
  * awake), plus asleep {at, rid}, onBreak {at, since, rid} (since: the break row
  * or the wake after a nap, whichever is later) and sleeps [{at, end, rid}].
  * Item 26: a sleep or break has no age limit; a forgotten Wake is what the checks are for.
+ * Item 28: awakeOff spans (awake, the work side off: not started after a wake, or after
+ * End day) and offSince {at, rid}, the state row that began the current one.
  */
 function actWalk(rows, fromMs, toMs) {
   var list = (rows || []).map(function (r, i) { return { r: r, t: Date.parse(String(r && r.at)), i: i }; })
@@ -468,6 +471,9 @@ function actWalk(rows, fromMs, toMs) {
   var sleepList = [];
   var sleep = [];
   var rest = [];
+  var awakeOff = [];
+  var off = null;                         // awake with the work side off since this row (item 28)
+  var known = false;                      // a state row has been read: before it the work side is a guess
   function emit(a, b) {
     if (b > toMs) b = toMs;
     if (a < fromMs) a = fromMs;
@@ -483,6 +489,8 @@ function actWalk(rows, fromMs, toMs) {
     } else if (!clock && ws === 'break' && brk) {
       var r0 = auto ? Math.max(a, auto.t + ACT_AUTO_WATCH_MS) : a;
       if (b > r0) rest.push([r0, b]);
+    } else if (!clock && ws === 'off' && known) {
+      if (b > a) awakeOff.push([a, b]);
     }
   }
   list.forEach(function (x) {
@@ -511,6 +519,8 @@ function actWalk(rows, fromMs, toMs) {
       if (asleep) { asleep.end = x.t; asleep = null; since = x.t; }
     }
     if (ACT_TENDED.indexOf(type) !== -1 && x.t > tended) tended = x.t;
+    if (ACT_STATE[type]) known = true;
+    if (known && !asleep && !clock && ws === 'off') { if (!off) off = { t: x.t, rid: rid }; } else off = null;
   });
   if (prev > -Infinity) emit(prev, toMs);
   var idle = tended && toMs >= tended + ACT_IDLE_MAX_MS;
@@ -524,6 +534,8 @@ function actWalk(rows, fromMs, toMs) {
            sleep: actMergeSpans(sleep), rest: actMergeSpans(rest),
            asleep: asleep ? { at: asleep.t, rid: asleep.rid } : null,
            onBreak: onBreak,
+           awakeOff: actMergeSpans(awakeOff),
+           offSince: off ? { at: off.t, rid: off.rid } : null,
            sleeps: sleepList.filter(function (s) { return (s.end === null || s.end > fromMs) && s.t < toMs; })
              .map(function (s) { return { at: s.t, end: s.end, rid: s.rid }; }) };
 }

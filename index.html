@@ -720,21 +720,24 @@
           data-title="Laptop and phone activity" aria-label="About laptop and phone activity">?</button></h3>
         <template id="helpWatch">
         <p class="hint">A small script on your Windows laptop reads ActivityWatch every 5 minutes,
-          <strong>while you are working</strong> (bare while asleep or on a break, below), and sends time blocks: when, which app, which
+          <strong>while you are working</strong> (bare at other times, below), and sends time blocks: when, which app, which
           site (its name only), which project, and whether it was work, a meeting, a distraction or
           private. Never a web address, never page text. A window title leaves the laptop only when no
           keyword places it, once, for Gemini to name the project, and only while you are working; it is not stored.</p>
         <p class="hint">On a distraction for 10 minutes you get a push. No answer in 5 minutes and it
           becomes a break from when it started; back in a work app, the work resumes by itself. If
           another device was working across the same span, you are asked instead.</p>
-        <p class="hint">Asleep or on a break, the laptop and phone still send, but only whether they were in use
-          and what kind of use: no app, no site, no title, and nothing goes to Gemini. Marked asleep and
-          using one for 5 minutes after Fajr (any time in a nap): a push asks <strong>awake?</strong>, and
-          I'm awake records waking from when the use began. Before Fajr there is no push; the minutes show
-          in Review as a disturbed night. On a break and in a work app for 5 minutes: a push asks
-          <strong>back to work?</strong>, and Resume records you back from when the work began. A push you
-          missed is asked when you next open ProBeing. <strong>Sleep and break checks</strong> turns these two
-          questions off; disturbed nights are still kept.</p>
+        <p class="hint">Asleep, on a break, or awake with the day not started (or ended), the laptop and phone
+          still send, but only whether they were in use and what kind of use: no app, no site, no title, and
+          nothing goes to Gemini. Marked asleep and using one for 5 minutes after Fajr (any time in a nap): a
+          push asks <strong>awake?</strong>, and I'm awake records waking from when the use began; if the use
+          was a work app it asks <strong>Up and working?</strong>, and Start day records waking and work from
+          then. Before Fajr there is no push; the minutes show in Review as a disturbed night. On a break and
+          in a work app for 5 minutes: a push asks <strong>back to work?</strong>, and Resume records you back
+          from when the work began. Awake with the day not started and in a work app for 10 minutes: a push
+          asks <strong>start?</strong>, and Start records work from when it began (Not work: no ask for 30
+          minutes). A push you missed is asked when you next open ProBeing. <strong>Sleep and break
+          checks</strong> turns these questions off; disturbed nights are still kept.</p>
         <p class="hint"><strong>Teach ProBeing</strong> lists apps and sites from the last 7 days that no rule placed,
           most time first. Work (then pick the project), Meeting, Distraction, Private or Ignore files them from then
           on, on both devices. Only the app's or site's name is kept, never a window title.</p>

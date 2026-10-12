@@ -32,6 +32,12 @@
 // state rows from before its window too, and a sleep days old asks about use after
 // the latest Fajr (never between midnight and Fajr).
 //
+// Item 28 (12 Oct): awake with the day not started (or after End day), blocks are kept
+// bare too (mode 'off'). A work app 10 minutes in a row there: "didn't mark it — start?"
+// (Start writes a resume back to when the work began; Not work: quiet 30 min). Asleep
+// and in a work app 5 minutes after Fajr asks "Up and working?" instead of "awake?"
+// (Start day writes a wake and a resume back to the work; Just awake, the wake only).
+//
 // No cron: the laptop's own 5-minute run is the clock. A push goes out when a
 // distraction has run 10 minutes; 5 minutes later, with no answer and still on
 // it, a break is written back to when it started (or, when another device shows
@@ -41,8 +47,8 @@
 // Deployed by hand (verify_jwt stays on; the laptop sends the anon key):
 //   npx supabase functions deploy activity-ingest --project-ref <ref> --use-api
 // Secrets: ALLOWED_USER_ID, GEMINI_API_KEY, GEMINI_MODEL, VAPID_PRIVATE_KEY (set
-// for the other functions); GEMINI_DAILY optional. Needs the "stage 18b" and
-// "item 23" parts of docs/supabase_schema.sql.
+// for the other functions); GEMINI_DAILY optional. Needs the "stage 18b", "item 23"
+// and "item 28" parts of docs/supabase_schema.sql.
 
 import { createClient } from 'jsr:@supabase/supabase-js@2';
 import '../_shared/day.js';
@@ -92,7 +98,7 @@ var PROJECTS_MAX = 60;
  * he stopped scrolling. Not the server's own rows or the popup's backdated ones. */
 var RESPONSE_TYPES = ['work', 'voice', 'resume', 'break', 'off', 'sleep', 'done', 'subdone', 'subdrop', 'substop',
                       'pin', 'unpin', 'actanswer'];
-var SERVER_RIDS = /^(ab|ar|aw|an|aq|qb|qr|kb|kr|as|nw|nr|na)-|^wrapup-/;
+var SERVER_RIDS = /^(ab|ar|aw|an|aq|qb|qr|kb|kr|as|nw|nr|ns|na)-|^wrapup-/;
 var STATE_TYPES = ['work', 'voice', 'resume', 'break', 'off', 'sleep', 'wake', 'done', 'awake', 'subdone', 'subdrop',
                    'substop', 'pin', 'unpin', 'actanswer'];
 
@@ -103,8 +109,12 @@ var USE_FRESH_MS = 25 * MIN_MS;        // a run must reach this close to now to 
 var NIGHT_FROM_H = 21;                 // a sleep from 9 pm (the Sleep button's line) or after midnight is a night
 var QUIET_BACK_MS = 40 * 3600000;      // blocks read for the asleep/break checks and the nights
 var NIGHTS_BACK_MS = 36 * 3600000;     // nights recounted on each run
-var ASK_KINDS = ['awake', 'resume'];
-var ASK_QUIET_MS = 30 * MIN_MS;        // after "Still asleep" or "It was a break", not asked again this long
+var ASK_KINDS = ['awake', 'resume', 'upwork', 'start'];
+var ASK_QUIET_MS = 30 * MIN_MS;        // after "Still asleep", "It was a break" or "Not work", not asked again this long
+var START_MIN_MS = 10 * MIN_MS;        // item 28: work this long in a row, day not started, asks "start?"
+/* What an na- answer (the second button) leaves a question as; and each kind's two answers. */
+var NA_STATE = { awake: 'asleep', upwork: 'asleep', resume: 'break', start: 'notwork' };
+var ASK_CHOICES = { awake: ['awake', 'asleep'], resume: ['resume', 'break'], upwork: ['start', 'awake'], start: ['start', 'notwork'] };
 /* A row of his of these types after the use a question is about ends the question. */
 var ASK_ENDS = ['work', 'voice', 'resume', 'break', 'off', 'sleep', 'wake'];
 
@@ -291,22 +301,27 @@ function inUseSpans(list, a, z) {
   return A.actIntersect(a, z, A.actMergeSpans(list.map(function (b) { return [b.start, b.end]; })));
 }
 
-/** Is an awake or back-to-work question still about the state he is in? Not once any
- *  state row of his (a nap, a wake, End day...) came after the use it is about. */
+/** Is an awake, back-to-work or start question still about the state he is in? Not once
+ *  any state row of his (a nap, a wake, End day...) came after the use it is about. */
 function askOpen(n, walk, rows) {
-  var own = ['nw-', 'nr-', 'na-'].map(function (x) { return x + n.id; });
+  var own = ['nw-', 'nr-', 'ns-', 'na-'].map(function (x) { return x + n.id; });
   var moved = (rows || []).some(function (r) {
     return r.at > n.streak_start && ASK_ENDS.indexOf(r.type) !== -1 && own.indexOf(String(r.rid || '')) === -1;
   });
   if (moved) return false;
-  if (n.kind === 'awake') return Boolean(walk && walk.asleep && walk.asleep.at === n.ref_at);
+  if (n.kind === 'awake' || n.kind === 'upwork') return Boolean(walk && walk.asleep && walk.asleep.at === n.ref_at);
   if (n.kind === 'resume') return Boolean(walk && walk.onBreak && walk.onBreak.at === n.ref_at);
+  if (n.kind === 'start') return Boolean(walk && walk.offSince && walk.offSince.at === n.ref_at);
   return false;
 }
 
+function isWorkBlock(b) {
+  return b.category === 'work';
+}
+
 /**
- * Asleep or on a break. d: {now, walk (actWalk), blocks [{device_id, kind, start, end,
- * category}] (any mode), nudges [{id, kind, device_id, streak_start, pushed_at, decided_at,
+ * Asleep, on a break or awake with the day off (item 28). d: {now, walk (actWalk), blocks
+ * [{device_id, kind, start, end, category}] (any mode), nudges [{id, kind, device_id, streak_start, pushed_at, decided_at,
  * state, ref_at}] (ms), rows [{at, type, rid}], nightEnd(at, until) -> Fajr or null,
  * fajrAfter(t), offsetAt(t) (minutes east of UTC), checks (his switch; false: no
  * questions, open ones closed; nights still kept)}.
@@ -323,39 +338,57 @@ function quietStep(d) {
   nudges.forEach(function (n) {
     state[n.id] = n.state;
     if (n.state !== 'sent') return;
-    var to = hasRid(rows, 'nw-' + n.id) ? 'awake' : hasRid(rows, 'nr-' + n.id) ? 'resumed'
-           : hasRid(rows, 'na-' + n.id) ? (n.kind === 'awake' ? 'asleep' : 'break')
+    var to = hasRid(rows, 'ns-' + n.id) ? 'started' : hasRid(rows, 'nw-' + n.id) ? 'awake'
+           : hasRid(rows, 'nr-' + n.id) ? 'resumed' : hasRid(rows, 'na-' + n.id) ? NA_STATE[n.kind]
            : d.checks !== false && askOpen(n, walk, rows) ? '' : 'closed';
     if (to) { out.decide.push({ id: n.id, state: to }); state[n.id] = to; }
   });
 
-  // One open question per sleep or break; a run that began before the last push or answer is not
-  // asked about again, nor anything for 30 minutes after "Still asleep" / "It was a break". The
-  // first use is asked about; it is pushed only when some use is recent (a late phone run: the sheet only).
-  function ask(kind, ref, from, thr, keep) {
-    var mine = nudges.filter(function (n) { return n.kind === kind && n.ref_at === ref; });
-    if (mine.some(function (n) { return state[n.id] === 'sent'; })) return;
-    if (mine.some(function (n) { return (n.state === 'asleep' || n.state === 'break') && now < n.decided_at + ASK_QUIET_MS; })) return;
+  // One open question per sleep, break or day-off stretch; a run that began before the last push
+  // or answer is not asked about again, nor anything for 30 minutes after a "no" (Still asleep,
+  // It was a break, Not work; for "start?" also Just awake, passed as `also`). Returns the
+  // instant a run must begin after, or null while a question is open or quiet.
+  function since(kinds, ref, also) {
+    var mine = nudges.filter(function (n) { return kinds.indexOf(n.kind) !== -1 && n.ref_at === ref; });
+    if (mine.some(function (n) { return state[n.id] === 'sent'; })) return null;
+    var all = mine.concat(also || []);
+    if (all.some(function (n) {
+      var no = n.state === 'asleep' || n.state === 'break' || n.state === 'notwork' || (also || []).indexOf(n) !== -1;
+      return no && now < n.decided_at + ASK_QUIET_MS;
+    })) return null;
     var after = -Infinity;
-    mine.forEach(function (n) {
+    all.forEach(function (n) {
       after = Math.max(after, n.streak_start, isFinite(n.pushed_at) ? n.pushed_at : -Infinity,
                        isFinite(n.decided_at) ? n.decided_at : -Infinity);
       if (state[n.id] !== n.state) after = Math.max(after, now);
     });
+    return after;
+  }
+  // The first run of use on one device (`keep`'s blocks) that began after `after` with `min` in
+  // use past `thr`; pushed only when some such run is recent (a late phone run: the sheet only).
+  function find(after, from, thr, keep, min, kind, ref) {
     var by = cutByDevice(d.blocks, from, now, keep);
     var best = null;
     var fresh = false;
     Object.keys(by).forEach(function (k) {
       A.actUseRuns(by[k], USE_GAP_MS).forEach(function (r) {
         if (r.start <= after) return;
-        if (A.actSpansMs(inUseSpans(by[k], Math.max(thr, r.start), r.end)) < USE_MIN_MS) return;
+        if (A.actSpansMs(inUseSpans(by[k], Math.max(thr, r.start), r.end)) < min) return;
         if (r.end >= now - USE_FRESH_MS) fresh = true;
         if (!best || r.start < best.start) {
           best = { kind: kind, device_id: k.slice(1), dev: by[k][0].kind || 'laptop', start: r.start, end: r.end, ref: ref };
         }
       });
     });
-    if (best) out.push.push(Object.assign(best, { push: fresh }));
+    return best ? Object.assign(best, { push: fresh }) : null;
+  }
+  function add(p) { if (p) out.push.push(p); }
+  // Item 28: runs count from after his newest state row in the stretch (a second Sleep, a chip),
+  // so an answer never lands on or before one, and no question is over as soon as it is asked.
+  function afterMine(ref) {
+    var t = ref + 1000;
+    rows.forEach(function (r) { if (ASK_ENDS.indexOf(r.type) !== -1 && r.at >= ref) t = Math.max(t, r.at + 1000); });
+    return t;
   }
   if (walk.asleep && d.checks !== false) {
     var f = d.nightEnd(walk.asleep.at, now);
@@ -367,10 +400,27 @@ function quietStep(d) {
       thr = latestFajr(f, now, d.fajrAfter);
       night = now >= midnightAfter(thr, d.offsetAt(thr));
     }
-    if (!night) ask('awake', walk.asleep.at, walk.asleep.at, thr, null);
+    var sa = night ? null : since(['awake', 'upwork'], walk.asleep.at);
+    // Item 28: work is "Up and working?"; any other use the plain "awake?".
+    if (sa !== null) {
+      var afrom = afterMine(walk.asleep.at);
+      add(find(sa, afrom, thr, isWorkBlock, USE_MIN_MS, 'upwork', walk.asleep.at) ||
+          find(sa, afrom, thr, null, USE_MIN_MS, 'awake', walk.asleep.at));
+    }
   }
   if (walk.onBreak && d.checks !== false) {
-    ask('resume', walk.onBreak.at, walk.onBreak.since, walk.onBreak.since, function (b) { return b.category === 'work'; });
+    var sr = since(['resume'], walk.onBreak.at);
+    if (sr !== null) add(find(sr, walk.onBreak.since, walk.onBreak.since, isWorkBlock, USE_MIN_MS, 'resume', walk.onBreak.at));
+  }
+  // Item 28: awake, the day not started or ended.
+  if (walk.offSince && d.checks !== false) {
+    var oref = walk.offSince.at;
+    var ofrom = afterMine(oref);
+    var just = nudges.filter(function (n) {
+      return n.kind === 'upwork' && state[n.id] === 'awake' && (state[n.id] !== n.state ? now : n.decided_at) >= oref;
+    });
+    var so = since(['start'], oref, just);
+    if (so !== null) add(find(so, ofrom, ofrom, isWorkBlock, START_MIN_MS, 'start', oref));
   }
 
   // Disturbed nights: use before Fajr while asleep, brief checks left out, all devices together.
@@ -402,8 +452,20 @@ function askAt(n) {
   return Math.max(n.streak_start, n.ref_at + 1000);
 }
 
-/** The rows an awake or back-to-work answer writes. choice: awake/asleep or resume/break. */
+/** The rows an answer writes. choice: awake/asleep, resume/break, start/awake (upwork) or
+ *  start/notwork (start). Start day's resume is a second after its wake, so the two never tie. */
 function askRows(n, choice, now) {
+  if (n.kind === 'upwork') {
+    var w = { type: 'wake', at: askAt(n), rid: 'nw-' + n.id, text: 'Wake up (I was awake — answered the check)' };
+    return choice === 'start'
+      ? [w, { type: 'resume', at: askAt(n) + 1000, rid: 'ns-' + n.id, text: 'Day started (up and working — answered the check)' }]
+      : [w];
+  }
+  if (n.kind === 'start') {
+    return choice === 'start'
+      ? [{ type: 'resume', at: askAt(n), rid: 'ns-' + n.id, text: 'Day started (I was working — answered the check)' }]
+      : [{ type: 'actanswer', at: now, rid: 'na-' + n.id, text: 'Not work — answered the check', detail: 'notwork' }];
+  }
   if (n.kind === 'awake') {
     return choice === 'awake'
       ? [{ type: 'wake', at: askAt(n), rid: 'nw-' + n.id, text: 'Wake up (I was awake — answered the check)' }]
@@ -440,6 +502,15 @@ function askPayload(p, nudgeId, nonce, url, key, offsetMin) {
   if (p.kind === 'awake') {
     return Object.assign(base, { title: 'You\'re marked asleep but using your ' + dev + ' — awake?',
                                  body: 'I\'m awake records waking at ' + at + '.' });
+  }
+  if (p.kind === 'upwork') {
+    return Object.assign(base, { title: 'Up and working? Start your day?',
+                                 body: 'Your ' + dev + ' shows work from ' + at + '. Start day records waking and work from then.' });
+  }
+  if (p.kind === 'start') {
+    var mins = Math.max(10, Math.round((p.end - p.start) / 60000));
+    return Object.assign(base, { title: 'You\'ve been working ' + mins + ' min but didn\'t mark it — start?',
+                                 body: 'Start records work from ' + at + '.' });
   }
   return Object.assign(base, { title: 'Still on break but you look like you\'re working — back to work?',
                                body: 'Resume records you back at ' + at + '.' });
@@ -544,7 +615,8 @@ function keepPlaced(fresh, had) {
 }
 
 /** Clean blocks cut to when they may be kept: whole while watched (mode work), bare while
- *  asleep or on a break (item 23: time, category, a work project); the rest dropped. */
+ *  asleep, on a break (item 23: time, category, a work project) or awake with the day off
+ *  (item 28); the rest dropped. */
 function keptPieces(clean, walk) {
   var full = A.actClip(clean, walk.watch || []).map(function (b) { return Object.assign({}, b, { mode: 'work' }); });
   function bare(spans, mode) {
@@ -553,7 +625,7 @@ function keptPieces(clean, walk) {
       return Object.assign({}, b, { app: '', domain: '', key: '', project: named ? b.project : '', mode: mode });
     });
   }
-  return full.concat(bare(walk.sleep, 'sleep'), bare(walk.rest, 'break'));
+  return full.concat(bare(walk.sleep, 'sleep'), bare(walk.rest, 'break'), bare(walk.awakeOff, 'off'));
 }
 
 /** What the watchers are told about now: work, sleep, break or off. */
@@ -813,11 +885,13 @@ async function runNudges(sb: Sb, owner: string, now: number, set: Record<string,
   return report;
 }
 
-/** The spans the devices may watch, from `from` to now: watch (whole) and quiet (bare, item 23). */
+/** The spans the devices may watch, from `from` to now: watch (whole) and quiet (bare: asleep,
+ *  a break, item 23; awake with the day off, item 28). */
 async function watchSpans(sb: Sb, owner: string, from: number, now: number) {
   const rows = await readRows(sb, owner, from - READ_BACK_MS);
   const walk = A.actWalk(rows, from, now);
-  return { walk, spans: walk.watch as number[][], quiet: A.actMergeSpans((walk.sleep || []).concat(walk.rest || [])) as number[][] };
+  const quiet = (walk.sleep || []).concat(walk.rest || [], walk.awakeOff || []);
+  return { walk, spans: walk.watch as number[][], quiet: A.actMergeSpans(quiet) as number[][] };
 }
 
 async function opConfig(sb: Sb, dev: Record<string, any>, body: Record<string, any>, now: number) {
@@ -948,10 +1022,10 @@ async function opClassify(sb: Sb, dev: Record<string, any>, body: Record<string,
                       results: results.map((r) => ({ key: r.key, project: r.project })) });
 }
 
-/** Item 23: I'm awake / Still asleep, Resume / It was a break. Open only while he is
- *  still in the sleep or break it asked about; late, "That one's over". */
+/** Item 23: I'm awake / Still asleep, Resume / It was a break; item 28: Start day / Just awake,
+ *  Start / Not work. Open only while he is still in the state it asked about; late, "That one's over". */
 async function answerAsk(sb: Sb, n: Record<string, any>, choice: string, set: Record<string, any>, now: number, from: string) {
-  const ok = n.kind === 'awake' ? ['awake', 'asleep'] : ['resume', 'break'];
+  const ok = ASK_CHOICES[n.kind] || [];
   if (ok.indexOf(choice) === -1) return reply(400, { ok: false, error: 'not an answer to this check' });
   const ask = { id: n.id, kind: n.kind, streak_start: ms(n.streak_start), ref_at: ms(n.ref_at) };
   const rows = await readRows(sb, n.user_id, now - READ_BACK_MS);
@@ -959,10 +1033,12 @@ async function answerAsk(sb: Sb, n: Record<string, any>, choice: string, set: Re
   const mine = rows.map((r) => ({ at: ms(r.at), type: r.type, rid: r.rid || '' }));
   if (n.state !== 'sent' || !askOpen(ask, walk, mine)) return reply(200, { ok: true, over: true, message: 'That one\'s over' });
   for (const w of A.actSkipTies(askRows(ask, choice, now), rows)) await writeRow(sb, n.user_id, set.zone, w);
-  const state = choice === 'awake' ? 'awake' : choice === 'resume' ? 'resumed' : choice;
+  const state = choice === 'start' ? 'started' : choice === 'resume' ? 'resumed' : choice === 'awake' ? 'awake'
+              : NA_STATE[n.kind];
   await sb.from('activity_nudges').update({ state, decided_at: iso(now) }).eq('id', n.id);
   const at = clock12(askAt(ask), set.offset);
-  await retireAsk(sb, n.user_id, choice === 'awake' ? 'Awake from ' + at : choice === 'resume' ? 'Back at work from ' + at : 'Noted', from);
+  await retireAsk(sb, n.user_id, choice === 'awake' ? 'Awake from ' + at : choice === 'resume' ? 'Back at work from ' + at
+                                 : choice === 'start' ? 'Working from ' + at : 'Noted', from);
   return reply(200, { ok: true, state });
 }
 
@@ -970,7 +1046,8 @@ async function answerAsk(sb: Sb, n: Record<string, any>, choice: string, set: Re
 async function opAnswer(sb: Sb, ans: Record<string, any>, now: number) {
   const id = String(ans.id || '');
   const nonce = String(ans.nonce || '');
-  const said = ['break', 'working', 'awake', 'asleep', 'resume'].indexOf(String(ans.choice)) !== -1 ? String(ans.choice) : '';
+  const said = ['break', 'working', 'awake', 'asleep', 'resume', 'start', 'notwork'].indexOf(String(ans.choice)) !== -1
+    ? String(ans.choice) : '';
   if (!UUID.test(id) || !nonce || !said) return reply(401, { ok: false, error: 'not a check of yours' });
   const n = must(await sb.from('activity_nudges').select('*').eq('id', id).limit(1))[0];
   if (!n || !n.nonce_sha256 || (await sha256Hex(nonce)) !== n.nonce_sha256) {

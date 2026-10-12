@@ -1659,9 +1659,10 @@ do $$ begin
   alter table public.activity_nudges add constraint activity_nudges_kind check (kind in ('distract', 'awake', 'resume'));
 exception when duplicate_object then null; end $$;
 
+-- Re-added on every run, so it carries item 28's states too (a narrower list would refuse its rows).
 alter table public.activity_nudges drop constraint if exists activity_nudges_state_check;
 alter table public.activity_nudges add constraint activity_nudges_state_check check (state in ('sent', 'working', 'break',
-  'answered', 'left', 'autobreak', 'question', 'stale', 'closed', 'awake', 'asleep', 'resumed'));
+  'answered', 'left', 'autobreak', 'question', 'stale', 'closed', 'awake', 'asleep', 'resumed', 'started', 'notwork'));
 
 -- One per device, kind and start: an awake run and a distraction streak never collide.
 alter table public.activity_nudges drop constraint if exists activity_nudges_streak_key;
@@ -1712,3 +1713,29 @@ create unique index if not exists activity_nudges_open_ask_idx on public.activit
 -- His switch for the sleep and break checks (the awake / back-to-work questions).
 -- Off: no question and no push; disturbed nights are still kept.
 alter table public.user_settings add column if not exists activity_checks boolean not null default true;
+
+-- ============================================================ item 28 (12 Oct)
+-- Awake with the day not started (or after End day), the devices send bare blocks
+-- too (mode 'off'). Two new questions: 'start' ("didn't mark it — start?", ref_at =
+-- the wake or off row that began the stretch) and 'upwork' ("Up and working?",
+-- asked instead of 'awake' about the same sleep). New states: started, notwork.
+-- New events rid prefix, no schema change: ns- (a resume back to the work, "Start").
+-- Safe to run twice.
+
+alter table public.activity_blocks drop constraint if exists activity_blocks_mode;
+alter table public.activity_blocks add constraint activity_blocks_mode check (mode in ('work', 'break', 'sleep', 'off'));
+
+alter table public.activity_nudges drop constraint if exists activity_nudges_kind;
+alter table public.activity_nudges add constraint activity_nudges_kind
+  check (kind in ('distract', 'awake', 'resume', 'upwork', 'start'));
+
+alter table public.activity_nudges drop constraint if exists activity_nudges_state_check;
+alter table public.activity_nudges add constraint activity_nudges_state_check check (state in ('sent', 'working', 'break',
+  'answered', 'left', 'autobreak', 'question', 'stale', 'closed', 'awake', 'asleep', 'resumed', 'started', 'notwork'));
+
+-- One open question per sleep, break or day-off stretch: "awake?" and "Up and working?"
+-- about one sleep count as one. It covers item 23's index, which is dropped.
+create unique index if not exists activity_nudges_open_ask28_idx on public.activity_nudges
+  (user_id, (case when kind = 'upwork' then 'awake' else kind end), ref_at)
+  where state = 'sent' and kind in ('awake', 'resume', 'upwork', 'start');
+drop index if exists public.activity_nudges_open_ask_idx;

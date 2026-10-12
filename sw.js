@@ -58,8 +58,9 @@
  * v33 (item 24): a prayer past its time offers the three modes as well as Qaza.
  * v34 (item 23): the awake and back-to-work pushes, missed questions first in the sheet, Teach ProBeing.
  * v35 (item 25): two prayer days' start and end times in the prayer dialog.
- * v36 (item 26): an open awake/back-to-work question of any age shows; a 20 h+ night is not counted. */
-var CACHE = 'probeing-shell-v36';
+ * v36 (item 26): an open awake/back-to-work question of any age shows; a 20 h+ night is not counted.
+ * v37 (item 28): "Up and working?" and "didn't mark it — start?", with their buttons. */
+var CACHE = 'probeing-shell-v37';
 var SHELL = [
   './',
   'index.html',
@@ -148,10 +149,13 @@ var PLAN_TAG = 'probeing-plan';
 // Stage 18b: the distraction push (activity-ingest), and its quiet "answered" replacement.
 var DISTRACT_TAG = 'probeing-distract';
 // Item 23: "awake?" and "back to work?" (activity-ingest), one at a time, and their quiet replacement.
+// Item 28: "Up and working?" and "start?".
 var ASK_TAG = 'probeing-watch-ask';
 var ASK_ACTIONS = {
   awake: [{ action: 'awake', title: 'I\'m awake' }, { action: 'asleep', title: 'Still asleep' }],
-  resume: [{ action: 'resume', title: 'Resume' }, { action: 'break', title: 'It was a break' }]
+  resume: [{ action: 'resume', title: 'Resume' }, { action: 'break', title: 'It was a break' }],
+  upwork: [{ action: 'start', title: 'Start day' }, { action: 'awake', title: 'Just awake' }],
+  start: [{ action: 'start', title: 'Start' }, { action: 'notwork', title: 'Not work' }]
 };
 
 self.addEventListener('push', function (event) {

@@ -15628,13 +15628,15 @@ function catchupHeld(types) {
 
 /** Unanswered pushes and questions, and auto breaks since he last looked (Looks right
  *  accepts one). `rids`: rids that exist; `since`: when he last confirmed. Item 23 adds
- *  the awake and back-to-work questions (kind 'awake' / 'resume'). */
+ *  the awake and back-to-work questions (kind 'awake' / 'resume'), item 28 'upwork' / 'start'. */
 function catchupAsks(nudges, rids, since) {
   var out = [];
   (nudges || []).forEach(function (n) {
     var id = n.id;
-    if (n.kind === 'awake' || n.kind === 'resume') {
-      if (n.state === 'sent' && !rids['nw-' + id] && !rids['nr-' + id] && !rids['na-' + id]) out.push({ kind: n.kind, n: n });
+    if (WATCH_ASKS[n.kind] === 1) {
+      if (n.state === 'sent' && !rids['nw-' + id] && !rids['nr-' + id] && !rids['ns-' + id] && !rids['na-' + id]) {
+        out.push({ kind: n.kind, n: n });
+      }
       return;
     }
     if (n.state === 'sent' && !rids['an-' + id] && !rids['ab-' + id]) out.push({ kind: 'sent', n: n });
@@ -15670,19 +15672,19 @@ async function readCatchUp() {
   if (nRes.error) throw errorFrom(nRes.error);
   // Item 26: an awake or back-to-work question still open is kept however old (a Wake forgotten for days).
   var oRes = await sb.from('activity_nudges').select('id,kind,ref_at,streak_start,what,pushed_at,state,span_end,other_work')
-    .eq('state', 'sent').in('kind', ['awake', 'resume']).lt('streak_start', new Date(now - CATCHUP_BACK_MS).toISOString())
+    .eq('state', 'sent').in('kind', Object.keys(WATCH_ASKS)).lt('streak_start', new Date(now - CATCHUP_BACK_MS).toISOString())
     .order('streak_start', { ascending: true }).limit(10);
   if (oRes.error) throw errorFrom(oRes.error);
   // A day that has turned closed its pushes and questions with it; an awake or back-to-work
   // question lasts while its sleep or break does (askStillOpen).
   var dayStart = counterDayStart(now);
   var nudges = (oRes.data || []).concat(nRes.data || []).filter(function (n) {
-    return n.kind === 'awake' || n.kind === 'resume' ? askStillOpen(n) : Date.parse(n.streak_start) >= dayStart;
+    return WATCH_ASKS[n.kind] === 1 ? askStillOpen(n) : Date.parse(n.streak_start) >= dayStart;
   });
   var rids = userMap();
   if (nudges.length) {
     var want = [];
-    nudges.forEach(function (n) { ['an-', 'ab-', 'aq-', 'qb-', 'aw-', 'nw-', 'nr-', 'na-'].forEach(function (p) { want.push(p + n.id); }); });
+    nudges.forEach(function (n) { ['an-', 'ab-', 'aq-', 'qb-', 'aw-', 'nw-', 'nr-', 'ns-', 'na-'].forEach(function (p) { want.push(p + n.id); }); });
     var rr = await sb.from('events').select('rid').in('rid', want).limit(500);
     if (rr.error) throw errorFrom(rr.error);
     (rr.data || []).forEach(function (r) { rids[r.rid] = 1; });
@@ -15741,28 +15743,33 @@ function catchupLabel(g) {
   return (g.project || 'Work') + ' · ' + mins;
 }
 
-/* Item 23: the awake and back-to-work questions. */
+/* Item 23: the awake and back-to-work questions; item 28: "Up and working?" and "start?". */
+var WATCH_ASKS = { awake: 1, resume: 1, upwork: 1, start: 1 };
 
 /** The instant an answer backdates to: the use, never before the sleep or break row. */
 function askAtOf(n) {
   return Math.max(Date.parse(n.streak_start), Date.parse(n.ref_at) + 1000);
 }
 
-/** Is an awake or back-to-work question still about the state he is in? The toggles say. */
+/** Is a watch question still about the state he is in? The toggles say. */
 function askStillOpen(n) {
   var ref = Date.parse(n.ref_at);
   var use = Date.parse(n.streak_start);
   if (!isFinite(ref)) return false;
   // Any change of his after the use it is about (a nap, a wake, End day) ends it.
   if (toggles.sleep.at > use || toggles.work.at > use) return false;
-  if (n.kind === 'awake') return toggles.sleep.state === 'asleep' && toggles.sleep.at <= ref + 60000;
+  if (n.kind === 'awake' || n.kind === 'upwork') return toggles.sleep.state === 'asleep' && toggles.sleep.at <= ref + 60000;
+  if (n.kind === 'start') {
+    return toggles.sleep.state !== 'asleep' && toggles.work.state === 'off' &&
+           Math.max(toggles.sleep.at, toggles.work.at) <= ref + 60000;
+  }
   return toggles.sleep.state !== 'asleep' && toggles.work.state === 'break' && toggles.work.at <= ref + 60000;
 }
 
 /* A distraction push he already answered by acting: a row of his after it (as activity-ingest answerOpen). */
 var ASK_RESPONSE_TYPES = { work: 1, voice: 1, resume: 1, 'break': 1, off: 1, sleep: 1, done: 1, subdone: 1, subdrop: 1,
                            substop: 1, pin: 1, unpin: 1, actanswer: 1 };
-var ASK_SERVER_RIDS = /^(ab|ar|aw|an|aq|qb|qr|kb|kr|as|nw|nr|na)-|^wrapup-/;
+var ASK_SERVER_RIDS = /^(ab|ar|aw|an|aq|qb|qr|kb|kr|as|nw|nr|ns|na)-|^wrapup-/;
 
 function distractActedOn(n) {
   var pushed = Date.parse(n.pushed_at);
@@ -15788,13 +15795,21 @@ function catchupAskRow(a) {
     b.addEventListener('click', function () { answerCatchUp(a, choice, li); });
     acts.appendChild(b);
   }
-  if (a.kind === 'awake' || a.kind === 'resume') {
+  if (WATCH_ASKS[a.kind] === 1) {
     var at = askAtOf(n);
     var dev = n.what === 'laptop' ? 'laptop' : 'phone';
     if (a.kind === 'awake') {
       text.textContent = 'You were marked asleep, but your ' + dev + ' was in use from ' + clockAt(at) + '.';
       btn('I was awake at ' + clockAt(at), 'awake');
       btn('Still asleep', 'asleep');
+    } else if (a.kind === 'upwork') {
+      text.textContent = 'You were marked asleep, but your ' + dev + ' showed work from ' + clockAt(at) + '. Up and working?';
+      btn('Start day at ' + clockAt(at), 'start');
+      btn('Just awake', 'awake');
+    } else if (a.kind === 'start') {
+      text.textContent = 'Your ' + dev + ' showed work from ' + clockAt(at) + ', but the day wasn\'t started.';
+      btn('Start at ' + clockAt(at), 'start');
+      btn('Not work', 'notwork');
     } else {
       text.textContent = 'On a break, but your ' + dev + ' showed work from ' + clockAt(at) + '.';
       btn('Back at ' + clockAt(at), 'resume');
@@ -15901,7 +15916,7 @@ function catchupPrune() {
   sessionLog().forEach(function (r) { if (r.rid) rids[r.rid] = 1; });
   catchup.asks = catchup.asks.filter(function (a) {
     var answered = !catchupAsks([a.n], rids, -Infinity).length;
-    var over = (a.kind === 'awake' || a.kind === 'resume') && !askStillOpen(a.n);
+    var over = WATCH_ASKS[a.kind] === 1 && !askStillOpen(a.n);
     if (!answered && !over) return true;
     if (a.li) a.li.textContent = answered ? 'Answered on another device.' : 'That one\'s over.';
     return false;
@@ -15915,27 +15930,37 @@ function answerCatchUp(a, choice, li) {
   var start = Date.parse(n.streak_start);
   var steps = [];
   // Late: the sleep or break it asked about is over, or he already acted on the push.
-  if ((a.kind === 'awake' || a.kind === 'resume') ? !askStillOpen(n) : a.kind === 'sent' && distractActedOn(n)) {
+  if (WATCH_ASKS[a.kind] === 1 ? !askStillOpen(n) : a.kind === 'sent' && distractActedOn(n)) {
     catchup.asks = catchup.asks.filter(function (x) { return x !== a; });
     li.textContent = 'That one\'s over — nothing was changed.';
     return;
   }
-  if (a.kind === 'awake' || a.kind === 'resume') {
+  if (WATCH_ASKS[a.kind] === 1) {
     var at = askAtOf(n);
     var back = { at: new Date(at).toISOString(), local_time: humanLocalAt(at) };
-    if (choice === 'awake') {
+    // Item 28: Start day's resume a second after its wake, as activity-ingest askRows writes it.
+    var then = a.kind === 'upwork' ? at + 1000 : at;
+    var started = { type: 'resume', rid: 'ns-' + id, at: new Date(then).toISOString(), local_time: humanLocalAt(then),
+                    raw_text: a.kind === 'upwork' ? 'Day started (up and working — answered the check)'
+                                                  : 'Day started (I was working — answered the check)' };
+    if (choice === 'awake' || (choice === 'start' && a.kind === 'upwork')) {
       steps = [Object.assign({ type: 'wake', raw_text: 'Wake up (I was awake — answered the check)', rid: 'nw-' + id }, back)];
       setToggle('sleep', 'awake', at);
+    }
+    if (choice === 'start') {
+      steps.push(started);
+      setToggle('work', 'working', then);
     } else if (choice === 'resume') {
       steps = [Object.assign({ type: 'resume', raw_text: 'Resume (back at work — answered the check)', rid: 'nr-' + id }, back)];
       setToggle('work', 'working', at);
-    } else {
-      steps = [{ type: 'actanswer', raw_text: a.kind === 'awake' ? 'Still asleep — answered the check' : 'Still on a break — answered the check',
-                 detail: choice, rid: 'na-' + id }];
+    } else if (choice !== 'awake') {
+      steps = [{ type: 'actanswer', raw_text: a.kind === 'awake' ? 'Still asleep — answered the check' : a.kind === 'start'
+                 ? 'Not work — answered the check' : 'Still on a break — answered the check', detail: choice, rid: 'na-' + id }];
     }
     catchup.asks = catchup.asks.filter(function (x) { return x !== a; });
     li.textContent = choice === 'awake' ? 'Noted: awake from ' + clockAt(at) + '.' : choice === 'resume'
-      ? 'Noted: back at work from ' + clockAt(at) + '.' : choice === 'asleep' ? 'Noted: still asleep.' : 'Noted: a break.';
+      ? 'Noted: back at work from ' + clockAt(at) + '.' : choice === 'start' ? 'Noted: working from ' + clockAt(at) + '.'
+      : choice === 'asleep' ? 'Noted: still asleep.' : choice === 'notwork' ? 'Noted: not work.' : 'Noted: a break.';
     runWrites(actSkipTies(steps, sessionLog())).then(function () { scheduleRefresh(800); });
     return;
   }
