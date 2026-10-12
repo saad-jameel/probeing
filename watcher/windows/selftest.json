@@ -1870,6 +1870,117 @@
     "project": "",
     "key": ""
    }
+  },
+  {
+   "name": "item 29: on the phone the built-in work names do not count (Claude)",
+   "seg": {
+    "app": "Claude",
+    "title": "",
+    "host": "",
+    "path": "",
+    "incognito": false,
+    "phone": true
+   },
+   "cfg": {
+    "lists": null,
+    "rules": [
+     {
+      "keyword": "docker",
+      "project": "OneNet"
+     },
+     {
+      "keyword": "neuravue",
+      "project": "NeuraVue"
+     }
+    ],
+    "projects": [
+     "ProBeing",
+     "OneNet",
+     "NeuraVue"
+    ]
+   },
+   "want": {
+    "category": "unclear",
+    "project": "",
+    "key": ""
+   }
+  },
+  {
+   "name": "item 29: on the phone his own work entry counts",
+   "seg": {
+    "app": "Notion",
+    "title": "",
+    "host": "",
+    "path": "",
+    "incognito": false,
+    "phone": true
+   },
+   "cfg": {
+    "lists": {
+     "work": [
+      "notion"
+     ]
+    },
+    "rules": [
+     {
+      "keyword": "docker",
+      "project": "OneNet"
+     },
+     {
+      "keyword": "neuravue",
+      "project": "NeuraVue"
+     }
+    ],
+    "projects": [
+     "ProBeing",
+     "OneNet",
+     "NeuraVue"
+    ]
+   },
+   "want": {
+    "category": "work",
+    "project": "",
+    "key": ""
+   }
+  },
+  {
+   "name": "item 29: on the phone a built-in name he typed is still built-in",
+   "seg": {
+    "app": "Excel",
+    "title": "",
+    "host": "",
+    "path": "",
+    "incognito": false,
+    "phone": true
+   },
+   "cfg": {
+    "lists": {
+     "work": [
+      "Excel.exe",
+      "notion"
+     ]
+    },
+    "rules": [
+     {
+      "keyword": "docker",
+      "project": "OneNet"
+     },
+     {
+      "keyword": "neuravue",
+      "project": "NeuraVue"
+     }
+    ],
+    "projects": [
+     "ProBeing",
+     "OneNet",
+     "NeuraVue"
+    ]
+   },
+   "want": {
+    "category": "unclear",
+    "project": "",
+    "key": ""
+   }
   }
  ],
  "pipeline": [
@@ -2544,6 +2655,86 @@
      "app": "",
      "domain": "",
      "category": "unclear",
+     "project": "",
+     "key": ""
+    }
+   ]
+  },
+  {
+   "name": "item 29: the lock screen is away, not activity (LockApp dropped like AFK)",
+   "cut": {
+    "from": "2026-10-12T05:00:00.000Z",
+    "to": "2026-10-12T05:40:00.000Z",
+    "spans": [
+     [
+      "2026-10-12T05:00:00.000Z",
+      "2026-10-12T05:40:00.000Z"
+     ]
+    ]
+   },
+   "cfg": {
+    "lists": null,
+    "rules": [
+     {
+      "keyword": "docker",
+      "project": "OneNet"
+     },
+     {
+      "keyword": "neuravue",
+      "project": "NeuraVue"
+     }
+    ],
+    "projects": [
+     "ProBeing",
+     "OneNet",
+     "NeuraVue"
+    ]
+   },
+   "events": {
+    "afk": [
+     {
+      "timestamp": "2026-10-12T05:00:00+00:00",
+      "duration": 2400,
+      "data": {
+       "status": "not-afk"
+      }
+     }
+    ],
+    "window": [
+     {
+      "timestamp": "2026-10-12T05:00:00+00:00",
+      "duration": 600,
+      "data": {
+       "app": "claude.exe",
+       "title": "Claude"
+      }
+     },
+     {
+      "timestamp": "2026-10-12T05:10:00+00:00",
+      "duration": 1200,
+      "data": {
+       "app": "LockApp.exe",
+       "title": "Windows Default Lock Screen"
+      }
+     },
+     {
+      "timestamp": "2026-10-12T05:30:00+00:00",
+      "duration": 600,
+      "data": {
+       "app": "LogonUI.exe",
+       "title": ""
+      }
+     }
+    ],
+    "web": []
+   },
+   "want": [
+    {
+     "start": "2026-10-12T05:00:00.000Z",
+     "end": "2026-10-12T05:10:00.000Z",
+     "app": "claude.exe",
+     "domain": "",
+     "category": "work",
      "project": "",
      "key": ""
     }

@@ -128,6 +128,13 @@ $ACT_BARE_DOMAIN = '\b(?:[a-z0-9-]+\.)+(?:com|org|net|io|dev|app|co|pk|gov|edu|m
 $ACT_NO_TITLE_APPS = @('windowsterminal', 'cmd', 'powershell', 'pwsh', 'powershellise', 'explorer', 'conhost', 'wt',
                        'mintty', 'bash', 'wsl', 'ubuntu', 'terminal', 'alacritty', 'putty', 'kitty', 'gitbash', 'wezterm')
 
+# Windows' lock and sign-in screens: away, not activity (dropped as AFK is). As ACT_AWAY_APPS.
+$ACT_AWAY_APPS = @('lockapp', 'logonui')
+
+function Act-IsAway($app) {
+  return ($ACT_AWAY_APPS -contains (Act-Norm ((Act-Str $app) -replace '\.exe$', '')))
+}
+
 function Act-TitleSendable($app, $title) {
   if ($ACT_NO_TITLE_APPS -contains (Act-Norm ((Act-Str $app) -replace '\.exe$', ''))) { return $false }
   $raw = Act-Str $title
@@ -211,13 +218,16 @@ function Act-WorkName($s) {
 }
 
 # A site as in the other lists; a name only as the app's whole name ("code" is Code.exe, never Barcode).
+# On the phone (seg.phone) the built-in names do not count; the laptop never sets it.
 function Act-WorkHit($list, $seg) {
   $app = Act-WorkName (Get-Prop $seg 'app')
+  $builtIn = @()
+  if ((Get-Prop $seg 'phone') -eq $true) { $builtIn = @($ACT_DEFAULT_LISTS['work'] | ForEach-Object { Act-WorkName $_ }) }
   foreach ($x in (As-Seq $list)) {
     $e = (Act-Str $x).Trim().ToLowerInvariant() -creplace '\.exe$', ''
     if (-not $e) { continue }
     if ($e -cmatch '[./]') { if (Act-EntryHits $e $seg $false) { return $x } }
-    elseif ($app -and (Act-WorkName $e) -ceq $app) { return $x }
+    elseif ($app -and (Act-WorkName $e) -ceq $app -and -not ($builtIn -contains $app)) { return $x }
   }
   return ''
 }
@@ -372,6 +382,7 @@ function Act-Segments($events, $cut) {
     if ($null -eq $sp) { continue }
     $data = Get-Prop $e 'data'
     $app = Act-CleanApp (Get-Prop $data 'app')
+    if (Act-IsAway $app) { continue }        # the lock screen: away, not activity
     $title = Act-Str (Get-Prop $data 'title')
     $browser = Act-IsBrowser $app
     foreach ($p in (Act-Intersect $sp[0] $sp[1] $allowed)) {

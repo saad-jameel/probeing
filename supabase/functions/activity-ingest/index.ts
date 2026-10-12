@@ -45,6 +45,9 @@
 // Its own switch (activity_teach). Once the name is sorted (any route: the sheet, Teach,
 // Lists) the question closes and today's unclear blocks are filed again by name. No name
 // is kept from sleep, a break or the day off: those blocks stay bare (items 23, 28).
+// Item 29 fix: a sorted question closes on any call (config, glance, ingest); a name made
+// private is blanked on its question rows; and a label never reaches back: a block's new
+// category counts for the checks only from when the server first saw it (became_at).
 //
 // No cron: the laptop's own 5-minute run is the clock. A push goes out when a
 // distraction has run 10 minutes; 5 minutes later, with no answer and still on
@@ -682,7 +685,7 @@ function teachFixes(blocks, cfg) {
   var by = Object.create(null);
   (blocks || []).forEach(function (b) {
     if (b.category !== 'unclear' || (b.mode && b.mode !== 'work') || !b.id) return;
-    var c = A.actClassify({ app: b.app, host: b.domain || '', path: '', title: '' }, cfg);
+    var c = A.actClassify({ app: b.app, host: b.domain || '', path: '', title: '', phone: b.kind === 'phone' }, cfg);
     if (c.category === 'unclear') return;
     var k = [c.category, c.project, c.key].join('|');
     if (!by[k]) {
@@ -692,6 +695,28 @@ function teachFixes(blocks, cfg) {
     by[k].ids.push(b.id);
   });
   return Object.keys(by).map(function (k) { return by[k]; });
+}
+
+/** A label never reaches back (item 29 fix): a block whose category arrived later (became, ms), or
+ *  whose name he answered a "what is" question about (labelled: entry -> when the server saw the
+ *  answer), is unclear before then, for the distraction, break and day checks. */
+function labelClip(blocks, labelled) {
+  var out = [];
+  (blocks || []).forEach(function (b) {
+    var t = isFinite(b.became) ? b.became : -Infinity;
+    var n = labelled ? A.actTeachName(b) : null;
+    if (n && isFinite(labelled[n.entry])) t = Math.max(t, labelled[n.entry]);
+    if (!(t > b.start) || b.category === 'unclear') { out.push(b); return; }
+    if (t >= b.end) { out.push(Object.assign({}, b, { category: 'unclear', project: '' })); return; }
+    out.push(Object.assign({}, b, { end: t, category: 'unclear', project: '' }));
+    out.push(Object.assign({}, b, { start: t }));
+  });
+  return out;
+}
+
+/** Is a teach question's name now on his private list? Its rows are blanked then. */
+function teachPrivate(n, cfg) {
+  return Boolean(n && n.entry) && A.actClassify(A.actTeachSeg(n), cfg).category === 'private';
 }
 
 /** Between local midnight and the Fajr after it. fajrAfter(t): the first Fajr after t. */
@@ -833,7 +858,7 @@ async function writeRow(sb: Sb, owner: string, zone: string, w: Record<string, a
 function blockOf(r: Record<string, any>, kinds?: Record<string, string>) {
   return { id: r.id, device_id: r.device_id, start: ms(r.started_at), end: ms(r.ended_at), category: r.category,
            project: r.project || '', app: r.app || '', domain: r.domain || '', rule_key: r.rule_key || '',
-           kind: (kinds && kinds[r.device_id]) || 'laptop', mode: r.mode || 'work' };
+           kind: (kinds && kinds[r.device_id]) || 'laptop', mode: r.mode || 'work', became: ms(r.became_at) };
 }
 
 async function deviceKinds(sb: Sb, owner: string) {
@@ -864,6 +889,7 @@ async function runQuiet(sb: Sb, owner: string, now: number, set: Record<string, 
   const blocks = must(await sb.from('activity_blocks').select('*').eq('user_id', owner)
     .gte('ended_at', iso(now - QUIET_BACK_MS)).order('started_at', { ascending: true }).limit(5000))
     .map((r) => blockOf(r, kinds));
+  const clipped = labelClip(blocks, await teachLabelled(sb, owner, now - QUIET_BACK_MS));
   const cols = 'id, kind, device_id, streak_start, pushed_at, decided_at, state, ref_at';
   const recent = must(await sb.from('activity_nudges').select(cols)
     .eq('user_id', owner).in('kind', ASK_KINDS).gte('streak_start', iso(now - QUIET_BACK_MS)).limit(500));
@@ -875,7 +901,7 @@ async function runQuiet(sb: Sb, owner: string, now: number, set: Record<string, 
     .map((n) => ({ id: n.id, kind: n.kind, device_id: n.device_id, streak_start: ms(n.streak_start), pushed_at: ms(n.pushed_at),
                    decided_at: ms(n.decided_at), state: n.state, ref_at: ms(n.ref_at) }));
   const fajrAfter = fajrAfterFn(set);
-  const step = quietStep({ now, walk, blocks, nudges, checks: set.checks,
+  const step = quietStep({ now, walk, blocks: clipped, nudges, checks: set.checks,
                            rows: rows.map((r) => ({ at: ms(r.at), type: r.type, rid: r.rid || '' })),
                            nightEnd: (t: number, until: number) => nightEnd(t, fajrAfter, Day.zoneOffsetMin(set.zone, t, set.offset), until),
                            fajrAfter, offsetAt: (t: number) => Day.zoneOffsetMin(set.zone, t, set.offset) });
@@ -921,11 +947,12 @@ async function runTeach(sb: Sb, owner: string, now: number, set: Record<string, 
   const fajrAfter = fajrAfterFn(set);
   const off = Day.zoneOffsetMin(set.zone, now, set.offset);
   const dayStart = Day.counterDayStart(now, off);
-  const blocks = must(await sb.from('activity_blocks').select('id, started_at, ended_at, app, domain, category, mode')
+  const kinds = await deviceKinds(sb, owner);
+  const blocks = must(await sb.from('activity_blocks').select('id, device_id, started_at, ended_at, app, domain, category, mode')
     .eq('user_id', owner).eq('mode', 'work').eq('category', 'unclear').gte('ended_at', iso(dayStart))
     .order('started_at', { ascending: true }).limit(5000))
     .map((r) => ({ id: r.id, start: Math.max(ms(r.started_at), dayStart), end: ms(r.ended_at), app: r.app || '',
-                   domain: r.domain || '', category: r.category, project: '', mode: r.mode }));
+                   domain: r.domain || '', category: r.category, project: '', mode: r.mode, kind: kinds[r.device_id] || 'laptop' }));
   const fixRows = must(await sb.from('events').select('at, type, detail, project').eq('user_id', owner)
     .eq('type', A.ACT_FIX_TYPE).gte('at', iso(dayStart - 86400000)).order('at', { ascending: true }).limit(2000));
   const { projects, rules } = await readProjects(sb, owner, now);
@@ -933,7 +960,9 @@ async function runTeach(sb: Sb, owner: string, now: number, set: Record<string, 
   const report: Record<string, unknown> = { filed: 0 };
   // Filed again by name: an answer, Teach or a Lists edit counts from today's first minute.
   for (const f of teachFixes(blocks, cfg)) {
-    const patch: Record<string, unknown> = { category: f.category, project: f.project, rule_key: f.key, updated_at: iso(now) };
+    // became_at: the checks count the new label from now, never back (item 29 fix).
+    const patch: Record<string, unknown> = { category: f.category, project: f.project, rule_key: f.key, updated_at: iso(now),
+                                            became_at: iso(now) };
     if (f.category === 'private') patch.domain = '';
     for (let i = 0; i < f.ids.length; i += TEACH_FIX_CHUNK) {
       const up = await sb.from('activity_blocks').update(patch).eq('user_id', owner).eq('category', 'unclear')
@@ -943,21 +972,22 @@ async function runTeach(sb: Sb, owner: string, now: number, set: Record<string, 
     report.filed = Number(report.filed) + f.ids.length;
   }
   const list = A.actTeachList(blocks, A.actFixMap(fixRows), cfg, set.ignore);
-  const cols = 'id, entry, state, streak_start, pushed_at';
+  const cols = 'id, entry, what, state, streak_start, pushed_at';
   const open = must(await sb.from('activity_nudges').select(cols).eq('user_id', owner).eq('kind', 'teach')
     .eq('state', 'asking').limit(10));
   const today = must(await sb.from('activity_nudges').select(cols).eq('user_id', owner).eq('kind', 'teach')
     .gte('streak_start', iso(dayStart)).limit(200));
   const seen: Record<string, boolean> = {};
   const nudges = open.concat(today).filter((n) => !seen[n.id] && (seen[n.id] = true))
-    .map((n) => ({ id: n.id, entry: String(n.entry || ''), state: n.state, streak_start: ms(n.streak_start),
-                   pushed_at: ms(n.pushed_at) }));
+    .map((n) => ({ id: n.id, entry: String(n.entry || ''), what: String(n.what || ''), state: n.state,
+                   streak_start: ms(n.streak_start), pushed_at: ms(n.pushed_at) }));
   const walk = A.actWalk(await readRows(sb, owner, now - READ_BACK_MS), now - READ_BACK_MS, now);
   const canPush = !walk.asleep && !nightNow(now, off, fajrAfter);
   const step = teachStep({ dayStart, on: set.teach, canPush, list, nudges });
   for (const d of step.decide) {
     await sb.from('activity_nudges').update({ state: d.state, decided_at: iso(now) }).eq('id', d.id).eq('user_id', owner);
   }
+  await blankPrivate(sb, owner, nudges, cfg);
   let id = step.push && step.push !== 'new' ? step.push : '';
   let ask = null as { label: string; ms: number } | null;
   if (step.ask) {
@@ -990,6 +1020,45 @@ async function runTeach(sb: Sb, owner: string, now: number, set: Record<string, 
   return report;
 }
 
+/** Item 29 fix: entry -> when the server saw the answer, for the "what is" questions answered since `from`. */
+async function teachLabelled(sb: Sb, owner: string, from: number) {
+  const out: Record<string, number> = Object.create(null);
+  must(await sb.from('activity_nudges').select('entry, decided_at').eq('user_id', owner).eq('kind', 'teach')
+    .eq('state', 'answered').gte('decided_at', iso(from)).limit(500))
+    .forEach((n) => { if (n.entry) out[n.entry] = Math.max(out[n.entry] || 0, ms(n.decided_at)); });
+  return out;
+}
+
+/** Item 29 fix: a name now on his private list leaves no trace on its question rows, any day. */
+async function blankPrivate(sb: Sb, owner: string, rows: Record<string, any>[], cfg: Record<string, any>) {
+  const done: Record<string, boolean> = {};
+  for (const n of rows) {
+    if (!teachPrivate(n, cfg) || done[n.entry]) continue;
+    done[n.entry] = true;
+    await sb.from('activity_nudges').update({ what: '', entry: '' }).eq('user_id', owner).eq('kind', 'teach').eq('entry', n.entry);
+  }
+}
+
+/** Item 29 fix: an open question whose name he has sorted (the sheet, Teach, Lists) closes on any
+ *  call, so no device asks it again. One read when nothing is open. */
+async function closeSortedTeach(sb: Sb, owner: string, now: number, set?: Record<string, any>) {
+  const open = must(await sb.from('activity_nudges').select('id, entry, what').eq('user_id', owner).eq('kind', 'teach')
+    .eq('state', 'asking').limit(10));
+  if (!open.length) return 0;
+  const s = set || await readSettings(sb, owner, now);
+  const { projects, rules } = await readProjects(sb, owner, now);
+  const cfg = { lists: s.lists, rules: rules.map((r) => ({ keyword: r.keyword, project: r.project })), projects };
+  let closed = 0;
+  for (const q of open) {
+    if (!A.actTeachSorted(q, cfg, s.ignore)) continue;
+    await sb.from('activity_nudges').update({ state: 'answered', decided_at: iso(now) }).eq('id', q.id).eq('user_id', owner)
+      .eq('state', 'asking');
+    closed += 1;
+  }
+  await blankPrivate(sb, owner, open, cfg);
+  return closed;
+}
+
 /** The distraction check after an ingest: decisions, rows, pushes. */
 async function runNudges(sb: Sb, owner: string, now: number, set: Record<string, any>, req: Request) {
   const rows = (await readRows(sb, owner, now - READ_BACK_MS));
@@ -999,11 +1068,12 @@ async function runNudges(sb: Sb, owner: string, now: number, set: Record<string,
   const blocks = must(await sb.from('activity_blocks').select('*').eq('user_id', owner)
     .gte('ended_at', iso(now - 6 * 3600000)).order('started_at', { ascending: true }).limit(2000))
     .map((r) => blockOf(r, kinds)).filter((b) => b.mode === 'work');
+  const clipped = labelClip(blocks, await teachLabelled(sb, owner, now - 6 * 3600000));
   const nudgeRows = must(await sb.from('activity_nudges').select('id, device_id, streak_start, pushed_at, state, span_end')
     .eq('user_id', owner).eq('kind', 'distract').gte('streak_start', iso(now - 12 * 3600000)).limit(500));
   const nudges = nudgeRows.map((n) => ({ id: n.id, device_id: n.device_id, streak_start: ms(n.streak_start),
                                          pushed_at: ms(n.pushed_at), state: n.state }));
-  const step = nudgeStep({ now, on: set.on, walk, blocks, nudges,
+  const step = nudgeStep({ now, on: set.on, walk, blocks: clipped, nudges,
                            rows: rows.map((r) => ({ at: ms(r.at), type: r.type, rid: r.rid || '' })) });
   const report: Record<string, unknown> = { decided: step.decide.length, wrote: [], pushed: [] };
 
@@ -1058,6 +1128,7 @@ async function opConfig(sb: Sb, dev: Record<string, any>, body: Record<string, a
       .eq('user_id', dev.user_id).eq('kind', 'distract').eq('state', 'sent');
   }
   const { projects, rules } = await readProjects(sb, dev.user_id, now);
+  try { await closeSortedTeach(sb, dev.user_id, now, set); } catch (_e) { /* the next call tries again */ }
   return reply(200, { ok: true, device: dev.label, now: iso(now), lists: set.lists, projects,
                       rules: rules.filter((r) => r.source !== 'gemini').map((r) => ({ keyword: r.keyword, project: r.project })),
                       spans: spans.map((s) => [iso(s[0]), iso(s[1])]), working: walk.working,
@@ -1065,8 +1136,10 @@ async function opConfig(sb: Sb, dev: Record<string, any>, body: Record<string, a
                       autoBreak: Boolean(walk.autoBreak) });
 }
 
-/** Item 27: the tray's dot and tooltip. Two reads, no writes; the words are glance-refresh's. */
+/** Item 27: the tray's dot and tooltip; the words are glance-refresh's. Its only write: closing a
+ *  "what is" question he has sorted (item 29 fix). */
 async function opGlance(sb: Sb, dev: Record<string, any>, now: number) {
+  try { await closeSortedTeach(sb, dev.user_id, now); } catch (_e) { /* the next call tries again */ }
   const { walk } = await watchSpans(sb, dev.user_id, now, now);
   const g = must(await sb.from('glance').select('title, body, as_of').eq('user_id', dev.user_id).limit(1))[0] || null;
   const word: Record<string, string> = { work: 'working', sleep: 'asleep', break: 'break', off: 'off' };
@@ -1092,9 +1165,12 @@ async function opIngest(sb: Sb, dev: Record<string, any>, body: Record<string, a
         .forEach((r) => { had[String(ms(r.started_at))] = blockOf(r); });
       const rows = pieces.map((p: any) => {
         const b = p.mode === 'work' ? keepPlaced(p, had[String(p.start)]) : p;
+        // A category it did not have before counts from now (item 29 fix): kept while it stays.
+        const h = had[String(p.start)];
+        const became = h && h.category !== b.category ? now : h && isFinite(h.became) ? h.became : NaN;
         return { user_id: dev.user_id, device_id: dev.id, started_at: iso(b.start), ended_at: iso(b.end), app: b.app,
                  domain: b.domain, category: b.category, project: b.project, rule_key: b.key, mode: p.mode,
-                 updated_at: iso(now) };
+                 updated_at: iso(now), became_at: isFinite(became) ? iso(became) : null };
       });
       const up = await sb.from('activity_blocks').upsert(rows, { onConflict: 'device_id,started_at' });
       if (up.error) return reply(500, { ok: false, error: up.error.message });

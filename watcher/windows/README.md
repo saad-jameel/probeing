@@ -94,6 +94,8 @@ powershell -NoProfile -ExecutionPolicy Bypass -File "$env:USERPROFILE\ProBeing-w
   with no project; a keyword in the window title still names the project.
 - An app or site nothing sorts, used 15 minutes in a day while you are working, is
   asked about in ProBeing: "What is …?" (at most two pushes a day).
+  Windows' own parts (Search, Start, the frame round Settings and Photos) are never
+  asked about, and time on the lock or sign-in screen counts as away, not activity.
 - "Distraction push and auto-break" in the same place turns the 10-minute push
   (and the break that follows if you ignore it) off for every device.
 - When you open ProBeing it may show **"From … to … you were doing"**: change a

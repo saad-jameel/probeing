@@ -1768,14 +1768,35 @@ alter table public.activity_nudges add constraint activity_nudges_state_check ch
   'answered', 'left', 'autobreak', 'question', 'stale', 'closed', 'awake', 'asleep', 'resumed', 'started', 'notwork',
   'asking'));
 
--- One open question at a time, and each name asked at most once a day.
+-- One open question at a time, and each name asked at most once a day. A name he made private is
+-- blanked on its rows (entry ''), so blank rows are left out of the second.
 create unique index if not exists activity_nudges_open_teach_idx on public.activity_nudges (user_id)
   where kind = 'teach' and state = 'asking';
-create unique index if not exists activity_nudges_teach_day_idx on public.activity_nudges (user_id, entry, streak_start)
-  where kind = 'teach';
+drop index if exists public.activity_nudges_teach_day_idx;
+create unique index if not exists activity_nudges_teach_name_day_idx on public.activity_nudges (user_id, entry, streak_start)
+  where kind = 'teach' and entry <> '';
 
 grant select (entry, entry_min) on public.activity_nudges to authenticated;
 
 -- His switch for the question (Settings: "Ask what an unsorted app is"). Off: no question,
 -- no push; Teach ProBeing in Settings still works.
 alter table public.user_settings add column if not exists activity_teach boolean not null default true;
+
+-- Item 29 fix: a label never reaches back. When a block's category changes (a list or a rule
+-- placed it later), activity-ingest stamps became_at, and the distraction, break and day checks
+-- read the block as unclear before then. Written by activity-ingest only, like the block.
+alter table public.activity_blocks add column if not exists became_at timestamptz;
+
+-- An app from before item 29 saves the lists without "work": the work list he already has is kept.
+create or replace function public.keep_work_list() returns trigger language plpgsql set search_path = '' as $$
+begin
+  if new.activity_lists is not null and not (new.activity_lists ? 'work')
+     and old.activity_lists is not null and (old.activity_lists ? 'work') then
+    new.activity_lists := new.activity_lists || jsonb_build_object('work', old.activity_lists -> 'work');
+  end if;
+  return new;
+end $$;
+
+drop trigger if exists keep_work_list on public.user_settings;
+create trigger keep_work_list before update of activity_lists on public.user_settings
+  for each row execute function public.keep_work_list();

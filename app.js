@@ -15731,11 +15731,20 @@ async function readCatchUp() {
 }
 
 /** Item 29: today's open "what is this app?" question, or none. A database without the item 29
- *  part answers with an error: no question then, and the rest of the sheet still works. */
+ *  part answers with an error: no question then, and the rest of the sheet still works. One he has
+ *  sorted already (here or on another device) is not shown: the server closes it on its next call,
+ *  and until then his current settings, which every device shares, decide. */
 async function readTeachAsk(dayStart) {
   var res = await sb.from('activity_nudges').select('id,kind,what,streak_start,state,entry,entry_min')
     .eq('kind', 'teach').eq('state', 'asking').gte('streak_start', new Date(dayStart).toISOString()).limit(1);
-  return res.error ? [] : (res.data || []);
+  if (res.error || !(res.data || []).length) return [];
+  var set = await sb.from('user_settings').select('activity_lists,activity_ignore').eq('user_id', sbUser.id).limit(1);
+  var rules = await sb.from('activity_rules').select('keyword,project').limit(500);
+  if (set.error || rules.error) return res.data;
+  var row = (set.data || [])[0] || null;
+  var cfg = { lists: row && row.activity_lists, rules: rules.data || [], projects: [] };
+  var ignore = Array.isArray(row && row.activity_ignore) ? row.activity_ignore : [];
+  return res.data.filter(function (n) { return !actTeachSorted(n, cfg, ignore); });
 }
 
 /** On opening the app (and coming back to it): the sheet, when there is something to confirm. */
@@ -16142,6 +16151,7 @@ function catchupRuleKey(b) {
   var k = b.domain ? actNorm(b.domain)
         : actIsBrowser(b.app) || ACT_NO_TITLE_APPS.indexOf(actNorm(String(b.app || '').replace(/\.exe$/i, ''))) !== -1 ? ''
         : actNorm(String(b.app || '').replace(/\.exe$/i, ''));
+  if (!b.domain && ACT_SHELL_APPS.indexOf(k) !== -1) return '';     // Windows' own parts host other apps (item 29 fix)
   return k.length >= ACT_KEY_MIN && k.length <= ACT_KEY_MAX ? k : '';
 }
 

@@ -101,6 +101,22 @@ var ACT_BARE_DOMAIN = /\b(?:[a-z0-9-]+\.)+(?:com|org|net|io|dev|app|co|pk|gov|ed
 var ACT_NO_TITLE_APPS = ['windowsterminal', 'cmd', 'powershell', 'pwsh', 'powershellise', 'explorer', 'conhost', 'wt',
                          'mintty', 'bash', 'wsl', 'ubuntu', 'terminal', 'alacritty', 'putty', 'kitty', 'gitbash', 'wezterm'];
 
+/* Windows' own screens (item 29 fix). Away: the lock and sign-in screens; time there is not
+ * activity, so it is dropped as AFK is. Never asked about: shell parts that host other things
+ * (Search, Start, the frame round Settings and Photos), where one answer would file them all. */
+var ACT_AWAY_APPS = ['lockapp', 'logonui'];
+var ACT_SHELL_APPS = ['lockapp', 'logonui', 'searchhost', 'searchapp', 'searchui', 'shellexperiencehost', 'shellhost',
+                      'startmenuexperiencehost', 'textinputhost', 'applicationframehost', 'explorer'];
+
+/** An app as one squashed word without ".exe": "LockApp.exe" -> "lockapp". */
+function actAppWord(app) {
+  return actNorm(String(app == null ? '' : app).replace(/\.exe$/i, ''));
+}
+
+function actIsAway(app) {
+  return ACT_AWAY_APPS.indexOf(actAppWord(app)) !== -1;
+}
+
 /** May this unclear title go to Gemini? Not a terminal's or a file window's, and not one that looks like a path. */
 function actTitleSendable(app, title) {
   if (ACT_NO_TITLE_APPS.indexOf(actNorm(String(app || '').replace(/\.exe$/i, ''))) !== -1) return false;
@@ -186,13 +202,15 @@ function actWorkName(s) {
 }
 
 /** The first work-list entry naming the piece, or ''. A site as in the other lists; a name
- *  ("code", or "Code.exe" as typed) only as the app's whole name. */
+ *  ("code", or "Code.exe" as typed) only as the app's whole name. On the phone (seg.phone) the
+ *  built-in names do not count: they are desktop apps (Saad, 12 Oct). */
 function actWorkHit(list, seg) {
   var app = actWorkName(seg.app);
+  var builtIn = seg.phone === true ? ACT_DEFAULT_LISTS.work.map(actWorkName) : [];
   for (var i = 0; i < (list || []).length; i++) {
     var e = String(list[i] || '').trim().toLowerCase().replace(/\.exe$/, '');
     if (!e) continue;
-    if (/[.\/]/.test(e) ? actEntryHits(e, seg, false) : actWorkName(e) === app && app !== '') return list[i];
+    if (/[.\/]/.test(e) ? actEntryHits(e, seg, false) : actWorkName(e) === app && app !== '' && builtIn.indexOf(app) === -1) return list[i];
   }
   return '';
 }
@@ -325,6 +343,7 @@ function actSegments(events, cut) {
     var sp = actEventSpan(e);
     if (!sp) return;
     var app = actCleanApp(e.data && e.data.app);
+    if (actIsAway(app)) return;              // the lock screen: away, not activity
     var title = String((e.data && e.data.title) || '');
     var browser = actIsBrowser(app);
     actIntersect(sp[0], sp[1], allowed).forEach(function (p) {
@@ -422,6 +441,7 @@ function actSanitize(b, lists, now) {
               project: actCut(String(b.project == null ? '' : b.project).trim(), ACT_PROJECT_MAX),
               key: actNorm(b.key).slice(0, ACT_KEY_MAX) };
   if (actListHit(actLists(lists)['private'], { app: out.app, host: out.domain, title: '' }, false)) out.category = 'private';
+  if (actIsAway(out.app)) return null;     // the lock screen, from a watcher before item 29's fix
   if (out.category === 'private') { out.domain = ''; out.project = ''; out.key = ''; }
   if (out.category === 'distraction' || out.category === 'unclear') { out.project = ''; out.key = ''; }
   return out;
@@ -755,6 +775,7 @@ function actTeachName(b) {
   var app = String(b.app || '').replace(/\.exe$/i, '').trim();
   var w = actNorm(app);
   if (w.length < 3 || w === 'otherapp' || actIsBrowser(b.app) || ACT_NO_TITLE_APPS.indexOf(w) !== -1) return null;
+  if (ACT_SHELL_APPS.indexOf(w) !== -1) return null;
   return { entry: w, label: app, site: false };
 }
 
@@ -779,6 +800,21 @@ function actTeachList(blocks, fixes, cfg, ignore) {
   return Object.keys(by).map(function (k) { return by[k]; }).filter(function (x) { return !x.placed; })
     .sort(function (a, b) { return (b.ms - a.ms) || (a.label < b.label ? -1 : a.label > b.label ? 1 : 0); })
     .map(function (x) { return { entry: x.entry, label: x.label, site: x.site, ms: x.ms }; });
+}
+
+/** Has he sorted this name since it was asked (a list, a rule, or Ignore)? n: {entry, what} as a
+ *  teach question carries them; cfg: {lists, rules, projects}. The sheet and activity-ingest both ask. */
+function actTeachSorted(n, cfg, ignore) {
+  var entry = String((n && n.entry) || '');
+  if (!entry || (ignore || []).indexOf(entry) !== -1) return true;
+  return actClassify(actTeachSeg(n), cfg).category !== 'unclear';
+}
+
+/** A teach question's name as a piece to classify: a site has a dot, an app is its name as shown. */
+function actTeachSeg(n) {
+  var entry = String((n && n.entry) || '');
+  return entry.indexOf('.') !== -1 ? { app: '', host: entry, path: '', title: '' }
+    : { app: String((n && n.what) || entry), host: '', path: '', title: '' };
 }
 
 // What the Edge Function uses. The browser reads the globals directly.
@@ -829,5 +865,9 @@ globalThis.ProBeingActivity = {
   actFigures: actFigures,
   actGroups: actGroups,
   actTeachName: actTeachName,
-  actTeachList: actTeachList
+  actTeachList: actTeachList,
+  actTeachSorted: actTeachSorted,
+  actTeachSeg: actTeachSeg,
+  actIsAway: actIsAway,
+  ACT_SHELL_APPS: ACT_SHELL_APPS
 };

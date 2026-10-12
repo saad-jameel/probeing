@@ -165,6 +165,8 @@ public final class PhoneRules {
         public boolean incognito;
         /** The phone sees no page, so a site entry's path cannot rule it out. */
         public boolean anyPath;
+        /** A phone app: the built-in work names (desktop apps) do not count for it. */
+        public boolean phone;
     }
 
     static boolean isBrowser(String app) {
@@ -227,16 +229,21 @@ public final class PhoneRules {
         return b.toString();
     }
 
-    /** As actWorkHit: a site as in the other lists; a name only as the app's whole name. */
+    /** As actWorkHit: a site as in the other lists; a name only as the app's whole name, and on the
+     *  phone never a built-in one (they are desktop apps). */
     static String workHit(List<String> list, Seg seg) {
         if (list == null) return "";
         String app = workName(seg.app);
+        Set<String> builtIn = new HashSet<>();
+        if (seg.phone) {
+            for (String d : DEFAULT_WORK) builtIn.add(workName(d));
+        }
         for (String x : list) {
             String e = trim(x).toLowerCase(Locale.ROOT).replaceFirst("\\.exe$", "");
             if (e.isEmpty()) continue;
             if (e.indexOf('.') != -1 || e.indexOf('/') != -1) {
                 if (entryHits(e, seg, false)) return x;
-            } else if (!app.isEmpty() && workName(e).equals(app)) {
+            } else if (!app.isEmpty() && workName(e).equals(app) && !builtIn.contains(app)) {
                 return x;
             }
         }
@@ -330,6 +337,7 @@ public final class PhoneRules {
         seg.host = siteOf(pkg);
         seg.title = pkg == null ? "" : pkg;
         seg.anyPath = true;
+        seg.phone = true;
         List<String> priv = new ArrayList<>(cfg.lists.get("private"));
         priv.addAll(Arrays.asList(PHONE_PRIVATE));
         if (!listHit(priv, seg, true).isEmpty()) return new String[]{"private", "", "", ""};
