@@ -3,7 +3,7 @@
 --
 -- Prayer reminders: the function runs every minute, and right after a prayer is
 -- logged (to clear that prayer's reminder on the other devices). Run the
--- prayer-reminders part of docs/supabase_schema.sql first. Needs pg_cron and
+-- prayer-reminders part of supabase/sql/supabase_schema.sql first. Needs pg_cron and
 -- pg_net, which the wrapup job already uses. Safe to re-run.
 
 -- One place holds the URL and headers; the cron job and the trigger both call it.

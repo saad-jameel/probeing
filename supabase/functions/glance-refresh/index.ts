@@ -2,9 +2,9 @@
 //
 // Owns the widget's words: recounts today (the counter day, plus the work
 // session's lead-in from before its rollover) and rewrites the `glance` row.
-// `lines` needs the column docs/glance_list.sql adds — run that SQL before deploying this.
+// `lines` needs the column supabase/sql/glance_list.sql adds — run that SQL before deploying this.
 // pg_cron calls it every 10 minutes and an insert trigger after every new row
-// (docs/glance_refresh.sql), so the widget moves while the app is closed.
+// (supabase/sql/glance_refresh.sql), so the widget moves while the app is closed.
 // Devices no longer write that row, so an out-of-date one cannot overwrite it.
 //
 // The counting is supabase/functions/_shared/day.js — the file the browser

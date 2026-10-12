@@ -496,7 +496,7 @@ async function callSupabase(action, payload) {
     /* THE ONE THING IN THIS APP THAT CHANGES A ROW THAT IS ALREADY WRITTEN, and
      * it may only ever fill in a blank. `rid` names the row — it is unique per
      * user, which is why it can be used as an address — and the database refuses
-     * anything wider: the policy in docs/supabase_schema.sql matches only a row
+     * anything wider: the policy in supabase/sql/supabase_schema.sql matches only a row
      * of this user's whose `project` is still empty, and the column grant beside
      * it means `raw_text`, `at` and `type` cannot be touched from the browser at
      * all. So the human record stays exactly as typed, whatever this code does.
@@ -3979,7 +3979,7 @@ $('projectSaveBtn').addEventListener('click', function () {
  *
  * So the label has to arrive afterwards, and it does — as an UPDATE that fills
  * in `project` on the row we already wrote (action `label`, and the narrow
- * policy that permits it in docs/supabase_schema.sql).
+ * policy that permits it in supabase/sql/supabase_schema.sql).
  *
  * THE ONE HARD PART, because the previous round's comment was right about it:
  * replayDay() keys a project on `row.project || row.raw_text`, so filling in
@@ -7996,7 +7996,7 @@ function openReview() {
  *     turned away with a 401 before it ever reached the model;
  *   - the four headings a report groups work under live in THIS BROWSER, in
  *     localStorage under `probeing.categories`. A server cannot read them, so
- *     its report could not have the shape docs/Review_Spec.md asks for;
+ *     its report could not have the shape claudeWorkingDocs/archive/docs/Review_Spec.md asks for;
  *   - and replayDay() would have to exist a second time, in Deno. This repo
  *     already has one story about a live copy drifting from the repo (the
  *     `goals` action) and does not need a second one where the two copies
@@ -8134,7 +8134,7 @@ async function savedReports() {
 /**
  * Write the report, replacing whatever was there for the same span.
  *
- * The conflict target is the unique index in docs/supabase_schema.sql,
+ * The conflict target is the unique index in supabase/sql/supabase_schema.sql,
  * (user_id, period, start_date), so pressing Generate twice for one week leaves
  * one row and not two. Two things are sent that could in principle be defaulted,
  * and both are deliberate: `user_id`, because the conflict target names it and
@@ -8352,7 +8352,7 @@ function renderReports(rows) {
  *
  * THE MODEL IS NEVER LOOPED. One call, for the whole span, over figures that
  * are already finished. A call per day, per project or per prayer is the
- * failure mode `docs/ProBeing_Execution_Plan.md` names, and against twenty
+ * failure mode the v1 plan names (claudeWorkingDocs/archive/docs/), and against twenty
  * calls a day it is fatal rather than merely slow.
  *
  * @returns a sentence saying what went wrong, for the note under the list, or
@@ -9159,7 +9159,7 @@ var MONEY_DEFAULT_TAGS = {
 };
 // A saved list without this version is replaced by the defaults once, on both copies.
 var MONEY_TAGS_VERSION = 2;
-// The same limits as the checks in docs/supabase_schema.sql.
+// The same limits as the checks in supabase/sql/supabase_schema.sql.
 var MONEY_TAG_MAX = 40;
 var MONEY_NOTE_MAX = 200;
 var MONEY_TAGS_MAX = 30;
@@ -11388,7 +11388,7 @@ $('pushTestBtn').addEventListener('click', async function () {
  * and no way to run the GitHub sign-in at all. So it is PAIRED instead. Settings
  * makes a short code, shows it once, and stores only its FINGERPRINT; the widget
  * quotes the code at a door called glance_for(), which hands back those two
- * lines and nothing else. The door itself is in docs/supabase_schema.sql.
+ * lines and nothing else. The door itself is in supabase/sql/supabase_schema.sql.
  */
 
 /* THE CODE'S ALPHABET, AND WHY IT IS NOT THE WHOLE OF A TO Z.
@@ -11455,7 +11455,7 @@ function pairCodeDisplay(code) {
  * What is actually hashed: letters and digits only, in capitals.
  *
  * So a code works typed with the dashes or without them, in lower case, or with
- * a stray space from a paste. glance_for() in docs/supabase_schema.sql strips
+ * a stray space from a paste. glance_for() in supabase/sql/supabase_schema.sql strips
  * exactly the same things before it compares. If those two ever disagree,
  * pairing fails in the one way that is genuinely hard to diagnose — silently,
  * with both halves looking correct.
@@ -13603,7 +13603,7 @@ var trayPick = userMap();        // entry rid -> google_id of the project picked
 var filingTimer = 0;
 var filingChannel = null;
 
-/** The trigger's rule (docs/classify.sql): connected, with a list. */
+/** The trigger's rule (supabase/sql/classify.sql): connected, with a list. */
 function googleFiles(sync) {
   return Boolean(sync && sync.connected && sync.list_id && sync.list_title);
 }

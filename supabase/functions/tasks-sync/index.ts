@@ -2,7 +2,7 @@
 //
 // Copies his chosen Google Tasks list into task_nodes, then sends back what
 // finished in ProBeing: pull -> compute -> push. pg_cron calls it every 15
-// minutes with the cron secret (docs/tasks_sync.sql), a Done/Drop or a changed
+// minutes with the cron secret (supabase/sql/tasks_sync.sql), a Done/Drop or a changed
 // finish date pokes it through a trigger, and the app calls it on open with
 // his JWT.
 //
@@ -33,7 +33,7 @@
 //
 // Secrets: the Stage 12 three (GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET,
 // GOOGLE_TOKEN_KEY), CRON_SECRET and ALLOWED_USER_ID. Needs task_nodes and
-// tasks_sync_wants from docs/supabase_schema.sql.
+// tasks_sync_wants from supabase/sql/supabase_schema.sql.
 //
 // Deployed by hand, like the others:
 //   npx supabase functions deploy tasks-sync --project-ref <ref> --use-api
@@ -274,7 +274,7 @@ function mirrorStore(sb) {
       must(await sb.from('task_nodes').upsert(Object.assign({ user_id: userId }, row),
         { onConflict: 'user_id,google_id', ignoreDuplicates: true }));
     },
-    /* The trigger's queue (docs/tasks_sync.sql): wanted_n counts taps, sent_at
+    /* The trigger's queue (supabase/sql/tasks_sync.sql): wanted_n counts taps, sent_at
      * says a request is out. null when there is no row. */
     wantsRead: async function (userId) {
       var rows = must(await sb.from('tasks_sync_wants').select('wanted_n').eq('user_id', userId).limit(1));
@@ -924,7 +924,7 @@ Deno.serve(async (req: Request): Promise<Response> => {
 
   // The scheduler proves itself with the cron secret; the app with his JWT.
   const cronSaid = req.headers.get('x-cron-secret');
-  // {poke:true} is the trigger's request after a tap (docs/tasks_sync.sql).
+  // {poke:true} is the trigger's request after a tap (supabase/sql/tasks_sync.sql).
   let poke = false;
   if (cronSaid !== null) {
     const secret = (Deno.env.get('CRON_SECRET') || '').trim();

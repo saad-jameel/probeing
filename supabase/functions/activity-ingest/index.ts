@@ -59,7 +59,7 @@
 //   npx supabase functions deploy activity-ingest --project-ref <ref> --use-api
 // Secrets: ALLOWED_USER_ID, GEMINI_API_KEY, GEMINI_MODEL, VAPID_PRIVATE_KEY (set
 // for the other functions); GEMINI_DAILY optional. Needs the "stage 18b", "item 23",
-// "item 28" and "item 29" parts of docs/supabase_schema.sql.
+// "item 28" and "item 29" parts of supabase/sql/supabase_schema.sql.
 
 import { createClient } from 'jsr:@supabase/supabase-js@2';
 import '../_shared/day.js';

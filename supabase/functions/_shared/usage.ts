@@ -1,5 +1,5 @@
 // Gemini's daily budget, one tally for every device and the server: the
-// gemini_usage table and its two functions (docs/supabase_schema.sql). Used by
+// gemini_usage table and its two functions (supabase/sql/supabase_schema.sql). Used by
 // classify, which stops at the cap, and gemini, which only counts.
 //
 // `sb` is a service-role client. The day is Google's quota day: the date in

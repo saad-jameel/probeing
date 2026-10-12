@@ -63,4 +63,5 @@ Close with, in this order:
   developer; he should never have to infer state from tool output.
 - Report failures plainly. A stage that did not finish is normal; a stage falsely reported as
   finished is a real problem, because it silently corrupts every later stage's foundation.
-- Stages are defined in `docs/ProBeing_Execution_Plan.md`. `CLAUDE.md` holds the rules.
+- Stages are defined in `claudeWorkingDocs/archive/docs/ProBeing_Execution_Plan.md` (v1)
+  and `claudeWorkingDocs/v2-plan.md`. `CLAUDE.md` holds the rules.

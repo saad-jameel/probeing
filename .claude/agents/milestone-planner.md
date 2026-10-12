@@ -22,8 +22,9 @@ alone. When that is the case, say `NEEDS USER` — do not quietly downgrade it t
 
 ## Inputs to read first
 
-- `docs/ProBeing_Execution_Plan.md` — the roadmap. Stage 3.5 onward each carry an
-  **"End goal (validation)"** block; those bullets are the contract you check against.
+- `claudeWorkingDocs/archive/docs/ProBeing_Execution_Plan.md` — the v1 roadmap, kept out
+  of the public repo (revision 2's plan is `claudeWorkingDocs/v2-plan.md`). Stage 3.5
+  onward each carry an **"End goal (validation)"** block; those bullets are the contract you check against.
   Stages 0 to 3 are long signed off and now carry a one-line verdict instead — their
   full checklists were moved out of the reading path on 2 Sep 2026. If a run genuinely
   needs one of them, say so rather than inferring it; do not treat the one-line verdict

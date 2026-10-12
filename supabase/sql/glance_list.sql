@@ -16,7 +16,7 @@ alter table public.glance add column if not exists lines text not null default '
 
 drop function if exists public.glance_for(text);
 
--- The body is docs/supabase_schema.sql's, unchanged; only the return shape moved.
+-- The body is supabase/sql/supabase_schema.sql's, unchanged; only the return shape moved.
 create function public.glance_for(secret text)
 returns table (title text, body text, lines text, as_of timestamptz)
 language plpgsql

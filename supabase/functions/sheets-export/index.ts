@@ -3,7 +3,7 @@
 // Writes a readable copy of his tables into one Google Sheet in his Drive:
 // tabs Entries, Tasks, Items, Marks, Money and Reports. A "What happened?" note
 // is an Entries row like any event, and also sits in its task's Notes column.
-// pg_cron calls it once a day at 12:00 Karachi with the cron secret (docs/sheets_export.sql); Settings'
+// pg_cron calls it once a day at 12:00 Karachi with the cron secret (supabase/sql/sheets_export.sql); Settings'
 // "Export now" calls it with his JWT. The database wins: the sheet is a copy,
 // rewritten whole every run, and nothing is ever read back from it.
 //

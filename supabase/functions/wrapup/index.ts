@@ -616,7 +616,7 @@ const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 /** The service client. It bypasses row level security, so every write below
  *  must name `user_id` itself — the column's default is auth.uid(), which is
  *  NULL here, and the not-null constraint would refuse the row. The same trap
- *  docs/supabase_schema.sql already carries a paragraph about for `reports`. */
+ *  supabase/sql/supabase_schema.sql already carries a paragraph about for `reports`. */
 function admin() {
   return createClient(
     Deno.env.get('SUPABASE_URL') || '',

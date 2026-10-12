@@ -20,7 +20,7 @@
 // not 32 bytes of base64 adds problem:'token key malformed'.
 // GOOGLE_TOKEN_KEY is 32 random bytes, base64 (openssl rand -base64 32).
 // Also reads ALLOWED_USER_ID, as `gemini` does. Needs google_grants,
-// oauth_states and sync_state from docs/supabase_schema.sql.
+// oauth_states and sync_state from supabase/sql/supabase_schema.sql.
 //
 // Deployed by hand, like the others:
 //   npx supabase functions deploy google-link --project-ref <ref> --use-api

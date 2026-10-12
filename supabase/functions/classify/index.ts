@@ -6,7 +6,7 @@
 // state 'unsorted'), where he files it by hand.
 //
 // Called with the cron secret by an insert trigger on each new entry and by
-// pg_cron every 5 minutes (docs/classify.sql). A run calls Gemini only when a
+// pg_cron every 5 minutes (supabase/sql/classify.sql). A run calls Gemini only when a
 // batch is ready — FILE_BATCH_MIN entries waiting, or the oldest waiting
 // FILE_WAIT_MIN minutes (default 30) — else it answers "waiting" after one
 // small read. Simulated, 35-40 entries a day spread 08:00-23:00 take about 16
@@ -44,7 +44,7 @@
 // already set for the other functions); GEMINI_DAILY and FILE_WAIT_MIN optional.
 // The Google three (GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET, GOOGLE_TOKEN_KEY)
 // for making sub-tasks; without them an entry goes to Unsorted as before.
-// Needs the "filing (14a)" tables of docs/supabase_schema.sql, and its edit
+// Needs the "filing (14a)" tables of supabase/sql/supabase_schema.sql, and its edit
 // queue 2 columns on entry_filing for making sub-tasks.
 //
 // Deployed by hand:

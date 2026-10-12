@@ -338,7 +338,7 @@ exception when duplicate_object then null; end $$;
 -- ----------------------------------------------------------------- glance
 -- One row per person, in the same words as the notification shade. The
 -- glance-refresh Edge Function writes it every 10 minutes and after each insert
--- into `events` (docs/glance_refresh.sql), using the same counting file the app
+-- into `events` (supabase/sql/glance_refresh.sql), using the same counting file the app
 -- uses (supabase/functions/_shared/day.js), so the two cannot count differently.
 -- The app no longer writes this row.
 --
@@ -510,7 +510,7 @@ exception when duplicate_object then null; end $$;
 -- Re-running this file replaces the function in place. If you ever change what
 -- it RETURNS rather than what it does, Postgres will refuse — run
 -- `drop function public.glance_for(text);` once, then this, and the two grants
--- at the bottom put its permissions back. docs/glance_list.sql did exactly that
+-- at the bottom put its permissions back. supabase/sql/glance_list.sql did exactly that
 -- to add `lines`, in one transaction.
 create or replace function public.glance_for(secret text)
 returns table (title text, body text, lines text, as_of timestamptz)
@@ -860,7 +860,7 @@ alter table public.money add constraint money_loan_person
 -- ======================================================== prayer reminders
 -- 29 Sep. The prayer-remind Edge Function pushes when a prayer's time begins
 -- and 60/30/15 minutes before it ends while it is not logged. Its schedule is
--- docs/prayer_remind.sql.
+-- supabase/sql/prayer_remind.sql.
 
 -- The Settings toggle. Owner-writable through the user_settings policies above.
 alter table public.user_settings add column if not exists prayer_reminders boolean not null default true;
@@ -942,7 +942,7 @@ exception when duplicate_object then null; end $$;
 
 -- ============================================================ filing (14a)
 -- Stage 14a. The classify Edge Function files each typed entry under one of his
--- Google tasks; docs/classify.sql schedules it. The three tables below are
+-- Google tasks; supabase/sql/classify.sql schedules it. The three tables below are
 -- written by the server only. The browser reads entry_filing and items, and
 -- files an Unsorted entry itself through the label policy.
 
@@ -1297,7 +1297,7 @@ alter table public.task_nodes add column if not exists push_refused jsonb;
 alter table public.task_nodes add column if not exists push_claim_until timestamptz;
 alter table public.task_nodes add column if not exists pb_completed_at timestamptz;
 
--- tasks_sync_wants: the throttle for docs/tasks_sync.sql's triggers. wanted_n
+-- tasks_sync_wants: the throttle for supabase/sql/tasks_sync.sql's triggers. wanted_n
 -- counts changes; sent_at is set while a request is out, so a burst of taps is
 -- one sync. tasks-sync clears it when no change came in during its run.
 -- Server-only: RLS on, no policies, nothing granted to the browser roles.
@@ -1423,7 +1423,7 @@ alter table public.money add constraint money_buy_person
 --   pin / unpin  node_id = the task; while pinned it alone collects time
 --   taskmeta     node_id = the task; detail 'p=high;e=m' (priority and effort) or 'skip'
 --   subnew       node_id = a project; raw_text = a sub-task added by hand, made in
---                Google by tasks-sync (docs/tasks_sync.sql pokes it)
+--                Google by tasks-sync (supabase/sql/tasks_sync.sql pokes it)
 -- A Drop whose text ends ' (deleted in Google)' deletes the task there (tree.js).
 
 -- The counter day a task was planned for. Planned from an earlier day and not

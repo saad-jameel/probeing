@@ -5,7 +5,7 @@
 -- `pending` row in entry_filing (only while Google is connected with a list)
 -- and pokes the classify function; the function waits until a batch is worth
 -- one Gemini call, and the 5-minute cron catches the ones it left waiting.
--- Run the "filing (14a)" part of docs/supabase_schema.sql first. Needs pg_cron
+-- Run the "filing (14a)" part of supabase/sql/supabase_schema.sql first. Needs pg_cron
 -- and pg_net, which the wrapup job already uses. Safe to re-run.
 
 -- One place holds the URL and headers; the cron job and the trigger both call it.

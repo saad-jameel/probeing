@@ -9,7 +9,7 @@
 //
 // Its own function rather than a branch of wrapup: wrapup is live and stays untouched.
 // pg_cron calls it every minute, and an insert trigger when a prayer is logged
-// (docs/prayer_remind.sql).
+// (supabase/sql/prayer_remind.sql).
 //
 // Feedback 1 (6 Oct): it also pushes "<task>: 30 min left (by 4:30 PM)" once per
 // task and expected finish (remindTasks), on its own toggle, user_settings.task_reminders.
@@ -29,7 +29,7 @@
 // Deployed by hand:
 //   npx supabase functions deploy prayer-remind --project-ref <ref> --use-api
 // Secrets: none new — CRON_SECRET, ALLOWED_USER_ID and VAPID_PRIVATE_KEY are wrapup's.
-// Needs the reminders_sent table and user_settings.prayer_reminders (docs/supabase_schema.sql).
+// Needs the reminders_sent table and user_settings.prayer_reminders (supabase/sql/supabase_schema.sql).
 
 import { createClient } from 'jsr:@supabase/supabase-js@2';
 import '../_shared/day.js';
