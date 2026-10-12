@@ -329,7 +329,8 @@ function Poll-Fetch {
   $status = 0; $text = ''
   if ($null -ne $res -and $res.Count -gt 0) {
     $r = $res[0]
-    if ($r -is [System.Management.Automation.PSObject]) { $r = $r.BaseObject }
+    # .PSObject.BaseObject: on a hashtable, .BaseObject is a key lookup and gives $null.
+    $r = $r.PSObject.BaseObject
     $status = [int](Get-Field $r 'status')
     $text = Tray-Str (Get-Field $r 'text')
   }
