@@ -368,6 +368,11 @@
       <button type="button" id="prayerCancelBtn" class="link-btn">Cancel</button>
       <button type="button" id="prayerSaveBtn" class="btn btn-accent" disabled>Save</button>
     </div>
+
+    <!-- Item 25: this prayer day's and the next one's times. Below Save, so no logging tap moves (rule 4). -->
+    <button type="button" id="prayerTimesToggle" class="link-btn ptimes-toggle"
+      aria-expanded="true" aria-controls="prayerTimetable">Prayer times</button>
+    <div id="prayerTimetable" class="ptimes"></div>
   </form>
 </dialog>
 

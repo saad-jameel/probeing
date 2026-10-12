@@ -56,8 +56,9 @@
  * v30 (Stage 18a): several tasks at once with a pin, Upcoming = the plan plus Backlog, priority and effort on Start.
  * v31 (Stage 18b): activity.js, the laptop's catch-up sheet, and the distraction push with its two buttons.
  * v33 (item 24): a prayer past its time offers the three modes as well as Qaza.
- * v34 (item 23): the awake and back-to-work pushes, missed questions first in the sheet, Teach ProBeing. */
-var CACHE = 'probeing-shell-v34';
+ * v34 (item 23): the awake and back-to-work pushes, missed questions first in the sheet, Teach ProBeing.
+ * v35 (item 25): two prayer days' start and end times in the prayer dialog. */
+var CACHE = 'probeing-shell-v35';
 var SHELL = [
   './',
   'index.html',

@@ -455,6 +455,16 @@ a.btn[hidden], a.link-btn[hidden] { display: none; }
 }
 .pick.logged { color: var(--muted); cursor: default; }
 
+/* Item 25: two prayer days' start - end, under Save. The current prayer in accent. */
+.ptimes-toggle { margin-top: 10px; padding-left: 0; }
+.ptimes[hidden] { display: none; }
+.ptimes-day { width: 100%; border-collapse: collapse; font-size: 13px; font-variant-numeric: tabular-nums; color: var(--muted); }
+.ptimes-day caption { text-align: left; font-weight: 600; color: var(--fg); padding: 8px 0 2px; }
+.ptimes-day th { text-align: left; font-weight: 500; padding: 2px 8px 2px 0; white-space: nowrap; }
+.ptimes-day td { text-align: right; padding: 2px 0; white-space: nowrap; }
+.ptimes-day tr.now, .ptimes-day tr.now th { color: var(--accent); font-weight: 600; }
+.ptimes-day .done { color: var(--accent); margin-left: 4px; }
+
 /* --------------------------------------------------------------- tracker */
 
 .tracker { display: flex; gap: 10px; }

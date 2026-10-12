@@ -2003,7 +2003,7 @@ function renderToday(data) {
    * one: it is a genuinely new write, and the store is append-only. */
   todayPrayers = prayersOn(data.prayers, prayerDate(Date.now())).concat(queuedPrayersToday(have));
   renderPrayerTicks();
-  if (prayerDlg.open) renderPrayerPicks();
+  if (prayerDlg.open) { renderPrayerPicks(); renderPrayerTimes(); }
 
   renderDaySummary();
   renderLogList();
@@ -2858,7 +2858,7 @@ setInterval(function () {
   // A prayer's time arriving, or the day turning, opens or closes its button.
   if (prayerGateKey(Date.now()) !== prayerGates) {
     renderPrayerTicks();
-    if (prayerDlg.open) { renderPrayerPicks(); renderModePicks(); }
+    if (prayerDlg.open) { renderPrayerPicks(); renderModePicks(); renderPrayerTimes(); }
   }
 }, 30000);
 
@@ -3795,6 +3795,82 @@ function renderModePicks() {
   });
 }
 
+/* Item 25: start and end of each prayer for this prayer day and the next, so the
+ * end can be read before sleep. Ends are prayerEndOf()'s, as Qaza and the reminders use. */
+var PRAYER_TIMES_OPEN_KEY = 'probeing.prayertimes.open';
+var SHORT_MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+
+/** "Mon 12 Oct" for 'YYYY-MM-DD'. */
+function prayerDayLabel(ymd) {
+  var p = ymd.split('-');
+  var d = new Date(Date.UTC(Number(p[0]), Number(p[1]) - 1, Number(p[2])));
+  return ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'][d.getUTCDay()] + ' ' + d.getUTCDate() + ' ' +
+         SHORT_MONTHS[d.getUTCMonth()];
+}
+
+function prayerTimesOpen() {
+  try { return localStorage.getItem(PRAYER_TIMES_OPEN_KEY) !== '0'; } catch (e) { return true; }
+}
+
+function renderPrayerTimes() {
+  var box = $('prayerTimetable');
+  var open = prayerTimesOpen();
+  var toggle = $('prayerTimesToggle');
+  toggle.setAttribute('aria-expanded', open ? 'true' : 'false');
+  toggle.textContent = 'Prayer times ' + (open ? '▾' : '›');
+  box.hidden = !open;
+  box.textContent = '';
+
+  var now = Date.now();
+  var today = prayerDate(now);
+  if (!today) return;
+  // At 2 AM the prayer day is still yesterday's (Isha open), so "next" holds the coming Fajr.
+  var p = today.split('-');
+  var n = new Date(Date.UTC(Number(p[0]), Number(p[1]) - 1, Number(p[2]) + 1));
+  var next = n.getUTCFullYear() + '-' + pad2(n.getUTCMonth() + 1) + '-' + pad2(n.getUTCDate());
+
+  [today, next].forEach(function (ymd, i) {
+    var q = ymd.split('-');
+    var starts = prayerTimes({ y: Number(q[0]), m: Number(q[1]), d: Number(q[2]) });
+    var table = document.createElement('table');
+    table.className = 'ptimes-day';
+    var cap = document.createElement('caption');
+    cap.textContent = prayerDayLabel(ymd);
+    table.appendChild(cap);
+    var body = document.createElement('tbody');
+
+    PRAYER_NAMES.forEach(function (name) {
+      var start = starts[name];
+      var end = prayerEndOf(name, ymd);
+      var tr = document.createElement('tr');
+      var th = document.createElement('th');
+      th.scope = 'row';
+      th.textContent = name;
+      if (i === 0 && loggedToday(name)) {
+        var tick = document.createElement('span');
+        tick.className = 'done';
+        tick.textContent = '✓';
+        th.appendChild(tick);
+      }
+      var td = document.createElement('td');
+      td.textContent = isFinite(start) && isFinite(end) ? glanceClock(start) + ' – ' + glanceClock(end) : '–';
+      if (now >= start && now < end) {
+        tr.className = 'now';
+        tr.setAttribute('aria-current', 'time');
+      }
+      tr.append(th, td);
+      body.appendChild(tr);
+    });
+    table.appendChild(body);
+    box.appendChild(table);
+  });
+}
+
+$('prayerTimesToggle').addEventListener('click', function () {
+  try { localStorage.setItem(PRAYER_TIMES_OPEN_KEY, prayerTimesOpen() ? '0' : '1'); } catch (e) { /* private mode */ }
+  renderPrayerTimes();
+});
+
 /** The picker, with `preset` already picked when it may be logged now (the
  *  end-of-day prompt's buttons). */
 function openPrayerPicker(preset) {
@@ -3806,6 +3882,7 @@ function openPrayerPicker(preset) {
   if (ok) pickPrayer(preset);
   renderPrayerPicks();
   renderModePicks();
+  renderPrayerTimes();
   prayerDlg.showModal();
   scheduleRefresh(1200);              // opens instantly on cached ticks, then corrects them
 }
