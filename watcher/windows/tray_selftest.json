@@ -1,0 +1,256 @@
+{
+  "max": 63,
+  "cases": [
+    {
+      "name": "working, a project and its task",
+      "reply": {
+        "state": "working",
+        "title": "Working on: OneNet · docker",
+        "body": "Mon 4h 20m · 3 M · 4/5 prayers · as of 5:42 PM"
+      },
+      "error": "",
+      "last": null,
+      "want": {
+        "colour": "green",
+        "ring": false,
+        "tip": "Working on: OneNet · docker\n4h 20m · 3 M · 4/5 prayers"
+      }
+    },
+    {
+      "name": "working, a long project and task are cut to fit",
+      "reply": {
+        "state": "working",
+        "title": "Working on: PhD Working · resolving FPS jitter, model latency and fall modelling",
+        "body": "Mon 4h 20m · 3 M · 4/5 prayers · as of 5:42 PM"
+      },
+      "error": "",
+      "last": null,
+      "want": {
+        "colour": "green",
+        "ring": false,
+        "tip": "Working on: PhD Working · resolving…\n4h 20m · 3 M · 4/5 prayers"
+      }
+    },
+    {
+      "name": "working, an emoji is never split at the cut",
+      "reply": {
+        "state": "working",
+        "title": "Working on: ProBeing · widget 🚀🚀🚀🚀 and the rest",
+        "body": "Mon 4h 20m · 3 M · 4/5 prayers · as of 5:42 PM"
+      },
+      "error": "",
+      "last": null,
+      "want": {
+        "colour": "green",
+        "ring": false,
+        "tip": "Working on: ProBeing · widget 🚀🚀…\n4h 20m · 3 M · 4/5 prayers"
+      }
+    },
+    {
+      "name": "working, a stale glance still saying Day done",
+      "reply": {
+        "state": "working",
+        "title": "Day done · OneNet",
+        "body": "Mon 4h 20m · 3 M · 4/5 prayers · as of 5:42 PM"
+      },
+      "error": "",
+      "last": null,
+      "want": {
+        "colour": "green",
+        "ring": false,
+        "tip": "Working\n4h 20m · 3 M · 4/5 prayers"
+      }
+    },
+    {
+      "name": "working, a stale glance still saying paused",
+      "reply": {
+        "state": "working",
+        "title": "Working on: OneNet · paused",
+        "body": "Mon 4h 20m · 3 M · 4/5 prayers · as of 5:42 PM"
+      },
+      "error": "",
+      "last": null,
+      "want": {
+        "colour": "green",
+        "ring": false,
+        "tip": "Working on: OneNet\n4h 20m · 3 M · 4/5 prayers"
+      }
+    },
+    {
+      "name": "working, nothing open",
+      "reply": {
+        "state": "working",
+        "title": "Working on: nothing open",
+        "body": "Mon 4h 20m · 3 M · 4/5 prayers · as of 5:42 PM"
+      },
+      "error": "",
+      "last": null,
+      "want": {
+        "colour": "green",
+        "ring": false,
+        "tip": "Working on: nothing open\n4h 20m · 3 M · 4/5 prayers"
+      }
+    },
+    {
+      "name": "on a break",
+      "reply": {
+        "state": "break",
+        "title": "Working on: OneNet · docker · paused",
+        "body": "Tue 2h 5m · 1 M · 3/5 prayers · as of 1:10 PM"
+      },
+      "error": "",
+      "last": null,
+      "want": {
+        "colour": "amber",
+        "ring": false,
+        "tip": "On a break\n2h 5m · 1 M · 3/5 prayers"
+      }
+    },
+    {
+      "name": "asleep",
+      "reply": {
+        "state": "asleep",
+        "title": "Day done",
+        "body": "Wed 0m · 0 M · 0/5 prayers · as of 2:00 AM"
+      },
+      "error": "",
+      "last": null,
+      "want": {
+        "colour": "blue",
+        "ring": false,
+        "tip": "Asleep\n0m · 0 M · 0/5 prayers"
+      }
+    },
+    {
+      "name": "day not started",
+      "reply": {
+        "state": "off",
+        "title": "Not started yet",
+        "body": "Thu 0m · 0 M · 1/5 prayers · as of 6:01 AM"
+      },
+      "error": "",
+      "last": null,
+      "want": {
+        "colour": "grey",
+        "ring": false,
+        "tip": "Not started yet\n0m · 0 M · 1/5 prayers"
+      }
+    },
+    {
+      "name": "day over",
+      "reply": {
+        "state": "off",
+        "title": "Day done · OneNet",
+        "body": "Mon 4h 20m · 3 M · 4/5 prayers · as of 5:42 PM"
+      },
+      "error": "",
+      "last": null,
+      "want": {
+        "colour": "grey",
+        "ring": false,
+        "tip": "Day over\n4h 20m · 3 M · 4/5 prayers"
+      }
+    },
+    {
+      "name": "a state word this version does not know",
+      "reply": {
+        "state": "meeting",
+        "title": "Working on: OneNet",
+        "body": "Mon 4h 20m · 3 M · 4/5 prayers · as of 5:42 PM"
+      },
+      "error": "",
+      "last": null,
+      "want": {
+        "colour": "grey",
+        "ring": false,
+        "tip": "ProBeing\n4h 20m · 3 M · 4/5 prayers"
+      }
+    },
+    {
+      "name": "a newline and tabs in a project name stay on one line",
+      "reply": {
+        "state": "working",
+        "title": "Working on: One\nNet\t\tdocker",
+        "body": "Mon 4h 20m · 3 M · 4/5 prayers · as of 5:42 PM"
+      },
+      "error": "",
+      "last": null,
+      "want": {
+        "colour": "green",
+        "ring": false,
+        "tip": "Working on: One Net docker\n4h 20m · 3 M · 4/5 prayers"
+      }
+    },
+    {
+      "name": "no glance row yet",
+      "reply": {
+        "state": "working",
+        "title": "",
+        "body": ""
+      },
+      "error": "",
+      "last": null,
+      "want": {
+        "colour": "green",
+        "ring": false,
+        "tip": "Working"
+      }
+    },
+    {
+      "name": "cannot reach it, last seen working",
+      "reply": null,
+      "error": "offline",
+      "last": {
+        "state": "working",
+        "title": "Working on: OneNet · docker",
+        "body": "Mon 4h 20m · 3 M · 4/5 prayers · as of 5:42 PM"
+      },
+      "want": {
+        "colour": "green",
+        "ring": true,
+        "tip": "Can't reach ProBeing\nLast: Working on: OneNet · docker"
+      }
+    },
+    {
+      "name": "cannot reach it, last seen with a very long title",
+      "reply": null,
+      "error": "offline",
+      "last": {
+        "state": "working",
+        "title": "Working on: PhD Working · resolving FPS jitter, model latency and fall modelling",
+        "body": "Mon 4h 20m · 3 M · 4/5 prayers · as of 5:42 PM"
+      },
+      "want": {
+        "colour": "green",
+        "ring": true,
+        "tip": "Can't reach ProBeing\nLast: Working on: PhD Working · resolving…"
+      }
+    },
+    {
+      "name": "cannot reach it, never reached",
+      "reply": null,
+      "error": "offline",
+      "last": null,
+      "want": {
+        "colour": "grey",
+        "ring": true,
+        "tip": "Can't reach ProBeing"
+      }
+    },
+    {
+      "name": "not paired (revoked, or watcher.json missing)",
+      "reply": null,
+      "error": "unpaired",
+      "last": {
+        "state": "break",
+        "title": "x",
+        "body": "Mon 4h 20m · 3 M · 4/5 prayers · as of 5:42 PM"
+      },
+      "want": {
+        "colour": "grey",
+        "ring": true,
+        "tip": "ProBeing: this laptop is not paired"
+      }
+    }
+  ]
+}

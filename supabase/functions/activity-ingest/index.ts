@@ -13,6 +13,9 @@
 //                             batch, counted in gemini_usage; a title is used
 //                             for that call and never stored, and only the
 //                             project comes back (no keyword from a title)
+//   {op: 'glance'}         -> item 27, the laptop tray: the state word (working,
+//                             break, asleep, off) and the glance row's words.
+//                             Read-only; does not mark the device seen
 // and a distraction push's buttons call it with {answer: {id, nonce, choice}},
 // the nonce standing in for a sign-in as wrapup's check does.
 //
@@ -792,6 +795,15 @@ async function opConfig(sb: Sb, dev: Record<string, any>, body: Record<string, a
                       autoBreak: Boolean(walk.autoBreak) });
 }
 
+/** Item 27: the tray's dot and tooltip. Two reads, no writes; the words are glance-refresh's. */
+async function opGlance(sb: Sb, dev: Record<string, any>, now: number) {
+  const { walk } = await watchSpans(sb, dev.user_id, now, now);
+  const g = must(await sb.from('glance').select('title, body, as_of').eq('user_id', dev.user_id).limit(1))[0] || null;
+  const word: Record<string, string> = { work: 'working', sleep: 'asleep', break: 'break', off: 'off' };
+  return reply(200, { ok: true, state: word[modeOf(walk)] || 'off', title: g ? String(g.title || '') : '',
+                      body: g ? String(g.body || '') : '', as_of: g ? g.as_of : null });
+}
+
 async function opIngest(sb: Sb, dev: Record<string, any>, body: Record<string, any>, now: number, req: Request) {
   const list = Array.isArray(body.blocks) ? body.blocks : [];
   if (list.length > INGEST_MAX) return reply(413, { ok: false, error: 'at most ' + INGEST_MAX + ' blocks a call' });
@@ -963,13 +975,15 @@ Deno.serve(async (req: Request): Promise<Response> => {
     if (!dev) return reply(401, { ok: false, error: 'this token is not paired (revoked?)' });
     const pinned = (Deno.env.get('ALLOWED_USER_ID') || '').trim();
     if (pinned && pinned !== dev.user_id) return reply(403, { ok: false, error: 'not this account' });
+    // Item 27: the tray asks every minute; it is not the watcher, so it must not say "connected".
+    if (body.op === 'glance') return await opGlance(sb, dev, now);
     // Item 22: any call it makes says it is connected, working or not.
     await sb.from('watch_devices').update({ last_seen_at: iso(now) }).eq('id', dev.id);
 
     if (body.op === 'config') return await opConfig(sb, dev, body, now);
     if (body.op === 'ingest') return await opIngest(sb, dev, body, now, req);
     if (body.op === 'classify') return await opClassify(sb, dev, body, now);
-    return reply(400, { ok: false, error: 'op must be config, ingest or classify' });
+    return reply(400, { ok: false, error: 'op must be config, ingest, classify or glance' });
   } catch (e) {
     return reply(500, { ok: false, error: scrub((e as Error)?.message || e) });
   }
