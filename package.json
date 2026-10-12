@@ -2,7 +2,7 @@
   "name": "probeing",
   "version": "0.1.0",
   "private": true,
-  "description": "ProBeing - personal activity keeper. PWA + Supabase, with an Android widget wrapper.",
+  "description": "ProBeing - a personal day keeper: prayers, work and money logged in one tap, on phone and laptop, always in sync, with a weekly review written for you.",
   "scripts": {
     "serve": "python3 -m http.server 8080"
   },
