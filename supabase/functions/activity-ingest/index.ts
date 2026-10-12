@@ -115,8 +115,8 @@ var START_MIN_MS = 10 * MIN_MS;        // item 28: work this long in a row, day 
 /* What an na- answer (the second button) leaves a question as; and each kind's two answers. */
 var NA_STATE = { awake: 'asleep', upwork: 'asleep', resume: 'break', start: 'notwork' };
 var ASK_CHOICES = { awake: ['awake', 'asleep'], resume: ['resume', 'break'], upwork: ['start', 'awake'], start: ['start', 'notwork'] };
-/* A row of his of these types after the use a question is about ends the question. */
-var ASK_ENDS = ['work', 'voice', 'resume', 'break', 'off', 'sleep', 'wake'];
+/* A row of his of these types after the use a question is about ends the question (activity.js). */
+var ASK_ENDS = A.ACT_ASK_ENDS;
 
 /** sha256 is taken of this: letters and digits, upper case (as app.js watchTokenHash). */
 function tokenText(t) {
@@ -301,18 +301,10 @@ function inUseSpans(list, a, z) {
   return A.actIntersect(a, z, A.actMergeSpans(list.map(function (b) { return [b.start, b.end]; })));
 }
 
-/** Is an awake, back-to-work or start question still about the state he is in? Not once
- *  any state row of his (a nap, a wake, End day...) came after the use it is about. */
+/** Is a watch question still about the state he is in? activity.js actAskOpen, which the
+ *  app's catch-up sheet uses too. */
 function askOpen(n, walk, rows) {
-  var own = ['nw-', 'nr-', 'ns-', 'na-'].map(function (x) { return x + n.id; });
-  var moved = (rows || []).some(function (r) {
-    return r.at > n.streak_start && ASK_ENDS.indexOf(r.type) !== -1 && own.indexOf(String(r.rid || '')) === -1;
-  });
-  if (moved) return false;
-  if (n.kind === 'awake' || n.kind === 'upwork') return Boolean(walk && walk.asleep && walk.asleep.at === n.ref_at);
-  if (n.kind === 'resume') return Boolean(walk && walk.onBreak && walk.onBreak.at === n.ref_at);
-  if (n.kind === 'start') return Boolean(walk && walk.offSince && walk.offSince.at === n.ref_at);
-  return false;
+  return A.actAskOpen(n, walk, rows);
 }
 
 function isWorkBlock(b) {
@@ -410,7 +402,8 @@ function quietStep(d) {
   }
   if (walk.onBreak && d.checks !== false) {
     var sr = since(['resume'], walk.onBreak.at);
-    if (sr !== null) add(find(sr, walk.onBreak.since, walk.onBreak.since, isWorkBlock, USE_MIN_MS, 'resume', walk.onBreak.at));
+    var rfrom = Math.max(walk.onBreak.since, afterMine(walk.onBreak.at));
+    if (sr !== null) add(find(sr, rfrom, rfrom, isWorkBlock, USE_MIN_MS, 'resume', walk.onBreak.at));
   }
   // Item 28: awake, the day not started or ended.
   if (walk.offSince && d.checks !== false) {

@@ -15675,9 +15675,12 @@ async function readCatchUp() {
     .eq('state', 'sent').in('kind', Object.keys(WATCH_ASKS)).lt('streak_start', new Date(now - CATCHUP_BACK_MS).toISOString())
     .order('streak_start', { ascending: true }).limit(10);
   if (oRes.error) throw errorFrom(oRes.error);
-  // A day that has turned closed its pushes and questions with it; an awake or back-to-work
-  // question lasts while its sleep or break does (askStillOpen).
+  // A day that has turned closed its pushes and questions with it; a watch question lasts
+  // while its sleep, break or day-off stretch does (askStillOpen, over the server's rows).
   var dayStart = counterDayStart(now);
+  if ((oRes.data || []).concat(nRes.data || []).some(function (n) { return WATCH_ASKS[n.kind] === 1; })) {
+    catchupStateRows = await readAskRows(now);
+  }
   var nudges = (oRes.data || []).concat(nRes.data || []).filter(function (n) {
     return WATCH_ASKS[n.kind] === 1 ? askStillOpen(n) : Date.parse(n.streak_start) >= dayStart;
   });
@@ -15751,19 +15754,58 @@ function askAtOf(n) {
   return Math.max(Date.parse(n.streak_start), Date.parse(n.ref_at) + 1000);
 }
 
-/** Is a watch question still about the state he is in? The toggles say. */
-function askStillOpen(n) {
+/* Item 28 fix: the rows activity-ingest readRows walks — state rows of the last 48 hours, led by
+ * the newest 12 before them — so the sheet judges a question exactly as the server does. */
+var ASK_BACK_MS = 48 * 3600000;
+var ASK_CARRY_ROWS = 12;
+var ASK_CARRY_TYPES = ['work', 'voice', 'resume', 'break', 'off', 'sleep', 'wake'];
+var ASK_STATE_TYPES = ['work', 'voice', 'resume', 'break', 'off', 'sleep', 'wake', 'done', 'awake', 'subdone', 'subdrop',
+                       'substop', 'pin', 'unpin', 'actanswer'];
+var catchupStateRows = [];               // read with the sheet; newer rows come from sessionLog and the outbox
+
+async function readAskRows(now) {
+  var from = new Date(now - ASK_BACK_MS).toISOString();
+  var before = await sb.from('events').select('at,type,rid,created_at').lt('at', from).in('type', ASK_CARRY_TYPES)
+    .order('at', { ascending: false }).order('created_at', { ascending: false }).limit(ASK_CARRY_ROWS);
+  if (before.error) throw errorFrom(before.error);
+  var rows = await sb.from('events').select('at,type,rid,created_at').gte('at', from).in('type', ASK_STATE_TYPES)
+    .order('at', { ascending: true }).order('created_at', { ascending: true }).limit(3000);
+  if (rows.error) throw errorFrom(rows.error);
+  return (before.data || []).slice().reverse().concat(rows.data || []);
+}
+
+/** The sheet's rows, then the refreshed day's and this device's held presses, once per rid, oldest first. */
+function watchAskRows() {
+  var held = userMap();
+  ASK_STATE_TYPES.forEach(function (t) { held[t] = 1; });
+  var seen = userMap();
+  var out = [];
+  catchupStateRows.concat(sessionLog(), catchupHeld(held)).forEach(function (r) {
+    // A row with no rid is an optimistic copy; its held twin carries the rid.
+    if (!r || !r.rid || ASK_STATE_TYPES.indexOf(r.type) === -1 || seen[r.rid]) return;
+    seen[r.rid] = 1;
+    out.push({ at: new Date(instantOf(r.at)).toISOString(), type: r.type, rid: String(r.rid), c: String(r.created_at || ''), i: out.length });
+  });
+  return out.sort(function (a, b) {
+    return (Date.parse(a.at) - Date.parse(b.at)) || (a.c < b.c ? -1 : a.c > b.c ? 1 : 0) || (a.i - b.i);
+  });
+}
+
+/** Is a watch question still about the state he is in? activity.js actAskOpen over the server's
+ *  rows (`rows`, else watchAskRows), never the pills alone: a chip after End day moves a pill but
+ *  not the stretch the server asked about. */
+function askStillOpen(n, rows, nowMs) {
   var ref = Date.parse(n.ref_at);
   var use = Date.parse(n.streak_start);
-  if (!isFinite(ref)) return false;
-  // Any change of his after the use it is about (a nap, a wake, End day) ends it.
+  if (!isFinite(ref) || !isFinite(use)) return false;
+  // A pill moved after the use (a nap, a wake, End day) means a row of his after it: over, as the server has it.
   if (toggles.sleep.at > use || toggles.work.at > use) return false;
-  if (n.kind === 'awake' || n.kind === 'upwork') return toggles.sleep.state === 'asleep' && toggles.sleep.at <= ref + 60000;
-  if (n.kind === 'start') {
-    return toggles.sleep.state !== 'asleep' && toggles.work.state === 'off' &&
-           Math.max(toggles.sleep.at, toggles.work.at) <= ref + 60000;
-  }
-  return toggles.sleep.state !== 'asleep' && toggles.work.state === 'break' && toggles.work.at <= ref + 60000;
+  var list = rows || watchAskRows();
+  var now = nowMs || Date.now();
+  var walk = actWalk(list, now - ASK_BACK_MS, now);
+  return actAskOpen({ id: n.id, kind: n.kind, streak_start: use, ref_at: ref }, walk, list.map(function (r) {
+    return { at: instantOf(r.at), type: r.type, rid: r.rid };
+  }));
 }
 
 /* A distraction push he already answered by acting: a row of his after it (as activity-ingest answerOpen). */

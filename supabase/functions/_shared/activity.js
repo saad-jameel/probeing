@@ -540,6 +540,28 @@ function actWalk(rows, fromMs, toMs) {
              .map(function (s) { return { at: s.t, end: s.end, rid: s.rid }; }) };
 }
 
+/* A row of his of these types after the use a watch question is about ends the question. */
+var ACT_ASK_ENDS = ['work', 'voice', 'resume', 'break', 'off', 'sleep', 'wake'];
+
+/**
+ * Is a watch question ("awake?", "back to work?", "Up and working?", "start?") still about the
+ * state he is in? Not once any state row of his came after the use (its own answer rows aside),
+ * nor once the sleep, break or day-off stretch it asked about has ended. activity-ingest and the
+ * app's catch-up sheet both judge with this, so they cannot disagree.
+ * n: {id, kind, streak_start, ref_at} (ms); walk: actWalk; rows: [{at (ms), type, rid}].
+ */
+function actAskOpen(n, walk, rows) {
+  var own = ['nw-', 'nr-', 'ns-', 'na-'].map(function (x) { return x + n.id; });
+  var moved = (rows || []).some(function (r) {
+    return r.at > n.streak_start && ACT_ASK_ENDS.indexOf(r.type) !== -1 && own.indexOf(String(r.rid || '')) === -1;
+  });
+  if (moved) return false;
+  if (n.kind === 'awake' || n.kind === 'upwork') return Boolean(walk && walk.asleep && walk.asleep.at === n.ref_at);
+  if (n.kind === 'resume') return Boolean(walk && walk.onBreak && walk.onBreak.at === n.ref_at);
+  if (n.kind === 'start') return Boolean(walk && walk.offSince && walk.offSince.at === n.ref_at);
+  return false;
+}
+
 /**
  * Blocks with the parts inside `quiet` (sleep or a break) made bare: no app,
  * site, keyword or title, and only work and meetings keep a project. Bare
@@ -729,6 +751,8 @@ globalThis.ProBeingActivity = {
   actPayload: actPayload,
   actSanitize: actSanitize,
   actWalk: actWalk,
+  ACT_ASK_ENDS: ACT_ASK_ENDS,
+  actAskOpen: actAskOpen,
   actQuiet: actQuiet,
   actUseRuns: actUseRuns,
   actClip: actClip,
