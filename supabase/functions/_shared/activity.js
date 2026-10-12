@@ -439,7 +439,6 @@ function actSkipTies(steps, rows) {
   });
 }
 var ACT_AUTO_WATCH_MS = 4 * 3600000;     // an auto break is watched this long at most
-var ACT_SLEEP_WATCH_MS = 24 * 3600000;   // a sleep is watched (quietly) this long at most
 
 /**
  * rows: event rows (any types, oldest first; ties keep their order). Returns
@@ -449,6 +448,7 @@ var ACT_SLEEP_WATCH_MS = 24 * 3600000;   // a sleep is watched (quietly) this lo
  * sleep row until a wake) and rest (a break of his, not the day's end, while
  * awake), plus asleep {at, rid}, onBreak {at, since, rid} (since: the break row
  * or the wake after a nap, whichever is later) and sleeps [{at, end, rid}].
+ * Item 26: a sleep or break has no age limit; a forgotten Wake is what the checks are for.
  */
 function actWalk(rows, fromMs, toMs) {
   var list = (rows || []).map(function (r, i) { return { r: r, t: Date.parse(String(r && r.at)), i: i }; })
@@ -479,12 +479,10 @@ function actWalk(rows, fromMs, toMs) {
       if (stop > a) watch.push([a, stop]);
     }
     if (asleep) {
-      var s1 = Math.min(b, asleep.t + ACT_SLEEP_WATCH_MS);
-      if (s1 > a) sleep.push([a, s1]);
+      if (b > a) sleep.push([a, b]);
     } else if (!clock && ws === 'break' && brk) {
       var r0 = auto ? Math.max(a, auto.t + ACT_AUTO_WATCH_MS) : a;
-      var r1 = Math.min(b, brk.t + ACT_IDLE_MAX_MS);
-      if (r1 > r0) rest.push([r0, r1]);
+      if (b > r0) rest.push([r0, b]);
     }
   }
   list.forEach(function (x) {
@@ -519,12 +517,12 @@ function actWalk(rows, fromMs, toMs) {
   var autoBreak = auto && !clock ? { at: auto.t, rid: auto.rid } : null;
   // The watcher's own break is its business for its first hours (18b); after that it is a break like any.
   var autoOn = autoBreak && toMs < autoBreak.at + ACT_AUTO_WATCH_MS;
-  var onBreak = !clock && !asleep && !autoOn && ws === 'break' && brk && toMs < brk.t + ACT_IDLE_MAX_MS
+  var onBreak = !clock && !asleep && !autoOn && ws === 'break' && brk
     ? { at: brk.t, since: Math.max(brk.t, since, autoBreak ? autoBreak.at + ACT_AUTO_WATCH_MS : 0), rid: brk.rid } : null;
   return { work: actMergeSpans(work), watch: actMergeSpans(watch), working: clock && !idle,
            autoBreak: autoBreak, closed: closed,
            sleep: actMergeSpans(sleep), rest: actMergeSpans(rest),
-           asleep: asleep && toMs < asleep.t + ACT_SLEEP_WATCH_MS ? { at: asleep.t, rid: asleep.rid } : null,
+           asleep: asleep ? { at: asleep.t, rid: asleep.rid } : null,
            onBreak: onBreak,
            sleeps: sleepList.filter(function (s) { return (s.end === null || s.end > fromMs) && s.t < toMs; })
              .map(function (s) { return { at: s.t, end: s.end, rid: s.rid }; }) };

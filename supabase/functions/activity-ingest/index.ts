@@ -28,6 +28,10 @@
 // Unanswered, they wait for the app's catch-up sheet. Every authenticated call
 // marks the device as seen (Settings: "connected · last checked").
 //
+// Item 26 (12 Oct): a sleep or break of any age counts. The clock reads the newest
+// state rows from before its window too, and a sleep days old asks about use after
+// the latest Fajr (never between midnight and Fajr).
+//
 // No cron: the laptop's own 5-minute run is the clock. A push goes out when a
 // distraction has run 10 minutes; 5 minutes later, with no answer and still on
 // it, a break is written back to when it started (or, when another device shows
@@ -73,6 +77,8 @@ var OTHER_COVER = 0.8;                 // another device working this much of th
 var RESUME_WORK_MS = MIN_MS;           // back in a work app this long ends an auto break
 var RESUME_UNCLEAR_MS = 3 * MIN_MS;    // ... or this long in something unclear
 var READ_BACK_MS = 48 * 3600000;       // event rows read for the clock, as day.js LEAD_MAX_MS
+var CARRY_ROWS = 12;                   // ...plus this many state rows from before (app.js `carry`)
+var CARRY_TYPES = ['work', 'voice', 'resume', 'break', 'off', 'sleep', 'wake'];
 var CONFIG_BACK_MS = 24 * 3600000;     // spans handed to the laptop reach back at most this far
 var INGEST_MAX = 500;                  // blocks in one request
 var CLASSIFY_MAX = 20;                 // titles in one Gemini call
@@ -251,6 +257,22 @@ function nightEnd(at, fajrAfter, offsetMin, until) {
   return hour >= NIGHT_FROM_H || sameDate || until > midnight ? f : null;
 }
 
+/** Item 26: the latest Fajr at or before `now`, stepping on from a night's first Fajr. */
+function latestFajr(first, now, fajrAfter) {
+  var f = first;
+  for (var i = 0; i < 400; i++) {
+    var n = fajrAfter(f);
+    if (!isFinite(n) || !(n > f) || n > now) break;
+    f = n;
+  }
+  return f;
+}
+
+/** The local midnight after t. */
+function midnightAfter(t, offsetMin) {
+  return (Math.floor((t + offsetMin * MIN_MS) / 86400000) + 1) * 86400000 - offsetMin * MIN_MS;
+}
+
 /** Blocks by device, each cut to [from, to]; `keep` picks which. */
 function cutByDevice(blocks, from, to, keep) {
   var by = {};
@@ -286,7 +308,8 @@ function askOpen(n, walk, rows) {
  * Asleep or on a break. d: {now, walk (actWalk), blocks [{device_id, kind, start, end,
  * category}] (any mode), nudges [{id, kind, device_id, streak_start, pushed_at, decided_at,
  * state, ref_at}] (ms), rows [{at, type, rid}], nightEnd(at, until) -> Fajr or null,
- * checks (his switch; false: no questions, open ones closed; nights still kept)}.
+ * fajrAfter(t), offsetAt(t) (minutes east of UTC), checks (his switch; false: no
+ * questions, open ones closed; nights still kept)}.
  * Returns {push: [{kind, device_id, dev, start, end, ref, push}], decide: [{id, state}],
  * nights: [{sleep_at, woke_at, fajr_at, first_at, last_at, minutes, kinds}]}.
  */
@@ -336,7 +359,15 @@ function quietStep(d) {
   }
   if (walk.asleep && d.checks !== false) {
     var f = d.nightEnd(walk.asleep.at, now);
-    ask('awake', walk.asleep.at, walk.asleep.at, f === null ? walk.asleep.at : f, null);
+    var thr = f === null ? walk.asleep.at : f;
+    var night = false;
+    // Item 26: past a Fajr, use counts from the latest one (a Wake forgotten days ago asks
+    // about today), and from the midnight after it to the next Fajr nothing is asked.
+    if (f !== null && f <= now) {
+      thr = latestFajr(f, now, d.fajrAfter);
+      night = now >= midnightAfter(thr, d.offsetAt(thr));
+    }
+    if (!night) ask('awake', walk.asleep.at, walk.asleep.at, thr, null);
   }
   if (walk.onBreak && d.checks !== false) {
     ask('resume', walk.onBreak.at, walk.onBreak.since, walk.onBreak.since, function (b) { return b.category === 'work'; });
@@ -595,11 +626,16 @@ function fajrAfterFn(set: Record<string, any>) {
   };
 }
 
-/** Rows that move the clock or answer a push, oldest first, from `from`. */
+/** Rows that move the clock or answer a push, oldest first, from `from`; led by the newest
+ *  state rows before it (item 26), so a sleep or break older than the window is still known. */
 async function readRows(sb: Sb, owner: string, from: number) {
-  return must(await sb.from('events').select('at, type, rid, created_at').eq('user_id', owner)
+  const before = must(await sb.from('events').select('at, type, rid, created_at').eq('user_id', owner)
+    .lt('at', iso(from)).in('type', CARRY_TYPES).order('at', { ascending: false })
+    .order('created_at', { ascending: false }).limit(CARRY_ROWS));
+  const rows = must(await sb.from('events').select('at, type, rid, created_at').eq('user_id', owner)
     .gte('at', iso(from)).in('type', STATE_TYPES).order('at', { ascending: true })
     .order('created_at', { ascending: true }).limit(3000));
+  return before.reverse().concat(rows);
 }
 
 /** His projects: the chosen Google list's open projects, then names logged in two weeks, then rule targets. */
@@ -678,14 +714,21 @@ async function runQuiet(sb: Sb, owner: string, now: number, set: Record<string, 
   const blocks = must(await sb.from('activity_blocks').select('*').eq('user_id', owner)
     .gte('ended_at', iso(now - QUIET_BACK_MS)).order('started_at', { ascending: true }).limit(5000))
     .map((r) => blockOf(r, kinds));
-  const nudges = must(await sb.from('activity_nudges').select('id, kind, device_id, streak_start, pushed_at, decided_at, state, ref_at')
-    .eq('user_id', owner).in('kind', ASK_KINDS).gte('streak_start', iso(now - QUIET_BACK_MS)).limit(500))
+  const cols = 'id, kind, device_id, streak_start, pushed_at, decided_at, state, ref_at';
+  const recent = must(await sb.from('activity_nudges').select(cols)
+    .eq('user_id', owner).in('kind', ASK_KINDS).gte('streak_start', iso(now - QUIET_BACK_MS)).limit(500));
+  // Item 26: a question still open, however old: it blocks a second one and is closed when he moves.
+  const older = must(await sb.from('activity_nudges').select(cols)
+    .eq('user_id', owner).in('kind', ASK_KINDS).eq('state', 'sent').limit(50));
+  const seen: Record<string, boolean> = {};
+  const nudges = recent.concat(older).filter((n) => !seen[n.id] && (seen[n.id] = true))
     .map((n) => ({ id: n.id, kind: n.kind, device_id: n.device_id, streak_start: ms(n.streak_start), pushed_at: ms(n.pushed_at),
                    decided_at: ms(n.decided_at), state: n.state, ref_at: ms(n.ref_at) }));
   const fajrAfter = fajrAfterFn(set);
   const step = quietStep({ now, walk, blocks, nudges, checks: set.checks,
                            rows: rows.map((r) => ({ at: ms(r.at), type: r.type, rid: r.rid || '' })),
-                           nightEnd: (t: number, until: number) => nightEnd(t, fajrAfter, Day.zoneOffsetMin(set.zone, t, set.offset), until) });
+                           nightEnd: (t: number, until: number) => nightEnd(t, fajrAfter, Day.zoneOffsetMin(set.zone, t, set.offset), until),
+                           fajrAfter, offsetAt: (t: number) => Day.zoneOffsetMin(set.zone, t, set.offset) });
   const report: Record<string, unknown> = { decided: step.decide.length, pushed: [], nights: 0 };
   for (const d of step.decide) {
     await sb.from('activity_nudges').update({ state: d.state, decided_at: iso(now) }).eq('id', d.id).eq('user_id', owner);

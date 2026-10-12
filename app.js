@@ -6055,10 +6055,13 @@ function prayerDays(rows, windows) {
  * @param rows oldest first.
  */
 function sleepInRange(rows) {
+  // Item 26: a "night" longer than this is a Wake forgotten for days, not sleep: flagged, not counted.
+  var NIGHT_MAX_MS = 20 * 3600000;
   var seen = 0;
   var nights = 0;
   var totalMs = 0;
   var openAt = 0;
+  var overlong = 0;
 
   (rows || []).forEach(function (row) {
     if (row.type !== 'sleep' && row.type !== 'wake') return;
@@ -6073,11 +6076,12 @@ function sleepInRange(rows) {
     }
     // A Wake with nothing open closes nothing — the night began before this
     // range, and half a night is not a measurement.
-    if (openAt && t > openAt) { totalMs += t - openAt; nights += 1; }
+    if (openAt && t > openAt && t - openAt > NIGHT_MAX_MS) overlong += 1;
+    else if (openAt && t > openAt) { totalMs += t - openAt; nights += 1; }
     openAt = 0;
   });
 
-  return { rows: seen, nights: nights, totalMs: totalMs, unclosed: Boolean(openAt) };
+  return { rows: seen, nights: nights, totalMs: totalMs, unclosed: Boolean(openAt), overlong: overlong };
 }
 
 /**
@@ -7616,10 +7620,14 @@ function renderReviewFigures(sum) {
    * false statement about Saad's nights. Same rule as the date floor: refuse
    * rather than report a confident nothing. */
   var sleep = sum.sleep;
+  var overlong = sleep.overlong
+    ? ' ' + (sleep.overlong === 1 ? 'One night' : sleep.overlong + ' nights') + ' ran past 20 hours (a missed Wake), so ' +
+      (sleep.overlong === 1 ? 'it is' : 'they are') + ' not counted.'
+    : '';
   $('reviewSleep').textContent = sleep.rows
     ? 'Sleep ' + reviewDuration(sleep.totalMs) + ' across ' + sleep.nights +
       (sleep.nights === 1 ? ' night' : ' nights') +
-      (sleep.unclosed ? ' — one night has no Wake yet, so it is not counted.' : '.')
+      (sleep.unclosed ? ' — one night has no Wake yet, so it is not counted.' : '.') + overlong
     : 'No sleep logged in this range — Sleep and Wake were never pressed, so ' +
       'there is nothing to average.';
 }
@@ -15660,10 +15668,15 @@ async function readCatchUp() {
     .in('state', ['sent', 'question', 'autobreak']).gte('streak_start', new Date(now - CATCHUP_BACK_MS).toISOString())
     .order('streak_start', { ascending: true }).limit(50);
   if (nRes.error) throw errorFrom(nRes.error);
+  // Item 26: an awake or back-to-work question still open is kept however old (a Wake forgotten for days).
+  var oRes = await sb.from('activity_nudges').select('id,kind,ref_at,streak_start,what,pushed_at,state,span_end,other_work')
+    .eq('state', 'sent').in('kind', ['awake', 'resume']).lt('streak_start', new Date(now - CATCHUP_BACK_MS).toISOString())
+    .order('streak_start', { ascending: true }).limit(10);
+  if (oRes.error) throw errorFrom(oRes.error);
   // A day that has turned closed its pushes and questions with it; an awake or back-to-work
   // question lasts while its sleep or break does (askStillOpen).
   var dayStart = counterDayStart(now);
-  var nudges = (nRes.data || []).filter(function (n) {
+  var nudges = (oRes.data || []).concat(nRes.data || []).filter(function (n) {
     return n.kind === 'awake' || n.kind === 'resume' ? askStillOpen(n) : Date.parse(n.streak_start) >= dayStart;
   });
   var rids = userMap();
