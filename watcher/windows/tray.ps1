@@ -341,7 +341,10 @@ function Poll-Fetch {
 function Open-ProBeing {
   if (((Get-Date) - $script:openedAt).TotalSeconds -lt 3) { return }
   $script:openedAt = Get-Date
-  Start-Process $APP_URL
+  # The installed app (Chrome or Edge puts its shortcut in the Start menu); else the browser.
+  $menu = Join-Path $env:APPDATA 'Microsoft\Windows\Start Menu\Programs'
+  $lnk = Get-ChildItem -Path $menu -Recurse -Filter 'ProBeing*.lnk' -ErrorAction SilentlyContinue | Select-Object -First 1
+  if ($lnk) { Start-Process $lnk.FullName } else { Start-Process $APP_URL }
 }
 
 function Stop-Tray {
