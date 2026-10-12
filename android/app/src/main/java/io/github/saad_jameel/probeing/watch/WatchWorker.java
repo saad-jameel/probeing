@@ -151,7 +151,7 @@ public final class WatchWorker extends Worker {
         PhoneRules.Cfg out = new PhoneRules.Cfg();
         JSONObject l = cfg.optJSONObject("lists");
         Map<String, List<String>> lists = new HashMap<>();
-        for (String k : new String[]{"distract", "private", "meeting"}) {
+        for (String k : new String[]{"distract", "private", "meeting", "work"}) {
             JSONArray a = l == null ? null : l.optJSONArray(k);
             if (a != null) lists.put(k, strings(a));
         }

@@ -7,7 +7,8 @@
   page text. A window title leaves this laptop only for a block no rule could
   place, to let Gemini name its project; private ones never leave at all.
   Asleep or on a break (item 23), a block is sent bare: its time, category and
-  project only.
+  project only. Item 29: a work-apps list (Code.exe, terminals, Office...) counts
+  as work with no project; it is matched here, so nothing more is sent.
 
   The logic is a line-by-line copy of the sender half of
   supabase/functions/_shared/activity.js: change one, change the other.
@@ -37,6 +38,9 @@ $ACT_DEFAULT_LISTS = @{
   private  = @('bank', 'password', 'bitwarden', '1password', 'lastpass', 'keepass', 'whatsapp', 'messenger',
                'signal', 'telegram')
   meeting  = @('meet.google.com', 'zoom.us', 'zoom', 'teams.microsoft.com', 'teams', 'discord')
+  work     = @('code', 'windowsterminal', 'cmd', 'powershell', 'pwsh', 'wsl', 'conhost', 'claude', 'idea64', 'pycharm64',
+               'webstorm64', 'phpstorm64', 'clion64', 'rider64', 'goland64', 'rubymine64', 'datagrip64', 'rustrover64',
+               'winword', 'excel', 'powerpnt', 'outlook', 'olk', 'notepad++')
 }
 $ACT_MIN_BLOCK_MS = 60000
 $ACT_JOIN_GAP_MS = 60000
@@ -151,7 +155,7 @@ function Act-TidyList($list) {
 
 function Act-Lists($l) {
   $out = @{}
-  foreach ($k in @('distract', 'private', 'meeting')) {
+  foreach ($k in @('distract', 'private', 'meeting', 'work')) {
     $v = Get-Prop $l $k
     if ($null -ne $v -and ($v -is [System.Array] -or $v -is [System.Collections.IList])) { $out[$k] = Act-TidyList $v }
     else { $out[$k] = $ACT_DEFAULT_LISTS[$k] }
@@ -197,6 +201,24 @@ function Act-TitleNamesSite($h, $path, $title) {
 
 function Act-ListHit($list, $seg, [bool]$withTitle) {
   foreach ($e in (As-Seq $list)) { if (Act-EntryHits $e $seg $withTitle) { return $e } }
+  return ''
+}
+
+# A work-list name: lower case, letters, digits and '+', no .exe (Notepad++, never plain Notepad).
+function Act-WorkName($s) {
+  $t = (Act-Str $s).Trim().ToLowerInvariant() -creplace '\.exe$', ''
+  return ($t -creplace '[^0-9a-z\u0080-\uffff+]+', '')
+}
+
+# A site as in the other lists; a name only as the app's whole name ("code" is Code.exe, never Barcode).
+function Act-WorkHit($list, $seg) {
+  $app = Act-WorkName (Get-Prop $seg 'app')
+  foreach ($x in (As-Seq $list)) {
+    $e = (Act-Str $x).Trim().ToLowerInvariant() -creplace '\.exe$', ''
+    if (-not $e) { continue }
+    if ($e -cmatch '[./]') { if (Act-EntryHits $e $seg $false) { return $x } }
+    elseif ($app -and (Act-WorkName $e) -ceq $app) { return $x }
+  }
   return ''
 }
 
@@ -246,6 +268,7 @@ function Act-Classify($seg, $cfg) {
   if ($hit) { return @{ category = 'work'; project = $hit.project; key = $hit.key } }
   $known = Get-Prop (Get-Prop $cfg 'known') (Act-TitleKey (Get-Prop $seg 'app') (Get-Prop $seg 'title'))
   if ($known) { return @{ category = 'work'; project = (Act-Cut ([string]$known) $ACT_PROJECT_MAX); key = '' } }
+  if (Act-WorkHit $lists['work'] $seg) { return @{ category = 'work'; project = ''; key = '' } }
   return @{ category = 'unclear'; project = ''; key = '' }
 }
 

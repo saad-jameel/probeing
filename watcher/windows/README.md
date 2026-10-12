@@ -88,8 +88,12 @@ powershell -NoProfile -ExecutionPolicy Bypass -File "$env:USERPROFILE\ProBeing-w
 
 ## Day to day
 
-- Change the distraction, meeting and private lists, and your project keywords,
-  in Settings → Laptop activity → Lists. The laptop picks them up on its next run.
+- Change the distraction, meeting, private and work-apps lists, and your project
+  keywords, in Settings → Laptop activity → Lists. The laptop picks them up on its
+  next run. Work apps (VS Code, terminals, the Claude app, Office...) count as work
+  with no project; a keyword in the window title still names the project.
+- An app or site nothing sorts, used 15 minutes in a day while you are working, is
+  asked about in ProBeing: "What is …?" (at most two pushes a day).
 - "Distraction push and auto-break" in the same place turns the 10-minute push
   (and the break that follows if you ignore it) off for every device.
 - When you open ProBeing it may show **"From … to … you were doing"**: change a

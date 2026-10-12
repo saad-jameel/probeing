@@ -11,7 +11,8 @@
  * window title stays on the laptop except for an unclear block sent to Gemini.
  * Item 23 (11 Oct): asleep or on a break, a block is only its time, category and
  * project (actQuiet); no app, site or title. Item 28 (12 Oct): the same while awake
- * with the day not started or ended.
+ * with the day not started or ended. Item 29 (12 Oct): a work list (no project needed),
+ * and the names Teach asks about (actTeachName / actTeachList).
  */
 
 'use strict';
@@ -20,13 +21,18 @@ var ACT_CATEGORIES = ['work', 'meeting', 'distraction', 'unclear', 'private'];
 
 /* The lists Settings can change. A word matches an app or a site name; an entry
  * with a dot is a site (and its sub-domains), and a path after it must start the
- * page's path. Private words also match the window title. */
+ * page's path. Private words also match the window title. A work word must be the
+ * app's whole name (actWorkHit), so "code" is Code.exe and never Barcode. */
 var ACT_DEFAULT_LISTS = {
   distract: ['youtube.com/shorts', 'x.com', 'twitter.com', 'instagram.com', 'tiktok.com', 'facebook.com'],
   private: ['bank', 'password', 'bitwarden', '1password', 'lastpass', 'keepass', 'whatsapp', 'messenger',
             'signal', 'telegram'],
-  meeting: ['meet.google.com', 'zoom.us', 'zoom', 'teams.microsoft.com', 'teams', 'discord']
+  meeting: ['meet.google.com', 'zoom.us', 'zoom', 'teams.microsoft.com', 'teams', 'discord'],
+  work: ['code', 'windowsterminal', 'cmd', 'powershell', 'pwsh', 'wsl', 'conhost', 'claude', 'idea64', 'pycharm64',
+         'webstorm64', 'phpstorm64', 'clion64', 'rider64', 'goland64', 'rubymine64', 'datagrip64', 'rustrover64',
+         'winword', 'excel', 'powerpnt', 'outlook', 'olk', 'notepad++']
 };
+var ACT_LIST_KEYS = ['distract', 'private', 'meeting', 'work'];
 
 var ACT_MIN_BLOCK_MS = 60000;            // shorter pieces fold into a neighbour
 var ACT_JOIN_GAP_MS = 60000;             // a gap this small does not split a block
@@ -120,11 +126,11 @@ function actTidyList(list) {
   return out;
 }
 
-/** The three lists; a list never set is the default, an empty one stays empty. */
+/** The four lists; a list never set is the default, an empty one stays empty. */
 function actLists(l) {
   l = l && typeof l === 'object' ? l : {};
   var out = {};
-  ['distract', 'private', 'meeting'].forEach(function (k) {
+  ACT_LIST_KEYS.forEach(function (k) {
     out[k] = Array.isArray(l[k]) ? actTidyList(l[k]) : ACT_DEFAULT_LISTS[k].slice();
   });
   return out;
@@ -173,6 +179,24 @@ function actListHit(list, seg, withTitle) {
   return '';
 }
 
+/** A work-list name: lower case, letters, digits and '+', no ".exe" ("Notepad++.exe" -> "notepad++",
+ *  so plain Notepad is not it). */
+function actWorkName(s) {
+  return String(s == null ? '' : s).trim().toLowerCase().replace(/\.exe$/, '').replace(/[^0-9a-z\u0080-\uffff+]+/g, '');
+}
+
+/** The first work-list entry naming the piece, or ''. A site as in the other lists; a name
+ *  ("code", or "Code.exe" as typed) only as the app's whole name. */
+function actWorkHit(list, seg) {
+  var app = actWorkName(seg.app);
+  for (var i = 0; i < (list || []).length; i++) {
+    var e = String(list[i] || '').trim().toLowerCase().replace(/\.exe$/, '');
+    if (!e) continue;
+    if (/[.\/]/.test(e) ? actEntryHits(e, seg, false) : actWorkName(e) === app && app !== '') return list[i];
+  }
+  return '';
+}
+
 /**
  * The keyword rules, longest first: his and learned ones ({keyword, project}),
  * then each project's own name squashed ("ProBeing" -> "probeing"). The first
@@ -209,7 +233,8 @@ function actRuleHit(seg, rules) {
 
 /**
  * {category, project, key} for one piece. Private first (never sent), then
- * distraction, then meeting (which may still name a project), then the rules.
+ * distraction, then meeting (which may still name a project), then the rules,
+ * then Gemini's earlier answer, then the work list (work, no project).
  * cfg: {lists, rules, projects, known: {titleKey: project}} (known: Gemini's
  * earlier answers, kept on the laptop).
  */
@@ -226,6 +251,7 @@ function actClassify(seg, cfg) {
   if (hit) return { category: 'work', project: hit.project, key: hit.key };
   var known = cfg && cfg.known ? cfg.known[actTitleKey(seg.app, seg.title)] : '';
   if (known) return { category: 'work', project: actCut(String(known), ACT_PROJECT_MAX), key: '' };
+  if (actWorkHit(lists.work, seg)) return { category: 'work', project: '', key: '' };
   return { category: 'unclear', project: '', key: '' };
 }
 
@@ -717,6 +743,44 @@ function actGroups(blocks, fixes) {
   return out;
 }
 
+/* ── Teach ProBeing (item 23; item 29 asks by itself) ────────────────────── */
+
+/** What a block can be taught by: its site, else its app as a squashed word; null for a
+ *  browser with no site, a terminal or file window, or a phone app with no name. */
+function actTeachName(b) {
+  if (b.domain) {
+    var d = actCleanDomain(b.domain);
+    return d ? { entry: d, label: d, site: true } : null;
+  }
+  var app = String(b.app || '').replace(/\.exe$/i, '').trim();
+  var w = actNorm(app);
+  if (w.length < 3 || w === 'otherapp' || actIsBrowser(b.app) || ACT_NO_TITLE_APPS.indexOf(w) !== -1) return null;
+  return { entry: w, label: app, site: false };
+}
+
+/** Unplaced time by name, most first: [{entry, label, site, ms}]. blocks: unclear ones
+ *  (start, end ms); cfg: {lists, rules, projects} as the watchers classify with; a name
+ *  a rule or list now places, or one he ignored, is left out. */
+function actTeachList(blocks, fixes, cfg, ignore) {
+  var by = Object.create(null);
+  var skip = Object.create(null);
+  (ignore || []).forEach(function (e) { skip[String(e)] = 1; });
+  (blocks || []).forEach(function (raw) {
+    var b = actFixed(raw, fixes);
+    if (b.category !== 'unclear' || (b.mode && b.mode !== 'work') || !(b.end > b.start)) return;
+    var n = actTeachName(b);
+    if (!n || skip[n.entry]) return;
+    if (!by[n.entry]) {
+      var placed = actClassify({ app: b.app, host: b.domain || '', path: '', title: '' }, cfg).category !== 'unclear';
+      by[n.entry] = { entry: n.entry, label: n.label, site: n.site, ms: 0, placed: placed };
+    }
+    by[n.entry].ms += b.end - b.start;
+  });
+  return Object.keys(by).map(function (k) { return by[k]; }).filter(function (x) { return !x.placed; })
+    .sort(function (a, b) { return (b.ms - a.ms) || (a.label < b.label ? -1 : a.label > b.label ? 1 : 0); })
+    .map(function (x) { return { entry: x.entry, label: x.label, site: x.site, ms: x.ms }; });
+}
+
 // What the Edge Function uses. The browser reads the globals directly.
 globalThis.ProBeingActivity = {
   ACT_CATEGORIES: ACT_CATEGORIES,
@@ -740,6 +804,10 @@ globalThis.ProBeingActivity = {
   actLists: actLists,
   actTidyList: actTidyList,
   actListHit: actListHit,
+  actWorkHit: actWorkHit,
+  actWorkName: actWorkName,
+  ACT_LIST_KEYS: ACT_LIST_KEYS,
+  ACT_NO_TITLE_APPS: ACT_NO_TITLE_APPS,
   actRules: actRules,
   actClassify: actClassify,
   actTitleKey: actTitleKey,
@@ -759,5 +827,7 @@ globalThis.ProBeingActivity = {
   actFixMap: actFixMap,
   actFixed: actFixed,
   actFigures: actFigures,
-  actGroups: actGroups
+  actGroups: actGroups,
+  actTeachName: actTeachName,
+  actTeachList: actTeachList
 };

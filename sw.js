@@ -59,8 +59,9 @@
  * v34 (item 23): the awake and back-to-work pushes, missed questions first in the sheet, Teach ProBeing.
  * v35 (item 25): two prayer days' start and end times in the prayer dialog.
  * v36 (item 26): an open awake/back-to-work question of any age shows; a 20 h+ night is not counted.
- * v37 (item 28): "Up and working?" and "didn't mark it — start?", with their buttons. */
-var CACHE = 'probeing-shell-v37';
+ * v37 (item 28): "Up and working?" and "didn't mark it — start?", with their buttons.
+ * v38 (item 29): a work-apps list, and "What is <app>?" (a push that opens the sheet). */
+var CACHE = 'probeing-shell-v38';
 var SHELL = [
   './',
   'index.html',
@@ -158,6 +159,9 @@ var ASK_ACTIONS = {
   start: [{ action: 'start', title: 'Start' }, { action: 'notwork', title: 'Not work' }]
 };
 
+// Item 29: "What is <app>?" — no buttons (five answers do not fit); a tap opens the sheet.
+var TEACH_TAG = 'probeing-watch-teach';
+
 self.addEventListener('push', function (event) {
   var data = pushData(event);
 
@@ -223,6 +227,17 @@ self.addEventListener('push', function (event) {
     };
     if (!done && data.nudge && data.nonce && data.url && ASK_ACTIONS[data.ask]) askOpts.actions = ASK_ACTIONS[data.ask];
     event.waitUntil(self.registration.showNotification(String(data.title || 'ProBeing'), askOpts));
+    return;
+  }
+
+  if (data.kind === 'watch-teach') {
+    event.waitUntil(self.registration.showNotification(String(data.title || 'ProBeing'), {
+      body: String(data.body || ''),
+      icon: 'icons/icon-192.png',
+      badge: 'icons/favicon-32.png',
+      tag: TEACH_TAG,
+      renotify: true
+    }));
     return;
   }
 
@@ -437,6 +452,15 @@ self.addEventListener('notificationclick', function (event) {
         body: 'Could not record your answer. Open ProBeing to answer it there.',
         icon: 'icons/icon-192.png', badge: 'icons/favicon-32.png', tag: ASK_TAG
       });
+    }));
+    return;
+  }
+
+  // Item 29: the question is answered in the sheet.
+  if (event.notification && event.notification.tag === TEACH_TAG) {
+    event.notification.close();
+    event.waitUntil(showApp().then(function (client) {
+      if (client && typeof client.postMessage === 'function') client.postMessage({ goto: 'home', catchup: true });
     }));
     return;
   }

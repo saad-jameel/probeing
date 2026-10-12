@@ -783,6 +783,11 @@
           <span>Sleep and break checks (all devices)</span>
         </label>
         <p id="watchChecksResult" class="hint"></p>
+        <label class="check">
+          <input id="watchTeachOn" type="checkbox" checked>
+          <span>Ask what an unsorted app is, after 15 min in a day (all devices)</span>
+        </label>
+        <p id="watchTeachResult" class="hint"></p>
         <details id="watchListsDetails" class="sub-details">
         <summary>Lists</summary>
         <label class="hint" for="watchDistract">Distractions, one per line (a site, a site/path, or an app word)</label>
@@ -791,6 +796,8 @@
         <textarea id="watchMeeting" rows="3"></textarea>
         <label class="hint" for="watchPrivate">Private: sent only as "private", never with a site or title</label>
         <textarea id="watchPrivate" rows="3"></textarea>
+        <label class="hint" for="watchWork">Work apps: work with no project needed (an app's whole name, like code for Code.exe, or a site)</label>
+        <textarea id="watchWork" rows="4"></textarea>
         <label class="hint" for="watchRules">Project keywords, "keyword = Project" (each project's own name works already)</label>
         <textarea id="watchRules" rows="4" placeholder="docker = OneNet"></textarea>
         <div class="dlg-actions" style="justify-content: flex-start">

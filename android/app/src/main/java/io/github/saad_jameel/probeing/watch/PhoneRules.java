@@ -46,6 +46,10 @@ public final class PhoneRules {
             "whatsapp", "messenger", "signal", "telegram"};
     static final String[] DEFAULT_MEETING = {"meet.google.com", "zoom.us", "zoom", "teams.microsoft.com", "teams",
             "discord"};
+    /** Item 29: work with no project, by the app's whole name (laptop names; on the phone Claude, Excel, Outlook). */
+    static final String[] DEFAULT_WORK = {"code", "windowsterminal", "cmd", "powershell", "pwsh", "wsl", "conhost",
+            "claude", "idea64", "pycharm64", "webstorm64", "phpstorm64", "clion64", "rider64", "goland64", "rubymine64",
+            "datagrip64", "rustrover64", "winword", "excel", "powerpnt", "outlook", "olk", "notepad++"};
 
     static final String[] BROWSERS = {"chrome", "msedge", "brave", "firefox", "opera", "vivaldi"};
 
@@ -138,7 +142,7 @@ public final class PhoneRules {
         return out;
     }
 
-    /** The three lists; a list never set is the default, an empty one stays empty. */
+    /** The four lists; a list never set is the default, an empty one stays empty. */
     public static Map<String, List<String>> lists(Map<String, ? extends List<?>> l) {
         Map<String, List<String>> out = new HashMap<>();
         out.put("distract", l != null && l.get("distract") != null ? tidyList(l.get("distract"))
@@ -147,6 +151,8 @@ public final class PhoneRules {
                 : new ArrayList<>(Arrays.asList(DEFAULT_PRIVATE)));
         out.put("meeting", l != null && l.get("meeting") != null ? tidyList(l.get("meeting"))
                 : new ArrayList<>(Arrays.asList(DEFAULT_MEETING)));
+        out.put("work", l != null && l.get("work") != null ? tidyList(l.get("work"))
+                : new ArrayList<>(Arrays.asList(DEFAULT_WORK)));
         return out;
     }
 
@@ -210,6 +216,33 @@ public final class PhoneRules {
         return "";
     }
 
+    /** A work-list name, as actWorkName: lower case, letters, digits and '+', no ".exe". */
+    static String workName(String s) {
+        String t = trim(s).toLowerCase(Locale.ROOT).replaceFirst("\\.exe$", "");
+        StringBuilder b = new StringBuilder(t.length());
+        for (int i = 0; i < t.length(); i++) {
+            char c = t.charAt(i);
+            if ((c >= '0' && c <= '9') || (c >= 'a' && c <= 'z') || c >= 0x80 || c == '+') b.append(c);
+        }
+        return b.toString();
+    }
+
+    /** As actWorkHit: a site as in the other lists; a name only as the app's whole name. */
+    static String workHit(List<String> list, Seg seg) {
+        if (list == null) return "";
+        String app = workName(seg.app);
+        for (String x : list) {
+            String e = trim(x).toLowerCase(Locale.ROOT).replaceFirst("\\.exe$", "");
+            if (e.isEmpty()) continue;
+            if (e.indexOf('.') != -1 || e.indexOf('/') != -1) {
+                if (entryHits(e, seg, false)) return x;
+            } else if (!app.isEmpty() && workName(e).equals(app)) {
+                return x;
+            }
+        }
+        return "";
+    }
+
     /** {keyword, project}, longest keyword first; the first rule for a keyword wins. */
     public static List<String[]> rules(List<String[]> keywordRules, List<String> projects) {
         final List<String[]> out = new ArrayList<>();
@@ -253,7 +286,8 @@ public final class PhoneRules {
         public List<String[]> rules = new ArrayList<>();
     }
 
-    /** {category, project, key}: private first, then distraction, then meeting, then the rules. */
+    /** {category, project, key}: private first, then distraction, then meeting, then the rules, then
+     *  the work list (work, no project). */
     public static String[] classify(Seg seg, Cfg cfg) {
         if (seg.incognito || PRIVATE_TITLE.matcher(seg.title == null ? "" : seg.title).find()
                 || !listHit(cfg.lists.get("private"), seg, true).isEmpty()) {
@@ -265,6 +299,7 @@ public final class PhoneRules {
             return new String[]{"meeting", hit != null ? hit[0] : "", hit != null ? hit[1] : ""};
         }
         if (hit != null) return new String[]{"work", hit[0], hit[1]};
+        if (!workHit(cfg.lists.get("work"), seg).isEmpty()) return new String[]{"work", "", ""};
         return new String[]{"unclear", "", ""};
     }
 

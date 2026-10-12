@@ -1659,10 +1659,11 @@ do $$ begin
   alter table public.activity_nudges add constraint activity_nudges_kind check (kind in ('distract', 'awake', 'resume'));
 exception when duplicate_object then null; end $$;
 
--- Re-added on every run, so it carries item 28's states too (a narrower list would refuse its rows).
+-- Re-added on every run, so it carries item 28's and 29's states too (a narrower list would refuse their rows).
 alter table public.activity_nudges drop constraint if exists activity_nudges_state_check;
 alter table public.activity_nudges add constraint activity_nudges_state_check check (state in ('sent', 'working', 'break',
-  'answered', 'left', 'autobreak', 'question', 'stale', 'closed', 'awake', 'asleep', 'resumed', 'started', 'notwork'));
+  'answered', 'left', 'autobreak', 'question', 'stale', 'closed', 'awake', 'asleep', 'resumed', 'started', 'notwork',
+  'asking'));
 
 -- One per device, kind and start: an awake run and a distraction streak never collide.
 alter table public.activity_nudges drop constraint if exists activity_nudges_streak_key;
@@ -1727,11 +1728,12 @@ alter table public.activity_blocks add constraint activity_blocks_mode check (mo
 
 alter table public.activity_nudges drop constraint if exists activity_nudges_kind;
 alter table public.activity_nudges add constraint activity_nudges_kind
-  check (kind in ('distract', 'awake', 'resume', 'upwork', 'start'));
+  check (kind in ('distract', 'awake', 'resume', 'upwork', 'start', 'teach'));   -- teach: item 29, so a re-run keeps its rows
 
 alter table public.activity_nudges drop constraint if exists activity_nudges_state_check;
 alter table public.activity_nudges add constraint activity_nudges_state_check check (state in ('sent', 'working', 'break',
-  'answered', 'left', 'autobreak', 'question', 'stale', 'closed', 'awake', 'asleep', 'resumed', 'started', 'notwork'));
+  'answered', 'left', 'autobreak', 'question', 'stale', 'closed', 'awake', 'asleep', 'resumed', 'started', 'notwork',
+  'asking'));
 
 -- One open question per sleep, break or day-off stretch: "awake?" and "Up and working?"
 -- about one sleep count as one. It covers item 23's index, which is dropped.
@@ -1739,3 +1741,41 @@ create unique index if not exists activity_nudges_open_ask28_idx on public.activ
   (user_id, (case when kind = 'upwork' then 'awake' else kind end), ref_at)
   where state = 'sent' and kind in ('awake', 'resume', 'upwork', 'start');
 drop index if exists public.activity_nudges_open_ask_idx;
+
+-- ============================================================ item 29 (12 Oct)
+-- A work list ({"work": [...]} in user_settings.activity_lists; jsonb, no change): apps
+-- that are work with no project. And "What is <app>?": an unsorted app or site (a name
+-- from working-time blocks only; never a title, never one on his private list) at 15
+-- minutes in a day is asked about, one question at a time. A question is an
+-- activity_nudges row: kind 'teach', state 'asking' -> answered / closed / stale;
+-- streak_start = ref_at = the counter day's start; what = the name as shown; entry = the
+-- name Teach keeps (a site, or the app squashed); entry_min = its minutes when asked;
+-- pushed_at set only when it was pushed (at most two a day). Written by activity-ingest
+-- only. 'asking', not 'sent', so an app from before item 29 never shows it as a
+-- distraction push. No new events rows. Safe to run twice.
+
+alter table public.activity_nudges add column if not exists entry text not null default ''
+  check (char_length(entry) <= 253);
+alter table public.activity_nudges add column if not exists entry_min integer
+  check (entry_min is null or entry_min between 0 and 1440);
+
+alter table public.activity_nudges drop constraint if exists activity_nudges_kind;
+alter table public.activity_nudges add constraint activity_nudges_kind
+  check (kind in ('distract', 'awake', 'resume', 'upwork', 'start', 'teach'));
+
+alter table public.activity_nudges drop constraint if exists activity_nudges_state_check;
+alter table public.activity_nudges add constraint activity_nudges_state_check check (state in ('sent', 'working', 'break',
+  'answered', 'left', 'autobreak', 'question', 'stale', 'closed', 'awake', 'asleep', 'resumed', 'started', 'notwork',
+  'asking'));
+
+-- One open question at a time, and each name asked at most once a day.
+create unique index if not exists activity_nudges_open_teach_idx on public.activity_nudges (user_id)
+  where kind = 'teach' and state = 'asking';
+create unique index if not exists activity_nudges_teach_day_idx on public.activity_nudges (user_id, entry, streak_start)
+  where kind = 'teach';
+
+grant select (entry, entry_min) on public.activity_nudges to authenticated;
+
+-- His switch for the question (Settings: "Ask what an unsorted app is"). Off: no question,
+-- no push; Teach ProBeing in Settings still works.
+alter table public.user_settings add column if not exists activity_teach boolean not null default true;

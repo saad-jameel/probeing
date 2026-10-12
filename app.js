@@ -15212,6 +15212,8 @@ async function loadWatch() {
     $('watchDistract').value = lists.distract.join('\n');
     $('watchMeeting').value = lists.meeting.join('\n');
     $('watchPrivate').value = lists['private'].join('\n');
+    $('watchWork').value = lists.work.join('\n');
+    await loadTeachSwitch();
     $('watchNudgeOn').checked = !(row && row.activity_nudge === false);
     $('watchNudgeOn').disabled = false;
     $('watchChecksOn').checked = !(row && row.activity_checks === false);
@@ -15369,6 +15371,36 @@ $('watchChecksOn').addEventListener('change', async function () {
   box.disabled = false;
 });
 
+/* Item 29: the "what is this app?" question, its own switch. Read apart from the others, so a
+ * database without the item 29 column still shows the rest of Settings. */
+async function loadTeachSwitch() {
+  var box = $('watchTeachOn');
+  var set = await sb.from('user_settings').select('activity_teach').eq('user_id', sbUser.id).limit(1);
+  if (set.error) { box.disabled = true; $('watchTeachResult').textContent = 'Not set up yet: the database needs the item 29 part.'; return; }
+  var row = (set.data || [])[0] || null;
+  box.checked = !(row && row.activity_teach === false);
+  box.disabled = false;
+}
+
+$('watchTeachOn').addEventListener('change', async function () {
+  var box = this;
+  var want = box.checked;
+  var out = $('watchTeachResult');
+  box.disabled = true;
+  out.textContent = 'Saving…';
+  try {
+    if (!supabaseReady()) throw new Error('Sign in first.');
+    var res = await sb.from('user_settings').upsert({ user_id: sbUser.id, activity_teach: want }, { onConflict: 'user_id' });
+    if (res.error) throw errorFrom(res.error);
+    out.textContent = want ? 'On, for every device. At most two pushes a day; the rest wait in the app.'
+                           : 'Off: no "what is this app?" question. Teach ProBeing below still works.';
+  } catch (e) {
+    box.checked = !want;
+    out.textContent = 'Not saved: ' + ((e && e.message) || e);
+  }
+  box.disabled = false;
+});
+
 $('watchListsSave').addEventListener('click', async function () {
   var out = $('watchListsResult');
   var parsed = parseWatchRules($('watchRules').value);
@@ -15380,7 +15412,7 @@ $('watchListsSave').addEventListener('click', async function () {
   try {
     if (!supabaseReady()) throw new Error('Sign in first.');
     var lists = { distract: watchListOf($('watchDistract').value), meeting: watchListOf($('watchMeeting').value),
-                  'private': watchListOf($('watchPrivate').value) };
+                  'private': watchListOf($('watchPrivate').value), work: watchListOf($('watchWork').value) };
     var res = await sb.from('user_settings').upsert({ user_id: sbUser.id, activity_lists: lists }, { onConflict: 'user_id' });
     if (res.error) throw errorFrom(res.error);
     // Insert, update and delete, never upsert: the browser may not write a rule's keyword in place.
@@ -15404,50 +15436,21 @@ $('watchListsSave').addEventListener('click', async function () {
 
 /* ── Teach ProBeing (item 23) ──────────────────────────────────────────────
  * Apps and sites seen lately that no rule placed. Each choice is kept by name
- * only, never a title: Work = a keyword rule, Meeting / Distraction / Private =
- * an entry in that list, Ignore = user_settings.activity_ignore. The laptop and
- * the phone read them on their next run. A setting, so written straight away. */
+ * only, never a title: Work = a keyword rule (item 29: or, with no project, the
+ * work list), Meeting / Distraction / Private = an entry in that list, Ignore =
+ * user_settings.activity_ignore. The laptop and the phone read them on their next
+ * run. A setting, so written straight away. */
 
 var TEACH_BACK_MS = 7 * 86400000;
 var TEACH_SHOW_MAX = 30;
 var TEACH_IGNORE_MAX = 300;
-var TEACH_LISTS = { meeting: 'meeting', distraction: 'distract', 'private': 'private' };
+var TEACH_LISTS = { meeting: 'meeting', distraction: 'distract', 'private': 'private', work: 'work' };
 var teach = null;                         // {blocks, fixes, lists, rules, ignore, projects}
 
-/** What a block can be taught by: its site, else its app as a squashed word; null for a
- *  browser with no site, a terminal or file window, or a phone app with no name. */
-function teachName(b) {
-  if (b.domain) {
-    var d = actCleanDomain(b.domain);
-    return d ? { entry: d, label: d, site: true } : null;
-  }
-  var app = String(b.app || '').replace(/\.exe$/i, '').trim();
-  var w = actNorm(app);
-  if (w.length < 3 || w === 'otherapp' || actIsBrowser(b.app) || ACT_NO_TITLE_APPS.indexOf(w) !== -1) return null;
-  return { entry: w, label: app, site: false };
-}
-
-/** Unplaced time by name, most first: [{entry, label, site, ms}]. blocks: unclear ones
- *  (start, end ms); cfg: {lists, rules, projects} as the watchers classify with; a name
- *  a rule now places, or one he ignored, is left out. */
+/** Unplaced time by name, most first: [{entry, label, site, ms}] (activity.js actTeachList, as
+ *  activity-ingest counts what it asks about). */
 function teachList(blocks, fixes, cfg, ignore) {
-  var by = userMap();
-  var skip = userMap();
-  (ignore || []).forEach(function (e) { skip[String(e)] = 1; });
-  (blocks || []).forEach(function (raw) {
-    var b = actFixed(raw, fixes);
-    if (b.category !== 'unclear' || (b.mode && b.mode !== 'work') || !(b.end > b.start)) return;
-    var n = teachName(b);
-    if (!n || skip[n.entry]) return;
-    if (!by[n.entry]) {
-      var placed = actClassify({ app: b.app, host: b.domain || '', path: '', title: '' }, cfg).category !== 'unclear';
-      by[n.entry] = { entry: n.entry, label: n.label, site: n.site, ms: 0, placed: placed };
-    }
-    by[n.entry].ms += b.end - b.start;
-  });
-  return Object.keys(by).map(function (k) { return by[k]; }).filter(function (x) { return !x.placed; })
-    .sort(function (a, b) { return (b.ms - a.ms) || (a.label < b.label ? -1 : a.label > b.label ? 1 : 0); })
-    .map(function (x) { return { entry: x.entry, label: x.label, site: x.site, ms: x.ms }; });
+  return actTeachList(blocks, fixes, cfg, ignore);
 }
 
 /** Everything teachList needs for [sinceMs, untilMs) (0: until now), read fresh (rule 3). */
@@ -15514,37 +15517,20 @@ function teachRow(r) {
   li.appendChild(head);
   var acts = document.createElement('div');
   acts.className = 'catchup-acts';
-  var key = actNorm(r.entry);
-  var ruleOk = key.length >= ACT_KEY_MIN && key.length <= ACT_KEY_MAX;
-  function btn(label, fn, off) {
+  function btn(label, fn) {
     var b = document.createElement('button');
     b.type = 'button';
     b.className = 'link-btn';
     b.textContent = label;
-    b.disabled = Boolean(off);
-    if (off) b.title = 'Too short a name to make a rule of';
     b.addEventListener('click', fn);
     acts.appendChild(b);
   }
   btn('Work', function () {
-    var sel = document.createElement('select');
-    sel.className = 'cat-pick';
-    sel.setAttribute('aria-label', 'Project for ' + r.label);
-    var none = document.createElement('option');
-    none.value = '';
-    none.textContent = 'Which project?';
-    sel.appendChild(none);
-    teach.projects.forEach(function (p) {
-      var o = document.createElement('option');
-      o.value = p;
-      o.textContent = p;
-      sel.appendChild(o);
-    });
-    sel.addEventListener('change', function () { if (sel.value) teachSave(r, 'work', sel.value, li); });
+    var sel = teachWorkPick(r, teach.projects, function (project) { teachSave(r, 'work', project, li); });
     acts.textContent = '';
     acts.appendChild(sel);
     sel.focus();
-  }, !ruleOk);
+  });
   btn('Meeting', function () { teachSave(r, 'meeting', '', li); });
   btn('Distraction', function () { teachSave(r, 'distraction', '', li); });
   btn('Private', function () { teachSave(r, 'private', '', li); });
@@ -15553,42 +15539,80 @@ function teachRow(r) {
   return li;
 }
 
-/** One choice, written now. The lists and ignore are read fresh first, so nothing else is lost. */
+/** Can this name be a keyword rule (4 to 40 letters or digits)? */
+function teachRuleOk(r) {
+  var key = actNorm(r.entry);
+  return key.length >= ACT_KEY_MIN && key.length <= ACT_KEY_MAX;
+}
+
+/** Work's project picker: "No project — just work" (the work list), then his projects (a
+ *  keyword rule) when the name is long enough for one. onPick(project or ''). */
+function teachWorkPick(r, projects, onPick) {
+  var sel = document.createElement('select');
+  sel.className = 'cat-pick';
+  sel.setAttribute('aria-label', 'Project for ' + r.label);
+  function opt(text, value, none) {
+    var o = document.createElement('option');
+    o.value = value;
+    o.textContent = text;              // his project names: textContent (rule 5)
+    if (none) o.dataset.none = '1';
+    sel.appendChild(o);
+  }
+  opt('Which project?', '', false);
+  opt('No project — just work', '', true);
+  if (teachRuleOk(r)) (projects || []).forEach(function (p) { opt(p, p, false); });
+  sel.addEventListener('change', function () {
+    var o = sel.options[sel.selectedIndex];
+    if (o && o.dataset.none === '1') onPick('');
+    else if (sel.value) onPick(sel.value);
+  });
+  return sel;
+}
+
+/** One choice, written now; returns what it became, in words. Work with a project is a rule;
+ *  without one (or a name too short for a rule) the work list. The lists and ignore are read
+ *  fresh first, so nothing else is lost. */
+async function teachApply(r, kind, project) {
+  if (!supabaseReady()) throw new Error('Sign in first.');
+  if (kind === 'work' && project && teachRuleOk(r)) {
+    var key = actNorm(r.entry);
+    var ins = await sb.from('activity_rules').insert({ user_id: sbUser.id, keyword: key, project: project, source: 'hand' });
+    if (ins.error && ins.error.code === '23505') {
+      ins = await sb.from('activity_rules').update({ project: project, source: 'hand', updated_at: new Date().toISOString() })
+        .eq('keyword', key);
+    }
+    if (ins.error) throw errorFrom(ins.error);
+    return project;
+  }
+  var set = await sb.from('user_settings').select('activity_lists,activity_ignore').eq('user_id', sbUser.id).limit(1);
+  if (set.error) throw errorFrom(set.error);
+  var row = (set.data || [])[0] || null;
+  var patch = { user_id: sbUser.id };
+  if (kind === 'ignore') {
+    var ign = Array.isArray(row && row.activity_ignore) ? row.activity_ignore.slice() : [];
+    if (ign.indexOf(r.entry) === -1) ign.push(r.entry);
+    patch.activity_ignore = ign.slice(-TEACH_IGNORE_MAX);
+  } else {
+    var lists = actLists(row && row.activity_lists);
+    var name = TEACH_LISTS[kind];
+    // A work app is kept by its whole name with any '+' (activity.js actWorkName); a site as it is.
+    var entry = kind === 'work' && !r.site ? actWorkName(r.label) || r.entry : r.entry;
+    if (lists[name].indexOf(entry) === -1) {
+      if (lists[name].length >= ACT_LIST_MAX) throw new Error('That list is full (' + ACT_LIST_MAX + '). Remove one under Lists first.');
+      lists[name].push(entry);
+    }
+    patch.activity_lists = lists;
+  }
+  var up = await sb.from('user_settings').upsert(patch, { onConflict: 'user_id' });
+  if (up.error) throw errorFrom(up.error);
+  return kind === 'ignore' ? 'ignored' : kind === 'work' ? 'work, no project' : kind;
+}
+
 async function teachSave(r, kind, project, li) {
   li.textContent = 'Saving…';
   try {
-    if (!supabaseReady()) throw new Error('Sign in first.');
-    if (kind === 'work') {
-      var key = actNorm(r.entry);
-      var ins = await sb.from('activity_rules').insert({ user_id: sbUser.id, keyword: key, project: project, source: 'hand' });
-      if (ins.error && ins.error.code === '23505') {
-        ins = await sb.from('activity_rules').update({ project: project, source: 'hand', updated_at: new Date().toISOString() })
-          .eq('keyword', key);
-      }
-      if (ins.error) throw errorFrom(ins.error);
-    } else {
-      var set = await sb.from('user_settings').select('activity_lists,activity_ignore').eq('user_id', sbUser.id).limit(1);
-      if (set.error) throw errorFrom(set.error);
-      var row = (set.data || [])[0] || null;
-      var patch = { user_id: sbUser.id };
-      if (kind === 'ignore') {
-        var ign = Array.isArray(row && row.activity_ignore) ? row.activity_ignore.slice() : [];
-        if (ign.indexOf(r.entry) === -1) ign.push(r.entry);
-        patch.activity_ignore = ign.slice(-TEACH_IGNORE_MAX);
-      } else {
-        var lists = actLists(row && row.activity_lists);
-        var name = TEACH_LISTS[kind];
-        if (lists[name].indexOf(r.entry) === -1) {
-          if (lists[name].length >= ACT_LIST_MAX) throw new Error('That list is full (' + ACT_LIST_MAX + '). Remove one under Lists first.');
-          lists[name].push(r.entry);
-        }
-        patch.activity_lists = lists;
-      }
-      var up = await sb.from('user_settings').upsert(patch, { onConflict: 'user_id' });
-      if (up.error) throw errorFrom(up.error);
-    }
-    li.textContent = r.label + ' → ' + (kind === 'work' ? project : kind === 'ignore' ? 'ignored' : kind) +
-      '. The laptop and phone use it from their next run.';
+    var did = await teachApply(r, kind, project);
+    li.textContent = r.label + ' → ' + did + '. The laptop and phone use it from their next run.';
     // The Lists editor must not save an older copy over this.
     loadWatch().catch(function () { /* its own line says what failed */ });
   } catch (e) {
@@ -15633,6 +15657,11 @@ function catchupAsks(nudges, rids, since) {
   var out = [];
   (nudges || []).forEach(function (n) {
     var id = n.id;
+    // Item 29: "what is this app?" is open until the server sees the name sorted.
+    if (n.kind === 'teach') {
+      if (n.state === 'asking') out.push({ kind: 'teach', n: n });
+      return;
+    }
     if (WATCH_ASKS[n.kind] === 1) {
       if (n.state === 'sent' && !rids['nw-' + id] && !rids['nr-' + id] && !rids['ns-' + id] && !rids['na-' + id]) {
         out.push({ kind: n.kind, n: n });
@@ -15693,12 +15722,20 @@ async function readCatchUp() {
     (rr.data || []).forEach(function (r) { rids[r.rid] = 1; });
     outboxMine().forEach(function (it) { if (it.rid) rids[it.rid] = 1; });
   }
-  var asks = catchupAsks(nudges, rids, since);
+  var asks = catchupAsks(nudges.concat(await readTeachAsk(dayStart)), rids, since);
   var groups = actGroups(blocks, fixes);
   var total = groups.reduce(function (n, g) { return n + g.ms; }, 0);
   if (!asks.length && total < CATCHUP_MIN_MS) return null;
   var until = blocks.reduce(function (m, b) { return Math.max(m, b.end); }, since);
   return { since: since, until: until, blocks: blocks, fixes: fixes, groups: groups, asks: asks, edits: [] };
+}
+
+/** Item 29: today's open "what is this app?" question, or none. A database without the item 29
+ *  part answers with an error: no question then, and the rest of the sheet still works. */
+async function readTeachAsk(dayStart) {
+  var res = await sb.from('activity_nudges').select('id,kind,what,streak_start,state,entry,entry_min')
+    .eq('kind', 'teach').eq('state', 'asking').gte('streak_start', new Date(dayStart).toISOString()).limit(1);
+  return res.error ? [] : (res.data || []);
 }
 
 /** On opening the app (and coming back to it): the sheet, when there is something to confirm. */
@@ -15834,8 +15871,26 @@ function catchupAskRow(a) {
     b.type = 'button';
     b.className = 'btn';
     b.textContent = label;
-    b.addEventListener('click', function () { answerCatchUp(a, choice, li); });
+    b.addEventListener('click', typeof choice === 'function' ? choice
+      : a.kind === 'teach' ? function () { answerTeach(a, choice, '', li); } : function () { answerCatchUp(a, choice, li); });
     acts.appendChild(b);
+  }
+  if (a.kind === 'teach') {
+    var r = teachAskName(n);
+    var mins = Number(n.entry_min) > 0 ? ' ' + humanDuration(Number(n.entry_min) * 60000) + ' today, not sorted yet.' : '';
+    text.textContent = 'What is ' + r.label + '?' + mins;      // an app's or site's name: textContent (rule 5)
+    btn('Work', function () {
+      var sel = teachWorkPick(r, catchupProjects([]), function (project) { answerTeach(a, 'work', project, li); });
+      acts.textContent = '';
+      acts.appendChild(sel);
+      sel.focus();
+    });
+    btn('Meeting', 'meeting');
+    btn('Distraction', 'distraction');
+    btn('Private', 'private');
+    btn('Ignore', 'ignore');
+    li.append(text, acts);
+    return li;
   }
   if (WATCH_ASKS[a.kind] === 1) {
     var at = askAtOf(n);
@@ -15937,8 +15992,10 @@ function catchupGroupRow(g, i, projects) {
 function renderCatchUp() {
   var c = catchup;
   // Questions first (item 23); the title speaks for the list under them.
+  var onlyTeach = c.asks.length && c.asks.every(function (a) { return a.kind === 'teach'; });
   $('catchupTitle').textContent = c.groups.length || !c.asks.length
-    ? 'From ' + clockAt(c.since) + ' to ' + clockAt(c.until) + ' you were doing:' : 'Missed while you were away';
+    ? 'From ' + clockAt(c.since) + ' to ' + clockAt(c.until) + ' you were doing:'
+    : onlyTeach ? 'A quick question' : 'Missed while you were away';
   var asks = $('catchupAsks');
   asks.textContent = '';
   c.asks.forEach(function (a) { asks.appendChild(catchupAskRow(a)); });
@@ -15963,6 +16020,26 @@ function catchupPrune() {
     if (a.li) a.li.textContent = answered ? 'Answered on another device.' : 'That one\'s over.';
     return false;
   });
+}
+
+/** The name a teach question is about: a site has a dot, an app is a squashed word. */
+function teachAskName(n) {
+  var entry = String(n.entry || '');
+  return { entry: entry, label: String(n.what || entry), site: entry.indexOf('.') !== -1 };
+}
+
+/** Item 29: an answer is Teach ProBeing's own (a setting, written now); the server sees the name
+ *  sorted on its next run, closes the question and files today's blocks under it. */
+async function answerTeach(a, kind, project, li) {
+  var r = teachAskName(a.n);
+  catchup.asks = catchup.asks.filter(function (x) { return x !== a; });
+  li.textContent = 'Saving…';
+  try {
+    var did = await teachApply(r, kind, project);
+    li.textContent = r.label + ' → ' + did + '. Noted for every device.';
+  } catch (e) {
+    li.textContent = 'Not saved: ' + ((e && e.message) || e) + '. It will be asked again.';
+  }
 }
 
 /** A push or question answered from the sheet: written now, through the outbox. */

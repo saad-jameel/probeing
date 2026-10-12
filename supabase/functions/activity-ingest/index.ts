@@ -38,6 +38,14 @@
 // and in a work app 5 minutes after Fajr asks "Up and working?" instead of "awake?"
 // (Start day writes a wake and a resume back to the work; Just awake, the wake only).
 //
+// Item 29 (12 Oct): an unsorted app or site (unclear, in working-time blocks, so it has a
+// name) at 15 minutes in a day, all devices together, is asked about: "What is <app>?",
+// one question at a time, answered in the app's sheet with Teach's choices. At most two
+// pushes a day, none asleep or between midnight and Fajr; the rest wait in the sheet.
+// Its own switch (activity_teach). Once the name is sorted (any route: the sheet, Teach,
+// Lists) the question closes and today's unclear blocks are filed again by name. No name
+// is kept from sleep, a break or the day off: those blocks stay bare (items 23, 28).
+//
 // No cron: the laptop's own 5-minute run is the clock. A push goes out when a
 // distraction has run 10 minutes; 5 minutes later, with no answer and still on
 // it, a break is written back to when it started (or, when another device shows
@@ -47,8 +55,8 @@
 // Deployed by hand (verify_jwt stays on; the laptop sends the anon key):
 //   npx supabase functions deploy activity-ingest --project-ref <ref> --use-api
 // Secrets: ALLOWED_USER_ID, GEMINI_API_KEY, GEMINI_MODEL, VAPID_PRIVATE_KEY (set
-// for the other functions); GEMINI_DAILY optional. Needs the "stage 18b", "item 23"
-// and "item 28" parts of docs/supabase_schema.sql.
+// for the other functions); GEMINI_DAILY optional. Needs the "stage 18b", "item 23",
+// "item 28" and "item 29" parts of docs/supabase_schema.sql.
 
 import { createClient } from 'jsr:@supabase/supabase-js@2';
 import '../_shared/day.js';
@@ -112,6 +120,9 @@ var NIGHTS_BACK_MS = 36 * 3600000;     // nights recounted on each run
 var ASK_KINDS = ['awake', 'resume', 'upwork', 'start'];
 var ASK_QUIET_MS = 30 * MIN_MS;        // after "Still asleep", "It was a break" or "Not work", not asked again this long
 var START_MIN_MS = 10 * MIN_MS;        // item 28: work this long in a row, day not started, asks "start?"
+var TEACH_MIN_MS = 15 * MIN_MS;        // item 29: an unsorted name this long today is asked about
+var TEACH_PUSH_MAX = 2;                // ...pushed at most this many times a day; the rest wait in the sheet
+var TEACH_FIX_CHUNK = 100;             // block ids per update when today's blocks are filed again
 /* What an na- answer (the second button) leaves a question as; and each kind's two answers. */
 var NA_STATE = { awake: 'asleep', upwork: 'asleep', resume: 'break', start: 'notwork' };
 var ASK_CHOICES = { awake: ['awake', 'asleep'], resume: ['resume', 'break'], upwork: ['start', 'awake'], start: ['start', 'notwork'] };
@@ -626,6 +637,78 @@ function modeOf(walk) {
   return walk.working ? 'work' : walk.asleep ? 'sleep' : (walk.onBreak || walk.autoBreak) ? 'break' : 'off';
 }
 
+/* ── Item 29: "What is <app>?" ─────────────────────────────────────────── */
+
+/**
+ * d: {dayStart, on (his switch), canPush, list (activity.js actTeachList of today's blocks:
+ * unsorted names, most time first), nudges [{id, entry, state, streak_start, pushed_at}] (ms;
+ * kind teach: every open one, and all of today's)}. Returns {decide: [{id, state}], ask:
+ * {entry, label, ms} or null, push: 'new', an open question's id, or null}.
+ */
+function teachStep(d) {
+  var out = { decide: [], ask: null, push: null };
+  var unsorted = Object.create(null);
+  (d.list || []).forEach(function (r) { unsorted[r.entry] = r; });
+  var asked = Object.create(null);
+  var pushed = 0;
+  var open = null;
+  (d.nudges || []).forEach(function (n) {
+    var today = n.streak_start >= d.dayStart;
+    if (today) {
+      asked[n.entry] = 1;
+      if (isFinite(n.pushed_at)) pushed += 1;
+    }
+    if (n.state !== 'asking') return;
+    // Sorted by any route (the sheet, Teach, Lists, a rule): its name is no longer unsorted.
+    var to = !today ? 'stale' : d.on === false ? 'closed' : !unsorted[n.entry] ? 'answered' : open ? 'closed' : '';
+    if (to) out.decide.push({ id: n.id, state: to });
+    else open = n;
+  });
+  if (d.on === false) return out;
+  if (!open) {
+    var next = (d.list || []).filter(function (r) { return r.ms >= TEACH_MIN_MS && !asked[r.entry]; })[0];
+    if (next) out.ask = { entry: next.entry, label: next.label, ms: next.ms };
+  }
+  if (d.canPush && pushed < TEACH_PUSH_MAX) {
+    if (out.ask) out.push = 'new';
+    else if (open && !isFinite(open.pushed_at)) out.push = open.id;
+  }
+  return out;
+}
+
+/** Today's unclear blocks that the lists and rules now place, as updates: [{ids, category,
+ *  project, key}]. By app and site only, as the server has no title. */
+function teachFixes(blocks, cfg) {
+  var by = Object.create(null);
+  (blocks || []).forEach(function (b) {
+    if (b.category !== 'unclear' || (b.mode && b.mode !== 'work') || !b.id) return;
+    var c = A.actClassify({ app: b.app, host: b.domain || '', path: '', title: '' }, cfg);
+    if (c.category === 'unclear') return;
+    var k = [c.category, c.project, c.key].join('|');
+    if (!by[k]) {
+      by[k] = { ids: [], category: c.category, project: c.category === 'private' ? '' : c.project,
+                key: c.category === 'private' ? '' : c.key };
+    }
+    by[k].ids.push(b.id);
+  });
+  return Object.keys(by).map(function (k) { return by[k]; });
+}
+
+/** Between local midnight and the Fajr after it. fajrAfter(t): the first Fajr after t. */
+function nightNow(now, offsetMin, fajrAfter) {
+  var midnight = midnightAfter(now, offsetMin) - 86400000;
+  var f = fajrAfter(midnight);
+  return isFinite(f) && now >= midnight && now < f;
+}
+
+/** The push. sw.js shows it with no buttons; a tap opens the sheet, which asks it. */
+function teachPayload(label, ms) {
+  var mins = Math.max(15, Math.round(ms / 60000));
+  return { kind: 'watch-teach', tag: 'probeing-watch-teach', goto: 'home',
+           title: 'What is ' + A.actCut(label, 60) + '?',
+           body: mins + ' min today and not sorted yet. Tap to say: Work, Meeting, Distraction, Private or Ignore.' };
+}
+
 function isDailyRefusal(msg) {
   var s = String(msg || '');
   if (!/quota|rate.?limit|RESOURCE_EXHAUSTED|exceeded/i.test(s)) return false;
@@ -679,7 +762,9 @@ async function readSettings(sb: Sb, owner: string, now: number) {
   } catch (_e) { /* Karachi */ }
   const place = row ? { lat: row.lat, lng: row.lng, zone, method: row.method, asr: row.asr_school } : null;
   return { lists: A.actLists(row && row.activity_lists), on: !(row && row.activity_nudge === false),
-           checks: !(row && row.activity_checks === false), zone, offset, place };
+           checks: !(row && row.activity_checks === false), zone, offset, place,
+           teach: !(row && row.activity_teach === false),
+           ignore: Array.isArray(row && row.activity_ignore) ? row.activity_ignore : [] };
 }
 
 /** The first Fajr after t at his saved place (day.js: Isha's time ends at the next Fajr). */
@@ -830,6 +915,81 @@ async function runQuiet(sb: Sb, owner: string, now: number, set: Record<string, 
   return report;
 }
 
+/** Item 29: today's unsorted names, the question about one, its push; today's blocks filed
+ *  again by name once the lists or rules place them. */
+async function runTeach(sb: Sb, owner: string, now: number, set: Record<string, any>) {
+  const fajrAfter = fajrAfterFn(set);
+  const off = Day.zoneOffsetMin(set.zone, now, set.offset);
+  const dayStart = Day.counterDayStart(now, off);
+  const blocks = must(await sb.from('activity_blocks').select('id, started_at, ended_at, app, domain, category, mode')
+    .eq('user_id', owner).eq('mode', 'work').eq('category', 'unclear').gte('ended_at', iso(dayStart))
+    .order('started_at', { ascending: true }).limit(5000))
+    .map((r) => ({ id: r.id, start: Math.max(ms(r.started_at), dayStart), end: ms(r.ended_at), app: r.app || '',
+                   domain: r.domain || '', category: r.category, project: '', mode: r.mode }));
+  const fixRows = must(await sb.from('events').select('at, type, detail, project').eq('user_id', owner)
+    .eq('type', A.ACT_FIX_TYPE).gte('at', iso(dayStart - 86400000)).order('at', { ascending: true }).limit(2000));
+  const { projects, rules } = await readProjects(sb, owner, now);
+  const cfg = { lists: set.lists, rules: rules.map((r) => ({ keyword: r.keyword, project: r.project })), projects };
+  const report: Record<string, unknown> = { filed: 0 };
+  // Filed again by name: an answer, Teach or a Lists edit counts from today's first minute.
+  for (const f of teachFixes(blocks, cfg)) {
+    const patch: Record<string, unknown> = { category: f.category, project: f.project, rule_key: f.key, updated_at: iso(now) };
+    if (f.category === 'private') patch.domain = '';
+    for (let i = 0; i < f.ids.length; i += TEACH_FIX_CHUNK) {
+      const up = await sb.from('activity_blocks').update(patch).eq('user_id', owner).eq('category', 'unclear')
+        .in('id', f.ids.slice(i, i + TEACH_FIX_CHUNK));
+      if (up.error) throw new Error(up.error.message);
+    }
+    report.filed = Number(report.filed) + f.ids.length;
+  }
+  const list = A.actTeachList(blocks, A.actFixMap(fixRows), cfg, set.ignore);
+  const cols = 'id, entry, state, streak_start, pushed_at';
+  const open = must(await sb.from('activity_nudges').select(cols).eq('user_id', owner).eq('kind', 'teach')
+    .eq('state', 'asking').limit(10));
+  const today = must(await sb.from('activity_nudges').select(cols).eq('user_id', owner).eq('kind', 'teach')
+    .gte('streak_start', iso(dayStart)).limit(200));
+  const seen: Record<string, boolean> = {};
+  const nudges = open.concat(today).filter((n) => !seen[n.id] && (seen[n.id] = true))
+    .map((n) => ({ id: n.id, entry: String(n.entry || ''), state: n.state, streak_start: ms(n.streak_start),
+                   pushed_at: ms(n.pushed_at) }));
+  const walk = A.actWalk(await readRows(sb, owner, now - READ_BACK_MS), now - READ_BACK_MS, now);
+  const canPush = !walk.asleep && !nightNow(now, off, fajrAfter);
+  const step = teachStep({ dayStart, on: set.teach, canPush, list, nudges });
+  for (const d of step.decide) {
+    await sb.from('activity_nudges').update({ state: d.state, decided_at: iso(now) }).eq('id', d.id).eq('user_id', owner);
+  }
+  let id = step.push && step.push !== 'new' ? step.push : '';
+  let ask = null as { label: string; ms: number } | null;
+  if (step.ask) {
+    // One open question (activity_nudges_open_teach_idx) and one per name a day: a second run loses here.
+    const claim = await sb.from('activity_nudges').insert({
+      user_id: owner, device_id: null, kind: 'teach', ref_at: iso(dayStart), streak_start: iso(dayStart),
+      what: A.actCut(step.ask.label, 80), entry: step.ask.entry, entry_min: Math.round(step.ask.ms / MIN_MS), state: 'asking'
+    }).select('id');
+    if (claim.error) return Object.assign(report, { asked: false });
+    report.asked = true;
+    if (step.push === 'new') id = String((claim.data || [])[0]?.id || '');
+    ask = { label: step.ask.label, ms: step.ask.ms };
+  } else if (id) {
+    const o = nudges.filter((n) => n.id === id)[0];
+    const l = list.filter((r: Record<string, any>) => o && r.entry === o.entry)[0];
+    if (l) ask = { label: l.label, ms: l.ms };
+  }
+  if (id && ask) {
+    // Claimed before it is sent, so two devices' runs cannot both push it.
+    const mark = await sb.from('activity_nudges').update({ pushed_at: iso(now) }).eq('id', id).eq('user_id', owner)
+      .is('pushed_at', null).select('id');
+    if (!mark.error && (mark.data || []).length) {
+      const sent = await pushAll(sb, owner, JSON.stringify(teachPayload(ask.label, ask.ms)),
+                                 { ttl: 3600, topic: 'probeing-watch-teach', urgency: 'normal' });
+      // Delivered nowhere: not counted, so a later run may try again.
+      if (!sent.sent) await sb.from('activity_nudges').update({ pushed_at: null }).eq('id', id).eq('user_id', owner);
+      report.pushed = sent.sent;
+    }
+  }
+  return report;
+}
+
 /** The distraction check after an ingest: decisions, rows, pushes. */
 async function runNudges(sb: Sb, owner: string, now: number, set: Record<string, any>, req: Request) {
   const rows = (await readRows(sb, owner, now - READ_BACK_MS));
@@ -941,6 +1101,13 @@ async function opIngest(sb: Sb, dev: Record<string, any>, body: Record<string, a
       stored = rows.length;
     }
   }
+  // Item 29 first: today's blocks it files again count for the checks below.
+  let teach: Record<string, unknown> = {};
+  try {
+    teach = await runTeach(sb, dev.user_id, now, set);
+  } catch (e) {
+    teach = { error: String((e as Error)?.message || e) };
+  }
   let nudges: Record<string, unknown> = {};
   try {
     nudges = await runNudges(sb, dev.user_id, now, set, req);
@@ -953,7 +1120,7 @@ async function opIngest(sb: Sb, dev: Record<string, any>, body: Record<string, a
   } catch (e) {
     quiet = { error: String((e as Error)?.message || e) };
   }
-  return reply(200, { ok: true, stored, skipped: list.length - clean.length, nudges, quiet });
+  return reply(200, { ok: true, stored, skipped: list.length - clean.length, nudges, quiet, teach });
 }
 
 async function askGemini(key: string, model: string, prompt: string) {
