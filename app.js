@@ -5,7 +5,7 @@
  * Money    : money in and out, PKR, and today's list (Stage 11)
  * Review   : the weekly report (layout final, numbers land with the backend)
  *
- * The taskboard link lives in Settings → Developer settings.
+ * The taskboard link lives in Settings → Developer options.
  *
  * Everything writes through api() below — with one deliberate exception, the
  * Gemini call in extractProject(), which must not queue behind it.
@@ -381,7 +381,7 @@ function humanLocal() {
 }
 
 async function callSupabase(action, payload) {
-  if (!sb) throw new Error('Add your Supabase details in Settings → Developer settings.');
+  if (!sb) throw new Error('Add your Supabase details in Settings → Developer options.');
   if (!sbUser) throw new Error('Sign in to keep logging.');
   payload = payload || {};
 
@@ -4737,7 +4737,7 @@ function geminiUsageLine() {
   return used + ' of ' + geminiDailyBudget() + ' used today' +
     (used >= geminiDailyBudget()
       ? ' — entries keep their own text as the name until tomorrow.'
-      : ' (this app\'s own limit, set in Developer settings — leave room under your model\'s).');
+      : ' (this app\'s own limit, set in Developer options — leave room under your model\'s).');
 }
 
 /* The batch shape: one object per line, in the order the lines were given. The
@@ -10449,7 +10449,7 @@ moneyDlgKeys(buyEarlyDlg);
 
 /* A link, not a screen: whatever board you already use stays where it is. It was
  * the fourth tab until Stage 11 gave that place to Money; now it is a button in
- * Settings → Developer settings. Opened in the browser, not the PWA frame. */
+ * Settings → Developer options. Opened in the browser, not the PWA frame. */
 
 /** Only http(s) links may be opened. The Save button is type="button", so the
  *  <input type="url"> constraint never runs — this is the only check there is,
@@ -10481,7 +10481,7 @@ function askSignIn() {
 }
 
 $('githubBtn').addEventListener('click', async function () {
-  if (!sb) { $('signInMsg').textContent = 'Add your Supabase details in Settings → Developer settings first.'; return; }
+  if (!sb) { $('signInMsg').textContent = 'Add your Supabase details in Settings → Developer options first.'; return; }
   $('signInMsg').textContent = 'Opening GitHub…';
   try {
     // Come back to this exact page, so an installed app returns where it left.
@@ -10539,7 +10539,7 @@ function paintOutboxNote() {
     lines.push(held + (held === 1 ? ' entry belongs' : ' entries belong') +
       ' to a different account or a different Supabase project, so ' +
       (held === 1 ? 'it is' : 'they are') + ' being held here rather than sent. ' +
-      'Sign in to that account, or put that project back in Developer settings, ' +
+      'Sign in to that account, or put that project back in Developer options, ' +
       'and ' + (held === 1 ? 'it goes' : 'they go') + ' up.');
   }
   if (newer) {
@@ -10700,7 +10700,8 @@ $('settingsBtn').addEventListener('click', function () {
   buildListPanels();                 // once; the chips are drawn when loadWatch has read them
   loadWatch().catch(function () { /* its own line says what failed */ });   // likewise (Stage 18b)
   dlg.showModal();
-  showSettingsTab(savedSettingsTab(), false);
+  var tab = savedSettingsTab();
+  showSettingsTab(tab, tab !== 'general');   // on another tab, focus its button so the reader knows where they are
 });
 
 $('cancelBtn').addEventListener('click', function () { dlg.close(); });
@@ -15613,8 +15614,22 @@ async function readActIgnore() {
   actSet.ignore = Array.isArray(row && row.activity_ignore) ? row.activity_ignore.slice() : [];
 }
 
+/* Every write to activity_lists / activity_ignore (the panels and Teach) runs one at a time:
+ * two read-change-writes of one field in flight at once lose the first one's entry. */
+var actSetChain = Promise.resolve();
+
+function actSetSerial(fn) {
+  var run = actSetChain.then(function () { return fn(); });
+  actSetChain = run.catch(function () { /* the caller reports it; the next write still runs */ });
+  return run;
+}
+
 /** Read the setting fresh, change it, write it back: nothing another device wrote is lost. */
-async function listWriteSetting(p, change) {
+function listWriteSetting(p, change) {
+  return actSetSerial(function () { return listWriteNow(p, change); });
+}
+
+async function listWriteNow(p, change) {
   var col = p.store === 'ignore' ? 'activity_ignore' : 'activity_lists';
   var set = await sb.from('user_settings').select(col).eq('user_id', sbUser.id).limit(1);
   if (set.error) throw errorFrom(set.error);
@@ -15622,7 +15637,7 @@ async function listWriteSetting(p, change) {
   var patch = { user_id: sbUser.id };
   if (p.store === 'ignore') {
     var ign = Array.isArray(row && row.activity_ignore) ? row.activity_ignore.slice() : [];
-    patch.activity_ignore = change(ign).slice(-TEACH_IGNORE_MAX);
+    patch.activity_ignore = change(ign);
   } else {
     var lists = actLists(row && row.activity_lists);
     lists[p.key] = change(lists[p.key]);
@@ -15669,9 +15684,8 @@ async function listAdd(p) {
     } else {
       await listWriteSetting(p, function (list) {
         if (listHas(p, list, got.entry)) return list;           // another device added it meanwhile
-        if (p.store !== 'ignore' && list.length >= ACT_LIST_MAX) {
-          throw new Error('That list is full (' + ACT_LIST_MAX + '). Remove one first.');
-        }
+        var max = p.store === 'ignore' ? TEACH_IGNORE_MAX : ACT_LIST_MAX;
+        if (list.length >= max) throw new Error('That list is full (' + max + '). Remove one first.');
         return list.concat([got.entry]);
       });
       done = got.entry;
@@ -15862,14 +15876,22 @@ async function teachApply(r, kind, project) {
     if (ins.error) throw errorFrom(ins.error);
     return project;
   }
+  return actSetSerial(function () { return teachApplySetting(r, kind); });
+}
+
+/** Teach's list or Ignore write, inside the shared chain (re-read there). */
+async function teachApplySetting(r, kind) {
   var set = await sb.from('user_settings').select('activity_lists,activity_ignore').eq('user_id', sbUser.id).limit(1);
   if (set.error) throw errorFrom(set.error);
   var row = (set.data || [])[0] || null;
   var patch = { user_id: sbUser.id };
   if (kind === 'ignore') {
     var ign = Array.isArray(row && row.activity_ignore) ? row.activity_ignore.slice() : [];
-    if (ign.indexOf(r.entry) === -1) ign.push(r.entry);
-    patch.activity_ignore = ign.slice(-TEACH_IGNORE_MAX);
+    if (ign.indexOf(r.entry) === -1) {
+      if (ign.length >= TEACH_IGNORE_MAX) throw new Error('Ignore is full (' + TEACH_IGNORE_MAX + '). Remove one in the Ignore list first.');
+      ign.push(r.entry);
+    }
+    patch.activity_ignore = ign;
   } else {
     var lists = actLists(row && row.activity_lists);
     var name = TEACH_LISTS[kind];

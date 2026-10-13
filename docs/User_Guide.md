@@ -90,16 +90,24 @@ Pick a range: last 2 or 7 days, this week, last week, or last 30 days.
 
 ## Settings
 
+Three tabs: **General**, **ProBeing training** and **Developer options**. Settings opens
+on the tab you used last.
+
 - **Bedtime notifications** — at 11:30 pm, if your day is still open, a push asks
   "still awake?". Ignore it and the day ends at that time.
 - **Prayer times** — your location, calculation method and Asr school. Switches for
   prayer reminders, task-deadline reminders and a morning plan push.
 - **Google Tasks** — connect, pick the list, **Sync now**. A copy of your records is
   written to a Google Sheet in your Drive daily; **Export now** does it at once.
-- **Laptop and phone activity** — pair the laptop or phone, switch the distraction push
-  and the sleep/break checks on or off, edit the lists (distractions, meetings, private,
-  work apps, project keywords) and **Teach ProBeing** what an unsorted app is.
-- **Developer settings** — the backend address, Gemini limits, and **Pair a widget**.
+- **Laptop and phone activity** — pair the laptop or phone, and switch the distraction
+  push and the sleep/break checks on or off.
+- **Home-screen widget** — **Pair a widget** (General tab).
+- **ProBeing training** — at the top, apps and sites seen recently that nothing sorted:
+  one tap files each as Work, Meeting, Distraction, Private or Ignore. Below, one panel
+  per list (work apps, work sites, meetings, distractions, private, ignore, keyword
+  rules): type a name and press **Add**, or × to remove one. Saved at once.
+- **Developer options** — the backend address, Gemini limits, the taskboard link, and
+  **Test** / **Test Gemini**.
 
 ## Laptop watcher and taskbar dot (Windows)
 
@@ -125,7 +133,7 @@ paste the line it gives you into PowerShell, done.
 The Android app is the same ProBeing, plus:
 
 - **A home-screen widget** — what you are on and today's figures. Look-only; tap it to
-  open the app. Pair it once from Settings → Developer settings → **Pair a widget**.
+  open the app. Pair it once from Settings → General → **Pair a widget**.
 - **Phone activity** — the same checks as the laptop, from Android's usage access
   (which app was on screen and when; never what was on it). In Settings press **Pair
   this phone**, then **Finish in the Android app**.
@@ -135,4 +143,4 @@ The Android app is the same ProBeing, plus:
 - The dot by the logo is green when connected. A small number beside it means taps are
   waiting on this device; they are sent, once, when the connection returns.
 - The database is always right. If two devices disagree, press **Refresh** on Today.
-- Settings → Developer settings → **Test** and **Test Gemini** check the connection.
+- Settings → Developer options → **Test** and **Test Gemini** check the connection.
