@@ -60,8 +60,9 @@
  * v35 (item 25): two prayer days' start and end times in the prayer dialog.
  * v36 (item 26): an open awake/back-to-work question of any age shows; a 20 h+ night is not counted.
  * v37 (item 28): "Up and working?" and "didn't mark it — start?", with their buttons.
- * v38 (item 29): a work-apps list, and "What is <app>?" (a push that opens the sheet). */
-var CACHE = 'probeing-shell-v38';
+ * v38 (item 29): a work-apps list, and "What is <app>?" (a push that opens the sheet).
+ * v39 (item 30c): Settings in three tabs; one panel per list with Add and ×. */
+var CACHE = 'probeing-shell-v39';
 var SHELL = [
   './',
   'index.html',

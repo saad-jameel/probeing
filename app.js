@@ -10630,6 +10630,46 @@ $('helpCloseBtn').addEventListener('click', closeHelp);
 helpDlg.addEventListener('cancel', function (e) { e.preventDefault(); closeHelp(); });
 helpDlg.addEventListener('click', function (e) { if (e.target === helpDlg) closeHelp(); });
 
+/* Item 30c: Settings has three tabs; the last one shown is kept per device. */
+var SET_TAB_KEY = 'probeing.settings.tab';
+var SET_TABS = { general: 'setPanelGeneral', training: 'setPanelTraining', dev: 'devSettings' };
+
+function settingsTabButtons() {
+  return Array.prototype.slice.call(document.querySelectorAll('#settingsDlg .set-tab'));
+}
+
+function savedSettingsTab() {
+  var t = '';
+  try { t = localStorage.getItem(SET_TAB_KEY) || ''; } catch (e) { /* the default */ }
+  return SET_TABS[t] ? t : 'general';
+}
+
+/** Show one tab and remember it. Training reads its unsorted list when shown. */
+function showSettingsTab(name, focus) {
+  if (!SET_TABS[name]) name = 'general';
+  settingsTabButtons().forEach(function (b) {
+    var on = b.getAttribute('data-tab') === name;
+    b.setAttribute('aria-selected', on ? 'true' : 'false');
+    b.tabIndex = on ? 0 : -1;
+    if (on && focus) b.focus();
+  });
+  Object.keys(SET_TABS).forEach(function (k) { $(SET_TABS[k]).hidden = k !== name; });
+  try { localStorage.setItem(SET_TAB_KEY, name); } catch (e) { /* per visit only */ }
+  if (name === 'training' && dlg.open) loadTeach();
+}
+
+settingsTabButtons().forEach(function (b, i, all) {
+  b.addEventListener('click', function () { showSettingsTab(b.getAttribute('data-tab'), false); });
+  // Arrow keys, Home and End move along the tabs (the ARIA tabs pattern).
+  b.addEventListener('keydown', function (e) {
+    var to = e.key === 'ArrowRight' ? (i + 1) % all.length : e.key === 'ArrowLeft' ? (i + all.length - 1) % all.length
+      : e.key === 'Home' ? 0 : e.key === 'End' ? all.length - 1 : -1;
+    if (to === -1) return;
+    e.preventDefault();
+    showSettingsTab(all[to].getAttribute('data-tab'), true);
+  });
+});
+
 $('settingsBtn').addEventListener('click', function () {
   paintAccount();
   $('supaUrl').value = cfg.supaUrl || '';
@@ -10657,8 +10697,10 @@ $('settingsBtn').addEventListener('click', function () {
   loadPrayerRemind();                // likewise
   loadTaskRemind();                  // likewise
   loadPlanPush();                    // likewise
+  buildListPanels();                 // once; the chips are drawn when loadWatch has read them
   loadWatch().catch(function () { /* its own line says what failed */ });   // likewise (Stage 18b)
   dlg.showModal();
+  showSettingsTab(savedSettingsTab(), false);
 });
 
 $('cancelBtn').addEventListener('click', function () { dlg.close(); });
@@ -10953,7 +10995,7 @@ $('saveBtn').addEventListener('click', function () {
   // safeBoardUrl() would quietly store nothing. Say so instead.
   var typedBoard = $('boardUrl').value.trim();
   if (typedBoard && !safeBoardUrl(typedBoard)) {
-    $('devSettings').open = true;           // the field is folded away; show it
+    showSettingsTab('dev', false);          // the field is on another tab; show it
     $('testResult').textContent = 'The taskboard link must start with https:// — nothing else was saved.';
     return;
   }
@@ -10973,7 +11015,7 @@ $('saveBtn').addEventListener('click', function () {
     glance: $('glanceOn').checked
   };
   if (!next.supaUrl || !next.supaKey) {
-    $('devSettings').open = true;
+    showSettingsTab('dev', false);
     $('testResult').textContent = 'Fill in the Supabase URL and key first.';
     return;
   }
@@ -15110,48 +15152,6 @@ function humanLocalAt(ms) {
   }
 }
 
-/** Lines of a textarea, tidied as the server tidies a list. */
-function watchListOf(text) {
-  return actTidyList(String(text || '').split(/\r?\n/));
-}
-
-/** "keyword = Project" lines -> {ok: [{keyword, project}], bad: [line]}. */
-function parseWatchRules(text) {
-  var ok = [];
-  var bad = [];
-  var seen = userMap();
-  String(text || '').split(/\r?\n/).forEach(function (line) {
-    var t = line.trim();
-    if (!t) return;
-    var at = t.indexOf('=');
-    var k = at === -1 ? '' : actNorm(t.slice(0, at));
-    var p = at === -1 ? '' : t.slice(at + 1).trim();
-    if (k.length < ACT_KEY_MIN || k.length > ACT_KEY_MAX || !p || Array.from(p).length > ACT_PROJECT_MAX || seen[k]) {
-      bad.push(t);
-      return;
-    }
-    seen[k] = 1;
-    ok.push({ keyword: k, project: p });
-  });
-  return { ok: ok, bad: bad };
-}
-
-/** What Save must do to the rules table: [{op: 'insert'|'update'|'delete', ...}]. */
-function watchRuleChanges(had, want) {
-  var have = userMap();
-  (had || []).forEach(function (r) { have[r.keyword] = r; });
-  var keep = userMap();
-  var out = [];
-  want.forEach(function (r) {
-    keep[r.keyword] = 1;
-    var h = have[r.keyword];
-    if (!h) out.push({ op: 'insert', keyword: r.keyword, project: r.project });
-    else if (h.project !== r.project) out.push({ op: 'update', keyword: r.keyword, project: r.project });
-  });
-  (had || []).forEach(function (r) { if (!keep[r.keyword]) out.push({ op: 'delete', keyword: r.keyword }); });
-  return out;
-}
-
 var watchRules = [];                      // the rules as Settings last read them
 
 /* Item 22: every call a device makes marks it seen, working or not. The phone runs every
@@ -15193,7 +15193,7 @@ function renderWatchDevices(rows) {
   });
 }
 
-/** Settings: paired laptops, the switch, the lists and the keywords. */
+/** Settings: paired laptops, the switches, and the lists and keywords the training tab shows. */
 async function loadWatch() {
   var out = $('watchResult');
   forgetPairCodes();
@@ -15208,11 +15208,7 @@ async function loadWatch() {
     var set = await sb.from('user_settings').select('activity_lists,activity_nudge,activity_checks').eq('user_id', sbUser.id).limit(1);
     if (set.error) throw errorFrom(set.error);
     var row = (set.data || [])[0] || null;
-    var lists = actLists(row && row.activity_lists);
-    $('watchDistract').value = lists.distract.join('\n');
-    $('watchMeeting').value = lists.meeting.join('\n');
-    $('watchPrivate').value = lists['private'].join('\n');
-    $('watchWork').value = lists.work.join('\n');
+    actSet.lists = actLists(row && row.activity_lists);
     await loadTeachSwitch();
     $('watchNudgeOn').checked = !(row && row.activity_nudge === false);
     $('watchNudgeOn').disabled = false;
@@ -15221,7 +15217,8 @@ async function loadWatch() {
     var rules = await sb.from('activity_rules').select('keyword,project,source').order('keyword').limit(500);
     if (rules.error) throw errorFrom(rules.error);
     watchRules = (rules.data || []).filter(function (r) { return CATCHUP_RULE_SOURCES[r.source] === 1; });   // his and his corrections'
-    $('watchRules').value = watchRules.map(function (r) { return r.keyword + ' = ' + r.project; }).join('\n');
+    await readActIgnore();
+    listFill();
   } catch (e) {
     out.textContent = 'Could not read the laptop settings: ' + ((e && e.message) || e);
   }
@@ -15393,7 +15390,7 @@ $('watchTeachOn').addEventListener('change', async function () {
     var res = await sb.from('user_settings').upsert({ user_id: sbUser.id, activity_teach: want }, { onConflict: 'user_id' });
     if (res.error) throw errorFrom(res.error);
     out.textContent = want ? 'On, for every device. At most two pushes a day; the rest wait in the app.'
-                           : 'Off: no "what is this app?" question. Teach ProBeing below still works.';
+                           : 'Off: no "what is this app?" question. The ProBeing training tab still works.';
   } catch (e) {
     box.checked = !want;
     out.textContent = 'Not saved: ' + ((e && e.message) || e);
@@ -15401,38 +15398,319 @@ $('watchTeachOn').addEventListener('change', async function () {
   box.disabled = false;
 });
 
-$('watchListsSave').addEventListener('click', async function () {
-  var out = $('watchListsResult');
-  var parsed = parseWatchRules($('watchRules').value);
-  if (parsed.bad.length) {
-    out.textContent = 'Not saved. Write each keyword as "keyword = Project" (4 to 40 letters or digits): ' + parsed.bad.join('; ');
-    return;
+/* ── The lists (item 30c) ──────────────────────────────────────────────────
+ * One panel per list in the ProBeing training tab: chips with ×, a box and Add.
+ * Each change is written at once to the same places as before (activity_lists,
+ * activity_ignore, activity_rules), so the server and the watchers need nothing new.
+ * A 'list' panel whose key the data layer (ACT_LIST_KEYS) lacks is not drawn, so a
+ * new list is one line here. Work apps and Work sites are two views of the one work list. */
+var ACT_LIST_PANELS = [
+  { id: 'workApps', title: 'Work apps', store: 'list', key: 'work', part: 'app', ph: 'code',
+    hint: 'Work with no project needed. The app\'s whole name: code for Code.exe.' },
+  { id: 'workSites', title: 'Work sites', store: 'list', key: 'work', part: 'site', ph: 'docs.google.com',
+    hint: 'Work with no project needed. A site, or a site/path.' },
+  { id: 'meeting', title: 'Meetings', store: 'list', key: 'meeting', ph: 'zoom', hint: 'A site or an app word.' },
+  { id: 'distract', title: 'Distractions', store: 'list', key: 'distract', ph: 'reddit.com',
+    hint: 'A site, a site/path, or an app word.' },
+  { id: 'private', title: 'Private', store: 'list', key: 'private', ph: 'mybank.com',
+    hint: 'Sent only as "private", never with a site or title.' },
+  { id: 'helpers', title: 'Helpers', store: 'list', key: 'helpers', ph: 'notepad',
+    hint: 'Used for every project: they take the project of the work around them.' },
+  { id: 'ignore', title: 'Ignore', store: 'ignore', ph: 'spotify', hint: 'Never asked about. An app word or a site.' },
+  { id: 'rules', title: 'Keyword rules', store: 'rules', ph: 'docker',
+    hint: 'A window whose title, app or site holds the keyword goes to that project.' }
+];
+
+var actSet = { lists: null, ignore: null };   // as last read; null until read (rule 3: re-read after every write)
+
+function listPanelOn(p) {
+  if (typeof ACT_LIST_KEYS === 'undefined') return false;      // activity.js not loaded: no lists to show
+  return p.store !== 'list' || ACT_LIST_KEYS.indexOf(p.key) !== -1;
+}
+
+/** A site entry (a dot or a path), as actWorkHit tells them apart: "code.exe" is an app. */
+function listIsSite(e) {
+  return /[.\/]/.test(String(e || '').replace(/\.exe$/i, ''));
+}
+
+/** What a panel shows: list entries, ignored names, or the rules as "keyword → project". */
+function listPanelItems(p) {
+  if (p.store === 'rules') return watchRules.map(function (r) { return { key: r.keyword, text: r.keyword + ' → ' + r.project }; });
+  var all = p.store === 'ignore' ? actSet.ignore : actSet.lists && actSet.lists[p.key];
+  return (all || []).filter(function (e) {
+    return p.part === 'app' ? !listIsSite(e) : p.part === 'site' ? listIsSite(e) : true;
+  }).map(function (e) { return { key: e, text: e }; });
+}
+
+function listPanelLoaded(p) {
+  return p.store === 'rules' ? actSet.lists !== null : p.store === 'ignore' ? actSet.ignore !== null : actSet.lists !== null;
+}
+
+/** The panels' frames, built once; listFill() draws the chips. */
+function buildListPanels() {
+  var box = $('actListPanels');
+  if (!box || box.childNodes.length) return;
+  ACT_LIST_PANELS.forEach(function (p) {
+    if (!listPanelOn(p)) return;
+    var sec = document.createElement('section');
+    sec.className = 'list-panel';
+    sec.id = 'listPanel-' + p.id;
+    var h = document.createElement('h4');
+    var name = document.createElement('span');
+    name.textContent = p.title;
+    var count = document.createElement('span');
+    count.className = 'list-count';
+    h.append(name, count);
+    var hint = document.createElement('p');
+    hint.className = 'hint';
+    hint.textContent = p.hint;
+    var chips = document.createElement('ul');
+    chips.className = 'list-chips';
+    var row = document.createElement('div');
+    row.className = 'list-add';
+    var input = document.createElement('input');
+    input.type = 'text';
+    input.id = 'listInput-' + p.id;
+    input.placeholder = p.ph;
+    input.setAttribute('aria-label', (p.store === 'rules' ? 'Keyword' : 'Add to ' + p.title));
+    input.autocomplete = 'off';
+    row.appendChild(input);
+    var proj = null;
+    if (p.store === 'rules') {
+      proj = document.createElement('input');
+      proj.type = 'text';
+      proj.id = 'listProject-' + p.id;
+      proj.placeholder = 'Project';
+      proj.setAttribute('aria-label', 'Project for the keyword');
+      proj.setAttribute('list', 'listProjects');
+      proj.autocomplete = 'off';
+      var dl = document.createElement('datalist');
+      dl.id = 'listProjects';
+      row.append(proj, dl);
+    }
+    var add = document.createElement('button');
+    add.type = 'button';
+    add.className = 'btn';
+    add.id = 'listAdd-' + p.id;
+    add.textContent = 'Add';
+    row.appendChild(add);
+    var out = document.createElement('p');
+    out.className = 'hint';
+    out.id = 'listResult-' + p.id;
+    out.setAttribute('role', 'status');
+    sec.append(h, hint, chips, row, out);
+    box.appendChild(sec);
+    p.el = { count: count, chips: chips, input: input, proj: proj, add: add, out: out };
+    add.addEventListener('click', function () { listAdd(p); });
+    [input, proj].forEach(function (f) {
+      if (!f) return;
+      // Enter adds, and must not submit the Settings form.
+      f.addEventListener('keydown', function (e) { if (e.key === 'Enter') { e.preventDefault(); listAdd(p); } });
+    });
+  });
+  listFill();
+}
+
+/** Draw every panel's chips from what was last read. Names are text (rule 5). */
+function listFill() {
+  ACT_LIST_PANELS.forEach(function (p) {
+    if (!p.el) return;
+    var ul = p.el.chips;
+    ul.textContent = '';
+    var loaded = listPanelLoaded(p);
+    p.el.add.disabled = !loaded || p.busy === true;
+    var items = loaded ? listPanelItems(p) : [];
+    p.el.count.textContent = loaded ? ' · ' + items.length : '';
+    if (!loaded) return;
+    if (!items.length) {
+      var none = document.createElement('li');
+      none.className = 'list-empty';
+      none.textContent = 'Nothing here yet.';
+      ul.appendChild(none);
+    }
+    items.forEach(function (it) {
+      var li = document.createElement('li');
+      li.className = 'list-chip';
+      var t = document.createElement('span');
+      t.className = 'list-chip-text';
+      t.textContent = it.text;
+      var x = document.createElement('button');
+      x.type = 'button';
+      x.className = 'list-chip-x';
+      x.textContent = '×';
+      x.setAttribute('aria-label', 'Remove ' + it.text + ' from ' + p.title);
+      x.addEventListener('click', function () { listRemove(p, it.key); });
+      li.append(t, x);
+      ul.appendChild(li);
+    });
+    if (p.el.proj) {
+      var dl = $('listProjects');
+      dl.textContent = '';
+      catchupProjects([]).forEach(function (name) {
+        var o = document.createElement('option');
+        o.value = name;
+        dl.appendChild(o);
+      });
+    }
+  });
+}
+
+/** Typed text -> {entry} for a list or Ignore, or {error} in words. */
+function listEntryFor(p, text) {
+  var raw = String(text || '').trim().replace(/^[a-z][a-z0-9+.-]*:\/\//i, '').replace(/^www\./i, '');
+  if (!raw) return { error: 'Type a name first.' };
+  if (p.store === 'ignore') {
+    // The form Teach keeps: a site's host, else the app as one squashed word.
+    if (listIsSite(raw)) {
+      var host = actCleanDomain(raw.split('/')[0]);
+      return host ? { entry: host } : { error: 'That is not a site name.' };
+    }
+    var w = actNorm(raw.replace(/\.exe$/i, ''));
+    return w.length >= 3 ? { entry: w } : { error: 'Too short to match anything: 3 letters or more.' };
   }
+  var e = actTidyList([raw])[0] || '';
+  var site = listIsSite(e);
+  if (p.part === 'app' && site) return { error: 'That is a site: add it under Work sites.' };
+  if (p.part === 'site' && !site) return { error: 'A site has a dot, like docs.google.com. An app goes under Work apps.' };
+  if (!site && (p.part === 'app' ? actWorkName(e).length < 1 : actNorm(e).length < 3)) {
+    return { error: 'Too short to match anything: 3 letters or more.' };
+  }
+  return { entry: e };
+}
+
+/** Is `e` already in `list`? A work app by its whole name, so "Code.exe" is "code". */
+function listHas(p, list, e) {
+  return list.some(function (x) {
+    return x === e || (p.key === 'work' && !listIsSite(x) && !listIsSite(e) && actWorkName(x) === actWorkName(e));
+  });
+}
+
+/** Read the lists, Ignore and his rules fresh, then redraw the panels, and Teach unless
+ *  `redrawTeach` is false (after a Teach choice, whose own line must stay). */
+async function refreshActLists(redrawTeach) {
+  var set = await sb.from('user_settings').select('activity_lists').eq('user_id', sbUser.id).limit(1);
+  if (set.error) throw errorFrom(set.error);
+  actSet.lists = actLists(((set.data || [])[0] || {}).activity_lists);
+  await readActIgnore();
+  var rules = await sb.from('activity_rules').select('keyword,project,source').order('keyword').limit(500);
+  if (rules.error) throw errorFrom(rules.error);
+  watchRules = (rules.data || []).filter(function (r) { return CATCHUP_RULE_SOURCES[r.source] === 1; });
+  listFill();
+  if (teach) {
+    // What Teach lists follows at once: a name just filed here leaves it.
+    teach.lists = actSet.lists;
+    teach.ignore = actSet.ignore;
+    teach.rules = (rules.data || []).map(function (r) { return { keyword: r.keyword, project: r.project }; });
+    if (redrawTeach !== false) renderTeach();
+  }
+}
+
+/** Ignore apart from the lists: a database without the item 23 column still shows them. */
+async function readActIgnore() {
+  var set = await sb.from('user_settings').select('activity_ignore').eq('user_id', sbUser.id).limit(1);
+  if (set.error) { actSet.ignore = null; return; }
+  var row = (set.data || [])[0] || null;
+  actSet.ignore = Array.isArray(row && row.activity_ignore) ? row.activity_ignore.slice() : [];
+}
+
+/** Read the setting fresh, change it, write it back: nothing another device wrote is lost. */
+async function listWriteSetting(p, change) {
+  var col = p.store === 'ignore' ? 'activity_ignore' : 'activity_lists';
+  var set = await sb.from('user_settings').select(col).eq('user_id', sbUser.id).limit(1);
+  if (set.error) throw errorFrom(set.error);
+  var row = (set.data || [])[0] || null;
+  var patch = { user_id: sbUser.id };
+  if (p.store === 'ignore') {
+    var ign = Array.isArray(row && row.activity_ignore) ? row.activity_ignore.slice() : [];
+    patch.activity_ignore = change(ign).slice(-TEACH_IGNORE_MAX);
+  } else {
+    var lists = actLists(row && row.activity_lists);
+    lists[p.key] = change(lists[p.key]);
+    patch.activity_lists = lists;
+  }
+  var up = await sb.from('user_settings').upsert(patch, { onConflict: 'user_id' });
+  if (up.error) throw errorFrom(up.error);
+}
+
+async function listAdd(p) {
+  var out = p.el.out;
+  if (p.busy) return;
+  if (!supabaseReady()) { out.textContent = 'Sign in first.'; return; }
+  var done = '';
+  var rule = null;
+  var got = null;
+  if (p.store === 'rules') {
+    var k = actNorm(p.el.input.value);
+    var proj = String(p.el.proj.value || '').trim();
+    if (k.length < ACT_KEY_MIN || k.length > ACT_KEY_MAX) { out.textContent = 'A keyword is 4 to 40 letters or digits.'; return; }
+    if (!proj || Array.from(proj).length > ACT_PROJECT_MAX) { out.textContent = 'Name the project too.'; return; }
+    var had = watchRules.filter(function (r) { return r.keyword === k; })[0];
+    if (had) { out.textContent = 'Already a rule: ' + had.keyword + ' → ' + had.project + '. Remove it first to change it.'; return; }
+    rule = { keyword: k, project: proj };
+  } else {
+    got = listEntryFor(p, p.el.input.value);
+    if (got.error) { out.textContent = got.error; return; }
+    var now = p.store === 'ignore' ? actSet.ignore || [] : (actSet.lists && actSet.lists[p.key]) || [];
+    if (listHas(p, now, got.entry)) { out.textContent = got.entry + ' is already in ' + p.title + '.'; return; }
+  }
+  p.busy = true;
+  p.el.add.disabled = true;
   out.textContent = 'Saving…';
   try {
-    if (!supabaseReady()) throw new Error('Sign in first.');
-    var lists = { distract: watchListOf($('watchDistract').value), meeting: watchListOf($('watchMeeting').value),
-                  'private': watchListOf($('watchPrivate').value), work: watchListOf($('watchWork').value) };
-    var res = await sb.from('user_settings').upsert({ user_id: sbUser.id, activity_lists: lists }, { onConflict: 'user_id' });
-    if (res.error) throw errorFrom(res.error);
-    // Insert, update and delete, never upsert: the browser may not write a rule's keyword in place.
-    var changes = watchRuleChanges(watchRules, parsed.ok);
-    for (var i = 0; i < changes.length; i++) {
-      var c = changes[i];
-      var r = c.op === 'insert'
-        ? await sb.from('activity_rules').insert({ user_id: sbUser.id, keyword: c.keyword, project: c.project, source: 'hand' })
-        : c.op === 'update'
-          ? await sb.from('activity_rules').update({ project: c.project, source: 'hand', updated_at: new Date().toISOString() })
-            .eq('keyword', c.keyword)
-          : await sb.from('activity_rules').delete().eq('keyword', c.keyword);
-      if (r.error) throw errorFrom(r.error);
+    if (rule) {
+      var ins = await sb.from('activity_rules').insert({ user_id: sbUser.id, keyword: rule.keyword, project: rule.project, source: 'hand' });
+      // A rule Gemini learned (not shown here) holds the keyword: his choice replaces it.
+      if (ins.error && ins.error.code === '23505') {
+        ins = await sb.from('activity_rules').update({ project: rule.project, source: 'hand', updated_at: new Date().toISOString() })
+          .eq('keyword', rule.keyword);
+      }
+      if (ins.error) throw errorFrom(ins.error);
+      done = rule.keyword + ' → ' + rule.project;
+    } else {
+      await listWriteSetting(p, function (list) {
+        if (listHas(p, list, got.entry)) return list;           // another device added it meanwhile
+        if (p.store !== 'ignore' && list.length >= ACT_LIST_MAX) {
+          throw new Error('That list is full (' + ACT_LIST_MAX + '). Remove one first.');
+        }
+        return list.concat([got.entry]);
+      });
+      done = got.entry;
     }
-    await loadWatch();
-    out.textContent = 'Saved, for every device. The laptop uses them from its next run.';
+    p.el.input.value = '';
+    if (p.el.proj) p.el.proj.value = '';
+    out.textContent = 'Added ' + done + '. The laptop and phone use it from their next run.';
   } catch (e) {
     out.textContent = 'Not saved: ' + ((e && e.message) || e);
   }
-});
+  p.busy = false;
+  try { await refreshActLists(); } catch (e) { out.textContent += ' (Could not read the lists back: ' + ((e && e.message) || e) + ')'; }
+  listFill();
+  p.el.input.focus();
+}
+
+async function listRemove(p, key) {
+  var out = p.el.out;
+  if (p.busy) return;
+  if (!supabaseReady()) { out.textContent = 'Sign in first.'; return; }
+  p.busy = true;
+  p.el.add.disabled = true;
+  out.textContent = 'Saving…';
+  try {
+    if (p.store === 'rules') {
+      var del = await sb.from('activity_rules').delete().eq('keyword', key);
+      if (del.error) throw errorFrom(del.error);
+    } else {
+      await listWriteSetting(p, function (list) { return list.filter(function (x) { return x !== key; }); });
+    }
+    out.textContent = 'Removed ' + key + '.';
+  } catch (e) {
+    out.textContent = 'Not saved: ' + ((e && e.message) || e);
+  }
+  p.busy = false;
+  try { await refreshActLists(); } catch (e) { out.textContent += ' (Could not read the lists back: ' + ((e && e.message) || e) + ')'; }
+  listFill();
+}
+
 
 /* ── Teach ProBeing (item 23) ──────────────────────────────────────────────
  * Apps and sites seen lately that no rule placed. Each choice is kept by name
@@ -15613,23 +15891,21 @@ async function teachSave(r, kind, project, li) {
   try {
     var did = await teachApply(r, kind, project);
     li.textContent = r.label + ' → ' + did + '. The laptop and phone use it from their next run.';
-    // The Lists editor must not save an older copy over this.
-    loadWatch().catch(function () { /* its own line says what failed */ });
+    // The panels show it at once (read back, rule 3).
+    refreshActLists(false).catch(function () { /* the panels keep their last copy */ });
   } catch (e) {
     li.textContent = 'Not saved: ' + ((e && e.message) || e);
   }
 }
 
-/** From Review's "label them": Settings, open at the Teach list. */
+/** From Review's "label them": Settings, open at the training tab (its top is the Teach list). */
 function openTeach() {
-  $('settingsBtn').click();
-  var box = $('teachDetails');
-  if (!box.open) box.open = true;           // its toggle event reads the list
-  else loadTeach();
+  try { localStorage.setItem(SET_TAB_KEY, 'training'); } catch (e) { /* shown below anyway */ }
+  $('settingsBtn').click();                 // opens at the saved tab, which reads the list
+  if ($('setPanelTraining').hidden) showSettingsTab('training', false);
+  var box = $('teachBox');
   if (typeof box.scrollIntoView === 'function') box.scrollIntoView({ block: 'start' });
 }
-
-$('teachDetails').addEventListener('toggle', function () { if (this.open) loadTeach(); });
 
 /* ── The catch-up sheet ────────────────────────────────────────────────────
  * Non-modal on purpose: M and Prayer stay one tap away underneath it (rule 4). */
@@ -16253,11 +16529,12 @@ renderProject();
 renderDaySummary();
 lastVisibleRefresh = Date.now();     // the boot reconcile counts as the first one
 refresh();
-if (!cfg.supaUrl || !cfg.supaKey) dlg.showModal();
+if (!cfg.supaUrl || !cfg.supaKey) { dlg.showModal(); showSettingsTab('dev', false); }   // the URL and key live there
 // google-callback.html links back to ./#google: open Settings there.
 if (location.hash === '#google') {
   try { history.replaceState(null, '', location.pathname + location.search); } catch (e) { /* stays */ }
   $('settingsBtn').click();
+  showSettingsTab('general', false);         // Google Tasks is there
 }
 // A deadline reminder that had to open a fresh window (sw.js) asks for Tasks.
 if (location.hash === '#tasks') {

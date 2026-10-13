@@ -621,6 +621,18 @@
   <form method="dialog" id="settingsForm">
     <h2>Settings</h2>
 
+    <!-- Item 30c: three tabs; the last one shown is kept per device. -->
+    <div class="set-tabs" role="tablist" aria-label="Settings sections">
+      <button type="button" class="set-tab" role="tab" id="setTabGeneral" data-tab="general"
+        aria-controls="setPanelGeneral" aria-selected="true">General</button>
+      <button type="button" class="set-tab" role="tab" id="setTabTraining" data-tab="training"
+        aria-controls="setPanelTraining" aria-selected="false" tabindex="-1">ProBeing training</button>
+      <button type="button" class="set-tab" role="tab" id="setTabDev" data-tab="dev"
+        aria-controls="devSettings" aria-selected="false" tabindex="-1">Developer options</button>
+    </div>
+
+    <div id="setPanelGeneral" class="set-panel" role="tabpanel" aria-labelledby="setTabGeneral">
+
       <div class="dlg-block">
         <h3>Bedtime notifications <button type="button" class="help-btn" data-help="helpPush"
           data-title="Bedtime notifications" aria-label="About bedtime notifications">?</button></h3>
@@ -738,8 +750,8 @@
           asks <strong>start?</strong>, and Start records work from when it began (Not work: no ask for 30
           minutes). A push you missed is asked when you next open ProBeing. <strong>Sleep and break
           checks</strong> turns these questions off; disturbed nights are still kept.</p>
-        <p class="hint"><strong>Teach ProBeing</strong> lists apps and sites from the last 7 days that no rule placed,
-          most time first. Work (then pick the project), Meeting, Distraction, Private or Ignore files them from then
+        <p class="hint">The <strong>ProBeing training</strong> tab lists apps and sites from the last 7 days that no rule placed,
+          most time first, and holds the lists they go into. Work (then pick the project), Meeting, Distraction, Private or Ignore files them from then
           on, on both devices. Only the app's or site's name is kept, never a window title.</p>
         <p class="hint">Pair once: press the button, copy the line, paste it into PowerShell on the
           laptop. The line is shown only now; ProBeing keeps a fingerprint, not the token.</p>
@@ -788,30 +800,29 @@
           <span>Ask what an unsorted app is, after 15 min in a day (all devices)</span>
         </label>
         <p id="watchTeachResult" class="hint"></p>
-        <details id="watchListsDetails" class="sub-details">
-        <summary>Lists</summary>
-        <label class="hint" for="watchDistract">Distractions, one per line (a site, a site/path, or an app word)</label>
-        <textarea id="watchDistract" rows="4"></textarea>
-        <label class="hint" for="watchMeeting">Meetings</label>
-        <textarea id="watchMeeting" rows="3"></textarea>
-        <label class="hint" for="watchPrivate">Private: sent only as "private", never with a site or title</label>
-        <textarea id="watchPrivate" rows="3"></textarea>
-        <label class="hint" for="watchWork">Work apps: work with no project needed (an app's whole name, like code for Code.exe, or a site)</label>
-        <textarea id="watchWork" rows="4"></textarea>
-        <label class="hint" for="watchRules">Project keywords, "keyword = Project" (each project's own name works already)</label>
-        <textarea id="watchRules" rows="4" placeholder="docker = OneNet"></textarea>
+      </div>
+
+      <div class="dlg-block">
+        <h3>Home-screen widget <button type="button" class="help-btn" data-help="helpWidget"
+          data-title="Home-screen widget" aria-label="About the home-screen widget">?</button></h3>
+        <template id="helpWidget">
+        <p class="hint">The Android widget shows the same two lines as the notification
+          shade &mdash; what you are working on, this session&rsquo;s hours, and today&rsquo;s
+          M and prayers &mdash; on your home
+          screen. It is <strong>look-only</strong>: tapping it opens ProBeing, and there is
+          nothing on it to press. The server keeps its lines current &mdash; every
+          10 minutes and after each entry, even with the app closed. The widget checks
+          by itself every 30 minutes; &#x21bb; on it checks now.</p>
+        <p class="hint">Pair it once. Press the button, write the code down, and type it
+          into the widget. ProBeing keeps only a fingerprint of the code, so it can never be
+          shown to you again &mdash; if it is lost, revoke it here and make another.</p>
+        </template>
         <div class="dlg-actions" style="justify-content: flex-start">
-          <button type="button" id="watchListsSave" class="btn">Save lists</button>
+          <button type="button" id="pairBtn" class="btn">Pair a widget</button>
         </div>
-        <p id="watchListsResult" class="hint"></p>
-        </details>
-        <!-- Item 23: apps and sites no rule placed; a choice is kept by name only. -->
-        <details id="teachDetails" class="sub-details">
-        <summary>Teach ProBeing</summary>
-        <p class="hint">Apps and sites from the last 7 days that no rule placed. One tap files them from now on.</p>
-        <ul id="teachList" class="catchup-list"></ul>
-        <p id="teachResult" class="hint"></p>
-        </details>
+        <p id="pairCode" class="pair-code" hidden></p>
+        <p id="pairResult" class="hint"></p>
+        <div id="deviceList" class="cat-list"></div>
       </div>
 
     <div class="help-row">
@@ -846,6 +857,76 @@
       this to turn it off.</p>
     </template>
     <p id="glanceResult" class="hint"></p>
+
+    <div class="help-row">
+      <label for="chipsInput">Break reasons (comma separated)</label>
+      <button type="button" class="help-btn" data-help="helpChips"
+        data-title="Break reasons" aria-label="About break reasons">?</button>
+    </div>
+    <input id="chipsInput" type="text" placeholder="Prayer-break, Lunch, Coffee">
+    <template id="helpChips">
+    <p class="hint">Stored on this device only, so each device has its own list. The comma is the separator, so a name cannot contain one. This list decides which reasons exist; the order re-sorts itself so the ones you use most sit first. The + on Home adds to it.</p>
+    </template>
+
+    <div class="help-row">
+      <label for="moneyOutTags">Money tags for spending (comma separated)</label>
+      <button type="button" class="help-btn" data-help="helpMoneyTags"
+        data-title="Money tags" aria-label="About money tags">?</button>
+    </div>
+    <input id="moneyOutTags" type="text" placeholder="Food, Laundry, Groceries">
+    <label for="moneyInTags">Money tags for income (comma separated)</label>
+    <input id="moneyInTags" type="text" placeholder="Salary">
+    <template id="helpMoneyTags">
+    <p class="hint">Shared by your phone and laptop, in this order. A tag you type with +
+      on the Money screen is used for that entry only and is not added here. Leave a box
+      empty for the starting list.</p>
+    </template>
+
+    <p id="supaWho" class="hint"></p>
+    <!-- Entries this device is holding: waiting, held for another account or
+         project, or refused outright. -->
+    <p id="outboxNote" class="hint" hidden></p>
+    <div class="dlg-actions" style="justify-content: flex-start">
+      <button type="button" id="signOutBtn" class="link-btn">Sign out</button>
+      <button type="button" id="outboxForgetBtn" class="link-btn" hidden>Forget the refused entries</button>
+    </div>
+    </div>
+
+    <div id="setPanelTraining" class="set-panel" role="tabpanel" aria-labelledby="setTabTraining" hidden>
+      <!-- Item 23: apps and sites no rule placed; a choice is kept by name only. -->
+      <section id="teachBox" class="dlg-block">
+        <h3>Seen recently, not sorted <button type="button" class="help-btn" data-help="helpTeach"
+          data-title="Seen recently, not sorted" aria-label="About seen recently, not sorted">?</button></h3>
+        <template id="helpTeach">
+        <p class="hint">Apps and sites from the last 7 days that no rule placed, most time first.
+          <strong>Work</strong> (then pick the project, or none), <strong>Meeting</strong>,
+          <strong>Distraction</strong>, <strong>Private</strong> or <strong>Ignore</strong> files one
+          from then on, on both devices. Only the app&rsquo;s or site&rsquo;s name is kept, never a
+          window title. Each choice lands in one of the lists below, where &times; takes it back out.</p>
+        </template>
+        <ul id="teachList" class="catchup-list"></ul>
+        <p id="teachResult" class="hint"></p>
+      </section>
+
+      <div class="help-row set-subhead">
+        <h3>Lists</h3>
+        <button type="button" class="help-btn" data-help="helpLists"
+          data-title="The lists" aria-label="About the lists">?</button>
+      </div>
+      <template id="helpLists">
+      <p class="hint">How the laptop and the phone sort what they see. Shared by every device;
+        each <strong>Add</strong> or &times; is saved at once, and the watchers use it from their
+        next run.</p>
+      <p class="hint">A <strong>site</strong> has a dot (<strong>docs.google.com</strong>) and counts
+        for its sub-domains too; add a path after it (<strong>youtube.com/shorts</strong>) to match
+        only that part. A <strong>word</strong> matches an app&rsquo;s or a site&rsquo;s name. A work
+        app must be the app&rsquo;s whole name: <strong>code</strong> for Code.exe, never Barcode.</p>
+      <p class="hint"><strong>Keyword rules</strong> send a window to a project when its title, app
+        or site holds the keyword (4 to 40 letters or digits). Each project&rsquo;s own name works
+        already. <strong>Ignore</strong> is never asked about again.</p>
+      </template>
+      <!-- Drawn by app.js from ACT_LIST_PANELS, so a new list is one line there. -->
+      <div id="actListPanels" class="list-panels"></div>
 
     <details id="projectNamesDetails" class="sub-details">
     <summary>Details: your project names</summary>
@@ -890,42 +971,9 @@
         <button type="button" id="catsOpenBtn" class="btn">Choose kinds of work</button>
       </div>
     </div>
-
-    <div class="help-row">
-      <label for="chipsInput">Break reasons (comma separated)</label>
-      <button type="button" class="help-btn" data-help="helpChips"
-        data-title="Break reasons" aria-label="About break reasons">?</button>
-    </div>
-    <input id="chipsInput" type="text" placeholder="Prayer-break, Lunch, Coffee">
-    <template id="helpChips">
-    <p class="hint">Stored on this device only, so each device has its own list. The comma is the separator, so a name cannot contain one. This list decides which reasons exist; the order re-sorts itself so the ones you use most sit first. The + on Home adds to it.</p>
-    </template>
-
-    <div class="help-row">
-      <label for="moneyOutTags">Money tags for spending (comma separated)</label>
-      <button type="button" class="help-btn" data-help="helpMoneyTags"
-        data-title="Money tags" aria-label="About money tags">?</button>
-    </div>
-    <input id="moneyOutTags" type="text" placeholder="Food, Laundry, Groceries">
-    <label for="moneyInTags">Money tags for income (comma separated)</label>
-    <input id="moneyInTags" type="text" placeholder="Salary">
-    <template id="helpMoneyTags">
-    <p class="hint">Shared by your phone and laptop, in this order. A tag you type with +
-      on the Money screen is used for that entry only and is not added here. Leave a box
-      empty for the starting list.</p>
-    </template>
-
-    <p id="supaWho" class="hint"></p>
-    <!-- Entries this device is holding: waiting, held for another account or
-         project, or refused outright. -->
-    <p id="outboxNote" class="hint" hidden></p>
-    <div class="dlg-actions" style="justify-content: flex-start">
-      <button type="button" id="signOutBtn" class="link-btn">Sign out</button>
-      <button type="button" id="outboxForgetBtn" class="link-btn" hidden>Forget the refused entries</button>
     </div>
 
-    <details id="devSettings" class="dev-settings">
-      <summary>Developer settings</summary>
+    <div id="devSettings" class="set-panel" role="tabpanel" aria-labelledby="setTabDev" hidden>
       <p class="hint">Set once and rarely touched. Stored only on this device, never in the
         code repo.</p>
 
@@ -959,29 +1007,6 @@
         <input id="geminiRpm" type="number" min="1" max="1000" step="1" placeholder="4">
       </div>
 
-      <div class="dlg-block">
-        <h3>Home-screen widget <button type="button" class="help-btn" data-help="helpWidget"
-          data-title="Home-screen widget" aria-label="About the home-screen widget">?</button></h3>
-        <template id="helpWidget">
-        <p class="hint">The Android widget shows the same two lines as the notification
-          shade &mdash; what you are working on, this session&rsquo;s hours, and today&rsquo;s
-          M and prayers &mdash; on your home
-          screen. It is <strong>look-only</strong>: tapping it opens ProBeing, and there is
-          nothing on it to press. The server keeps its lines current &mdash; every
-          10 minutes and after each entry, even with the app closed. The widget checks
-          by itself every 30 minutes; &#x21bb; on it checks now.</p>
-        <p class="hint">Pair it once. Press the button, write the code down, and type it
-          into the widget. ProBeing keeps only a fingerprint of the code, so it can never be
-          shown to you again &mdash; if it is lost, revoke it here and make another.</p>
-        </template>
-        <div class="dlg-actions" style="justify-content: flex-start">
-          <button type="button" id="pairBtn" class="btn">Pair a widget</button>
-        </div>
-        <p id="pairCode" class="pair-code" hidden></p>
-        <p id="pairResult" class="hint"></p>
-        <div id="deviceList" class="cat-list"></div>
-      </div>
-
       <label for="boardUrl">Taskboard link (optional)</label>
       <input id="boardUrl" type="url" placeholder="https://trello.com/b/... or any board you use">
       <p class="hint">The button below opens this in your browser. Any board works &mdash; Trello, Notion, Jira, Google Tasks.</p>
@@ -993,7 +1018,7 @@
         <button type="button" id="testBtn" class="btn">Test</button>
         <button type="button" id="testGeminiBtn" class="btn">Test Gemini</button>
       </div>
-    </details>
+    </div>
 
     <div class="dlg-actions">
       <button type="button" id="cancelBtn" class="link-btn">Cancel</button>
