@@ -58,6 +58,17 @@
 // activity_focus with each day's longest unbroken stretch; names only as a word (YouTube, X).
 // An unsorted site is asked about at 10 minutes a day, an app still at 15.
 //
+// Item 30b (13 Oct): a laptop block may carry its virtual desktop's name (`desktop`, stored on
+// the block). A desktop named after a project, or paired with one in Settings
+// (user_settings.activity_desktops), is that block's project ahead of any keyword; helpers take it
+// first too. config hands the pairs to the laptop. And "auto-detected Working on": while the
+// clock runs, 10 minutes or more of work on a project that is not in Working on (and was not
+// named since) is kept as a question (kind 'auto', run.project) that the app's Home shows with
+// Accept / Reject; no push. "start?" and "Up and working?" (the day not started) carry the run's
+// project too when it is half the work or more, and Start then writes a work row for it (ns-, type
+// work, project set) instead of a bare resume. "back to work?" does not: once back, a project not in
+// Working on is the auto question's.
+//
 // No cron: the laptop's own 5-minute run is the clock. A push goes out when a
 // distraction has run 10 minutes; 5 minutes later, with no answer and still on
 // it, a break is written back to when it started (or, when another device shows
@@ -68,7 +79,7 @@
 //   npx supabase functions deploy activity-ingest --project-ref <ref> --use-api
 // Secrets: ALLOWED_USER_ID, GEMINI_API_KEY, GEMINI_MODEL, VAPID_PRIVATE_KEY (set
 // for the other functions); GEMINI_DAILY optional. Needs the "stage 18b", "item 23",
-// "item 28", "item 29" and "item 30a" parts of supabase/sql/supabase_schema.sql.
+// "item 28", "item 29", "item 30a" and "item 30b" parts of supabase/sql/supabase_schema.sql.
 
 import { createClient } from 'jsr:@supabase/supabase-js@2';
 import '../_shared/day.js';
@@ -136,6 +147,7 @@ var START_MIN_MS = 10 * MIN_MS;        // item 28: work this long in a row, day 
 var TEACH_MIN_MS = 15 * MIN_MS;        // item 29: an unsorted app this long today is asked about
 var TEACH_SITE_MIN_MS = 10 * MIN_MS;   // item 30a: ...a site this long
 var RUN_GAP_MS = 15 * MIN_MS;          // item 30a: a work run goes on through gaps shorter than this
+var AUTO_MIN_MS = 10 * MIN_MS;         // item 30b: work on a project not in Working on this long is shown
 var HELPER_BACK_MS = 6 * 3600000;      // helpers given a project again on each run
 var FOCUS_BACK_MS = 24 * 3600000;      // focus recounted from the counter day this long ago
 var TEACH_PUSH_MAX = 2;                // ...pushed at most this many times a day; the rest wait in the sheet
@@ -412,10 +424,38 @@ function workRuns(blocks) {
 }
 
 /** What a question keeps (activity_nudges.run): the run's minutes and word, for the words; and
- *  the plan its answer writes from (activity.js actRunPlan over every block since the run began). */
-function runInfo(r, plan) {
+ *  the plan its answer writes from (activity.js actRunPlan over every block since the run began).
+ *  Item 30b: the project Start names (runProject), '' for none. */
+function runInfo(r, plan, project) {
   return { work_min: Math.round(r.workMs / MIN_MS), dist_min: Math.round(r.distMs / MIN_MS), what: r.what,
-           gaps: (plan ? plan.gaps : r.gaps).map(function (g) { return [g[0], g[1]]; }), last: plan && isFinite(plan.last) ? plan.last : null };
+           gaps: (plan ? plan.gaps : r.gaps).map(function (g) { return [g[0], g[1]]; }), last: plan && isFinite(plan.last) ? plan.last : null,
+           project: project || '' };
+}
+
+/** Is `name` in Working on (names as replayDay keys them; case, spaces and punctuation ignored)? */
+function isActive(name, active) {
+  var k = A.actNorm(name);
+  return Boolean(k) && (active || []).some(function (a) { return A.actNorm(a) === k; });
+}
+
+/** Item 30b: the project a run is mostly about (half its work time or more), by the name it had
+ *  most; '' when none is, or when it is already in Working on. blocks: cut as the run's. */
+function runProject(blocks, r, active) {
+  var time = Object.create(null);
+  var names = Object.create(null);
+  (blocks || []).forEach(function (b) {
+    if (!isWorkBlock(b) || !b.project) return;
+    var k = A.actNorm(b.project);
+    var ms = A.actSpansMs(A.actMergeSpans(r.work.reduce(function (all, s) { return all.concat(A.actIntersect(b.start, b.end, [s])); }, [])));
+    if (!k || !(ms > 0)) return;
+    time[k] = (time[k] || 0) + ms;
+    var by = names[k] = names[k] || Object.create(null);
+    by[b.project] = (by[b.project] || 0) + ms;
+  });
+  var top = Object.keys(time).sort(function (x, y) { return (time[y] - time[x]) || (x < y ? -1 : 1); })[0];
+  if (!top || time[top] * 2 < r.workMs) return '';
+  var name = Object.keys(names[top]).sort(function (x, y) { return (names[top][y] - names[top][x]) || (x < y ? -1 : 1); })[0];
+  return isActive(name, active) ? '' : name;
 }
 
 /**
@@ -423,7 +463,7 @@ function runInfo(r, plan) {
  * [{device_id, kind, start, end, category}] (any mode), nudges [{id, kind, device_id, streak_start, pushed_at, decided_at,
  * state, ref_at}] (ms), rows [{at, type, rid}], nightEnd(at, until) -> Fajr or null,
  * fajrAfter(t), offsetAt(t) (minutes east of UTC), checks (his switch; false: no
- * questions, open ones closed; nights still kept)}.
+ * questions, open ones closed; nights still kept), active (item 30b: Working on's names)}.
  * Returns {push: [{kind, device_id, dev, start, end, ref, push, run}], decide: [{id, state}],
  * nights: [{sleep_at, woke_at, fajr_at, first_at, last_at, minutes, kinds}], runs: [{id, run}]
  * (item 30a: an open question's run, when it changed; a nudge may carry `run`, gaps in ms)}.
@@ -494,7 +534,7 @@ function quietStep(d) {
       if (r.end >= now - USE_FRESH_MS) fresh = true;
       if (!best || r.start < best.start) {
         best = { kind: kind, device_id: r.device_id, dev: r.dev, start: r.start, end: r.end, ref: ref,
-                 run: runInfo(r, A.actRunPlan(cutAll(from), r.start, now)) };
+                 run: runInfo(r, A.actRunPlan(cutAll(from), r.start, now), kind === 'resume' ? '' : runProject(cutAll(from), r, d.active)) };
       }
     });
     return best ? Object.assign(best, { push: fresh }) : null;
@@ -555,7 +595,8 @@ function quietStep(d) {
     if (state[n.id] !== 'sent' || RUN_KINDS.indexOf(n.kind) === -1 || !isFinite(n.streak_start)) return;
     var r = workRuns(cutAll(n.streak_start))[0];
     if (!r || r.start >= n.streak_start + MIN_MS) return;
-    var info = runInfo(r, A.actRunPlan(cutAll(n.streak_start), r.start, now));
+    var info = runInfo(r, A.actRunPlan(cutAll(n.streak_start), r.start, now),
+                       n.kind === 'resume' ? '' : runProject(cutAll(n.streak_start), r, d.active));
     if (JSON.stringify(info) !== JSON.stringify(n.run || null)) out.runs.push({ id: n.id, run: info });
   });
 
@@ -597,13 +638,13 @@ function askRows(n, choice, now) {
   if (n.kind === 'upwork') {
     var w = { type: 'wake', at: askAt(n), rid: 'nw-' + n.id, text: 'Wake up (I was awake — answered the check)' };
     return choice === 'start'
-      ? [w, { type: 'resume', at: askAt(n) + 1000, rid: 'ns-' + n.id, text: 'Day started (up and working — answered the check)' }]
+      ? [w, projectRow(n, { type: 'resume', at: askAt(n) + 1000, rid: 'ns-' + n.id, text: 'Day started (up and working — answered the check)' })]
         .concat(pairs(askAt(n) + 1000))
       : [w];
   }
   if (n.kind === 'start') {
     return choice === 'start'
-      ? [{ type: 'resume', at: askAt(n), rid: 'ns-' + n.id, text: 'Day started (I was working — answered the check)' }]
+      ? [projectRow(n, { type: 'resume', at: askAt(n), rid: 'ns-' + n.id, text: 'Day started (I was working — answered the check)' })]
         .concat(pairs(askAt(n)))
       : [{ type: 'actanswer', at: now, rid: 'na-' + n.id, text: 'Not work — answered the check', detail: 'notwork' }];
   }
@@ -616,6 +657,103 @@ function askRows(n, choice, now) {
     ? [{ type: 'resume', at: askAt(n), rid: 'nr-' + n.id, text: 'Resume (back at work — answered the check)' }]
       .concat(pairs(askAt(n)))
     : [{ type: 'actanswer', at: now, rid: 'na-' + n.id, text: 'Still on a break — answered the check', detail: 'break' }];
+}
+
+/** Item 30b: "start?" about a project starts it: its resume becomes a work row naming it. */
+function projectRow(n, row) {
+  var p = n.run && n.run.project ? A.actCut(String(n.run.project).trim(), A.ACT_PROJECT_MAX) : '';
+  return p ? Object.assign({}, row, { type: 'work', project: p }) : row;
+}
+
+/* ── Item 30b: auto-detected Working on ────────────────────────────────── */
+
+/**
+ * d: {now, walk (actWalk), blocks [{device_id, kind, start, end, category, project}] (watched),
+ * nudges [{id, kind 'auto', streak_start, decided_at, state, ref_at, run}] (ms), rows [{at, type,
+ * rid}], named [{at, name}] (his work, voice and done rows: project or text), active (Working
+ * on), checks}. While the clock runs, a project's work in the current working stretch, after his
+ * newest row naming it, joined across gaps under RUN_GAP_MS, of AUTO_MIN_MS or more: one open at a
+ * time, the most time first. A stretch he rejected is not shown again; a later one may be.
+ * Returns {decide: [{id, state}], ask: {device_id, dev, start, end, ref, run} or null, runs: [{id, run}]}.
+ */
+function autoStep(d) {
+  var out = { decide: [], ask: null, runs: [] };
+  var walk = d.walk || {};
+  var rows = d.rows || [];
+  var now = d.now;
+  var nudges = (d.nudges || []).filter(function (n) { return n.kind === 'auto'; });
+  var open = null;
+  nudges.forEach(function (n) {
+    if (n.state !== 'sent') return;
+    var to = hasRid(rows, 'ns-' + n.id) ? 'started' : hasRid(rows, 'na-' + n.id) ? 'rejected'
+           : d.checks !== false && A.actAutoOpen(n, walk, rows, d.active) ? '' : 'closed';
+    if (to) out.decide.push({ id: n.id, state: to });
+    else open = n;
+  });
+  var spans = walk.work || [];
+  if (d.checks === false || !walk.working || !spans.length) return out;
+  var spanStart = spans[spans.length - 1][0];
+  function lastNamed(k) {
+    var t = -Infinity;
+    (d.named || []).forEach(function (r) { if (A.actNorm(r.name) === k && r.at > t) t = r.at; });
+    return t;
+  }
+  // A project's stretches from `from`: [{start, end, ms, device_id, dev, name}].
+  function stretches(k, from) {
+    var mine = [];
+    var names = Object.create(null);
+    (d.blocks || []).forEach(function (b) {
+      if (!isWorkBlock(b) || A.actNorm(b.project) !== k) return;
+      var a = Math.max(b.start, from);
+      var z = Math.min(b.end, now);
+      if (!(z > a)) return;
+      mine.push({ a: a, z: z, b: b });
+      names[b.project] = (names[b.project] || 0) + (z - a);
+    });
+    var name = Object.keys(names).sort(function (x, y) { return (names[y] - names[x]) || (x < y ? -1 : 1); })[0] || '';
+    var out2 = [];
+    joinSpans(mine.map(function (m) { return [m.a, m.z]; }), RUN_GAP_MS - 1).forEach(function (g) {
+      var first = mine.filter(function (m) { return m.z > g[0]; }).sort(function (x, y) { return x.a - y.a; })[0];
+      out2.push({ start: g[0], end: g[1], ms: g[2], device_id: first ? first.b.device_id : '', dev: (first && first.b.kind) || 'laptop', name: name });
+    });
+    return out2;
+  }
+  function info(r) {
+    return { work_min: Math.round(r.ms / MIN_MS), dist_min: 0, what: '', gaps: [], last: r.end, project: r.name };
+  }
+  if (open) {
+    var ok = A.actNorm(open.run && open.run.project);
+    var cur = stretches(ok, open.ref_at).filter(function (r) { return r.start < open.streak_start + MIN_MS; })[0];
+    if (cur) {
+      var was = open.run || {};
+      var now2 = info(Object.assign({}, cur, { name: was.project || cur.name }));
+      if (now2.work_min !== was.work_min || now2.last !== was.last) out.runs.push({ id: open.id, run: now2 });
+    }
+    return out;
+  }
+  var keys = Object.create(null);
+  (d.blocks || []).forEach(function (b) {
+    if (isWorkBlock(b) && b.project && b.end > spanStart && !isActive(b.project, d.active)) keys[A.actNorm(b.project)] = 1;
+  });
+  var best = null;
+  Object.keys(keys).forEach(function (k) {
+    if (!k) return;
+    var from = Math.max(spanStart, lastNamed(k) + 1000);
+    stretches(k, from).forEach(function (r) {
+      if (r.ms < AUTO_MIN_MS) return;
+      var said = nudges.some(function (n) {
+        if (n.state !== 'rejected' || A.actNorm(n.run && n.run.project) !== k) return false;
+        var last = n.run && isFinite(n.run.last) && n.run.last !== null ? n.run.last : -Infinity;
+        return r.start <= Math.max(n.streak_start, last);
+      });
+      if (said) return;
+      if (!best || r.ms > best.r.ms || (r.ms === best.r.ms && r.start < best.r.start)) best = { r: r, ref: from };
+    });
+  });
+  if (best) {
+    out.ask = { device_id: best.r.device_id, dev: best.r.dev, start: best.r.start, end: best.r.end, ref: best.ref, run: info(best.r) };
+  }
+  return out;
 }
 
 /** "6:12 pm" at `offsetMin`. */
@@ -654,9 +792,10 @@ function askPayload(p, nudgeId, nonce, url, key, offsetMin) {
   if (p.kind === 'start') {
     // Item 30a (Saad, 13 Oct): "Working since 13:02 · 18 min work · 12 min YouTube in between — start?"
     var mins = Math.max(10, run ? run.work_min : Math.round((p.end - p.start) / 60000));
-    return Object.assign(base, { title: 'Working since ' + at + ' · ' + mins + ' min work' + (dist ? ' · ' + dist + ' in between' : '') +
-                                        ' — start?',
-                                 body: 'Start records work from ' + at + (dist ? ', and the ' + dist + ' as a break' : '') + '.' });
+    var proj = run && run.project ? A.actCut(String(run.project), 40) : '';
+    return Object.assign(base, { title: (proj ? proj + ' since ' : 'Working since ') + at + ' · ' + mins + ' min work' +
+                                        (dist ? ' · ' + dist + ' in between' : '') + ' — start?',
+                                 body: 'Start records ' + (proj || 'work') + ' from ' + at + (dist ? ', and the ' + dist + ' as a break' : '') + '.' });
   }
   return Object.assign(base, { title: 'Still on break but you look like you\'re working — back to work?',
                                body: 'Resume records you back at ' + at + (dist ? ', and the ' + dist + ' as a break' : '') + '.' });
@@ -769,7 +908,7 @@ function keptPieces(clean, walk) {
   function bare(spans, mode) {
     return A.actClip(clean, spans || []).map(function (b) {
       var named = b.category === 'work' || b.category === 'meeting';
-      return Object.assign({}, b, { app: '', domain: '', key: '', project: named ? b.project : '', mode: mode });
+      return Object.assign({}, b, { app: '', domain: '', key: '', desktop: '', project: named ? b.project : '', mode: mode });
     });
   }
   return full.concat(bare(walk.sleep, 'sleep'), bare(walk.rest, 'break'), bare(walk.awakeOff, 'off'));
@@ -882,7 +1021,7 @@ function teachPayload(label, ms, site) {
  * blocks: [{id, device_id, kind, start, end, category, project, app, domain, rule_key}] (watched
  * ones); lists: actLists. Returns [{id, project}] for those whose project changes.
  */
-function helperFills(blocks, lists) {
+function helperFills(blocks, lists, desk) {
   var helper = A.actLists(lists).helpers;
   function isHelper(b) {
     return b.category === 'work' && !b.rule_key &&
@@ -899,8 +1038,26 @@ function helperFills(blocks, lists) {
       if (gap > A.ACT_NEAR_MS) return;
       if (!best || gap < best.gap || (gap === best.gap && b.start < best.b.start)) best = { gap: gap, b: b };
     });
-    var want = A.actPickProject({ near: best ? best.b.project : '' }).project;
+    // Item 30b: the desktop's project first (Terminal on the NeuraVue desktop is NeuraVue).
+    var want = A.actPickProject({ desktop: h.desktop ? A.actDeskProject(h.desktop, desk) : '', near: best ? best.b.project : '' }).project;
     if (want !== (h.project || '')) out.push({ id: h.id, project: want });
+  });
+  return out;
+}
+
+/**
+ * Item 30b: watched blocks whose desktop stands for a project they do not carry yet (a pair he
+ * added since, a project made since): [{id, project, category, was}]. An unclear block there is
+ * that project's work. Private and distraction blocks are left alone. desk: {desktops, projects}.
+ */
+function desktopFills(blocks, desk) {
+  var out = [];
+  (blocks || []).forEach(function (b) {
+    if (!b || !b.id || !b.desktop || (b.mode && b.mode !== 'work')) return;
+    if (b.category !== 'work' && b.category !== 'meeting' && b.category !== 'unclear') return;
+    var p = A.actDeskProject(b.desktop, desk);
+    if (!p || (p === b.project && b.category !== 'unclear')) return;
+    out.push({ id: b.id, project: p, category: b.category === 'unclear' ? 'work' : b.category, was: b.category });
   });
   return out;
 }
@@ -1002,7 +1159,8 @@ async function readSettings(sb: Sb, owner: string, now: number) {
   return { lists: A.actLists(row && row.activity_lists), on: !(row && row.activity_nudge === false),
            checks: !(row && row.activity_checks === false), zone, offset, place,
            teach: !(row && row.activity_teach === false),
-           ignore: Array.isArray(row && row.activity_ignore) ? row.activity_ignore : [] };
+           ignore: Array.isArray(row && row.activity_ignore) ? row.activity_ignore : [],
+           desktops: A.actDeskPairs(row && row.activity_desktops) };
 }
 
 /** The first Fajr after t at his saved place (day.js: Isha's time ends at the next Fajr). */
@@ -1024,6 +1182,18 @@ async function readRows(sb: Sb, owner: string, from: number) {
     .gte('at', iso(from)).in('type', STATE_TYPES).order('at', { ascending: true })
     .order('created_at', { ascending: true }).limit(3000));
   return before.reverse().concat(rows);
+}
+
+/** Item 30b: Working on as the app has it (day.js replayDay over the session's rows), and his rows
+ *  naming a project ({at, name}: work, voice, done), from `from`. */
+async function readActive(sb: Sb, owner: string, from: number) {
+  const rows = must(await sb.from('events').select('at, type, raw_text, project, detail, node_id, rid, created_at').eq('user_id', owner)
+    .gte('at', iso(from)).in('type', Day.LEAD_TYPES).order('at', { ascending: false })
+    .order('created_at', { ascending: false }).limit(3000));
+  const active = (Day.replayDay(rows).activeProjects || []) as string[];
+  const named = rows.filter((r) => r.type === 'work' || r.type === 'voice' || r.type === 'done')
+    .map((r) => ({ at: ms(r.at), name: String(r.project || r.raw_text || '').trim() }));
+  return { active, named };
 }
 
 /** His projects: the chosen Google list's open projects, then names logged in two weeks, then rule targets. */
@@ -1062,7 +1232,7 @@ function humanLocal(t: number, zone: string): string {
 async function writeRow(sb: Sb, owner: string, zone: string, w: Record<string, any>) {
   const res = await sb.from('events').insert({
     user_id: owner, at: iso(w.at), local_time: humanLocal(w.at, zone), tz: zone, type: w.type,
-    raw_text: w.text, project: '', detail: w.detail || '', rid: w.rid
+    raw_text: w.text, project: w.project || '', detail: w.detail || '', rid: w.rid
   });
   if (res.error && res.error.code !== '23505') throw new Error(res.error.message);
   return !res.error;
@@ -1071,13 +1241,15 @@ async function writeRow(sb: Sb, owner: string, zone: string, w: Record<string, a
 function blockOf(r: Record<string, any>, kinds?: Record<string, string>) {
   return { id: r.id, device_id: r.device_id, start: ms(r.started_at), end: ms(r.ended_at), category: r.category,
            project: r.project || '', app: r.app || '', domain: r.domain || '', rule_key: r.rule_key || '',
-           kind: (kinds && kinds[r.device_id]) || 'laptop', mode: r.mode || 'work', became: ms(r.became_at) };
+           kind: (kinds && kinds[r.device_id]) || 'laptop', mode: r.mode || 'work', became: ms(r.became_at),
+           desktop: r.desktop || '' };
 }
 
 /** Item 30a: a question's run as stored (gaps as ISO pairs) and back (ms). */
 function runJson(r: Record<string, any>) {
   return { work_min: r.work_min, dist_min: r.dist_min, what: r.what,
-           gaps: (r.gaps || []).map((g: number[]) => [iso(g[0]), iso(g[1])]), last: isFinite(r.last) && r.last !== null ? iso(r.last) : null };
+           gaps: (r.gaps || []).map((g: number[]) => [iso(g[0]), iso(g[1])]), last: isFinite(r.last) && r.last !== null ? iso(r.last) : null,
+           project: String(r.project || '') };
 }
 function runOf(v: unknown) {
   const r = v && typeof v === 'object' ? v as Record<string, any> : null;
@@ -1086,7 +1258,7 @@ function runOf(v: unknown) {
     .filter((g: number[]) => isFinite(g[0]) && isFinite(g[1]) && g[1] > g[0]);
   const last = r.last ? ms(r.last) : NaN;
   return { work_min: Number(r.work_min) || 0, dist_min: Number(r.dist_min) || 0, what: String(r.what || 'distraction'), gaps,
-           last: isFinite(last) ? last : null };
+           last: isFinite(last) ? last : null, project: A.actCut(String(r.project || '').trim(), A.ACT_PROJECT_MAX) };
 }
 
 async function deviceKinds(sb: Sb, owner: string) {
@@ -1137,7 +1309,10 @@ async function runQuiet(sb: Sb, owner: string, now: number, set: Record<string, 
     .map((n) => ({ id: n.id, kind: n.kind, device_id: n.device_id, streak_start: ms(n.streak_start), pushed_at: ms(n.pushed_at),
                    decided_at: ms(n.decided_at), state: n.state, ref_at: ms(n.ref_at), run: runOf(n.run) }));
   const fajrAfter = fajrAfterFn(set);
-  const step = quietStep({ now, walk, blocks: clipped, nudges, checks: set.checks,
+  // Item 30b: a run question names its project only when it is not in Working on.
+  let active: string[] = [];
+  try { active = (await readActive(sb, owner, now - READ_BACK_MS)).active; } catch (_e) { /* no project named */ }
+  const step = quietStep({ now, walk, blocks: clipped, nudges, checks: set.checks, active,
                            rows: rows.map((r) => ({ at: ms(r.at), type: r.type, rid: r.rid || '' })),
                            nightEnd: (t: number, until: number) => nightEnd(t, fajrAfter, Day.zoneOffsetMin(set.zone, t, set.offset), until),
                            fajrAfter, offsetAt: (t: number) => Day.zoneOffsetMin(set.zone, t, set.offset) });
@@ -1299,19 +1474,70 @@ async function closeSortedTeach(sb: Sb, owner: string, now: number, set?: Record
   return closed;
 }
 
-/** Item 30a: helpers take the project of the work around them; the last HELPER_BACK_MS, filed again each run. */
+/** Item 30a: helpers take the project of the work around them; the last HELPER_BACK_MS, filed again each run.
+ *  Item 30b: first, blocks take their desktop's project (a pair or a project made since they came). */
 async function runHelpers(sb: Sb, owner: string, now: number, set: Record<string, any>) {
   const kinds = await deviceKinds(sb, owner);
-  const blocks = must(await sb.from('activity_blocks').select('id, device_id, started_at, ended_at, app, domain, category, project, rule_key, mode')
+  // '*': before the item 30b SQL there is no desktop column, and nothing to file by it.
+  const blocks = must(await sb.from('activity_blocks').select('*')
     .eq('user_id', owner).eq('mode', 'work').gte('ended_at', iso(now - HELPER_BACK_MS))
     .order('started_at', { ascending: true }).limit(2000)).map((r) => blockOf(r, kinds));
-  const fills = helperFills(blocks, set.lists);
+  let desk = { desktops: set.desktops || [], projects: [] as string[] };
+  let moved = 0;
+  if (blocks.some((b) => b.desktop)) {
+    desk = { desktops: set.desktops || [], projects: (await readProjects(sb, owner, now)).projects };
+    for (const f of desktopFills(blocks, desk)) {
+      // A category it did not have counts from now (item 29 fix: a label never reaches back).
+      const patch: Record<string, unknown> = { project: f.project, updated_at: iso(now) };
+      if (f.category !== f.was) { patch.category = f.category; patch.became_at = iso(now); }
+      const up = await sb.from('activity_blocks').update(patch).eq('id', f.id).eq('user_id', owner).eq('category', f.was);
+      if (up.error) throw new Error(up.error.message);
+      blocks.forEach((b) => { if (b.id === f.id) { b.project = f.project; b.category = f.category; } });
+      moved += 1;
+    }
+  }
+  const fills = helperFills(blocks, set.lists, desk);
   for (const f of fills) {
     const up = await sb.from('activity_blocks').update({ project: f.project, updated_at: iso(now) })
       .eq('id', f.id).eq('user_id', owner).eq('category', 'work').eq('rule_key', '');
     if (up.error) throw new Error(up.error.message);
   }
-  return { filled: fills.length };
+  return { filled: fills.length, desktops: moved };
+}
+
+/** Item 30b: auto-detected Working on. Questions only (kind 'auto'), never a push or a row of his. */
+async function runAuto(sb: Sb, owner: string, now: number, set: Record<string, any>) {
+  const cols = 'id, kind, device_id, streak_start, pushed_at, decided_at, state, ref_at, run';
+  const nudges = must(await sb.from('activity_nudges').select(cols).eq('user_id', owner).eq('kind', 'auto')
+    .gte('streak_start', iso(now - READ_BACK_MS)).limit(300))
+    .map((n) => ({ id: n.id, kind: n.kind, device_id: n.device_id, streak_start: ms(n.streak_start), pushed_at: ms(n.pushed_at),
+                   decided_at: ms(n.decided_at), state: n.state, ref_at: ms(n.ref_at), run: runOf(n.run) }));
+  const rows = await readRows(sb, owner, now - READ_BACK_MS);
+  const walk = A.actWalk(rows, now - READ_BACK_MS, now);
+  if (!walk.working && !nudges.some((n) => n.state === 'sent')) return { asked: false };
+  const { active, named } = await readActive(sb, owner, now - READ_BACK_MS);
+  const kinds = await deviceKinds(sb, owner);
+  const blocks = must(await sb.from('activity_blocks').select('*').eq('user_id', owner).eq('mode', 'work')
+    .gte('ended_at', iso(now - READ_BACK_MS)).order('started_at', { ascending: true }).limit(5000)).map((r) => blockOf(r, kinds));
+  const clipped = labelClip(blocks, await teachLabelled(sb, owner, now - READ_BACK_MS));
+  const step = autoStep({ now, walk, blocks: clipped, nudges, named, active, checks: set.checks,
+                          rows: rows.map((r) => ({ at: ms(r.at), type: r.type, rid: r.rid || '' })) });
+  for (const d of step.decide) {
+    await sb.from('activity_nudges').update({ state: d.state, decided_at: iso(now) }).eq('id', d.id).eq('user_id', owner).eq('state', 'sent');
+  }
+  for (const r of step.runs) {
+    await sb.from('activity_nudges').update({ run: runJson(r.run) }).eq('id', r.id).eq('user_id', owner).eq('state', 'sent');
+  }
+  let asked = false;
+  if (step.ask) {
+    // One open at a time (activity_nudges_open_auto_idx): a second run loses here.
+    const claim = await sb.from('activity_nudges').insert({
+      user_id: owner, device_id: step.ask.device_id || null, kind: 'auto', ref_at: iso(step.ask.ref), streak_start: iso(step.ask.start),
+      what: step.ask.dev, state: 'sent', run: runJson(step.ask.run)
+    }).select('id');
+    asked = !claim.error;
+  }
+  return { decided: step.decide.length, asked };
 }
 
 /** Item 30a: slips, focus losses and each day's longest stretch, recounted from yesterday's counter day. */
@@ -1416,7 +1642,7 @@ async function opConfig(sb: Sb, dev: Record<string, any>, body: Record<string, a
   }
   const { projects, rules } = await readProjects(sb, dev.user_id, now);
   try { await closeSortedTeach(sb, dev.user_id, now, set); } catch (_e) { /* the next call tries again */ }
-  return reply(200, { ok: true, device: dev.label, now: iso(now), lists: set.lists, projects,
+  return reply(200, { ok: true, device: dev.label, now: iso(now), lists: set.lists, projects, desktops: set.desktops,
                       rules: rules.filter((r) => r.source !== 'gemini').map((r) => ({ keyword: r.keyword, project: r.project })),
                       spans: spans.map((s) => [iso(s[0]), iso(s[1])]), working: walk.working,
                       quiet: quiet.map((s) => [iso(s[0]), iso(s[1])]), mode: modeOf(walk),
@@ -1450,6 +1676,8 @@ async function opIngest(sb: Sb, dev: Record<string, any>, body: Record<string, a
       must(await sb.from('activity_blocks').select('*').eq('device_id', dev.id)
         .in('started_at', pieces.map((p: any) => iso(p.start))).limit(1000))
         .forEach((r) => { had[String(ms(r.started_at))] = blockOf(r); });
+      // Item 30b: before its SQL there is no desktop column; the blocks are stored without it.
+      const deskCol = !(await sb.from('activity_blocks').select('desktop').limit(1)).error;
       const rows = pieces.map((p: any) => {
         const b = p.mode === 'work' ? keepPlaced(p, had[String(p.start)]) : p;
         // A category it did not have before counts from now (item 29 fix): kept while it stays.
@@ -1457,7 +1685,8 @@ async function opIngest(sb: Sb, dev: Record<string, any>, body: Record<string, a
         const became = h && h.category !== b.category ? now : h && isFinite(h.became) ? h.became : NaN;
         return { user_id: dev.user_id, device_id: dev.id, started_at: iso(b.start), ended_at: iso(b.end), app: b.app,
                  domain: b.domain, category: b.category, project: b.project, rule_key: b.key, mode: p.mode,
-                 updated_at: iso(now), became_at: isFinite(became) ? iso(became) : null };
+                 updated_at: iso(now), became_at: isFinite(became) ? iso(became) : null,
+                 ...(deskCol ? { desktop: p.mode === 'work' ? (b.desktop || '') : '' } : {}) };
       });
       const up = await sb.from('activity_blocks').upsert(rows, { onConflict: 'device_id,started_at' });
       if (up.error) return reply(500, { ok: false, error: up.error.message });
@@ -1496,7 +1725,14 @@ async function opIngest(sb: Sb, dev: Record<string, any>, body: Record<string, a
   } catch (e) {
     focus = { error: String((e as Error)?.message || e) };
   }
-  return reply(200, { ok: true, stored, skipped: list.length - clean.length, nudges, quiet, teach, helpers, focus });
+  // Item 30b: before its SQL the kind 'auto' is refused, so nothing is asked; the rest ran.
+  let auto: Record<string, unknown> = {};
+  try {
+    auto = await runAuto(sb, dev.user_id, now, set);
+  } catch (e) {
+    auto = { error: String((e as Error)?.message || e) };
+  }
+  return reply(200, { ok: true, stored, skipped: list.length - clean.length, nudges, quiet, teach, helpers, focus, auto });
 }
 
 async function askGemini(key: string, model: string, prompt: string) {
@@ -1580,7 +1816,9 @@ async function answerAsk(sb: Sb, n: Record<string, any>, choice: string, set: Re
   if (n.state !== 'sent' || !askOpen(ask, walk, mine)) return reply(200, { ok: true, over: true, message: 'That one\'s over' });
   // Item 30a fix: the breaks from every block known now, not the run as it was when last stored.
   if (choice === 'start' || choice === 'resume') {
-    try { ask.run = await answerPlan(sb, n.user_id, ask, choice, now); } catch (_e) { /* the stored plan */ }
+    // Item 30b: the project the question named stays named.
+    const project = ask.run ? ask.run.project : '';
+    try { ask.run = Object.assign(await answerPlan(sb, n.user_id, ask, choice, now), { project }); } catch (_e) { /* the stored plan */ }
   }
   for (const w of A.actSkipTies(askRows(ask, choice, now), rows)) await writeRow(sb, n.user_id, set.zone, w);
   const state = choice === 'start' ? 'started' : choice === 'resume' ? 'resumed' : choice === 'awake' ? 'awake'

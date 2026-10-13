@@ -1663,7 +1663,7 @@ exception when duplicate_object then null; end $$;
 alter table public.activity_nudges drop constraint if exists activity_nudges_state_check;
 alter table public.activity_nudges add constraint activity_nudges_state_check check (state in ('sent', 'working', 'break',
   'answered', 'left', 'autobreak', 'question', 'stale', 'closed', 'awake', 'asleep', 'resumed', 'started', 'notwork',
-  'asking'));
+  'asking', 'rejected'));   -- rejected: item 30b
 
 -- One per device, kind and start: an awake run and a distraction streak never collide.
 alter table public.activity_nudges drop constraint if exists activity_nudges_streak_key;
@@ -1728,12 +1728,12 @@ alter table public.activity_blocks add constraint activity_blocks_mode check (mo
 
 alter table public.activity_nudges drop constraint if exists activity_nudges_kind;
 alter table public.activity_nudges add constraint activity_nudges_kind
-  check (kind in ('distract', 'awake', 'resume', 'upwork', 'start', 'teach'));   -- teach: item 29, so a re-run keeps its rows
+  check (kind in ('distract', 'awake', 'resume', 'upwork', 'start', 'teach', 'auto'));   -- teach: item 29, auto: item 30b, so a re-run keeps their rows
 
 alter table public.activity_nudges drop constraint if exists activity_nudges_state_check;
 alter table public.activity_nudges add constraint activity_nudges_state_check check (state in ('sent', 'working', 'break',
   'answered', 'left', 'autobreak', 'question', 'stale', 'closed', 'awake', 'asleep', 'resumed', 'started', 'notwork',
-  'asking'));
+  'asking', 'rejected'));
 
 -- One open question per sleep, break or day-off stretch: "awake?" and "Up and working?"
 -- about one sleep count as one. It covers item 23's index, which is dropped.
@@ -1761,12 +1761,12 @@ alter table public.activity_nudges add column if not exists entry_min integer
 
 alter table public.activity_nudges drop constraint if exists activity_nudges_kind;
 alter table public.activity_nudges add constraint activity_nudges_kind
-  check (kind in ('distract', 'awake', 'resume', 'upwork', 'start', 'teach'));
+  check (kind in ('distract', 'awake', 'resume', 'upwork', 'start', 'teach', 'auto'));
 
 alter table public.activity_nudges drop constraint if exists activity_nudges_state_check;
 alter table public.activity_nudges add constraint activity_nudges_state_check check (state in ('sent', 'working', 'break',
   'answered', 'left', 'autobreak', 'question', 'stale', 'closed', 'awake', 'asleep', 'resumed', 'started', 'notwork',
-  'asking'));
+  'asking', 'rejected'));
 
 -- One open question at a time, and each name asked at most once a day. A name he made private is
 -- blanked on its rows (entry ''), so blank rows are left out of the second.
@@ -1893,3 +1893,42 @@ begin
   end if;
   return new;
 end $$;
+
+-- ============================================================ item 30b (13 Oct)
+-- Virtual desktops (laptop) and auto-detected Working on. Safe to run twice.
+
+-- The Windows virtual desktop a laptop block was on, by NAME (the tray samples it; never an id).
+-- Empty on the phone, on a bare block (asleep, a break, the day off) and on a private one.
+-- Written by activity-ingest only, like the block.
+alter table public.activity_blocks add column if not exists desktop text not null default ''
+  check (char_length(desktop) <= 80 and desktop !~ '[[:cntrl:]]');
+
+do $$ begin
+  alter table public.activity_blocks add constraint activity_blocks_bare_desktop check (mode = 'work' or desktop = '');
+exception when duplicate_object then null; end $$;
+
+do $$ begin
+  alter table public.activity_blocks add constraint activity_blocks_private_desktop check (category <> 'private' or desktop = '');
+exception when duplicate_object then null; end $$;
+
+-- His "Desktop name = Project" pairs (Settings -> ProBeing training -> Desktops -> project), for
+-- desktops whose names are not a project's: [{"desktop": "Desktop 2", "project": "OneNet"}, ...].
+alter table public.user_settings add column if not exists activity_desktops jsonb
+  check (activity_desktops is null or (jsonb_typeof(activity_desktops) = 'array' and jsonb_array_length(activity_desktops) <= 30));
+
+-- Auto-detected Working on: a project worked on (by the watchers) that is not in Working on, kept as
+-- an activity_nudges row, kind 'auto' (run = {work_min, last, project, ...}; ref_at = where the
+-- stretch may begin; no push, no nonce). Accept writes an events row ns-<id> (type work, project set);
+-- Reject na-<id> (actanswer). New state: rejected. One open at a time. The run questions' run may
+-- carry a project too (jsonb, no change).
+alter table public.activity_nudges drop constraint if exists activity_nudges_kind;
+alter table public.activity_nudges add constraint activity_nudges_kind
+  check (kind in ('distract', 'awake', 'resume', 'upwork', 'start', 'teach', 'auto'));
+
+alter table public.activity_nudges drop constraint if exists activity_nudges_state_check;
+alter table public.activity_nudges add constraint activity_nudges_state_check check (state in ('sent', 'working', 'break',
+  'answered', 'left', 'autobreak', 'question', 'stale', 'closed', 'awake', 'asleep', 'resumed', 'started', 'notwork',
+  'asking', 'rejected'));
+
+create unique index if not exists activity_nudges_open_auto_idx on public.activity_nudges (user_id)
+  where kind = 'auto' and state = 'sent';

@@ -16,6 +16,9 @@
  * Item 30a (13 Oct): browsers are neutral (the site decides), ProBeing's own page is not
  * activity, helpers (terminals, Notepad, Explorer, localhost...) are work that takes its
  * project from the work around it, and a Start answer writes the distractions as breaks.
+ * Item 30b (13 Oct): the laptop's virtual desktop. A piece carries its desktop's NAME (the tray
+ * samples it); a desktop named after a project (or mapped to one in Settings) is that block's
+ * project, ahead of any keyword. A block is sent with `desktop` only when it has one.
  */
 
 'use strict';
@@ -49,6 +52,8 @@ var ACT_KEY_MIN = 4;
 var ACT_KEY_MAX = 40;
 var ACT_LIST_MAX = 50;
 var ACT_ENTRY_MAX = 80;
+var ACT_DESKTOP_MAX = 80;
+var ACT_DESKTOPS_MAX = 30;               // "Desktop name = Project" pairs in Settings
 var ACT_BROWSERS = ['chrome', 'msedge', 'brave', 'firefox', 'opera', 'vivaldi'];
 
 /* Item 30a: ProBeing's own page is neither work nor a distraction: dropped like the lock screen.
@@ -420,7 +425,7 @@ function actSegments(events, cut) {
 /** What makes two pieces the same block. Private ones keep only the app. */
 function actIdentity(b) {
   if (b.category === 'private') return 'private|' + b.app;
-  return [b.category, b.project, b.app, b.domain, b.category === 'unclear' ? actNorm(b.title) : ''].join('|');
+  return [b.category, b.project, b.app, b.domain, b.desktop || '', b.category === 'unclear' ? actNorm(b.title) : ''].join('|');
 }
 
 /** Neighbours with the same identity and a gap of ACT_JOIN_GAP_MS or less become one. */
@@ -445,9 +450,10 @@ function actJoin(list) {
  */
 function actBlocks(pieces, cfg) {
   var list = (pieces || []).map(function (p) {
-    var c = actClassify(p, cfg);
+    var c = actDeskClassify(p, cfg);
     var b = { start: p.start, end: p.end, app: actCleanApp(p.app), domain: c.category === 'private' ? '' : (p.host || ''),
               category: c.category, project: c.project, key: c.key,
+              desktop: c.category === 'private' ? '' : actCleanDesktop(p.desktop),
               title: c.category === 'unclear' && actTitleSendable(p.app, p.title) && !(actIsBrowser(p.app) && !p.host)
                      ? actScrubTitle(p.title) : '' };     // a browser window the extension did not see: never sent
     b.id = actIdentity(b);
@@ -466,16 +472,18 @@ function actBlocks(pieces, cfg) {
   return actJoin(kept).filter(function (b) { return b.end - b.start >= ACT_MIN_BLOCK_MS; });
 }
 
-/** What the laptop sends: no title, ever. */
+/** What the laptop sends: no title, ever. `desktop` (item 30b) only when the block has one. */
 function actPayload(blocks) {
   return (blocks || []).map(function (b) {
-    return { start: new Date(b.start).toISOString(), end: new Date(b.end).toISOString(), app: b.app,
-             domain: b.domain, category: b.category, project: b.project, key: b.key };
+    var o = { start: new Date(b.start).toISOString(), end: new Date(b.end).toISOString(), app: b.app,
+              domain: b.domain, category: b.category, project: b.project, key: b.key };
+    if (b.desktop) o.desktop = b.desktop;
+    return o;
   });
 }
 
 /**
- * One block as the server takes it, or null. Only these seven fields are read;
+ * One block as the server takes it, or null. Only these seven fields (and item 30b's desktop) are read;
  * a title or URL sent by mistake goes nowhere. Private words are checked again
  * here against the app and the site.
  */
@@ -496,6 +504,8 @@ function actSanitize(b, lists, now) {
   if (out.domain && actIsNeutral({ app: '', host: out.domain, path: '/probeing', title: '' })) return null;
   if (out.category === 'private') { out.domain = ''; out.project = ''; out.key = ''; }
   if (out.category === 'distraction' || out.category === 'unclear') { out.project = ''; out.key = ''; }
+  var desk = out.category === 'private' ? '' : actCleanDesktop(b.desktop);
+  if (desk) out.desktop = desk;            // item 30b: only when sent
   return out;
 }
 
@@ -677,7 +687,7 @@ function actQuiet(blocks, quiet) {
       if (!(z > a)) return;
       var x = Object.assign({}, b, { start: a, end: z });
       if (bare) {
-        x.app = ''; x.domain = ''; x.key = ''; x.title = '';
+        x.app = ''; x.domain = ''; x.key = ''; x.title = ''; x.desktop = '';
         if (x.category !== 'work' && x.category !== 'meeting') x.project = '';
         x.id = 'quiet|' + x.category + '|' + x.project;
       }
@@ -875,8 +885,8 @@ function actTeachSeg(n) {
 
 /* ── Item 30a: where a project comes from, work runs and focus ─────────────── */
 
-/* A block's project, first source that has one: the virtual desktop (item 30b; not sent yet), a
- * title keyword, the app, then for a helper the nearest work within ACT_NEAR_MS. */
+/* A block's project, first source that has one: the virtual desktop (item 30b), a title keyword,
+ * the app, then for a helper the nearest work within ACT_NEAR_MS. */
 var ACT_PROJECT_SOURCES = ['desktop', 'title', 'app', 'near'];
 var ACT_NEAR_MS = 10 * 60000;
 
@@ -995,6 +1005,103 @@ function actRunSteps(id, plan, after, now) {
   return out.sort(function (x, y) { return x.at - y.at; });
 }
 
+/* ── Item 30b: virtual desktops (laptop) ───────────────────────────────────
+ * The tray samples the window in front's desktop every ~10 s into desktops.json:
+ * [start, end, name] spans, names only. watch.ps1 Act-DesktopSplit is the twin. */
+
+/** A desktop's name as kept: one line, no control characters, at most ACT_DESKTOP_MAX. */
+function actCleanDesktop(s) {
+  var t = String(s == null ? '' : s).replace(/[\u0000-\u001f\u007f]/g, ' ').replace(/ {2,}/g, ' ').replace(/^ +| +$/g, '');
+  return actCut(t, ACT_DESKTOP_MAX).replace(/ +$/, '');
+}
+
+/** His "Desktop name = Project" pairs, tidied: both named, one per desktop (by its squashed name). */
+function actDeskPairs(list) {
+  var out = [];
+  var seen = Object.create(null);
+  (Array.isArray(list) ? list : []).forEach(function (x) {
+    if (!x || typeof x !== 'object' || out.length >= ACT_DESKTOPS_MAX) return;
+    var d = actCleanDesktop(x.desktop);
+    var p = actCut(String(x.project == null ? '' : x.project).trim(), ACT_PROJECT_MAX);
+    var k = actNorm(d);
+    if (!k || !p || seen[k]) return;
+    seen[k] = 1;
+    out.push({ desktop: d, project: p });
+  });
+  return out;
+}
+
+/** The project a desktop stands for: his pair for it, else a project of the same name
+ *  (case, spaces and punctuation ignored: "BipedRobot_working" is "Biped Robot Working"); else ''.
+ *  cfg: {desktops: pairs, projects: names}. */
+function actDeskProject(name, cfg) {
+  var k = actNorm(actCleanDesktop(name));
+  if (!k) return '';
+  var pairs = actDeskPairs(cfg && cfg.desktops);
+  for (var i = 0; i < pairs.length; i++) if (actNorm(pairs[i].desktop) === k) return pairs[i].project;
+  var projects = (cfg && cfg.projects) || [];
+  for (var j = 0; j < projects.length; j++) {
+    var p = actCut(String(projects[j] == null ? '' : projects[j]).trim(), ACT_PROJECT_MAX);
+    if (p && actNorm(p) === k) return p;
+  }
+  return '';
+}
+
+/** actClassify, then the desktop's project ahead of any other (seg.desktop: its name). Never for a
+ *  private block or a distraction; an unclear one on a project's desktop is that project's work. */
+function actDeskClassify(seg, cfg) {
+  var c = actClassify(seg, cfg);
+  if (c.category === 'private' || c.category === 'distraction') return c;
+  var pick = actPickProject({ desktop: actDeskProject(seg.desktop, cfg), title: c.project });
+  if (pick.from !== 'desktop') return c;
+  return { category: c.category === 'unclear' ? 'work' : c.category, project: pick.project,
+           key: actNorm(c.project) === actNorm(pick.project) ? c.key : '' };
+}
+
+/** Pieces cut at the desktop spans ([start ms, end ms, name]); each part carries `desktop` (its
+ *  name, '' where no span covers it). Spans are the tray's: in time order, not overlapping. */
+function actDesktopSplit(pieces, spans) {
+  var sp = (spans || []).map(function (s, i) {
+    return s ? { a: Number(s[0]), b: Number(s[1]), name: actCleanDesktop(s[2]), i: i } : null;
+  }).filter(function (s) { return s && s.name && isFinite(s.a) && isFinite(s.b) && s.b > s.a; })
+    .sort(function (x, y) { return (x.a - y.a) || (x.i - y.i); });
+  var out = [];
+  (pieces || []).forEach(function (p) {
+    var at = p.start;
+    function part(a, z, name) { if (z > a) out.push(Object.assign({}, p, { start: a, end: z, desktop: name })); }
+    sp.forEach(function (s) {
+      if (s.b <= at || s.a >= p.end) return;
+      var x = Math.max(at, s.a);
+      var y = Math.min(p.end, s.b);
+      part(at, x, '');
+      part(x, y, s.name);
+      at = y;
+    });
+    part(at, p.end, '');
+  });
+  return out;
+}
+
+/* ── Item 30b: auto-detected Working on ────────────────────────────────────
+ * activity-ingest finds a stretch of work on a project that is not in Working on while the
+ * clock runs and keeps it as an activity_nudges row, kind 'auto' (run.project, run.work_min,
+ * run.last). Accept writes a work row for it back to the stretch's start (ns-<id>); Reject an
+ * actanswer (na-<id>). The server and the app's Home both judge it open with this. */
+
+/** Is an auto-detected stretch still to ask about? Not once answered (ns-/na-), not when the
+ *  clock is off, the working stretch it was found in has ended, or the project is in Working on.
+ *  n: {id, ref_at (ms), run: {project}}; walk: actWalk; rows: [{at, type, rid}]; active: names. */
+function actAutoOpen(n, walk, rows, active) {
+  var id = String(n && n.id);
+  var p = actNorm(n && n.run && n.run.project);
+  if (!p || !walk || !walk.working) return false;
+  if ((rows || []).some(function (r) { var rid = String(r.rid || ''); return rid === 'ns-' + id || rid === 'na-' + id; })) return false;
+  if ((active || []).some(function (a) { return actNorm(a) === p; })) return false;
+  var spans = walk.work || [];
+  var cur = spans.length ? spans[spans.length - 1][0] : Infinity;
+  return cur <= n.ref_at;
+}
+
 // What the Edge Function uses. The browser reads the globals directly.
 globalThis.ProBeingActivity = {
   ACT_CATEGORIES: ACT_CATEGORIES,
@@ -1060,5 +1167,13 @@ globalThis.ProBeingActivity = {
   actDistractWord: actDistractWord,
   actRunSteps: actRunSteps,
   actRunPlan: actRunPlan,
-  ACT_RUN_GAP_MS: ACT_RUN_GAP_MS
+  ACT_RUN_GAP_MS: ACT_RUN_GAP_MS,
+  ACT_DESKTOP_MAX: ACT_DESKTOP_MAX,
+  ACT_DESKTOPS_MAX: ACT_DESKTOPS_MAX,
+  actCleanDesktop: actCleanDesktop,
+  actDeskPairs: actDeskPairs,
+  actDeskProject: actDeskProject,
+  actDeskClassify: actDeskClassify,
+  actDesktopSplit: actDesktopSplit,
+  actAutoOpen: actAutoOpen
 };

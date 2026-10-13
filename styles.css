@@ -261,6 +261,10 @@ a.btn[hidden], a.link-btn[hidden] { display: none; }
 
 .proj-list { list-style: none; margin: 0; padding: 0; display: grid; gap: 10px; }
 .proj-list:empty { display: none; }
+/* Item 30b: the auto-detected lines (rule 6: .proj-list sets display, so the [hidden] pair). */
+.auto-list[hidden] { display: none; }
+.auto-list { margin-bottom: 10px; }
+.auto-row .proj-name { font-style: italic; }
 .proj-list li {
   display: flex; align-items: center; gap: 12px;
   padding-top: 10px; border-top: 1px solid var(--line);

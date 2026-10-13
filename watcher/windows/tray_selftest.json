@@ -252,5 +252,307 @@
         "tip": "ProBeing: this laptop is not paired"
       }
     }
-  ]
+  ],
+  "desktops": {
+    "note": "Item 30b: tray.ps1 Desk-Name and the sampler (Desk-Load, Desk-Add, Desk-Prune, Desk-Json); item30b_tray.js runs the JS twin.",
+    "names": [
+      {
+        "name": "a named desktop",
+        "id": "3d1c8a52-7f3e-4b5e-9a31-0c2a51d1e002",
+        "ids": [
+          "3d1c8a52-7f3e-4b5e-9a31-0c2a51d1e001",
+          "3d1c8a52-7f3e-4b5e-9a31-0c2a51d1e002",
+          "3d1c8a52-7f3e-4b5e-9a31-0c2a51d1e003"
+        ],
+        "names": {
+          "3d1c8a52-7f3e-4b5e-9a31-0c2a51d1e002": "NeuraVue"
+        },
+        "want": "NeuraVue"
+      },
+      {
+        "name": "an unnamed desktop is Desktop N by its place",
+        "id": "3d1c8a52-7f3e-4b5e-9a31-0c2a51d1e003",
+        "ids": [
+          "3d1c8a52-7f3e-4b5e-9a31-0c2a51d1e001",
+          "3d1c8a52-7f3e-4b5e-9a31-0c2a51d1e002",
+          "3d1c8a52-7f3e-4b5e-9a31-0c2a51d1e003"
+        ],
+        "names": {},
+        "want": "Desktop 3"
+      },
+      {
+        "name": "a blank name is no name",
+        "id": "3d1c8a52-7f3e-4b5e-9a31-0c2a51d1e001",
+        "ids": [
+          "3d1c8a52-7f3e-4b5e-9a31-0c2a51d1e001",
+          "3d1c8a52-7f3e-4b5e-9a31-0c2a51d1e002",
+          "3d1c8a52-7f3e-4b5e-9a31-0c2a51d1e003"
+        ],
+        "names": {
+          "3d1c8a52-7f3e-4b5e-9a31-0c2a51d1e001": "   "
+        },
+        "want": "Desktop 1"
+      },
+      {
+        "name": "a desktop not in the list, others are: unknown",
+        "id": "3d1c8a52-7f3e-4b5e-9a31-0c2a51d1e004",
+        "ids": [
+          "3d1c8a52-7f3e-4b5e-9a31-0c2a51d1e001",
+          "3d1c8a52-7f3e-4b5e-9a31-0c2a51d1e002",
+          "3d1c8a52-7f3e-4b5e-9a31-0c2a51d1e003"
+        ],
+        "names": {
+          "3d1c8a52-7f3e-4b5e-9a31-0c2a51d1e001": "OneNet"
+        },
+        "want": ""
+      },
+      {
+        "name": "only one desktop (no list yet): Desktop 1",
+        "id": "3d1c8a52-7f3e-4b5e-9a31-0c2a51d1e004",
+        "ids": [],
+        "names": {},
+        "want": "Desktop 1"
+      },
+      {
+        "name": "no window in front: nothing",
+        "id": "",
+        "ids": [
+          "3d1c8a52-7f3e-4b5e-9a31-0c2a51d1e001",
+          "3d1c8a52-7f3e-4b5e-9a31-0c2a51d1e002",
+          "3d1c8a52-7f3e-4b5e-9a31-0c2a51d1e003"
+        ],
+        "names": {},
+        "want": ""
+      },
+      {
+        "name": "a name with tabs and a newline is one line",
+        "id": "3d1c8a52-7f3e-4b5e-9a31-0c2a51d1e001",
+        "ids": [
+          "3d1c8a52-7f3e-4b5e-9a31-0c2a51d1e001",
+          "3d1c8a52-7f3e-4b5e-9a31-0c2a51d1e002",
+          "3d1c8a52-7f3e-4b5e-9a31-0c2a51d1e003"
+        ],
+        "names": {
+          "3d1c8a52-7f3e-4b5e-9a31-0c2a51d1e001": "\tBiped\nRobot  working "
+        },
+        "want": "Biped Robot working"
+      },
+      {
+        "name": "a long name is cut to 80",
+        "id": "3d1c8a52-7f3e-4b5e-9a31-0c2a51d1e001",
+        "ids": [
+          "3d1c8a52-7f3e-4b5e-9a31-0c2a51d1e001"
+        ],
+        "names": {
+          "3d1c8a52-7f3e-4b5e-9a31-0c2a51d1e001": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+        },
+        "want": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+      }
+    ],
+    "samples": [
+      {
+        "name": "ticks on one desktop grow one span",
+        "file": "",
+        "steps": [
+          [
+            1792040400000,
+            "NeuraVue"
+          ],
+          [
+            1792040410000,
+            "NeuraVue"
+          ],
+          [
+            1792040420000,
+            "NeuraVue"
+          ]
+        ],
+        "want": "{\"v\":1,\"spans\":[[1792040400000,1792040420000,\"NeuraVue\"]]}"
+      },
+      {
+        "name": "a switch starts the next span where the last tick ended",
+        "file": "",
+        "steps": [
+          [
+            1792040400000,
+            "NeuraVue"
+          ],
+          [
+            1792040410000,
+            "NeuraVue"
+          ],
+          [
+            1792040420000,
+            "OneNet"
+          ],
+          [
+            1792040430000,
+            "OneNet"
+          ],
+          [
+            1792040440000,
+            "NeuraVue"
+          ]
+        ],
+        "want": "{\"v\":1,\"spans\":[[1792040400000,1792040410000,\"NeuraVue\"],[1792040410000,1792040430000,\"OneNet\"],[1792040430000,1792040440000,\"NeuraVue\"]]}"
+      },
+      {
+        "name": "a gap over 30 s (asleep, locked) starts afresh",
+        "file": "",
+        "steps": [
+          [
+            1792040400000,
+            "OneNet"
+          ],
+          [
+            1792040410000,
+            "OneNet"
+          ],
+          [
+            1792040500000,
+            "OneNet"
+          ]
+        ],
+        "want": "{\"v\":1,\"spans\":[[1792040400000,1792040410000,\"OneNet\"],[1792040500000,1792040500000,\"OneNet\"]]}"
+      },
+      {
+        "name": "a missed tick (25 s) is still one stretch",
+        "file": "",
+        "steps": [
+          [
+            1792040400000,
+            "OneNet"
+          ],
+          [
+            1792040425000,
+            "OneNet"
+          ],
+          [
+            1792040455000,
+            "ProBeing"
+          ]
+        ],
+        "want": "{\"v\":1,\"spans\":[[1792040400000,1792040425000,\"OneNet\"],[1792040425000,1792040455000,\"ProBeing\"]]}"
+      },
+      {
+        "name": "no desktop known for under 30 s: bridged",
+        "file": "",
+        "steps": [
+          [
+            1792040400000,
+            "OneNet"
+          ],
+          [
+            1792040410000,
+            "OneNet"
+          ],
+          [
+            1792040420000,
+            ""
+          ],
+          [
+            1792040430000,
+            "OneNet"
+          ]
+        ],
+        "want": "{\"v\":1,\"spans\":[[1792040400000,1792040430000,\"OneNet\"]]}"
+      },
+      {
+        "name": "no desktop known (locked) a minute: the span stops there",
+        "file": "",
+        "steps": [
+          [
+            1792040400000,
+            "OneNet"
+          ],
+          [
+            1792040410000,
+            "OneNet"
+          ],
+          [
+            1792040420000,
+            ""
+          ],
+          [
+            1792040450000,
+            ""
+          ],
+          [
+            1792040480000,
+            "OneNet"
+          ]
+        ],
+        "want": "{\"v\":1,\"spans\":[[1792040400000,1792040410000,\"OneNet\"],[1792040480000,1792040480000,\"OneNet\"]]}"
+      },
+      {
+        "name": "the clock set back: the sample is ignored",
+        "file": "",
+        "steps": [
+          [
+            1792040500000,
+            "OneNet"
+          ],
+          [
+            1792040450000,
+            "ProBeing"
+          ],
+          [
+            1792040510000,
+            "OneNet"
+          ]
+        ],
+        "want": "{\"v\":1,\"spans\":[[1792040500000,1792040510000,\"OneNet\"]]}"
+      },
+      {
+        "name": "older than 48 hours is pruned",
+        "file": "{\"v\":1,\"spans\":[[1791864000000,1791865800000,\"Old\"],[1791871200000,1791874800000,\"Kept\"]]}",
+        "steps": [
+          [
+            1792040400000,
+            "NeuraVue"
+          ]
+        ],
+        "want": "{\"v\":1,\"spans\":[[1791871200000,1791874800000,\"Kept\"],[1792040400000,1792040400000,\"NeuraVue\"]]}"
+      },
+      {
+        "name": "the file read back carries on its last span",
+        "file": "{\"v\":1,\"spans\":[[1792040400000,1792040420000,\"NeuraVue\"]]}",
+        "steps": [
+          [
+            1792040430000,
+            "NeuraVue"
+          ]
+        ],
+        "want": "{\"v\":1,\"spans\":[[1792040400000,1792040430000,\"NeuraVue\"]]}"
+      },
+      {
+        "name": "a broken file is ignored",
+        "file": "{\"v\":1,\"spans\":[[1",
+        "steps": [
+          [
+            1792040400000,
+            "OneNet"
+          ]
+        ],
+        "want": "{\"v\":1,\"spans\":[[1792040400000,1792040400000,\"OneNet\"]]}"
+      },
+      {
+        "name": "bad spans in the file are dropped (wrong length, no name, backwards, text)",
+        "file": "{\"v\":1,\"spans\":[[1,2],[3,4,\"\"],[9,5,\"Back\"],[\"x\",6,\"T\"],[10,20,\"Good\"],null]}",
+        "steps": [],
+        "want": "{\"v\":1,\"spans\":[[10,20,\"Good\"]]}"
+      },
+      {
+        "name": "a name with a quote and a backslash is written safely",
+        "file": "",
+        "steps": [
+          [
+            1792040400000,
+            "A \"quoted\" \\ name"
+          ]
+        ],
+        "want": "{\"v\":1,\"spans\":[[1792040400000,1792040400000,\"A \\\"quoted\\\" \\\\ name\"]]}"
+      }
+    ]
+  }
 }

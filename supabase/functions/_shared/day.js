@@ -1219,6 +1219,7 @@ globalThis.ProBeingDay = {
   LEAD_MAX_MS: LEAD_MAX_MS,
   LEAD_TYPES: LEAD_TYPES,
   dayFigures: dayFigures,
+  replayDay: replayDay,                     // item 30b: activity-ingest reads Working on with it
   isOpenAt: isOpenAt,
   canRename: canRename,
   openBeforeToday: openBeforeToday,

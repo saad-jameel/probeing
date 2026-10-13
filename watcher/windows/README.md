@@ -86,6 +86,30 @@ restarts the dot; it never makes a second one.
 powershell -NoProfile -ExecutionPolicy Bypass -File "$env:USERPROFILE\ProBeing-watcher\uninstall.ps1" -TrayOnly
 ```
 
+## Desktops (Windows virtual desktops)
+
+The dot also notes, every 10 seconds, which **virtual desktop** the window in front
+is on (Task View's desktops), by its **name** only, in
+`%LOCALAPPDATA%\ProBeing\desktops.json` (the last 48 hours). The watcher reads that
+file and sends each block with its desktop's name.
+
+- A desktop named after a project ("NeuraVue", "proBeing", "BipedRobot_working"
+  for "Biped Robot Working": case, spaces and `_` do not matter) **is** that
+  project: everything on it, the terminal and Notepad too, goes there, ahead of
+  any keyword. YouTube there is still a distraction; private is still private.
+- A desktop with another name (say "Desktop 2"): pair it once in Settings →
+  ProBeing training → **Desktops → project**. The panel lists desktops seen
+  lately that have no project yet.
+- Asleep, on a break or with the day not started, no desktop name is sent.
+
+**After an update**, copy the files over and restart the dot (one line):
+
+```powershell
+Copy-Item '\\wsl.localhost\Ubuntu-24.04\home\saad-wsl\proBeing\watcher\windows\*' "$env:USERPROFILE\ProBeing-watcher" -Recurse -Force; powershell -NoProfile -ExecutionPolicy Bypass -File "$env:USERPROFILE\ProBeing-watcher\install.ps1" -TrayOnly
+```
+
+`tray.ps1 -Check` then ends with "Desktop in front: …".
+
 ## Day to day
 
 - Change the distraction, meeting, private and work-apps lists, and your project
@@ -136,3 +160,6 @@ have a JavaScript twin in `claudeWorkingDocs/tests/item27_tray.js`, and both run
 `tray_selftest.json`. It asks `activity-ingest` with `{op: 'glance'}`, which
 reads the `glance` row and the state, writes nothing, and does not mark the
 laptop "connected" (only the watcher should). Keep it plain ASCII too.
+Its desktop sampler (`Desk-*`, item 30b) has a JavaScript twin in
+`claudeWorkingDocs/tests/item30b_desk_twin.js`, checked by `tray_selftest.json`
+("desktops"); the only file the dot writes is `desktops.json`.

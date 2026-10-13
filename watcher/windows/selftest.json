@@ -4259,5 +4259,636 @@
     }
    ]
   }
+ ],
+ "desktop": [
+  {
+   "name": "item 30b: one terminal window across two desktops: NeuraVue, then OneNet",
+   "cut": {
+    "from": "2026-10-13T05:00:00.000Z",
+    "to": "2026-10-13T05:30:00.000Z",
+    "spans": [
+     [
+      "2026-10-13T05:00:00.000Z",
+      "2026-10-13T05:30:00.000Z"
+     ]
+    ]
+   },
+   "cfg": {
+    "lists": null,
+    "rules": [],
+    "projects": [
+     "ProBeing",
+     "NeuraVue",
+     "OneNet",
+     "Biped Robot Working"
+    ]
+   },
+   "events": {
+    "afk": [
+     {
+      "timestamp": "2026-10-13T05:00:00+00:00",
+      "duration": 1800,
+      "data": {
+       "status": "not-afk"
+      }
+     }
+    ],
+    "window": [
+     {
+      "timestamp": "2026-10-13T05:00:00+00:00",
+      "duration": 1200,
+      "data": {
+       "app": "WindowsTerminal.exe",
+       "title": "saad@LAPTOP: ~"
+      }
+     }
+    ],
+    "web": []
+   },
+   "desktops": [
+    [
+     "2026-10-13T05:00:00.000Z",
+     "2026-10-13T05:10:00.000Z",
+     "NeuraVue"
+    ],
+    [
+     "2026-10-13T05:10:00.000Z",
+     "2026-10-13T05:25:00.000Z",
+     "OneNet"
+    ]
+   ],
+   "want": [
+    {
+     "start": "2026-10-13T05:00:00.000Z",
+     "end": "2026-10-13T05:10:00.000Z",
+     "app": "WindowsTerminal.exe",
+     "domain": "",
+     "category": "work",
+     "project": "NeuraVue",
+     "key": "",
+     "desktop": "NeuraVue"
+    },
+    {
+     "start": "2026-10-13T05:10:00.000Z",
+     "end": "2026-10-13T05:20:00.000Z",
+     "app": "WindowsTerminal.exe",
+     "domain": "",
+     "category": "work",
+     "project": "OneNet",
+     "key": "",
+     "desktop": "OneNet"
+    }
+   ]
+  },
+  {
+   "name": "item 30b: the desktop beats a title keyword (ProBeing code on the NeuraVue desktop is NeuraVue)",
+   "cut": {
+    "from": "2026-10-13T05:00:00.000Z",
+    "to": "2026-10-13T05:30:00.000Z",
+    "spans": [
+     [
+      "2026-10-13T05:00:00.000Z",
+      "2026-10-13T05:30:00.000Z"
+     ]
+    ]
+   },
+   "cfg": {
+    "lists": null,
+    "rules": [],
+    "projects": [
+     "ProBeing",
+     "NeuraVue",
+     "OneNet",
+     "Biped Robot Working"
+    ]
+   },
+   "events": {
+    "afk": [
+     {
+      "timestamp": "2026-10-13T05:00:00+00:00",
+      "duration": 1800,
+      "data": {
+       "status": "not-afk"
+      }
+     }
+    ],
+    "window": [
+     {
+      "timestamp": "2026-10-13T05:00:00+00:00",
+      "duration": 720,
+      "data": {
+       "app": "Code.exe",
+       "title": "app.js - probeing - Visual Studio Code"
+      }
+     },
+     {
+      "timestamp": "2026-10-13T05:12:00+00:00",
+      "duration": 480,
+      "data": {
+       "app": "Code.exe",
+       "title": "app.js - probeing - Visual Studio Code"
+      }
+     }
+    ],
+    "web": []
+   },
+   "desktops": [
+    [
+     "2026-10-13T05:00:00.000Z",
+     "2026-10-13T05:12:00.000Z",
+     "NeuraVue"
+    ],
+    [
+     "2026-10-13T05:12:00.000Z",
+     "2026-10-13T05:30:00.000Z",
+     "proBeing"
+    ]
+   ],
+   "want": [
+    {
+     "start": "2026-10-13T05:00:00.000Z",
+     "end": "2026-10-13T05:12:00.000Z",
+     "app": "Code.exe",
+     "domain": "",
+     "category": "work",
+     "project": "NeuraVue",
+     "key": "",
+     "desktop": "NeuraVue"
+    },
+    {
+     "start": "2026-10-13T05:12:00.000Z",
+     "end": "2026-10-13T05:20:00.000Z",
+     "app": "Code.exe",
+     "domain": "",
+     "category": "work",
+     "project": "ProBeing",
+     "key": "probeing",
+     "desktop": "proBeing"
+    }
+   ]
+  },
+  {
+   "name": "item 30b: a desktop named loosely (BipedRobot_working) and one mapped in Settings (Desktop 2 = OneNet)",
+   "cut": {
+    "from": "2026-10-13T05:00:00.000Z",
+    "to": "2026-10-13T05:30:00.000Z",
+    "spans": [
+     [
+      "2026-10-13T05:00:00.000Z",
+      "2026-10-13T05:30:00.000Z"
+     ]
+    ]
+   },
+   "cfg": {
+    "lists": null,
+    "rules": [],
+    "projects": [
+     "ProBeing",
+     "NeuraVue",
+     "OneNet",
+     "Biped Robot Working"
+    ],
+    "desktops": [
+     {
+      "desktop": "desktop 2",
+      "project": "OneNet"
+     },
+     {
+      "desktop": "",
+      "project": "X"
+     },
+     {
+      "desktop": "Desktop 2",
+      "project": "Not me"
+     }
+    ]
+   },
+   "events": {
+    "afk": [
+     {
+      "timestamp": "2026-10-13T05:00:00+00:00",
+      "duration": 1800,
+      "data": {
+       "status": "not-afk"
+      }
+     }
+    ],
+    "window": [
+     {
+      "timestamp": "2026-10-13T05:00:00+00:00",
+      "duration": 600,
+      "data": {
+       "app": "notepad.exe",
+       "title": "notes.txt - Notepad"
+      }
+     },
+     {
+      "timestamp": "2026-10-13T05:10:00+00:00",
+      "duration": 600,
+      "data": {
+       "app": "notepad.exe",
+       "title": "notes.txt - Notepad"
+      }
+     }
+    ],
+    "web": []
+   },
+   "desktops": [
+    [
+     "2026-10-13T05:00:00.000Z",
+     "2026-10-13T05:10:00.000Z",
+     "BipedRobot_working"
+    ],
+    [
+     "2026-10-13T05:10:00.000Z",
+     "2026-10-13T05:20:00.000Z",
+     "Desktop 2"
+    ]
+   ],
+   "want": [
+    {
+     "start": "2026-10-13T05:00:00.000Z",
+     "end": "2026-10-13T05:10:00.000Z",
+     "app": "notepad.exe",
+     "domain": "",
+     "category": "work",
+     "project": "Biped Robot Working",
+     "key": "",
+     "desktop": "BipedRobot_working"
+    },
+    {
+     "start": "2026-10-13T05:10:00.000Z",
+     "end": "2026-10-13T05:20:00.000Z",
+     "app": "notepad.exe",
+     "domain": "",
+     "category": "work",
+     "project": "OneNet",
+     "key": "",
+     "desktop": "Desktop 2"
+    }
+   ]
+  },
+  {
+   "name": "item 30b: on a project desktop an unknown app is its work; YouTube stays a distraction; private stays nameless",
+   "cut": {
+    "from": "2026-10-13T05:00:00.000Z",
+    "to": "2026-10-13T05:40:00.000Z",
+    "spans": [
+     [
+      "2026-10-13T05:00:00.000Z",
+      "2026-10-13T05:40:00.000Z"
+     ]
+    ]
+   },
+   "cfg": {
+    "lists": null,
+    "rules": [],
+    "projects": [
+     "ProBeing",
+     "NeuraVue",
+     "OneNet",
+     "Biped Robot Working"
+    ]
+   },
+   "events": {
+    "afk": [
+     {
+      "timestamp": "2026-10-13T05:00:00+00:00",
+      "duration": 2400,
+      "data": {
+       "status": "not-afk"
+      }
+     }
+    ],
+    "window": [
+     {
+      "timestamp": "2026-10-13T05:00:00+00:00",
+      "duration": 600,
+      "data": {
+       "app": "Figma.exe",
+       "title": "Board - Figma"
+      }
+     },
+     {
+      "timestamp": "2026-10-13T05:10:00+00:00",
+      "duration": 600,
+      "data": {
+       "app": "chrome.exe",
+       "title": "Shorts - YouTube - Google Chrome"
+      }
+     },
+     {
+      "timestamp": "2026-10-13T05:20:00+00:00",
+      "duration": 600,
+      "data": {
+       "app": "WhatsApp.exe",
+       "title": "Chat with a friend"
+      }
+     }
+    ],
+    "web": [
+     {
+      "timestamp": "2026-10-13T05:10:00+00:00",
+      "duration": 600,
+      "data": {
+       "url": "https://www.youtube.com/shorts/abc",
+       "title": "x"
+      }
+     }
+    ]
+   },
+   "desktops": [
+    [
+     "2026-10-13T05:00:00.000Z",
+     "2026-10-13T05:40:00.000Z",
+     "OneNet"
+    ]
+   ],
+   "want": [
+    {
+     "start": "2026-10-13T05:00:00.000Z",
+     "end": "2026-10-13T05:10:00.000Z",
+     "app": "Figma.exe",
+     "domain": "",
+     "category": "work",
+     "project": "OneNet",
+     "key": "",
+     "desktop": "OneNet"
+    },
+    {
+     "start": "2026-10-13T05:10:00.000Z",
+     "end": "2026-10-13T05:20:00.000Z",
+     "app": "chrome.exe",
+     "domain": "youtube.com",
+     "category": "distraction",
+     "project": "",
+     "key": "",
+     "desktop": "OneNet"
+    },
+    {
+     "start": "2026-10-13T05:20:00.000Z",
+     "end": "2026-10-13T05:30:00.000Z",
+     "app": "WhatsApp.exe",
+     "domain": "",
+     "category": "private",
+     "project": "",
+     "key": ""
+    }
+   ]
+  },
+  {
+   "name": "item 30b: a desktop that is no project (Personal): its name is sent, the project comes from the rules",
+   "cut": {
+    "from": "2026-10-13T05:00:00.000Z",
+    "to": "2026-10-13T05:20:00.000Z",
+    "spans": [
+     [
+      "2026-10-13T05:00:00.000Z",
+      "2026-10-13T05:20:00.000Z"
+     ]
+    ]
+   },
+   "cfg": {
+    "lists": null,
+    "rules": [
+     {
+      "keyword": "docker",
+      "project": "OneNet"
+     }
+    ],
+    "projects": [
+     "ProBeing",
+     "NeuraVue",
+     "OneNet",
+     "Biped Robot Working"
+    ]
+   },
+   "events": {
+    "afk": [
+     {
+      "timestamp": "2026-10-13T05:00:00+00:00",
+      "duration": 1200,
+      "data": {
+       "status": "not-afk"
+      }
+     }
+    ],
+    "window": [
+     {
+      "timestamp": "2026-10-13T05:00:00+00:00",
+      "duration": 600,
+      "data": {
+       "app": "Docker Desktop.exe",
+       "title": "Docker Desktop"
+      }
+     },
+     {
+      "timestamp": "2026-10-13T05:10:00+00:00",
+      "duration": 600,
+      "data": {
+       "app": "Figma.exe",
+       "title": "Board - Figma"
+      }
+     }
+    ],
+    "web": []
+   },
+   "desktops": [
+    [
+     "2026-10-13T05:00:00.000Z",
+     "2026-10-13T05:20:00.000Z",
+     "Personal"
+    ]
+   ],
+   "want": [
+    {
+     "start": "2026-10-13T05:00:00.000Z",
+     "end": "2026-10-13T05:10:00.000Z",
+     "app": "Docker Desktop.exe",
+     "domain": "",
+     "category": "work",
+     "project": "OneNet",
+     "key": "docker",
+     "desktop": "Personal"
+    },
+    {
+     "start": "2026-10-13T05:10:00.000Z",
+     "end": "2026-10-13T05:20:00.000Z",
+     "app": "Figma.exe",
+     "domain": "",
+     "category": "unclear",
+     "project": "",
+     "key": "",
+     "desktop": "Personal"
+    }
+   ]
+  },
+  {
+   "name": "item 30b: asleep (quiet): bare, no desktop name; the gap in the spans has none",
+   "cut": {
+    "from": "2026-10-13T05:00:00.000Z",
+    "to": "2026-10-13T05:40:00.000Z",
+    "spans": [
+     [
+      "2026-10-13T05:00:00.000Z",
+      "2026-10-13T05:20:00.000Z"
+     ]
+    ],
+    "quiet": [
+     [
+      "2026-10-13T05:20:00.000Z",
+      "2026-10-13T05:40:00.000Z"
+     ]
+    ]
+   },
+   "cfg": {
+    "lists": null,
+    "rules": [],
+    "projects": [
+     "ProBeing",
+     "NeuraVue",
+     "OneNet",
+     "Biped Robot Working"
+    ]
+   },
+   "events": {
+    "afk": [
+     {
+      "timestamp": "2026-10-13T05:00:00+00:00",
+      "duration": 2400,
+      "data": {
+       "status": "not-afk"
+      }
+     }
+    ],
+    "window": [
+     {
+      "timestamp": "2026-10-13T05:00:00+00:00",
+      "duration": 2400,
+      "data": {
+       "app": "Code.exe",
+       "title": "main.py - x - Visual Studio Code"
+      }
+     }
+    ],
+    "web": []
+   },
+   "desktops": [
+    [
+     "2026-10-13T05:00:00.000Z",
+     "2026-10-13T05:08:00.000Z",
+     "NeuraVue"
+    ],
+    [
+     "2026-10-13T05:12:00.000Z",
+     "2026-10-13T05:40:00.000Z",
+     "NeuraVue"
+    ]
+   ],
+   "want": [
+    {
+     "start": "2026-10-13T05:00:00.000Z",
+     "end": "2026-10-13T05:08:00.000Z",
+     "app": "Code.exe",
+     "domain": "",
+     "category": "work",
+     "project": "NeuraVue",
+     "key": "",
+     "desktop": "NeuraVue"
+    },
+    {
+     "start": "2026-10-13T05:08:00.000Z",
+     "end": "2026-10-13T05:12:00.000Z",
+     "app": "Code.exe",
+     "domain": "",
+     "category": "work",
+     "project": "",
+     "key": ""
+    },
+    {
+     "start": "2026-10-13T05:12:00.000Z",
+     "end": "2026-10-13T05:20:00.000Z",
+     "app": "Code.exe",
+     "domain": "",
+     "category": "work",
+     "project": "NeuraVue",
+     "key": "",
+     "desktop": "NeuraVue"
+    },
+    {
+     "start": "2026-10-13T05:20:00.000Z",
+     "end": "2026-10-13T05:40:00.000Z",
+     "app": "",
+     "domain": "",
+     "category": "work",
+     "project": "NeuraVue",
+     "key": ""
+    }
+   ]
+  },
+  {
+   "name": "item 30b: a tray sample a few seconds short folds into the block (no ten-second piece)",
+   "cut": {
+    "from": "2026-10-13T05:00:00.000Z",
+    "to": "2026-10-13T05:20:00.000Z",
+    "spans": [
+     [
+      "2026-10-13T05:00:00.000Z",
+      "2026-10-13T05:20:00.000Z"
+     ]
+    ]
+   },
+   "cfg": {
+    "lists": null,
+    "rules": [],
+    "projects": [
+     "ProBeing",
+     "NeuraVue",
+     "OneNet",
+     "Biped Robot Working"
+    ]
+   },
+   "events": {
+    "afk": [
+     {
+      "timestamp": "2026-10-13T05:00:00+00:00",
+      "duration": 1200,
+      "data": {
+       "status": "not-afk"
+      }
+     }
+    ],
+    "window": [
+     {
+      "timestamp": "2026-10-13T05:00:00+00:00",
+      "duration": 1200,
+      "data": {
+       "app": "WindowsTerminal.exe",
+       "title": "bash"
+      }
+     }
+    ],
+    "web": []
+   },
+   "desktops": [
+    [
+     "2026-10-13T05:00:07.000Z",
+     "2026-10-13T05:19:51.000Z",
+     "ProBeing"
+    ]
+   ],
+   "want": [
+    {
+     "start": "2026-10-13T05:00:00.000Z",
+     "end": "2026-10-13T05:20:00.000Z",
+     "app": "WindowsTerminal.exe",
+     "domain": "",
+     "category": "work",
+     "project": "ProBeing",
+     "key": "",
+     "desktop": "ProBeing"
+    }
+   ]
+  }
  ]
 }

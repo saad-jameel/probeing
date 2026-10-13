@@ -2085,6 +2085,7 @@ async function refresh(opts) {
     renderToday(data);
     catchupPrune();                       // item 23: answered on another device, or over
     if (catchupOnOpen) { catchupOnOpen = false; maybeCatchUp(); }      // Stage 18b: once per opening
+    readAutoAsks();                                                      // item 30b: at most once a minute
     if (epoch === glanceEpoch) armGlance(data, readAt);
     drainOutbox('read');                  // a read that worked means the way is open
     if (opts && opts.announce) flash('Up to date', 'ok');
@@ -2287,7 +2288,9 @@ function renderProject() {
   var empty = $('projEmpty');
 
   list.textContent = '';
-  empty.hidden = day.activeProjects.length > 0;
+  // Item 30b: a project the watchers saw that is not here yet, with Accept / Reject.
+  var autos = renderAutoList(day);
+  empty.hidden = day.activeProjects.length > 0 || autos > 0;
 
   if (!day.activeProjects.length) {
     empty.textContent = day.worked
@@ -15405,6 +15408,8 @@ async function loadWatch() {
     watchRules = (rules.data || []).filter(function (r) { return CATCHUP_RULE_SOURCES[r.source] === 1; });   // his and his corrections'
     await readActIgnore();
     listFill();
+    await readActDesktops();                // item 30b: last, never in the way of the rest
+    listFill();
   } catch (e) {
     out.textContent = 'Could not read the laptop settings: ' + ((e && e.message) || e);
   }
@@ -15604,13 +15609,17 @@ var ACT_LIST_PANELS = [
     hint: 'Used for every project: they take the project of the work around them.' },
   { id: 'ignore', title: 'Ignore', store: 'ignore', ph: 'spotify', hint: 'Never asked about. An app word or a site.' },
   { id: 'rules', title: 'Keyword rules', store: 'rules', ph: 'docker',
-    hint: 'A window whose title, app or site holds the keyword goes to that project.' }
+    hint: 'A window whose title, app or site holds the keyword goes to that project.' },
+  // Item 30b: user_settings.activity_desktops, read and written on its own (a database without it still shows the rest).
+  { id: 'desktops', title: 'Desktops → project', store: 'desktops', ph: 'Desktop 2',
+    hint: 'A Windows desktop named after a project is that project already. Pair the others here: everything on that desktop, the terminal too, goes to the project.' }
 ];
 
-var actSet = { lists: null, ignore: null };   // as last read; null until read (rule 3: re-read after every write)
+var actSet = { lists: null, ignore: null, desktops: null, seenDesktops: [] };   // as last read; null until read (rule 3: re-read after every write)
 
 function listPanelOn(p) {
   if (typeof ACT_LIST_KEYS === 'undefined') return false;      // activity.js not loaded: no lists to show
+  if (p.store === 'desktops') return typeof actDeskPairs === 'function';
   return p.store !== 'list' || ACT_LIST_KEYS.indexOf(p.key) !== -1;
 }
 
@@ -15622,6 +15631,9 @@ function listIsSite(e) {
 /** What a panel shows: list entries, ignored names, or the rules as "keyword → project". */
 function listPanelItems(p) {
   if (p.store === 'rules') return watchRules.map(function (r) { return { key: r.keyword, text: r.keyword + ' → ' + r.project }; });
+  if (p.store === 'desktops') {
+    return (actSet.desktops || []).map(function (d) { return { key: actNorm(d.desktop), text: d.desktop + ' → ' + d.project }; });
+  }
   var all = p.store === 'ignore' ? actSet.ignore : actSet.lists && actSet.lists[p.key];
   return (all || []).filter(function (e) {
     return p.part === 'app' ? !listIsSite(e) : p.part === 'site' ? listIsSite(e) : true;
@@ -15629,6 +15641,7 @@ function listPanelItems(p) {
 }
 
 function listPanelLoaded(p) {
+  if (p.store === 'desktops') return actSet.desktops !== null;
   return p.store === 'rules' ? actSet.lists !== null : p.store === 'ignore' ? actSet.ignore !== null : actSet.lists !== null;
 }
 
@@ -15658,21 +15671,24 @@ function buildListPanels() {
     input.type = 'text';
     input.id = 'listInput-' + p.id;
     input.placeholder = p.ph;
-    input.setAttribute('aria-label', (p.store === 'rules' ? 'Keyword' : 'Add to ' + p.title));
+    input.setAttribute('aria-label', (p.store === 'rules' ? 'Keyword' : p.store === 'desktops' ? 'Desktop name' : 'Add to ' + p.title));
     input.autocomplete = 'off';
     row.appendChild(input);
     var proj = null;
-    if (p.store === 'rules') {
+    if (p.store === 'rules' || p.store === 'desktops') {
       proj = document.createElement('input');
       proj.type = 'text';
       proj.id = 'listProject-' + p.id;
       proj.placeholder = 'Project';
-      proj.setAttribute('aria-label', 'Project for the keyword');
+      proj.setAttribute('aria-label', p.store === 'desktops' ? 'Project for the desktop' : 'Project for the keyword');
       proj.setAttribute('list', 'listProjects');
       proj.autocomplete = 'off';
-      var dl = document.createElement('datalist');
-      dl.id = 'listProjects';
-      row.append(proj, dl);
+      row.appendChild(proj);
+      if (!$('listProjects')) {
+        var dl = document.createElement('datalist');
+        dl.id = 'listProjects';
+        row.appendChild(dl);
+      }
     }
     var add = document.createElement('button');
     add.type = 'button';
@@ -15685,8 +15701,17 @@ function buildListPanels() {
     out.id = 'listResult-' + p.id;
     out.setAttribute('role', 'status');
     sec.append(h, hint, chips, row, out);
+    var seen = null;
+    if (p.store === 'desktops') {
+      // Item 30b: desktops the laptop reported lately that stand for no project yet.
+      seen = document.createElement('p');
+      seen.className = 'hint';
+      seen.id = 'listSeen-' + p.id;
+      seen.hidden = true;
+      sec.appendChild(seen);
+    }
     box.appendChild(sec);
-    p.el = { count: count, chips: chips, input: input, proj: proj, add: add, out: out };
+    p.el = { count: count, chips: chips, input: input, proj: proj, add: add, out: out, seen: seen };
     add.addEventListener('click', function () { listAdd(p); });
     [input, proj].forEach(function (f) {
       if (!f) return;
@@ -15729,7 +15754,12 @@ function listFill() {
       li.append(t, x);
       ul.appendChild(li);
     });
-    if (p.el.proj) {
+    if (p.el.seen) {
+      var loose = deskSeenLoose();
+      p.el.seen.textContent = loose.length ? 'Seen lately with no project: ' + loose.join(', ') + '.' : '';
+      p.el.seen.hidden = !loose.length;
+    }
+    if (p.el.proj && $('listProjects')) {
       var dl = $('listProjects');
       dl.textContent = '';
       catchupProjects([]).forEach(function (name) {
@@ -15789,6 +15819,8 @@ async function refreshActLists(redrawTeach) {
     teach.rules = (rules.data || []).map(function (r) { return { keyword: r.keyword, project: r.project }; });
     if (redrawTeach !== false) renderTeach();
   }
+  await readActDesktops();                  // item 30b: last, so the lists above never wait for it
+  listFill();
 }
 
 /** Ignore apart from the lists: a database without the item 23 column still shows them. */
@@ -15797,6 +15829,46 @@ async function readActIgnore() {
   if (set.error) { actSet.ignore = null; return; }
   var row = (set.data || [])[0] || null;
   actSet.ignore = Array.isArray(row && row.activity_ignore) ? row.activity_ignore.slice() : [];
+}
+
+/** Item 30b: his desktop pairs, and the desktop names seen in a week; apart from the lists, so a
+ *  database without the item 30b part still shows the rest (the panel then stays unloaded). */
+async function readActDesktops() {
+  try {
+    var set = await sb.from('user_settings').select('activity_desktops').eq('user_id', sbUser.id).limit(1);
+    if (set.error) { actSet.desktops = null; return; }
+    actSet.desktops = actDeskPairs(((set.data || [])[0] || {}).activity_desktops);
+    var seen = await sb.from('activity_blocks').select('desktop').eq('mode', 'work')
+      .gte('ended_at', new Date(Date.now() - 7 * 86400000).toISOString()).limit(2000);
+    var names = [];
+    if (!seen.error) {
+      (seen.data || []).forEach(function (r) {
+        var d = actCleanDesktop(r.desktop);
+        if (d && !names.some(function (x) { return actNorm(x) === actNorm(d); })) names.push(d);
+      });
+    }
+    actSet.seenDesktops = names;
+  } catch (e) {
+    actSet.desktops = null;                 // the panel waits for the next read; the other lists are drawn
+  }
+}
+
+/** Desktops seen lately that neither a pair nor a project's name places. Names are text (rule 5). */
+function deskSeenLoose() {
+  if (actSet.desktops === null) return [];
+  var cfg = { desktops: actSet.desktops, projects: catchupProjects([]) };
+  return (actSet.seenDesktops || []).filter(function (d) { return !actDeskProject(d, cfg); }).slice(0, 12);
+}
+
+/** Read the pairs fresh, change them, write them back (one at a time, as the lists are). */
+function deskWriteSetting(change) {
+  return actSetSerial(async function () {
+    var set = await sb.from('user_settings').select('activity_desktops').eq('user_id', sbUser.id).limit(1);
+    if (set.error) throw errorFrom(set.error);
+    var list = actDeskPairs(((set.data || [])[0] || {}).activity_desktops);
+    var up = await sb.from('user_settings').upsert({ user_id: sbUser.id, activity_desktops: change(list) }, { onConflict: 'user_id' });
+    if (up.error) throw errorFrom(up.error);
+  });
 }
 
 /* Every write to activity_lists / activity_ignore (the panels and Teach) runs one at a time:
@@ -15839,7 +15911,16 @@ async function listAdd(p) {
   var done = '';
   var rule = null;
   var got = null;
-  if (p.store === 'rules') {
+  var pair = null;
+  if (p.store === 'desktops') {
+    var dname = actCleanDesktop(p.el.input.value);
+    var dproj = String(p.el.proj.value || '').trim();
+    if (!actNorm(dname)) { out.textContent = 'Type the desktop\'s name as Windows shows it (Task View).'; return; }
+    if (!dproj || Array.from(dproj).length > ACT_PROJECT_MAX) { out.textContent = 'Name the project too.'; return; }
+    var dhad = (actSet.desktops || []).filter(function (x) { return actNorm(x.desktop) === actNorm(dname); })[0];
+    if (dhad) { out.textContent = 'Already paired: ' + dhad.desktop + ' → ' + dhad.project + '. Remove it first to change it.'; return; }
+    pair = { desktop: dname, project: dproj };
+  } else if (p.store === 'rules') {
     var k = actNorm(p.el.input.value);
     var proj = String(p.el.proj.value || '').trim();
     if (k.length < ACT_KEY_MIN || k.length > ACT_KEY_MAX) { out.textContent = 'A keyword is 4 to 40 letters or digits.'; return; }
@@ -15857,7 +15938,14 @@ async function listAdd(p) {
   p.el.add.disabled = true;
   out.textContent = 'Saving…';
   try {
-    if (rule) {
+    if (pair) {
+      await deskWriteSetting(function (list) {
+        if (list.some(function (x) { return actNorm(x.desktop) === actNorm(pair.desktop); })) return list;   // another device paired it meanwhile
+        if (list.length >= ACT_DESKTOPS_MAX) throw new Error('That list is full (' + ACT_DESKTOPS_MAX + '). Remove one first.');
+        return list.concat([pair]);
+      });
+      done = pair.desktop + ' → ' + pair.project;
+    } else if (rule) {
       var ins = await sb.from('activity_rules').insert({ user_id: sbUser.id, keyword: rule.keyword, project: rule.project, source: 'hand' });
       // A rule Gemini learned (not shown here) holds the keyword: his choice replaces it.
       if (ins.error && ins.error.code === '23505') {
@@ -15898,6 +15986,8 @@ async function listRemove(p, key) {
     if (p.store === 'rules') {
       var del = await sb.from('activity_rules').delete().eq('keyword', key);
       if (del.error) throw errorFrom(del.error);
+    } else if (p.store === 'desktops') {
+      await deskWriteSetting(function (list) { return list.filter(function (x) { return actNorm(x.desktop) !== key; }); });
     } else {
       await listWriteSetting(p, function (list) { return list.filter(function (x) { return x !== key; }); });
     }
@@ -16194,6 +16284,7 @@ async function readCatchUp() {
     catchupStateRows = await readAskRows(now);
   }
   var nudges = (oRes.data || []).concat(nRes.data || []).filter(function (n) {
+    if (n.kind === 'auto') return false;          // item 30b: shown on Home, never in the sheet
     return WATCH_ASKS[n.kind] === 1 ? askStillOpen(n) : Date.parse(n.streak_start) >= dayStart;
   });
   var rids = userMap();
@@ -16568,7 +16659,7 @@ function answerCatchUp(a, choice, li) {
   var steps = [];
   // Late: the sleep or break it asked about is over, or he already acted on the push.
   if (WATCH_ASKS[a.kind] === 1 ? !askStillOpen(n) : a.kind === 'sent' && distractActedOn(n)) {
-    catchup.asks = catchup.asks.filter(function (x) { return x !== a; });
+    dropAsk(a);
     li.textContent = 'That one\'s over — nothing was changed.';
     return;
   }
@@ -16580,12 +16671,13 @@ function answerCatchUp(a, choice, li) {
     var started = { type: 'resume', rid: 'ns-' + id, at: new Date(then).toISOString(), local_time: humanLocalAt(then),
                     raw_text: a.kind === 'upwork' ? 'Day started (up and working — answered the check)'
                                                   : 'Day started (I was working — answered the check)' };
+    var runProj = a.kind === 'resume' ? '' : askProject(n);     // item 30b: as activity-ingest projectRow writes it
     if (choice === 'awake' || (choice === 'start' && a.kind === 'upwork')) {
       steps = [Object.assign({ type: 'wake', raw_text: 'Wake up (I was awake — answered the check)', rid: 'nw-' + id }, back)];
       setToggle('sleep', 'awake', at);
     }
     if (choice === 'start') {
-      steps.push(started);
+      steps.push(runProj ? Object.assign(started, { type: 'work', project: runProj }) : started);
       setToggle('work', 'working', then);
     } else if (choice === 'resume') {
       steps = [Object.assign({ type: 'resume', raw_text: 'Resume (back at work — answered the check)', rid: 'nr-' + id }, back)];
@@ -16600,7 +16692,7 @@ function answerCatchUp(a, choice, li) {
         steps.push({ type: w.type, raw_text: w.text, rid: w.rid, at: new Date(w.at).toISOString(), local_time: humanLocalAt(w.at) });
       });
     }
-    catchup.asks = catchup.asks.filter(function (x) { return x !== a; });
+    dropAsk(a);
     li.textContent = choice === 'awake' ? 'Noted: awake from ' + clockAt(at) + '.' : choice === 'resume'
       ? 'Noted: back at work from ' + clockAt(at) + '.' : choice === 'start' ? 'Noted: working from ' + clockAt(at) + '.'
       : choice === 'asleep' ? 'Noted: still asleep.' : choice === 'notwork' ? 'Noted: not work.' : 'Noted: a break.';
@@ -16624,6 +16716,164 @@ function answerCatchUp(a, choice, li) {
   catchup.asks = catchup.asks.filter(function (x) { return x !== a; });
   li.textContent = choice === 'break' ? 'Noted: a break.' : 'Noted: working.';
   runWrites(actSkipTies(steps, sessionLog())).then(function () { scheduleRefresh(800); });
+}
+
+/** A question answered (in the sheet or on Home) leaves the sheet's list, when the sheet is open. */
+function dropAsk(a) {
+  if (catchup) catchup.asks = catchup.asks.filter(function (x) { return x !== a && x.n !== a.n && !(x.n && a.n && x.n.id === a.n.id); });
+}
+
+/** Item 30b: the project a run question names (its run.project), cut as the server cuts it; '' for none. */
+function askProject(n) {
+  var p = n && n.run && typeof n.run === 'object' ? String(n.run.project || '').trim() : '';
+  return p ? actCut(p, ACT_PROJECT_MAX) : '';
+}
+
+/* ── Item 30b: auto-detected Working on ────────────────────────────────────
+ * activity-ingest finds work the watchers saw on a project that is not in Working on: an
+ * activity_nudges row, kind 'auto' (no push), or a "start?" question whose run names a project. Home shows each as "<Project> · 1h 10m (auto-detected)" with Accept / Reject.
+ * Accept writes what the server would (ns-, a work row for the project, through the outbox);
+ * Reject an actanswer (na-). Any device: the rids make it once. M and Prayer are untouched (rule 4). */
+
+var AUTO_EVERY_MS = 60000;
+var AUTO_KINDS = ['auto', 'start'];          // "back to work?" names no project: once back, the auto one asks
+var autoAsks = [];                        // as last read: open questions naming a project
+var autoReadAt = 0;
+var autoBusy = false;
+
+/** Read the open ones (rule 3: the table decides), at most once a minute unless forced. */
+async function readAutoAsks(force) {
+  if (autoBusy || !supabaseReady()) return;
+  var now = Date.now();
+  if (!force && now - autoReadAt < AUTO_EVERY_MS) return;
+  autoBusy = true;
+  autoReadAt = now;
+  try {
+    var res = await sb.from('activity_nudges').select('id,kind,ref_at,streak_start,state,what,run')
+      .eq('state', 'sent').in('kind', AUTO_KINDS).order('streak_start', { ascending: true }).limit(20);
+    if (res.error) return;                 // before item 30a's SQL (no run): nothing to show
+    var list = (res.data || []).filter(function (n) { return askProject(n) !== ''; });
+    if (list.length) catchupStateRows = await readAskRows(now);
+    autoAsks = list;
+  } catch (e) {
+    /* the next look tries again */
+  } finally {
+    autoBusy = false;
+  }
+  renderProject();
+}
+
+/** Answered here or on another device (a row with its rid, landed or still held)? */
+function autoAnswered(n, rows) {
+  var mine = ['ns-', 'nr-', 'na-', 'nw-'].map(function (x) { return x + n.id; });
+  return rows.some(function (r) { return mine.indexOf(String(r.rid || '')) !== -1; });
+}
+
+/** Still to show? The server's rule (activity.js actAutoOpen / actAskOpen) over the rows this device has. */
+function autoOpen(n, day) {
+  var rows = watchAskRows();
+  if (autoAnswered(n, rows)) return false;
+  if (n.kind !== 'auto') return askStillOpen(n, rows);
+  var now = Date.now();
+  var walk = actWalk(rows, now - ASK_BACK_MS, now);
+  return actAutoOpen({ id: n.id, ref_at: Date.parse(n.ref_at), run: n.run }, walk, rows.map(function (r) {
+    return { at: instantOf(r.at), type: r.type, rid: r.rid };
+  }), day.activeProjects);
+}
+
+/** The lines on Home's Working on; how many were drawn. */
+function renderAutoList(day) {
+  var ul = $('autoList');
+  if (!ul) return 0;
+  ul.textContent = '';
+  var shown = autoAsks.filter(function (n) { return autoOpen(n, day); });
+  shown.forEach(function (n) { ul.appendChild(autoRow(n)); });
+  ul.hidden = !shown.length;
+  return shown.length;
+}
+
+/** When the stretch was, in words. */
+function autoWhen(n) {
+  var at = askAtOf(n);
+  var last = n.run && n.run.last ? Date.parse(n.run.last) : NaN;
+  if (n.kind === 'auto' && isFinite(last) && Date.now() - last >= ACT_RUN_GAP_MS) return spanClock(at, last) + ', seen by the watchers';
+  return 'Since ' + clockAt(at) + (n.kind === 'start' ? ', day not started' : '') + ', seen by the watchers';
+}
+
+function autoRow(n) {
+  var li = document.createElement('li');
+  li.className = 'now-group auto-row';
+  var head = document.createElement('div');
+  head.className = 'now-head';
+  var name = document.createElement('span');
+  name.className = 'proj-name';
+  // A project's name is his text: textContent only (rule 5).
+  name.textContent = askProject(n) + ' · ' + humanDuration(Math.max(0, Number(n.run.work_min) || 0) * 60000) + ' (auto-detected)';
+  head.appendChild(name);
+  var when = document.createElement('p');
+  when.className = 'hint';
+  when.textContent = autoWhen(n);
+  var acts = document.createElement('div');
+  acts.className = 'dlg-actions';
+  function btn(label, fn) {
+    var b = document.createElement('button');
+    b.type = 'button';
+    b.className = 'btn';
+    b.textContent = label;
+    b.addEventListener('click', function () {
+      if (b.disabled) return;
+      acts.querySelectorAll('button').forEach(function (x) { x.disabled = true; });
+      fn();
+    });
+    acts.appendChild(b);
+  }
+  btn('Accept', function () { answerAuto(n, true, li); });
+  btn('Reject', function () { answerAuto(n, false, li); });
+  li.append(head, when, acts);
+  return li;
+}
+
+/** The rows Accept writes for a kind 'auto' stretch: work for the project back to its start (ns-),
+ *  and, when it ended 15 minutes or more ago, a Done where it ended (ne-), so the time stays its own. */
+function autoAcceptSteps(n, now) {
+  var p = askProject(n);
+  var at = askAtOf(n);
+  var steps = [{ type: 'work', raw_text: p + ' (auto-detected)', project: p, rid: 'ns-' + n.id,
+                 at: new Date(at).toISOString(), local_time: humanLocalAt(at) }];
+  var last = n.run && n.run.last ? Date.parse(n.run.last) : NaN;
+  if (isFinite(last) && last > at && now - last >= ACT_RUN_GAP_MS) {
+    steps.push({ type: 'done', raw_text: p, project: p, rid: 'ne-' + n.id + '-' + Math.floor(last / 1000).toString(36),
+                 at: new Date(last).toISOString(), local_time: humanLocalAt(last) });
+  }
+  return steps;
+}
+
+/** Accept or Reject on Home. Late (answered elsewhere, or no longer true): nothing is written. */
+function answerAuto(n, yes, li) {
+  var day = replayDay(named(sessionLog()));
+  if (!autoOpen(n, day)) {
+    li.textContent = 'That one\'s over — nothing was changed.';
+    return;
+  }
+  autoAsks = autoAsks.filter(function (x) { return x.id !== n.id; });
+  if (n.kind !== 'auto') {
+    // "start?": the sheet's own answer, so the two write the same rows.
+    answerCatchUp({ kind: n.kind, n: n }, yes ? 'start' : 'notwork', li);
+    renderProject();
+    return;
+  }
+  var p = askProject(n);
+  var steps = yes ? autoAcceptSteps(n, Date.now())
+    : [{ type: 'actanswer', raw_text: 'Not ' + p + ' — answered the auto-detected check', detail: 'reject', rid: 'na-' + n.id }];
+  steps = actSkipTies(steps, sessionLog());
+  // Shown at once; the outbox holds each row until it lands.
+  steps.forEach(function (w) {
+    if (w.type === 'actanswer') return;
+    noteLocalRow(w.type, w.raw_text, w.project, '', '', w.at).rid = w.rid;
+  });
+  li.textContent = yes ? 'Noted: ' + p + ' from ' + clockAt(askAtOf(n)) + '.' : 'Noted: not ' + p + '.';
+  runWrites(steps).then(function () { scheduleRefresh(800); });
+  renderProject();
 }
 
 /** Looks right: the edits as rows (a correction, a break), then "seen up to here". */
@@ -16741,6 +16991,7 @@ document.addEventListener('visibilitychange', function () {
   retrySession();
   drainOutbox('visible');
   maybeCatchUp();                    // Stage 18b: coming back is opening it
+  readAutoAsks(true);                // item 30b: the auto-detected lines, read fresh
   var now = Date.now();
   if (now - lastVisibleRefresh < VISIBILITY_THROTTLE_MS) return;
   lastVisibleRefresh = now;

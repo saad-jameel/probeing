@@ -12,6 +12,8 @@
   Item 30a: a browser's own name never decides (its site does), ProBeing's own page
   is not activity, and helpers (terminals, Notepad, Explorer, localhost...) are work
   whose project the server takes from the work around them.
+  Item 30b: the tray writes which virtual desktop was in front (desktops.json, names
+  only). A block takes its desktop's project first, and is sent with the desktop's name.
 
   The logic is a line-by-line copy of the sender half of
   supabase/functions/_shared/activity.js: change one, change the other.
@@ -26,6 +28,7 @@ param(
   [string]$ConfigFile = (Join-Path $env:LOCALAPPDATA 'ProBeing\watcher.json'),
   [string]$StateFile = (Join-Path $env:LOCALAPPDATA 'ProBeing\state.json'),
   [string]$LogFile = (Join-Path $env:LOCALAPPDATA 'ProBeing\watcher.log'),
+  [string]$DesktopFile = (Join-Path $env:LOCALAPPDATA 'ProBeing\desktops.json'),
   [string]$AwUrl = 'http://localhost:5600',
   [string]$Fixtures = (Join-Path $PSScriptRoot 'selftest.json'),
   [switch]$Check,
@@ -56,6 +59,8 @@ $ACT_KEY_MIN = 4
 $ACT_KEY_MAX = 40
 $ACT_LIST_MAX = 50
 $ACT_ENTRY_MAX = 80
+$ACT_DESKTOP_MAX = 80
+$ACT_DESKTOPS_MAX = 30
 $ACT_BROWSERS = @('chrome', 'msedge', 'brave', 'firefox', 'opera', 'vivaldi')
 
 # Item 30a: ProBeing's own page or window is not activity (dropped like the lock screen).
@@ -454,7 +459,7 @@ function Act-Identity($b) {
   if ($b.category -eq 'private') { return 'private|' + $b.app }
   $t = ''
   if ($b.category -eq 'unclear') { $t = Act-Norm $b.title }
-  return ($b.category, $b.project, $b.app, $b.domain, $t) -join '|'
+  return ($b.category, $b.project, $b.app, $b.domain, (Act-Str $b.desktop), $t) -join '|'
 }
 
 function Act-Join($list) {
@@ -478,16 +483,17 @@ function Act-Blocks($pieces, $cfg) {
   $i = 0
   foreach ($p in (As-Seq $pieces)) {
     if ($null -eq $p) { continue }
-    $c = Act-Classify $p $cfg
+    $c = Act-DeskClassify $p $cfg
     $domain = $p.host
-    if ($c.category -eq 'private') { $domain = '' }
+    $desk = Act-CleanDesktop $p.desktop
+    if ($c.category -eq 'private') { $domain = ''; $desk = '' }
     $title = ''
     # A browser window the extension did not see: its title is never sent.
     if ($c.category -eq 'unclear' -and (Act-TitleSendable $p.app $p.title) -and -not ((Act-IsBrowser $p.app) -and -not $p.host)) {
       $title = Act-ScrubTitle $p.title
     }
     $b = @{ start = [double]$p.start; end = [double]$p.end; app = (Act-CleanApp $p.app); domain = (Act-Str $domain);
-            category = $c.category; project = $c.project; key = $c.key; title = $title; i = $i }
+            category = $c.category; project = $c.project; key = $c.key; desktop = $desk; title = $title; i = $i }
     $b.id = Act-Identity $b
     $made.Add($b)
     $i++
@@ -523,7 +529,7 @@ function Act-Quiet($blocks, $quiet) {
       $x.start = $a
       $x.end = $z
       if ($bare) {
-        $x.app = ''; $x.domain = ''; $x.key = ''; $x.title = ''
+        $x.app = ''; $x.domain = ''; $x.key = ''; $x.title = ''; $x.desktop = ''
         if ($x.category -ne 'work' -and $x.category -ne 'meeting') { $x.project = '' }
         $x.id = 'quiet|' + $x.category + '|' + $x.project
       }
@@ -540,13 +546,98 @@ function Act-Quiet($blocks, $quiet) {
   return Act-Join $out.ToArray()
 }
 
-# What is sent: these seven fields, never the title.
+# What is sent: these seven fields, never the title; and the desktop's name when it has one (item 30b).
 function Act-Payload($blocks) {
   $out = New-Object System.Collections.Generic.List[object]
   foreach ($b in (As-Seq $blocks)) {
     if ($null -eq $b) { continue }
-    $out.Add([ordered]@{ start = (Act-Iso $b.start); end = (Act-Iso $b.end); app = $b.app; domain = $b.domain;
-                         category = $b.category; project = $b.project; key = $b.key })
+    $o = [ordered]@{ start = (Act-Iso $b.start); end = (Act-Iso $b.end); app = $b.app; domain = $b.domain;
+                     category = $b.category; project = $b.project; key = $b.key }
+    if ($b.desktop) { $o.desktop = $b.desktop }
+    $out.Add($o)
+  }
+  return ,$out.ToArray()
+}
+
+# ---------------------------------------------------- item 30b: virtual desktops
+# The tray writes which desktop was in front: [start, end, name] spans. As activity.js.
+
+function Act-CleanDesktop($s) {
+  $t = ((Act-Str $s) -creplace '[\u0000-\u001f\u007f]', ' ') -creplace ' {2,}', ' '
+  $t = Act-Cut ($t.Trim(' ')) $ACT_DESKTOP_MAX
+  return $t.TrimEnd(' ')
+}
+
+# His "Desktop name = Project" pairs: both named, one per desktop (by its squashed name).
+function Act-DeskPairs($list) {
+  $out = New-Object System.Collections.Generic.List[object]
+  $seen = @{}
+  foreach ($x in (As-Seq $list)) {
+    if ($null -eq $x -or $x -is [string] -or $x -is [System.ValueType] -or $out.Count -ge $ACT_DESKTOPS_MAX) { continue }
+    $d = Act-CleanDesktop (Get-Prop $x 'desktop')
+    $p = Act-Cut ((Act-Str (Get-Prop $x 'project')).Trim()) $ACT_PROJECT_MAX
+    $k = Act-Norm $d
+    if (-not $k -or -not $p -or $seen.ContainsKey($k)) { continue }
+    $seen[$k] = 1
+    $out.Add(@{ desktop = $d; project = $p })
+  }
+  return ,$out.ToArray()
+}
+
+# His pair for the desktop, else a project of the same squashed name, else ''.
+function Act-DeskProject($name, $cfg) {
+  $k = Act-Norm (Act-CleanDesktop $name)
+  if (-not $k) { return '' }
+  foreach ($x in (Act-DeskPairs (Get-Prop $cfg 'desktops'))) { if ((Act-Norm $x.desktop) -ceq $k) { return $x.project } }
+  foreach ($p in (As-Seq (Get-Prop $cfg 'projects'))) {
+    $t = Act-Cut ((Act-Str $p).Trim()) $ACT_PROJECT_MAX
+    if ($t -and (Act-Norm $t) -ceq $k) { return $t }
+  }
+  return ''
+}
+
+# Act-Classify, then the desktop's project first. Never for private or a distraction; unclear becomes work.
+function Act-DeskClassify($seg, $cfg) {
+  $c = Act-Classify $seg $cfg
+  if ($c.category -eq 'private' -or $c.category -eq 'distraction') { return $c }
+  $dp = Act-DeskProject (Get-Prop $seg 'desktop') $cfg
+  if (-not $dp) { return $c }
+  $cat = $c.category
+  if ($cat -eq 'unclear') { $cat = 'work' }
+  $key = ''
+  if ((Act-Norm $c.project) -ceq (Act-Norm $dp)) { $key = $c.key }
+  return @{ category = $cat; project = $dp; key = $key }
+}
+
+# Pieces cut at the desktop spans; each part carries `desktop` ('' where no span covers it).
+function Act-DesktopSplit($pieces, $spans) {
+  $items = New-Object System.Collections.Generic.List[object]
+  $i = 0
+  foreach ($s in (As-Seq $spans)) {
+    if ($null -ne $s) {
+      $a = [double]::NaN
+      $b = [double]::NaN
+      try { $a = [double]$s[0]; $b = [double]$s[1] } catch { }
+      $n = Act-CleanDesktop $s[2]
+      if ($n -and -not [double]::IsNaN($a) -and -not [double]::IsNaN($b) -and $b -gt $a) { $items.Add(@{ a = $a; b = $b; name = $n; i = $i }) }
+    }
+    $i++
+  }
+  $sp = @($items | Sort-Object -Property @{ Expression = { $_.a } }, @{ Expression = { $_.i } })
+  $out = New-Object System.Collections.Generic.List[object]
+  foreach ($p in (As-Seq $pieces)) {
+    if ($null -eq $p) { continue }
+    $at = [double]$p.start
+    $end = [double]$p.end
+    foreach ($s in $sp) {
+      if ($s.b -le $at -or $s.a -ge $end) { continue }
+      $x = [Math]::Max($at, $s.a)
+      $y = [Math]::Min($end, $s.b)
+      if ($x -gt $at) { $q = $p.Clone(); $q.start = $at; $q.end = $x; $q.desktop = ''; $out.Add($q) }
+      $q = $p.Clone(); $q.start = $x; $q.end = $y; $q.desktop = $s.name; $out.Add($q)
+      $at = $y
+    }
+    if ($end -gt $at) { $q = $p.Clone(); $q.start = $at; $q.end = $end; $q.desktop = ''; $out.Add($q) }
   }
   return ,$out.ToArray()
 }
@@ -612,6 +703,26 @@ function Run-SelfTest {
     }
     if ($same) { $ok++ } else { $bad++; Write-Output ('FAIL quiet ' + $c.name + ': ' + (ConvertTo-Json @($got) -Depth 6 -Compress)) }
   }
+  # Item 30b: a day with desktop spans, through the whole sender (Act-DesktopSplit after Act-Segments).
+  foreach ($c in @($fx.desktop)) {
+    $cut = @{ from = (Act-Ms $c.cut.from); to = (Act-Ms $c.cut.to); spans = @() }
+    $sp = New-Object System.Collections.Generic.List[object]
+    $qp = New-Object System.Collections.Generic.List[object]
+    foreach ($s in @($c.cut.spans)) { $sp.Add([double[]]@((Act-Ms $s[0]), (Act-Ms $s[1]))) }
+    foreach ($s in @($c.cut.quiet)) { if ($null -ne $s) { $q2 = [double[]]@((Act-Ms $s[0]), (Act-Ms $s[1])); $sp.Add($q2); $qp.Add($q2) } }
+    $cut.spans = Act-MergeSpans $sp
+    $dk = New-Object System.Collections.Generic.List[object]
+    foreach ($s in @($c.desktops)) { if ($null -ne $s) { $dk.Add(@((Act-Ms $s[0]), (Act-Ms $s[1]), $s[2])) } }
+    $got = Act-Payload (Act-Quiet (Act-Blocks (Act-DesktopSplit (Act-Segments $c.events $cut) $dk.ToArray()) $c.cfg) $qp.ToArray())
+    $want = @($c.want)
+    $same = ($got.Length -eq $want.Length)
+    for ($i = 0; $same -and $i -lt $got.Length; $i++) {
+      foreach ($k in @('start', 'end', 'app', 'domain', 'category', 'project', 'key', 'desktop')) {
+        if (-not (Same $got[$i][$k] (Get-Prop $want[$i] $k))) { $same = $false }
+      }
+    }
+    if ($same) { $ok++ } else { $bad++; Write-Output ('FAIL desktop ' + $c.name + ': ' + (ConvertTo-Json @($got) -Depth 6 -Compress)) }
+  }
   Write-Output ('selftest: ' + $ok + ' ok, ' + $bad + ' failed')
   if ($bad) { exit 1 }
   exit 0
@@ -648,6 +759,19 @@ function Save-Json([string]$path, $obj) {
   $dir = Split-Path $path
   if (-not (Test-Path $dir)) { New-Item -ItemType Directory -Path $dir | Out-Null }
   [System.IO.File]::WriteAllText($path, (ConvertTo-Json $obj -Depth 10 -Compress), (New-Object System.Text.UTF8Encoding $false))
+}
+
+# Item 30b: the tray's desktop spans, [start ms, end ms, name]; none when the file is missing or unreadable.
+function Read-Desktops([string]$path) {
+  $list = New-Object System.Collections.Generic.List[object]
+  if (-not (Test-Path $path)) { return ,$list.ToArray() }
+  try {
+    $d = Get-Content -Raw -Encoding UTF8 $path | ConvertFrom-Json
+    foreach ($s in @($d.spans)) {
+      if ($null -ne $s -and @($s).Count -ge 3) { $list.Add(@([double]$s[0], [double]$s[1], [string]$s[2])) }
+    }
+  } catch { }
+  return ,$list.ToArray()
 }
 
 function To-Hash($obj) {
@@ -725,8 +849,10 @@ try {
     $webEvents = New-Object System.Collections.Generic.List[object]
     foreach ($id in $webIds) { foreach ($e in (Get-Events $id $look $now)) { $webEvents.Add($e) } }
     $events = @{ window = (Get-Events $win $look $now); afk = (Get-Events $afk $look $now); web = $webEvents.ToArray() }
-    $classCfg = @{ lists = $cfg.lists; rules = $cfg.rules; projects = $cfg.projects; known = $knownNames }
-    $blocks = Act-Quiet (Act-Blocks (Act-Segments $events @{ from = $from; to = $now; spans = $allSpans }) $classCfg) $quiet
+    $classCfg = @{ lists = $cfg.lists; rules = $cfg.rules; projects = $cfg.projects; known = $knownNames; desktops = $cfg.desktops }
+    $deskSpans = Read-Desktops $DesktopFile
+    $pieces = Act-DesktopSplit (Act-Segments $events @{ from = $from; to = $now; spans = $allSpans }) $deskSpans
+    $blocks = Act-Quiet (Act-Blocks $pieces $classCfg) $quiet
   }
 
   $counts = @{}
@@ -735,6 +861,8 @@ try {
   if ($Check) {
     Write-Output ('Paired as: ' + $cfg.device + '. Working now: ' + $cfg.working + '. Now: ' + $cfg.mode + '.')
     Write-Output ('Would send ' + $blocks.Length + ' blocks (' + $summary + '). Nothing was sent.')
+    $named = @($blocks | Where-Object { $_.desktop }).Count
+    Write-Output ('Desktops: ' + (Read-Desktops $DesktopFile).Length + ' spans from the tray; ' + $named + ' blocks carry a desktop name.')
     exit 0
   }
 
