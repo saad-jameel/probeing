@@ -1701,7 +1701,7 @@ function showScreen(name) {
   }
 
   window.scrollTo(0, 0);
-  if (name === 'today') renderDaySummary();     // catch up the clock on arrival
+  if (name === 'today') { renderDaySummary(); paintTodayFocus(); }     // catch up the clock on arrival
   if (name === 'review') openReview();
   if (name === 'money') openMoney();
   if (name === 'tasks') openTasksPage();
@@ -3285,6 +3285,7 @@ dayBtn.addEventListener('click', async function () {
     flash(off ? 'Day started' : 'Day closed', 'ok');
     runWrites(steps, undo);
     if (off) maybeAskProject();
+    else openFocusDay().catch(function () { /* the card is extra; End day is done */ });   // item 30a
   }
 
   if (!ending) go();
@@ -7056,6 +7057,12 @@ function reviewPrompt(win, now, prior, cats, pace) {
     lines.push('MEASURED ON THE LAPTOP while working (worked out already, for you to judge from, not to repeat): ' +
                reportActivityLine(act).replace(/^Laptop: /, '') + '.');
   }
+  /* Item 30a: focus while working; figures and a word only. */
+  if (act && act.focus) {
+    lines.push('');
+    lines.push('FOCUS WHILE WORKING (worked out already, for you to judge from, not to repeat): ' +
+               focusLine(act.focus).replace(/^Focus: /, '') + '.');
+  }
   /* Item 23: nights he used a device before Fajr while marked asleep. */
   if (act && act.nights && act.nights.count) {
     lines.push('');
@@ -8327,6 +8334,13 @@ function renderReports(rows) {
       al.textContent = actLine;             // project names are his text (rule 5)
       li.appendChild(al);
     }
+    var focusText = focusLine(stats.activity && stats.activity.focus);     // item 30a
+    if (focusText) {
+      var fl = document.createElement('p');
+      fl.className = 'report-figs report-tasks';
+      fl.textContent = focusText + '.';
+      li.appendChild(fl);
+    }
     var nightLine = nightsLine(stats.activity && stats.activity.nights);     // item 23
     if (nightLine) {
       var nl = document.createElement('p');
@@ -8458,7 +8472,8 @@ async function reportActivityFigures(rows, windows) {
     throw errorFrom(res.error);
   }
   var nights = nightsSummary(await readNights(startMs, endMs));             // item 23
-  if (!(res.data || []).length && !nights) return null;
+  var focus = focusSummary(await readFocus(startMs, endMs));                // item 30a
+  if (!(res.data || []).length && !nights && !focus) return null;
   var fixRes = await sb.from('events').select('at,type,detail,project,rid').eq('type', ACT_FIX_TYPE)
     .gte('at', new Date(startMs).toISOString()).order('at', { ascending: true }).limit(5000);
   if (fixRes.error) throw errorFrom(fixRes.error);
@@ -8474,7 +8489,142 @@ async function reportActivityFigures(rows, windows) {
   var out = { byProject: figs.byProject, workMs: figs.workMs, meetingMs: figs.meetingMs, unclearMs: figs.unclearMs,
               distractMs: figs.distractMs, privateMs: figs.privateMs, blocks: figs.blocks };
   if (nights) out.nights = nights;
+  if (focus) out.focus = focus;
   return out;
+}
+
+/* ── Item 30a: focus while working ─────────────────────────────────────────
+ * activity-ingest keeps slips (2-5 min distracted while working), focus losses (5-15 min) and
+ * each day's longest unbroken stretch in activity_focus; a distraction is named only by a word
+ * (YouTube, X... or "distraction"). One Gemini call a day turns a day's figures into a line or
+ * two of advice, kept in focus_advice so every device shows the same and none asks twice. */
+
+/** activity_focus rows -> {losses, lossMin, slips, slipMin, longestMin, top}, or null with none. */
+function focusSummary(rows) {
+  var s = { losses: 0, lossMin: 0, slips: 0, slipMin: 0, longestMin: 0, top: '' };
+  var by = userMap();
+  var any = false;
+  (rows || []).forEach(function (r) {
+    var m = Math.round(Number(r && r.minutes));
+    if (!(m > 0)) return;
+    any = true;
+    if (r.tier === 'stretch') { s.longestMin = Math.max(s.longestMin, m); return; }
+    if (r.tier === 'loss') { s.losses += 1; s.lossMin += m; }
+    else if (r.tier === 'slip') { s.slips += 1; s.slipMin += m; }
+    else return;
+    var w = String(r.what || 'distraction');
+    by[w] = (by[w] || 0) + m;
+  });
+  s.top = Object.keys(by).sort(function (x, y) { return (by[y] - by[x]) || (x < y ? -1 : 1); })[0] || '';
+  return any ? s : null;
+}
+
+/** "Focus: 2 focus losses · 23 min lost (3 slips among them) · longest unbroken stretch 1h 10m · most: YouTube"; '' with none. */
+function focusLine(s) {
+  if (!s || typeof s !== 'object') return '';
+  var lost = Number(s.lossMin || 0) + Number(s.slipMin || 0);
+  var bits = [Number(s.losses || 0) + ' focus loss' + (Number(s.losses) === 1 ? '' : 'es')];
+  if (lost) bits.push(lost + ' min lost' + (Number(s.slips) ? ' (' + s.slips + ' slip' + (Number(s.slips) === 1 ? '' : 's') + ' among them)' : ''));
+  if (Number(s.longestMin)) bits.push('longest unbroken stretch ' + reviewDuration(Number(s.longestMin) * 60000));
+  if (s.top && lost) bits.push('most: ' + String(s.top));
+  return 'Focus: ' + bits.join(' · ');
+}
+
+/** The focus rows that start in [startMs, endMs); null when the table is not there yet. */
+async function readFocus(startMs, endMs) {
+  var res = await sb.from('activity_focus').select('tier,start_at,minutes,what,day')
+    .gte('start_at', new Date(startMs).toISOString()).lt('start_at', new Date(endMs).toISOString()).limit(2000);
+  if (res.error) {
+    if (/^(PGRST205|42P01)$/.test(String(res.error.code))) return null;
+    throw errorFrom(res.error);
+  }
+  return res.data || [];
+}
+
+/** One counter day's focus rows ('YYYY-MM-DD'); null when the table is not there yet. */
+async function readFocusDay(day) {
+  var res = await sb.from('activity_focus').select('tier,start_at,minutes,what,day').eq('day', day).limit(500);
+  if (res.error) {
+    if (/^(PGRST205|42P01)$/.test(String(res.error.code))) return null;
+    throw errorFrom(res.error);
+  }
+  return res.data || [];
+}
+
+/** The advice prompt: figures and a word only, never a name or a title. */
+function focusAdvicePrompt(s) {
+  return ['You are helping one person keep focus while they work. These are today\'s figures, worked out already:',
+          '- focus losses (5 to 15 minutes distracted while working): ' + s.losses + ', ' + s.lossMin + ' min',
+          '- slips (2 to 5 minutes): ' + s.slips + ', ' + s.slipMin + ' min',
+          '- longest unbroken work stretch: ' + s.longestMin + ' min',
+          '- what distracted most: ' + (s.top || 'nothing'),
+          '',
+          'Write one or two short sentences of practical advice for tomorrow. Plain words, no greeting, no list, ' +
+          'do not repeat the figures.'].join('\n');
+}
+
+/** A model's advice, trimmed to two lines and 300 characters; '' when there is none. */
+function tidyAdvice(text) {
+  var t = String(text || '').replace(/[\u0000-\u0008\u000b-\u001f]/g, '').trim();
+  if (!t) return '';
+  return t.split(/\n+/).slice(0, 2).join('\n').slice(0, 300).trim();
+}
+
+/**
+ * The day's advice: the saved one, else (allowCall, and calls to spare above the reserve) ONE
+ * call, claimed first in focus_advice so two devices never both ask. '' when there is none.
+ */
+async function focusAdvice(day, s, allowCall) {
+  var got = await sb.from('focus_advice').select('text').eq('day', day).limit(1);
+  if (got.error) return '';
+  var row = (got.data || [])[0];
+  if (row) return String(row.text || '');
+  if (!allowCall || !canAskGemini() || geminiCallsLeft() <= REPORT_AUTO_RESERVE) return '';
+  var claim = await sb.from('focus_advice').insert({ user_id: sbUser.id, day: day, text: '' });
+  if (claim.error) return '';                         // another device has it, or no table yet
+  var text = tidyAdvice(await askReviewProse(focusAdvicePrompt(s)));
+  if (text) await sb.from('focus_advice').update({ text: text, model: String(lastGeminiModel || '').slice(0, 80) }).eq('day', day);
+  return text;
+}
+
+/** Fill a focus card: the figures line, and the advice under it when there is any. */
+function paintFocusBox(lineEl, adviceEl, s, advice) {
+  lineEl.textContent = focusLine(s);                  // server words and his figures: textContent (rule 5)
+  adviceEl.textContent = advice || '';
+  adviceEl.hidden = !advice;
+}
+
+/** Today's card: the counter day's figures and its saved advice (never a new call). */
+async function paintTodayFocus() {
+  var card = $('focusCard');
+  if (!card || !supabaseReady()) return;
+  var day = counterDate(Date.now());
+  try {
+    var s = focusSummary(await readFocusDay(day));
+    if (!s) { card.hidden = true; return; }
+    paintFocusBox($('focusLine'), $('focusAdvice'), s, await focusAdvice(day, s, false));
+    card.hidden = false;
+  } catch (e) {
+    card.hidden = true;                               // a figure we cannot read is left out, not guessed
+  }
+}
+
+/** End day: the day's focus as a sheet (non-modal: M and Prayer stay usable), and its one call for advice. */
+async function openFocusDay() {
+  var dlg = $('focusDlg');
+  if (!dlg || !supabaseReady()) return;
+  var day = counterDate(Date.now());
+  var s = null;
+  try { s = focusSummary(await readFocusDay(day)); } catch (e) { return; }
+  if (!s) return;
+  paintFocusBox($('focusDlgLine'), $('focusDlgAdvice'), s, '');
+  $('focusDlgNote').textContent = 'Asking for a line of advice…';
+  if (!dlg.open) { if (typeof dlg.show === 'function') dlg.show(); else dlg.setAttribute('open', ''); }
+  var advice = '';
+  try { advice = await focusAdvice(day, s, true); } catch (e) { advice = ''; }
+  paintFocusBox($('focusDlgLine'), $('focusDlgAdvice'), s, advice);
+  $('focusDlgNote').textContent = advice ? '' : 'No advice today (Gemini\'s daily budget is kept for naming entries).';
+  paintTodayFocus();
 }
 
 /* Item 23: disturbed nights (activity_nights, kept by activity-ingest) and unsorted
@@ -8524,16 +8674,24 @@ async function paintReviewWatch(startMs, endMs, mine) {
   if (!supabaseReady()) return;
   var nights = null;
   var unsorted = [];
+  var focus = null;
   var failed = '';
   try {
     nights = nightsSummary(await readNights(startMs, endMs));
     unsorted = teachRows(await readTeach(startMs, endMs));
+    focus = focusSummary(await readFocus(startMs, endMs));          // item 30a
   } catch (e) {
     if (!/PGRST205|42703|42P01|does not exist/i.test(String((e && e.message) || e))) failed = String((e && e.message) || e);
   }
   if (!mine()) return;
   var line = nightsLine(nights);
   if (line) box.append(line + '.');
+  var fline = focusLine(focus);
+  if (fline) {
+    if (line) box.appendChild(document.createElement('br'));
+    box.append(fline + '.');
+    line = line || fline;
+  }
   if (unsorted.length) {
     var ms = unsorted.reduce(function (n, r) { return n + r.ms; }, 0);
     if (line) box.appendChild(document.createElement('br'));
@@ -8557,7 +8715,7 @@ function reportActivityLine(a) {
     .sort(function (x, y) { return by[y] - by[x]; });
   var bits = [names.length ? names.slice(0, 6).map(function (k) { return k + ' ' + reviewDuration(Number(by[k])); }).join(', ')
                            : 'no project time'];
-  if (Number(a.meetingMs)) bits.push('meetings ' + reviewDuration(Number(a.meetingMs)));
+  if (Number(a.meetingMs)) bits.push('work meetings ' + reviewDuration(Number(a.meetingMs)));   // item 30a: counted as work
   if (Number(a.unclearMs)) bits.push('not placed ' + reviewDuration(Number(a.unclearMs)));
   bits.push('distractions ' + reviewDuration(Number(a.distractMs || 0)));
   return 'Laptop: ' + bits.join(' · ');
@@ -16020,6 +16178,7 @@ async function readCatchUp() {
     (rr.data || []).forEach(function (r) { rids[r.rid] = 1; });
     outboxMine().forEach(function (it) { if (it.rid) rids[it.rid] = 1; });
   }
+  await attachRuns(nudges);
   var asks = catchupAsks(nudges.concat(await readTeachAsk(dayStart)), rids, since);
   var groups = actGroups(blocks, fixes);
   var total = groups.reduce(function (n, g) { return n + g.ms; }, 0);
@@ -16043,6 +16202,24 @@ async function readTeachAsk(dayStart) {
   var cfg = { lists: row && row.activity_lists, rules: rules.data || [], projects: [] };
   var ignore = Array.isArray(row && row.activity_ignore) ? row.activity_ignore : [];
   return res.data.filter(function (n) { return !actTeachSorted(n, cfg, ignore); });
+}
+
+/** Item 30a: the work run a watch question is about (its distractions, written as breaks by Start),
+ *  read on its own so a database without the column still shows the sheet, with no breaks. */
+async function attachRuns(nudges) {
+  var ids = nudges.filter(function (n) { return WATCH_ASKS[n.kind] === 1; }).map(function (n) { return n.id; });
+  if (!ids.length) return;
+  var res = await sb.from('activity_nudges').select('id,run').in('id', ids).limit(50);
+  if (res.error) return;
+  var by = userMap();
+  (res.data || []).forEach(function (r) { if (r.run && typeof r.run === 'object') by[r.id] = r.run; });
+  nudges.forEach(function (n) { if (by[n.id]) n.run = by[n.id]; });
+}
+
+/** "12 min YouTube" for a run's distractions, or ''. The word is the server's (a site's name or "distraction"). */
+function runDistText(run) {
+  if (!run || !(Number(run.dist_min) > 0) || !Array.isArray(run.gaps) || !run.gaps.length) return '';
+  return Math.round(Number(run.dist_min)) + ' min ' + String(run.what || 'distraction').slice(0, 20);
 }
 
 /** On opening the app (and coming back to it): the sheet, when there is something to confirm. */
@@ -16155,7 +16332,7 @@ function askStillOpen(n, rows, nowMs) {
 /* A distraction push he already answered by acting: a row of his after it (as activity-ingest answerOpen). */
 var ASK_RESPONSE_TYPES = { work: 1, voice: 1, resume: 1, 'break': 1, off: 1, sleep: 1, done: 1, subdone: 1, subdrop: 1,
                            substop: 1, pin: 1, unpin: 1, actanswer: 1 };
-var ASK_SERVER_RIDS = /^(ab|ar|aw|an|aq|qb|qr|kb|kr|as|nw|nr|ns|na)-|^wrapup-/;
+var ASK_SERVER_RIDS = /^(ab|ar|aw|an|aq|qb|qr|kb|kr|as|nw|nr|ns|na|nd|ne)-|^wrapup-/;
 
 function distractActedOn(n) {
   var pushed = Date.parse(n.pushed_at);
@@ -16211,11 +16388,18 @@ function catchupAskRow(a) {
       btn('Start day at ' + clockAt(at), 'start');
       btn('Just awake', 'awake');
     } else if (a.kind === 'start') {
-      text.textContent = 'Your ' + dev + ' showed work from ' + clockAt(at) + ', but the day wasn\'t started.';
+      // Item 30a: the run as the push said it.
+      var run = n.run && typeof n.run === 'object' ? n.run : null;
+      var dist = runDistText(run);
+      text.textContent = 'Your ' + dev + ' showed work from ' + clockAt(at) +
+        (run && Number(run.work_min) > 0 ? ' (' + Math.round(Number(run.work_min)) + ' min work' + (dist ? ' · ' + dist + ' in between' : '') + ')' : '') +
+        ', but the day wasn\'t started.' + (dist ? ' Start counts the ' + dist + ' as a break.' : '');
       btn('Start at ' + clockAt(at), 'start');
       btn('Not work', 'notwork');
     } else {
-      text.textContent = 'On a break, but your ' + dev + ' showed work from ' + clockAt(at) + '.';
+      var rdist = runDistText(n.run);
+      text.textContent = 'On a break, but your ' + dev + ' showed work from ' + clockAt(at) + '.' +
+        (rdist ? ' Back counts the ' + rdist + ' in between as a break.' : '');
       btn('Back at ' + clockAt(at), 'resume');
       btn('It was a break', 'break');
     }
@@ -16382,6 +16566,12 @@ function answerCatchUp(a, choice, li) {
     } else if (choice !== 'awake') {
       steps = [{ type: 'actanswer', raw_text: a.kind === 'awake' ? 'Still asleep — answered the check' : a.kind === 'start'
                  ? 'Not work — answered the check' : 'Still on a break — answered the check', detail: choice, rid: 'na-' + id }];
+    }
+    // Item 30a: the run's distractions as breaks (nd-/ne-), as activity-ingest askRows writes them.
+    if (choice === 'start' || choice === 'resume') {
+      actRunSteps(id, n.run && n.run.gaps, choice === 'start' ? then : at, Date.now()).forEach(function (w) {
+        steps.push({ type: w.type, raw_text: w.text, rid: w.rid, at: new Date(w.at).toISOString(), local_time: humanLocalAt(w.at) });
+      });
     }
     catchup.asks = catchup.asks.filter(function (x) { return x !== a; });
     li.textContent = choice === 'awake' ? 'Noted: awake from ' + clockAt(at) + '.' : choice === 'resume'

@@ -47,9 +47,11 @@ public final class PhoneRules {
     static final String[] DEFAULT_MEETING = {"meet.google.com", "zoom.us", "zoom", "teams.microsoft.com", "teams",
             "discord"};
     /** Item 29: work with no project, by the app's whole name (laptop names; on the phone Claude, Excel, Outlook). */
-    static final String[] DEFAULT_WORK = {"code", "windowsterminal", "cmd", "powershell", "pwsh", "wsl", "conhost",
-            "claude", "idea64", "pycharm64", "webstorm64", "phpstorm64", "clion64", "rider64", "goland64", "rubymine64",
-            "datagrip64", "rustrover64", "winword", "excel", "powerpnt", "outlook", "olk", "notepad++"};
+    static final String[] DEFAULT_WORK = {"code", "claude", "idea64", "pycharm64", "webstorm64", "phpstorm64", "clion64",
+            "rider64", "goland64", "rubymine64", "datagrip64", "rustrover64", "winword", "excel", "powerpnt", "outlook", "olk"};
+    /** Item 30a: laptop helpers (work, project from the work around them). Never matched on the phone. */
+    static final String[] DEFAULT_HELPER = {"windowsterminal", "wt", "cmd", "powershell", "pwsh", "wsl", "conhost", "notepad",
+            "notepad++", "explorer", "photos", "systemsettings", "applicationframehost", "localhost", "127.0.0.1"};
 
     static final String[] BROWSERS = {"chrome", "msedge", "brave", "firefox", "opera", "vivaldi"};
 
@@ -142,7 +144,7 @@ public final class PhoneRules {
         return out;
     }
 
-    /** The four lists; a list never set is the default, an empty one stays empty. */
+    /** The five lists; a list never set is the default, an empty one stays empty. */
     public static Map<String, List<String>> lists(Map<String, ? extends List<?>> l) {
         Map<String, List<String>> out = new HashMap<>();
         out.put("distract", l != null && l.get("distract") != null ? tidyList(l.get("distract"))
@@ -153,6 +155,8 @@ public final class PhoneRules {
                 : new ArrayList<>(Arrays.asList(DEFAULT_MEETING)));
         out.put("work", l != null && l.get("work") != null ? tidyList(l.get("work"))
                 : new ArrayList<>(Arrays.asList(DEFAULT_WORK)));
+        out.put("helpers", l != null && l.get("helpers") != null ? tidyList(l.get("helpers"))
+                : new ArrayList<>(Arrays.asList(DEFAULT_HELPER)));
         return out;
     }
 
@@ -171,6 +175,11 @@ public final class PhoneRules {
 
     static boolean isBrowser(String app) {
         return Arrays.asList(BROWSERS).contains(norm((app == null ? "" : app).replaceFirst("(?i)\\.exe$", "")));
+    }
+
+    /** As actAppName (item 30a): a browser's own name never decides, its site does. */
+    static String appName(String app) {
+        return isBrowser(app) ? "" : (app == null ? "" : app);
     }
 
     /** As actTitleNamesSite: the site's first label as a word in the title, and its path's first part too. */
@@ -207,7 +216,7 @@ public final class PhoneRules {
         }
         String w = norm(e);
         if (w.length() < 3) return false;
-        return norm(seg.app).contains(w) || norm(seg.host).contains(w) || (withTitle && norm(seg.title).contains(w));
+        return norm(appName(seg.app)).contains(w) || norm(seg.host).contains(w) || (withTitle && norm(seg.title).contains(w));
     }
 
     static String listHit(List<String> list, Seg seg, boolean withTitle) {
@@ -233,7 +242,7 @@ public final class PhoneRules {
      *  phone never a built-in one (they are desktop apps). */
     static String workHit(List<String> list, Seg seg) {
         if (list == null) return "";
-        String app = workName(seg.app);
+        String app = workName(appName(seg.app));
         Set<String> builtIn = new HashSet<>();
         if (seg.phone) {
             for (String d : DEFAULT_WORK) builtIn.add(workName(d));
@@ -244,6 +253,23 @@ public final class PhoneRules {
             if (e.indexOf('.') != -1 || e.indexOf('/') != -1) {
                 if (entryHits(e, seg, false)) return x;
             } else if (!app.isEmpty() && workName(e).equals(app) && !builtIn.contains(app)) {
+                return x;
+            }
+        }
+        return "";
+    }
+
+    /** As actHelperHit (item 30a): a site by its host, a name as the app's whole name; never on the phone. */
+    static String helperHit(List<String> list, Seg seg) {
+        if (list == null || seg.phone) return "";
+        String app = workName(appName(seg.app));
+        String h = seg.host == null ? "" : seg.host;
+        for (String x : list) {
+            String e = trim(x).toLowerCase(Locale.ROOT).replaceFirst("\\.exe$", "");
+            if (e.isEmpty()) continue;
+            if (e.indexOf('.') != -1 || e.equals("localhost")) {
+                if (!h.isEmpty() && (h.equals(e) || h.endsWith("." + e))) return x;
+            } else if (!app.isEmpty() && workName(e).equals(app)) {
                 return x;
             }
         }
@@ -279,7 +305,7 @@ public final class PhoneRules {
 
     static String[] ruleHit(Seg seg, List<String[]> rules) {
         String t = norm(seg.title);
-        String a = norm(seg.app);
+        String a = norm(appName(seg.app));
         String h = norm(seg.host);
         for (String[] r : rules) {
             if (t.contains(r[0]) || a.contains(r[0]) || h.contains(r[0])) return new String[]{r[1], r[0]};
@@ -294,7 +320,7 @@ public final class PhoneRules {
     }
 
     /** {category, project, key}: private first, then distraction, then meeting, then the rules, then
-     *  the work list (work, no project). */
+     *  a helper (laptop only), then the work list (work, no project). */
     public static String[] classify(Seg seg, Cfg cfg) {
         if (seg.incognito || PRIVATE_TITLE.matcher(seg.title == null ? "" : seg.title).find()
                 || !listHit(cfg.lists.get("private"), seg, true).isEmpty()) {
@@ -306,6 +332,7 @@ public final class PhoneRules {
             return new String[]{"meeting", hit != null ? hit[0] : "", hit != null ? hit[1] : ""};
         }
         if (hit != null) return new String[]{"work", hit[0], hit[1]};
+        if (!helperHit(cfg.lists.get("helpers"), seg).isEmpty()) return new String[]{"work", "", ""};
         if (!workHit(cfg.lists.get("work"), seg).isEmpty()) return new String[]{"work", "", ""};
         return new String[]{"unclear", "", ""};
     }

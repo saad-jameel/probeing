@@ -1800,3 +1800,93 @@ end $$;
 drop trigger if exists keep_work_list on public.user_settings;
 create trigger keep_work_list before update of activity_lists on public.user_settings
   for each row execute function public.keep_work_list();
+
+-- ============================================================ item 30a (13 Oct)
+-- Focus while working, work runs and helpers. Browsers are neutral (the site decides) and
+-- ProBeing's own page is not activity: the watchers decide that, no schema change. A helper
+-- (terminal, Notepad, Explorer, localhost...) is a "helpers" list in user_settings.activity_lists
+-- (jsonb, no change). New events rid prefixes, no schema change: nd- / ne- (a distraction inside
+-- a work run, written as a break and a resume when "start?", "back to work?" or "Up and
+-- working?" is answered Start / Resume). Safe to run twice.
+
+-- The work run a question is about: {work_min, dist_min, what, gaps: [[start, end], ...]} (ISO).
+-- Written by activity-ingest; read by the app so its sheet writes the same breaks.
+alter table public.activity_nudges add column if not exists run jsonb
+  check (run is null or jsonb_typeof(run) = 'object');
+grant select (run) on public.activity_nudges to authenticated;
+
+-- activity_focus: distractions while working, by tier: a slip (2-5 min) or a focus loss (5-15);
+-- and each counter day's longest unbroken work stretch ('stretch'). A distraction is named by a
+-- word only (YouTube, X... or "distraction"), never an app, site or title. Recounted by
+-- activity-ingest on each run; read by the Today card, Review and the reports.
+create table if not exists public.activity_focus (
+  user_id    uuid        not null references auth.users on delete cascade,
+  tier       text        not null check (tier in ('slip', 'loss', 'stretch')),
+  start_at   timestamptz not null,
+  end_at     timestamptz not null,
+  day        date        not null,
+  minutes    integer     not null check (minutes between 1 and 1440),
+  what       text        not null default '' check (what ~ '^[A-Za-z ]{0,20}$'),
+  updated_at timestamptz not null default now(),
+  primary key (user_id, tier, start_at),
+  constraint activity_focus_span check (end_at > start_at)
+);
+
+create index if not exists activity_focus_user_day_idx on public.activity_focus (user_id, day);
+
+alter table public.activity_focus enable row level security;
+
+do $$ begin
+  create policy "read own focus" on public.activity_focus
+    for select using (auth.uid() = user_id);
+exception when duplicate_object then null; end $$;
+
+revoke insert, update, delete, truncate on table public.activity_focus from anon, authenticated;
+
+-- focus_advice: the day's one Gemini line or two (End day). The app claims the day with an empty
+-- row before it asks, so two devices never both spend a call; it then fills the text in.
+create table if not exists public.focus_advice (
+  user_id  uuid        not null default auth.uid() references auth.users on delete cascade,
+  day      date        not null,
+  text     text        not null default '' check (char_length(text) <= 400),
+  model    text        not null default '' check (char_length(model) <= 80),
+  made_at  timestamptz not null default now(),
+  primary key (user_id, day)
+);
+
+alter table public.focus_advice enable row level security;
+
+do $$ begin
+  create policy "read own advice" on public.focus_advice
+    for select using (auth.uid() = user_id);
+exception when duplicate_object then null; end $$;
+
+do $$ begin
+  create policy "insert own advice" on public.focus_advice
+    for insert with check (auth.uid() = user_id);
+exception when duplicate_object then null; end $$;
+
+do $$ begin
+  create policy "update own advice" on public.focus_advice
+    for update using (auth.uid() = user_id) with check (auth.uid() = user_id);
+exception when duplicate_object then null; end $$;
+
+revoke all on table public.focus_advice from anon, authenticated;
+grant select on public.focus_advice to authenticated;
+grant insert (user_id, day, text) on public.focus_advice to authenticated;
+grant update (text, model) on public.focus_advice to authenticated;
+
+-- An app from before item 30a saves the lists without "helpers" (and before 29, without "work"):
+-- the lists he already has are kept.
+create or replace function public.keep_work_list() returns trigger language plpgsql set search_path = '' as $$
+declare k text;
+begin
+  if new.activity_lists is not null and old.activity_lists is not null then
+    foreach k in array array['work', 'helpers'] loop
+      if not (new.activity_lists ? k) and (old.activity_lists ? k) then
+        new.activity_lists := new.activity_lists || jsonb_build_object(k, old.activity_lists -> k);
+      end if;
+    end loop;
+  end if;
+  return new;
+end $$;

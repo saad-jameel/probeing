@@ -7,8 +7,11 @@
   page text. A window title leaves this laptop only for a block no rule could
   place, to let Gemini name its project; private ones never leave at all.
   Asleep or on a break (item 23), a block is sent bare: its time, category and
-  project only. Item 29: a work-apps list (Code.exe, terminals, Office...) counts
+  project only. Item 29: a work-apps list (Code.exe, the Claude app, Office...) counts
   as work with no project; it is matched here, so nothing more is sent.
+  Item 30a: a browser's own name never decides (its site does), ProBeing's own page
+  is not activity, and helpers (terminals, Notepad, Explorer, localhost...) are work
+  whose project the server takes from the work around them.
 
   The logic is a line-by-line copy of the sender half of
   supabase/functions/_shared/activity.js: change one, change the other.
@@ -38,10 +41,12 @@ $ACT_DEFAULT_LISTS = @{
   private  = @('bank', 'password', 'bitwarden', '1password', 'lastpass', 'keepass', 'whatsapp', 'messenger',
                'signal', 'telegram')
   meeting  = @('meet.google.com', 'zoom.us', 'zoom', 'teams.microsoft.com', 'teams', 'discord')
-  work     = @('code', 'windowsterminal', 'cmd', 'powershell', 'pwsh', 'wsl', 'conhost', 'claude', 'idea64', 'pycharm64',
-               'webstorm64', 'phpstorm64', 'clion64', 'rider64', 'goland64', 'rubymine64', 'datagrip64', 'rustrover64',
-               'winword', 'excel', 'powerpnt', 'outlook', 'olk', 'notepad++')
+  work     = @('code', 'claude', 'idea64', 'pycharm64', 'webstorm64', 'phpstorm64', 'clion64', 'rider64', 'goland64',
+               'rubymine64', 'datagrip64', 'rustrover64', 'winword', 'excel', 'powerpnt', 'outlook', 'olk')
+  helpers  = @('windowsterminal', 'wt', 'cmd', 'powershell', 'pwsh', 'wsl', 'conhost', 'notepad', 'notepad++', 'explorer',
+               'photos', 'systemsettings', 'applicationframehost', 'localhost', '127.0.0.1')
 }
+$ACT_LIST_KEYS = @('distract', 'private', 'meeting', 'work', 'helpers')
 $ACT_MIN_BLOCK_MS = 60000
 $ACT_JOIN_GAP_MS = 60000
 $ACT_TITLE_MAX = 120
@@ -52,6 +57,10 @@ $ACT_KEY_MAX = 40
 $ACT_LIST_MAX = 50
 $ACT_ENTRY_MAX = 80
 $ACT_BROWSERS = @('chrome', 'msedge', 'brave', 'firefox', 'opera', 'vivaldi')
+
+# Item 30a: ProBeing's own page or window is not activity (dropped like the lock screen).
+$ACT_NEUTRAL_SITES = @('saad-jameel.github.io/probeing')
+$ACT_NEUTRAL_TITLE = '^probeing($|[ \-\u2013\u2014|\u00b7:])'
 
 # Arrays come back whole (the comma), never unrolled to one item or to nothing.
 function Get-Prop($obj, [string]$name) {
@@ -150,6 +159,23 @@ function Act-IsBrowser($app) {
   return ($ACT_BROWSERS -contains $n)
 }
 
+# The app's name as the lists and rules see it: a browser's is nothing, its site decides (item 30a).
+function Act-AppName($app) {
+  if (Act-IsBrowser $app) { return '' }
+  return (Act-Str $app)
+}
+
+function Act-IsNeutral($seg) {
+  $h = Act-Str (Get-Prop $seg 'host')
+  if (-not $h) {
+    return ((Act-IsBrowser (Get-Prop $seg 'app')) -and ((Act-Str (Get-Prop $seg 'title')).Trim() -match $ACT_NEUTRAL_TITLE))
+  }
+  foreach ($e in $ACT_NEUTRAL_SITES) {
+    if (Act-EntryHits $e @{ app = ''; host = $h; path = (Act-Str (Get-Prop $seg 'path')); title = '' } $false) { return $true }
+  }
+  return $false
+}
+
 function Act-TidyList($list) {
   $out = New-Object System.Collections.Generic.List[string]
   foreach ($x in (As-Seq $list)) {
@@ -162,7 +188,7 @@ function Act-TidyList($list) {
 
 function Act-Lists($l) {
   $out = @{}
-  foreach ($k in @('distract', 'private', 'meeting', 'work')) {
+  foreach ($k in $ACT_LIST_KEYS) {
     $v = Get-Prop $l $k
     if ($null -ne $v -and ($v -is [System.Array] -or $v -is [System.Collections.IList])) { $out[$k] = Act-TidyList $v }
     else { $out[$k] = $ACT_DEFAULT_LISTS[$k] }
@@ -189,7 +215,7 @@ function Act-EntryHits($entry, $seg, [bool]$withTitle) {
   }
   $w = Act-Norm $e
   if ($w.Length -lt 3) { return $false }
-  if ((Act-Norm (Get-Prop $seg 'app')).Contains($w)) { return $true }
+  if ((Act-Norm (Act-AppName (Get-Prop $seg 'app'))).Contains($w)) { return $true }
   if ((Act-Norm (Get-Prop $seg 'host')).Contains($w)) { return $true }
   return ($withTitle -and (Act-Norm (Get-Prop $seg 'title')).Contains($w))
 }
@@ -220,7 +246,7 @@ function Act-WorkName($s) {
 # A site as in the other lists; a name only as the app's whole name ("code" is Code.exe, never Barcode).
 # On the phone (seg.phone) the built-in names do not count; the laptop never sets it.
 function Act-WorkHit($list, $seg) {
-  $app = Act-WorkName (Get-Prop $seg 'app')
+  $app = Act-WorkName (Act-AppName (Get-Prop $seg 'app'))
   $builtIn = @()
   if ((Get-Prop $seg 'phone') -eq $true) { $builtIn = @($ACT_DEFAULT_LISTS['work'] | ForEach-Object { Act-WorkName $_ }) }
   foreach ($x in (As-Seq $list)) {
@@ -228,6 +254,21 @@ function Act-WorkHit($list, $seg) {
     if (-not $e) { continue }
     if ($e -cmatch '[./]') { if (Act-EntryHits $e $seg $false) { return $x } }
     elseif ($app -and (Act-WorkName $e) -ceq $app -and -not ($builtIn -contains $app)) { return $x }
+  }
+  return ''
+}
+
+# Item 30a: a helper by its host (localhost, 127.0.0.1) or the app's whole name. Never on the phone.
+function Act-HelperHit($list, $seg) {
+  if ((Get-Prop $seg 'phone') -eq $true) { return '' }
+  $app = Act-WorkName (Act-AppName (Get-Prop $seg 'app'))
+  $h = Act-Str (Get-Prop $seg 'host')
+  foreach ($x in (As-Seq $list)) {
+    $e = (Act-Str $x).Trim().ToLowerInvariant() -creplace '\.exe$', ''
+    if (-not $e) { continue }
+    if ($e.Contains('.') -or $e -ceq 'localhost') {
+      if ($h -and ($h -ceq $e -or $h.EndsWith('.' + $e, [System.StringComparison]::Ordinal))) { return $x }
+    } elseif ($app -and (Act-WorkName $e) -ceq $app) { return $x }
   }
   return ''
 }
@@ -250,7 +291,7 @@ function Act-Rules($cfg) {
 }
 
 function Act-RuleHit($seg, $rules) {
-  $hay = @((Act-Norm (Get-Prop $seg 'title')), (Act-Norm (Get-Prop $seg 'app')), (Act-Norm (Get-Prop $seg 'host')))
+  $hay = @((Act-Norm (Get-Prop $seg 'title')), (Act-Norm (Act-AppName (Get-Prop $seg 'app'))), (Act-Norm (Get-Prop $seg 'host')))
   foreach ($r in $rules) {
     if ($hay[0].Contains($r.key) -or $hay[1].Contains($r.key) -or $hay[2].Contains($r.key)) {
       return @{ project = $r.project; key = $r.key }
@@ -276,6 +317,7 @@ function Act-Classify($seg, $cfg) {
     return @{ category = 'meeting'; project = ''; key = '' }
   }
   if ($hit) { return @{ category = 'work'; project = $hit.project; key = $hit.key } }
+  if (Act-HelperHit $lists['helpers'] $seg) { return @{ category = 'work'; project = ''; key = '' } }
   $known = Get-Prop (Get-Prop $cfg 'known') (Act-TitleKey (Get-Prop $seg 'app') (Get-Prop $seg 'title'))
   if ($known) { return @{ category = 'work'; project = (Act-Cut ([string]$known) $ACT_PROJECT_MAX); key = '' } }
   if (Act-WorkHit $lists['work'] $seg) { return @{ category = 'work'; project = ''; key = '' } }
@@ -372,8 +414,9 @@ function Act-Segments($events, $cut) {
   $piece = {
     param([double]$a, [double]$b, $w, $app, $title)
     if ($b -gt $a) {
-      if ($null -ne $w) { $out.Add(@{ start = $a; end = $b; app = $app; title = $title; host = $w.host; path = $w.path; incognito = $w.incognito; n = $out.Count }) }
-      else { $out.Add(@{ start = $a; end = $b; app = $app; title = $title; host = ''; path = ''; incognito = $false; n = $out.Count }) }
+      if ($null -ne $w) { $x = @{ start = $a; end = $b; app = $app; title = $title; host = $w.host; path = $w.path; incognito = $w.incognito; n = $out.Count } }
+      else { $x = @{ start = $a; end = $b; app = $app; title = $title; host = ''; path = ''; incognito = $false; n = $out.Count } }
+      if (-not (Act-IsNeutral $x)) { $out.Add($x) }      # ProBeing itself: not activity (item 30a)
     }
   }
   foreach ($e in (Get-Prop $events 'window')) {

@@ -215,6 +215,13 @@
     <p id="todayNote" class="hint" hidden></p>
   </section>
 
+  <!-- Item 30a: focus while working, from the watchers (activity_focus). Hidden with nothing to say. -->
+  <section id="focusCard" class="card" hidden>
+    <h2 class="card-head">Focus today</h2>
+    <p id="focusLine" class="review-sleep"></p>
+    <p id="focusAdvice" class="review-prose" hidden></p>
+  </section>
+
   <div class="log-head">
     <h2 class="card-head">Today</h2>
     <button id="refreshBtn" class="link-btn">Refresh</button>
@@ -1147,6 +1154,19 @@
     <div class="dlg-actions">
       <button type="button" id="catchupLaterBtn" class="link-btn">Later</button>
       <button type="button" id="catchupOkBtn" class="btn btn-accent">Looks right</button>
+    </div>
+  </form>
+</dialog>
+
+<!-- Item 30a: the day's focus, shown after End day. Non-modal like the catch-up sheet (rule 4). -->
+<dialog id="focusDlg" class="dlg catchup-dlg" aria-labelledby="focusDlgTitle">
+  <form method="dialog">
+    <h2 id="focusDlgTitle">Your focus today</h2>
+    <p id="focusDlgLine" class="review-sleep"></p>
+    <p id="focusDlgAdvice" class="review-prose" hidden></p>
+    <p id="focusDlgNote" class="hint"></p>
+    <div class="dlg-actions">
+      <button type="submit" class="btn btn-accent">Close</button>
     </div>
   </form>
 </dialog>

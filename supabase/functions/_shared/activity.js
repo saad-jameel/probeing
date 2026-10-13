@@ -13,6 +13,9 @@
  * project (actQuiet); no app, site or title. Item 28 (12 Oct): the same while awake
  * with the day not started or ended. Item 29 (12 Oct): a work list (no project needed),
  * and the names Teach asks about (actTeachName / actTeachList).
+ * Item 30a (13 Oct): browsers are neutral (the site decides), ProBeing's own page is not
+ * activity, helpers (terminals, Notepad, Explorer, localhost...) are work that takes its
+ * project from the work around it, and a Start answer writes the distractions as breaks.
  */
 
 'use strict';
@@ -28,11 +31,13 @@ var ACT_DEFAULT_LISTS = {
   private: ['bank', 'password', 'bitwarden', '1password', 'lastpass', 'keepass', 'whatsapp', 'messenger',
             'signal', 'telegram'],
   meeting: ['meet.google.com', 'zoom.us', 'zoom', 'teams.microsoft.com', 'teams', 'discord'],
-  work: ['code', 'windowsterminal', 'cmd', 'powershell', 'pwsh', 'wsl', 'conhost', 'claude', 'idea64', 'pycharm64',
-         'webstorm64', 'phpstorm64', 'clion64', 'rider64', 'goland64', 'rubymine64', 'datagrip64', 'rustrover64',
-         'winword', 'excel', 'powerpnt', 'outlook', 'olk', 'notepad++']
+  work: ['code', 'claude', 'idea64', 'pycharm64', 'webstorm64', 'phpstorm64', 'clion64', 'rider64', 'goland64',
+         'rubymine64', 'datagrip64', 'rustrover64', 'winword', 'excel', 'powerpnt', 'outlook', 'olk'],
+  // Item 30a: used for every project, so never asked about; work, with the project of the work around it.
+  helpers: ['windowsterminal', 'wt', 'cmd', 'powershell', 'pwsh', 'wsl', 'conhost', 'notepad', 'notepad++', 'explorer',
+           'photos', 'systemsettings', 'applicationframehost', 'localhost', '127.0.0.1']
 };
-var ACT_LIST_KEYS = ['distract', 'private', 'meeting', 'work'];
+var ACT_LIST_KEYS = ['distract', 'private', 'meeting', 'work', 'helpers'];
 
 var ACT_MIN_BLOCK_MS = 60000;            // shorter pieces fold into a neighbour
 var ACT_JOIN_GAP_MS = 60000;             // a gap this small does not split a block
@@ -45,6 +50,11 @@ var ACT_KEY_MAX = 40;
 var ACT_LIST_MAX = 50;
 var ACT_ENTRY_MAX = 80;
 var ACT_BROWSERS = ['chrome', 'msedge', 'brave', 'firefox', 'opera', 'vivaldi'];
+
+/* Item 30a: ProBeing's own page is neither work nor a distraction: dropped like the lock screen.
+ * Its installed window has no site, only its title. */
+var ACT_NEUTRAL_SITES = ['saad-jameel.github.io/probeing'];
+var ACT_NEUTRAL_TITLE = /^probeing($|[ \-\u2013\u2014|\u00b7:])/i;
 
 /** Lower case, letters and digits only: "proBeing - VS Code" -> "probeingvscode". */
 function actNorm(s) {
@@ -132,6 +142,21 @@ function actIsBrowser(app) {
   return ACT_BROWSERS.indexOf(actNorm(String(app || '').replace(/\.exe$/i, ''))) !== -1;
 }
 
+/** The app's name as the lists and rules see it: a browser's is nothing, its site decides (item 30a). */
+function actAppName(app) {
+  return actIsBrowser(app) ? '' : String(app == null ? '' : app);
+}
+
+/** ProBeing's own page or window: not activity (item 30a). seg: {app, host, path, title}. */
+function actIsNeutral(seg) {
+  var h = String(seg.host || '');
+  if (!h) return actIsBrowser(seg.app) && ACT_NEUTRAL_TITLE.test(String(seg.title || '').trim());
+  for (var i = 0; i < ACT_NEUTRAL_SITES.length; i++) {
+    if (actEntryHits(ACT_NEUTRAL_SITES[i], { app: '', host: h, path: seg.path || '', title: '' }, false)) return true;
+  }
+  return false;
+}
+
 /** One list, tidied: trimmed, lower case, at most ACT_LIST_MAX entries. */
 function actTidyList(list) {
   var out = [];
@@ -171,7 +196,7 @@ function actEntryHits(entry, seg, withTitle) {
   }
   var w = actNorm(e);
   if (w.length < 3) return false;
-  return actNorm(seg.app).indexOf(w) !== -1 || actNorm(seg.host).indexOf(w) !== -1 ||
+  return actNorm(actAppName(seg.app)).indexOf(w) !== -1 || actNorm(seg.host).indexOf(w) !== -1 ||
          (withTitle === true && actNorm(seg.title).indexOf(w) !== -1);
 }
 
@@ -205,12 +230,30 @@ function actWorkName(s) {
  *  ("code", or "Code.exe" as typed) only as the app's whole name. On the phone (seg.phone) the
  *  built-in names do not count: they are desktop apps (Saad, 12 Oct). */
 function actWorkHit(list, seg) {
-  var app = actWorkName(seg.app);
+  var app = actWorkName(actAppName(seg.app));
   var builtIn = seg.phone === true ? ACT_DEFAULT_LISTS.work.map(actWorkName) : [];
   for (var i = 0; i < (list || []).length; i++) {
     var e = String(list[i] || '').trim().toLowerCase().replace(/\.exe$/, '');
     if (!e) continue;
     if (/[.\/]/.test(e) ? actEntryHits(e, seg, false) : actWorkName(e) === app && app !== '' && builtIn.indexOf(app) === -1) return list[i];
+  }
+  return '';
+}
+
+/** Item 30a: the first helper entry naming the piece, or ''. A site (localhost, 127.0.0.1) by its
+ *  host; a name as the app's whole name. Never on the phone: helpers are laptop apps. */
+function actHelperHit(list, seg) {
+  if (seg.phone === true) return '';
+  var app = actWorkName(actAppName(seg.app));
+  var host = String(seg.host || '');
+  for (var i = 0; i < (list || []).length; i++) {
+    var e = String(list[i] == null ? '' : list[i]).trim().toLowerCase().replace(/\.exe$/, '');
+    if (!e) continue;
+    if (e.indexOf('.') !== -1 || e === 'localhost') {
+      if (host && (host === e || host.slice(-(e.length + 1)) === '.' + e)) return list[i];
+    } else if (app && actWorkName(e) === app) {
+      return list[i];
+    }
   }
   return '';
 }
@@ -239,7 +282,7 @@ function actRules(cfg) {
 
 /** The longest rule whose keyword is in the title, the app or the site. */
 function actRuleHit(seg, rules) {
-  var hay = [actNorm(seg.title), actNorm(seg.app), actNorm(seg.host)];
+  var hay = [actNorm(seg.title), actNorm(actAppName(seg.app)), actNorm(seg.host)];
   for (var i = 0; i < (rules || []).length; i++) {
     var k = rules[i].key;
     if (hay[0].indexOf(k) !== -1 || hay[1].indexOf(k) !== -1 || hay[2].indexOf(k) !== -1) {
@@ -252,6 +295,7 @@ function actRuleHit(seg, rules) {
 /**
  * {category, project, key} for one piece. Private first (never sent), then
  * distraction, then meeting (which may still name a project), then the rules,
+ * then a helper (work, its project found later from the work around it, item 30a),
  * then Gemini's earlier answer, then the work list (work, no project).
  * cfg: {lists, rules, projects, known: {titleKey: project}} (known: Gemini's
  * earlier answers, kept on the laptop).
@@ -267,6 +311,7 @@ function actClassify(seg, cfg) {
     return { category: 'meeting', project: hit ? hit.project : '', key: hit ? hit.key : '' };
   }
   if (hit) return { category: 'work', project: hit.project, key: hit.key };
+  if (actHelperHit(lists.helpers, seg)) return { category: 'work', project: '', key: '' };
   var known = cfg && cfg.known ? cfg.known[actTitleKey(seg.app, seg.title)] : '';
   if (known) return { category: 'work', project: actCut(String(known), ACT_PROJECT_MAX), key: '' };
   if (actWorkHit(lists.work, seg)) return { category: 'work', project: '', key: '' };
@@ -348,8 +393,9 @@ function actSegments(events, cut) {
     var browser = actIsBrowser(app);
     actIntersect(sp[0], sp[1], allowed).forEach(function (p) {
       function piece(a, b, w) {
-        if (b > a) out.push({ start: a, end: b, app: app, title: title, host: w ? w.host : '',
-                              path: w ? w.path : '', incognito: Boolean(w && w.incognito) });
+        var x = { start: a, end: b, app: app, title: title, host: w ? w.host : '',
+                  path: w ? w.path : '', incognito: Boolean(w && w.incognito) };
+        if (b > a && !actIsNeutral(x)) out.push(x);      // ProBeing itself: not activity (item 30a)
       }
       if (!browser) { piece(p[0], p[1], null); return; }
       var at = p[0];
@@ -442,6 +488,8 @@ function actSanitize(b, lists, now) {
               key: actNorm(b.key).slice(0, ACT_KEY_MAX) };
   if (actListHit(actLists(lists)['private'], { app: out.app, host: out.domain, title: '' }, false)) out.category = 'private';
   if (actIsAway(out.app)) return null;     // the lock screen, from a watcher before item 29's fix
+  // ProBeing's own site, from a watcher before item 30a. The server sees no path; that host serves only ProBeing.
+  if (out.domain && actIsNeutral({ app: '', host: out.domain, path: '/probeing', title: '' })) return null;
   if (out.category === 'private') { out.domain = ''; out.project = ''; out.key = ''; }
   if (out.category === 'distraction' || out.category === 'unclear') { out.project = ''; out.key = ''; }
   return out;
@@ -458,9 +506,10 @@ var ACT_TENDED = ['work', 'voice', 'done', 'break', 'resume', 'awake', 'subdone'
 var ACT_AUTO_RID = /^ab-/;
 
 /* Rows written later for an earlier instant: the watcher's (ab-/ar-/aw-), the sheet's or
- * a question's (kb-/kr-/qb-/qr-), an awake or back-to-work answer's (nw-/nr-, item 23)
- * and a Start answer's (ns-, item 28). On a tie with his own row they go first, so his row decides. */
-var ACT_BACKDATED = /^(ab|ar|aw|kb|kr|qb|qr|nw|nr|ns)-/;
+ * a question's (kb-/kr-/qb-/qr-), an awake or back-to-work answer's (nw-/nr-, item 23),
+ * a Start answer's (ns-, item 28) and the distractions it writes as breaks (nd-/ne-, item 30a).
+ * On a tie with his own row they go first, so his row decides. */
+var ACT_BACKDATED = /^(ab|ar|aw|kb|kr|qb|qr|nw|nr|ns|nd|ne)-/;
 
 /** Order of two rows at the same instant: backdated ones first, those by rid; else 0. */
 function actTie(x, y) {
@@ -598,8 +647,10 @@ var ACT_ASK_ENDS = ['work', 'voice', 'resume', 'break', 'off', 'sleep', 'wake'];
  */
 function actAskOpen(n, walk, rows) {
   var own = ['nw-', 'nr-', 'ns-', 'na-'].map(function (x) { return x + n.id; });
+  var pairs = new RegExp('^n[de]-' + String(n.id).replace(/[^0-9a-zA-Z-]/g, '') + '-[0-9]+$');   // item 30a's breaks
   var moved = (rows || []).some(function (r) {
-    return r.at > n.streak_start && ACT_ASK_ENDS.indexOf(r.type) !== -1 && own.indexOf(String(r.rid || '')) === -1;
+    var rid = String(r.rid || '');
+    return r.at > n.streak_start && ACT_ASK_ENDS.indexOf(r.type) !== -1 && own.indexOf(rid) === -1 && !pairs.test(rid);
   });
   if (moved) return false;
   if (n.kind === 'awake' || n.kind === 'upwork') return Boolean(walk && walk.asleep && walk.asleep.at === n.ref_at);
@@ -710,7 +761,7 @@ function actFixed(b, fixes) {
 
 /**
  * The period's figures. blocks: {id, start, end, category, project} (ms);
- * fixes: actFixMap(); work: the working spans. Time in a project, meetings and
+ * fixes: actFixMap(); work: the working spans. workMs includes meetings. Time in a project, meetings and
  * unclear counts only while working; distraction counts whenever it was
  * watched (an auto break turns it into break time, and it is still distraction).
  */
@@ -724,7 +775,8 @@ function actFigures(blocks, fixes, work) {
     var ms = actSpansMs(actIntersect(b.start, b.end, work));
     if (!(ms > 0)) return;
     if (b.category === 'private') { out.privateMs += ms; return; }
-    if (b.category === 'meeting') out.meetingMs += ms;
+    // A meeting is work time (item 30a: Discord is a work meeting); meetingMs says how much of it.
+    if (b.category === 'meeting') { out.meetingMs += ms; out.workMs += ms; }
     else if (b.category === 'unclear') out.unclearMs += ms;
     else out.workMs += ms;
     if (b.project) out.byProject['p' + b.project] = (out.byProject['p' + b.project] || 0) + ms;
@@ -817,6 +869,67 @@ function actTeachSeg(n) {
     : { app: String((n && n.what) || entry), host: '', path: '', title: '' };
 }
 
+/* ── Item 30a: where a project comes from, work runs and focus ─────────────── */
+
+/* A block's project, first source that has one: the virtual desktop (item 30b; not sent yet), a
+ * title keyword, the app, then for a helper the nearest work within ACT_NEAR_MS. */
+var ACT_PROJECT_SOURCES = ['desktop', 'title', 'app', 'near'];
+var ACT_NEAR_MS = 10 * 60000;
+
+/** src: {desktop, title, app, near} -> {project, from}; {project: '', from: ''} with none. */
+function actPickProject(src) {
+  for (var i = 0; i < ACT_PROJECT_SOURCES.length; i++) {
+    var p = String((src && src[ACT_PROJECT_SOURCES[i]]) || '').trim();
+    if (p) return { project: actCut(p, ACT_PROJECT_MAX), from: ACT_PROJECT_SOURCES[i] };
+  }
+  return { project: '', from: '' };
+}
+
+/* Distraction tiers while working (Saad, 13 Oct): under 2 min a glance (ignored), 2-5 a slip,
+ * 5-15 a focus loss, 15 or more a break (the distraction push, unchanged). */
+var ACT_GLANCE_MS = 2 * 60000;
+var ACT_SLIP_MS = 5 * 60000;
+var ACT_LOSS_MS = 15 * 60000;
+
+/** 'glance', 'slip', 'loss' or 'break' for a distraction this long. */
+function actTier(ms) {
+  return ms < ACT_GLANCE_MS ? 'glance' : ms < ACT_SLIP_MS ? 'slip' : ms < ACT_LOSS_MS ? 'loss' : 'break';
+}
+
+/* Distractions named by a word, never more (Saad, 9 Oct): a well-known site, else "distraction". */
+var ACT_DISTRACT_NAMES = { 'youtube.com': 'YouTube', 'x.com': 'X', 'twitter.com': 'X', 'instagram.com': 'Instagram',
+                           'tiktok.com': 'TikTok', 'facebook.com': 'Facebook', 'reddit.com': 'Reddit',
+                           'snapchat.com': 'Snapchat', 'linkedin.com': 'LinkedIn' };
+
+/** The word for a distraction block: its site's name when well known, else 'distraction'. */
+function actDistractWord(b) {
+  var d = actCleanDomain(b && b.domain);
+  while (d) {
+    if (Object.prototype.hasOwnProperty.call(ACT_DISTRACT_NAMES, d)) return ACT_DISTRACT_NAMES[d];
+    var dot = d.indexOf('.');
+    d = dot === -1 ? '' : d.slice(dot + 1);
+  }
+  return 'distraction';
+}
+
+/**
+ * The breaks a Start (or Resume) answer writes inside its work run (item 30a): each distraction
+ * the run held, from its start to its end, as a break and a resume. gaps: [[start, end]] (ms or
+ * ISO); only those after `after` and ended by `now` count. Rids are fixed per question and gap,
+ * so the push's button and the app's sheet write the same rows once.
+ */
+function actRunSteps(id, gaps, after, now) {
+  var out = [];
+  (Array.isArray(gaps) ? gaps : []).forEach(function (g, i) {
+    var a = typeof g[0] === 'number' ? g[0] : Date.parse(String(g[0]));
+    var z = typeof g[1] === 'number' ? g[1] : Date.parse(String(g[1]));
+    if (!(a > after) || !(z > a) || !(z <= now)) return;
+    out.push({ type: 'break', at: a, rid: 'nd-' + id + '-' + i, text: 'Distraction' });
+    out.push({ type: 'resume', at: z, rid: 'ne-' + id + '-' + i, text: 'Resume (after a distraction — answered the check)' });
+  });
+  return out;
+}
+
 // What the Edge Function uses. The browser reads the globals directly.
 globalThis.ProBeingActivity = {
   ACT_CATEGORIES: ACT_CATEGORIES,
@@ -869,5 +982,16 @@ globalThis.ProBeingActivity = {
   actTeachSorted: actTeachSorted,
   actTeachSeg: actTeachSeg,
   actIsAway: actIsAway,
-  ACT_SHELL_APPS: ACT_SHELL_APPS
+  ACT_SHELL_APPS: ACT_SHELL_APPS,
+  actAppName: actAppName,
+  actIsNeutral: actIsNeutral,
+  actHelperHit: actHelperHit,
+  ACT_NEAR_MS: ACT_NEAR_MS,
+  actPickProject: actPickProject,
+  ACT_GLANCE_MS: ACT_GLANCE_MS,
+  ACT_SLIP_MS: ACT_SLIP_MS,
+  ACT_LOSS_MS: ACT_LOSS_MS,
+  actTier: actTier,
+  actDistractWord: actDistractWord,
+  actRunSteps: actRunSteps
 };

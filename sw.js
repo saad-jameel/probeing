@@ -61,8 +61,9 @@
  * v36 (item 26): an open awake/back-to-work question of any age shows; a 20 h+ night is not counted.
  * v37 (item 28): "Up and working?" and "didn't mark it — start?", with their buttons.
  * v38 (item 29): a work-apps list, and "What is <app>?" (a push that opens the sheet).
- * v39 (item 30c): Settings in three tabs; one panel per list with Add and ×. */
-var CACHE = 'probeing-shell-v39';
+ * v39 (item 30c): Settings in three tabs; one panel per list with Add and ×.
+ * v40 (item 30a): work runs, helpers, the focus card. */
+var CACHE = 'probeing-shell-v40';
 var SHELL = [
   './',
   'index.html',
