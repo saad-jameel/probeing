@@ -2150,10 +2150,10 @@
    }
   },
   {
-   "name": "item 30a: the frame round Settings and Photos is a helper",
+   "name": "item 30a: the frame round Store apps (Netflix too) is no helper: unclear, never asked",
    "seg": {
     "app": "ApplicationFrameHost.exe",
-    "title": "Calculator",
+    "title": "Netflix",
     "host": "",
     "path": "",
     "incognito": false
@@ -2177,7 +2177,7 @@
     ]
    },
    "want": {
-    "category": "work",
+    "category": "unclear",
     "project": "",
     "key": ""
    }
@@ -3611,6 +3611,112 @@
      "category": "work",
      "project": "ProBeing",
      "key": "probeing"
+    }
+   ]
+  },
+  {
+   "name": "item 30a fix: only ProBeing's own window title and path are dropped",
+   "cut": {
+    "from": "2026-10-12T05:00:00.000Z",
+    "to": "2026-10-12T05:40:00.000Z",
+    "spans": [
+     [
+      "2026-10-12T05:00:00.000Z",
+      "2026-10-12T05:40:00.000Z"
+     ]
+    ]
+   },
+   "cfg": {
+    "lists": null,
+    "rules": [
+     {
+      "keyword": "docker",
+      "project": "OneNet"
+     },
+     {
+      "keyword": "neuravue",
+      "project": "NeuraVue"
+     }
+    ],
+    "projects": [
+     "ProBeing",
+     "OneNet",
+     "NeuraVue"
+    ]
+   },
+   "events": {
+    "afk": [
+     {
+      "timestamp": "2026-10-12T05:00:00+00:00",
+      "duration": 2400,
+      "data": {
+       "status": "not-afk"
+      }
+     }
+    ],
+    "window": [
+     {
+      "timestamp": "2026-10-12T05:00:00+00:00",
+      "duration": 600,
+      "data": {
+       "app": "msedge.exe",
+       "title": "ProBeing notes - Google Docs - Work - Microsoft Edge"
+      }
+     },
+     {
+      "timestamp": "2026-10-12T05:10:00+00:00",
+      "duration": 600,
+      "data": {
+       "app": "msedge.exe",
+       "title": "ProBeing - Work - Microsoft Edge"
+      }
+     },
+     {
+      "timestamp": "2026-10-12T05:20:00+00:00",
+      "duration": 1200,
+      "data": {
+       "app": "chrome.exe",
+       "title": "Notes - Google Chrome"
+      }
+     }
+    ],
+    "web": [
+     {
+      "timestamp": "2026-10-12T05:20:00+00:00",
+      "duration": 600,
+      "data": {
+       "url": "https://saad-jameel.github.io/probeing-notes/x",
+       "title": "Notes"
+      }
+     },
+     {
+      "timestamp": "2026-10-12T05:30:00+00:00",
+      "duration": 600,
+      "data": {
+       "url": "https://saad-jameel.github.io/proBeing/#home",
+       "title": "Notes"
+      }
+     }
+    ]
+   },
+   "want": [
+    {
+     "start": "2026-10-12T05:00:00.000Z",
+     "end": "2026-10-12T05:10:00.000Z",
+     "app": "msedge.exe",
+     "domain": "",
+     "category": "work",
+     "project": "ProBeing",
+     "key": "probeing"
+    },
+    {
+     "start": "2026-10-12T05:20:00.000Z",
+     "end": "2026-10-12T05:30:00.000Z",
+     "app": "chrome.exe",
+     "domain": "saad-jameel.github.io",
+     "category": "unclear",
+     "project": "",
+     "key": ""
     }
    ]
   }

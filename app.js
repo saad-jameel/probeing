@@ -8570,22 +8570,49 @@ function tidyAdvice(text) {
   return t.split(/\n+/).slice(0, 2).join('\n').slice(0, 300).trim();
 }
 
+var ADVICE_TRIES = 2;                     // a failed call may be tried once more that day
+var ADVICE_STALE_MS = 5 * 60000;          // a "writing" claim this old was left behind
+
 /**
- * The day's advice: the saved one, else (allowCall, and calls to spare above the reserve) ONE
- * call, claimed first in focus_advice so two devices never both ask. '' when there is none.
+ * The day's advice: {text, why}. The saved text, else (allowCall, calls to spare above the reserve)
+ * ONE call, claimed first in focus_advice so two devices never both ask. A failed call marks the
+ * row failed and may be tried once more that day; a success is never asked twice.
+ * why: 'budget', 'other' (another device is writing it), 'failed', or ''.
  */
 async function focusAdvice(day, s, allowCall) {
-  var got = await sb.from('focus_advice').select('text').eq('day', day).limit(1);
-  if (got.error) return '';
+  var got = await sb.from('focus_advice').select('text,state,tries,made_at').eq('day', day).limit(1);
+  if (got.error) return { text: '', why: 'failed' };
   var row = (got.data || [])[0];
-  if (row) return String(row.text || '');
-  if (!allowCall || !canAskGemini() || geminiCallsLeft() <= REPORT_AUTO_RESERVE) return '';
-  var claim = await sb.from('focus_advice').insert({ user_id: sbUser.id, day: day, text: '' });
-  if (claim.error) return '';                         // another device has it, or no table yet
+  if (row && row.text) return { text: String(row.text), why: '' };
+  var writing = Boolean(row) && row.state !== 'failed' && Date.now() - Date.parse(row.made_at) < ADVICE_STALE_MS;
+  if (!allowCall || writing) return { text: '', why: writing ? 'other' : '' };
+  if (row && Number(row.tries) >= ADVICE_TRIES) return { text: '', why: 'failed' };
+  if (!canAskGemini() || geminiCallsLeft() <= REPORT_AUTO_RESERVE) return { text: '', why: 'budget' };
+  var stamp = new Date().toISOString();
+  var tries = row ? (Number(row.tries) || 1) + 1 : 1;
+  if (!row) {
+    var claim = await sb.from('focus_advice').insert({ user_id: sbUser.id, day: day, text: '', state: 'writing', tries: 1, made_at: stamp });
+    if (claim.error) return { text: '', why: 'other' };
+  } else {
+    await sb.from('focus_advice').update({ state: 'writing', tries: tries, made_at: stamp }).eq('day', day).eq('tries', tries - 1);
+    // Ours only if the row now carries this claim: two devices retrying at once, one wins.
+    var check = await sb.from('focus_advice').select('state,tries,made_at').eq('day', day).limit(1);
+    var now = (check.data || [])[0];
+    if (check.error || !now || now.state !== 'writing' || Number(now.tries) !== tries || Date.parse(now.made_at) !== Date.parse(stamp)) {
+      return { text: '', why: 'other' };
+    }
+  }
   var text = tidyAdvice(await askReviewProse(focusAdvicePrompt(s)));
-  if (text) await sb.from('focus_advice').update({ text: text, model: String(lastGeminiModel || '').slice(0, 80) }).eq('day', day);
-  return text;
+  if (text) {
+    await sb.from('focus_advice').update({ text: text, model: String(lastGeminiModel || '').slice(0, 80), state: 'done' }).eq('day', day);
+    return { text: text, why: '' };
+  }
+  await sb.from('focus_advice').update({ state: 'failed' }).eq('day', day);
+  return { text: '', why: 'failed' };
 }
+
+var ADVICE_WHY = { budget: 'No advice today (Gemini\'s daily budget is kept for naming entries).',
+                   other: 'Advice is being written on your other device.', failed: 'Couldn\'t get advice right now.' };
 
 /** Fill a focus card: the figures line, and the advice under it when there is any. */
 function paintFocusBox(lineEl, adviceEl, s, advice) {
@@ -8602,7 +8629,7 @@ async function paintTodayFocus() {
   try {
     var s = focusSummary(await readFocusDay(day));
     if (!s) { card.hidden = true; return; }
-    paintFocusBox($('focusLine'), $('focusAdvice'), s, await focusAdvice(day, s, false));
+    paintFocusBox($('focusLine'), $('focusAdvice'), s, (await focusAdvice(day, s, false)).text);
     card.hidden = false;
   } catch (e) {
     card.hidden = true;                               // a figure we cannot read is left out, not guessed
@@ -8620,10 +8647,10 @@ async function openFocusDay() {
   paintFocusBox($('focusDlgLine'), $('focusDlgAdvice'), s, '');
   $('focusDlgNote').textContent = 'Asking for a line of advice…';
   if (!dlg.open) { if (typeof dlg.show === 'function') dlg.show(); else dlg.setAttribute('open', ''); }
-  var advice = '';
-  try { advice = await focusAdvice(day, s, true); } catch (e) { advice = ''; }
-  paintFocusBox($('focusDlgLine'), $('focusDlgAdvice'), s, advice);
-  $('focusDlgNote').textContent = advice ? '' : 'No advice today (Gemini\'s daily budget is kept for naming entries).';
+  var got = { text: '', why: 'failed' };
+  try { got = await focusAdvice(day, s, true); } catch (e) { /* said below */ }
+  paintFocusBox($('focusDlgLine'), $('focusDlgAdvice'), s, got.text);
+  $('focusDlgNote').textContent = got.text ? '' : ADVICE_WHY[got.why] || '';
   paintTodayFocus();
 }
 
@@ -16569,7 +16596,7 @@ function answerCatchUp(a, choice, li) {
     }
     // Item 30a: the run's distractions as breaks (nd-/ne-), as activity-ingest askRows writes them.
     if (choice === 'start' || choice === 'resume') {
-      actRunSteps(id, n.run && n.run.gaps, choice === 'start' ? then : at, Date.now()).forEach(function (w) {
+      actRunSteps(id, n.run, choice === 'start' ? then : at, Date.now()).forEach(function (w) {
         steps.push({ type: w.type, raw_text: w.text, rid: w.rid, at: new Date(w.at).toISOString(), local_time: humanLocalAt(w.at) });
       });
     }

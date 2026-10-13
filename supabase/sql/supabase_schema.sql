@@ -1844,12 +1844,15 @@ exception when duplicate_object then null; end $$;
 revoke insert, update, delete, truncate on table public.activity_focus from anon, authenticated;
 
 -- focus_advice: the day's one Gemini line or two (End day). The app claims the day with an empty
--- row before it asks, so two devices never both spend a call; it then fills the text in.
+-- row before it asks (state 'writing'), so two devices never both spend a call; it then fills the
+-- text in ('done'). A failed call leaves 'failed', and one more try (tries 2) is allowed that day.
 create table if not exists public.focus_advice (
   user_id  uuid        not null default auth.uid() references auth.users on delete cascade,
   day      date        not null,
   text     text        not null default '' check (char_length(text) <= 400),
   model    text        not null default '' check (char_length(model) <= 80),
+  state    text        not null default 'writing' check (state in ('writing', 'done', 'failed')),
+  tries    integer     not null default 1 check (tries between 1 and 2),
   made_at  timestamptz not null default now(),
   primary key (user_id, day)
 );
@@ -1873,8 +1876,8 @@ exception when duplicate_object then null; end $$;
 
 revoke all on table public.focus_advice from anon, authenticated;
 grant select on public.focus_advice to authenticated;
-grant insert (user_id, day, text) on public.focus_advice to authenticated;
-grant update (text, model) on public.focus_advice to authenticated;
+grant insert (user_id, day, text, state, tries, made_at) on public.focus_advice to authenticated;
+grant update (text, model, state, tries, made_at) on public.focus_advice to authenticated;
 
 -- An app from before item 30a saves the lists without "helpers" (and before 29, without "work"):
 -- the lists he already has are kept.

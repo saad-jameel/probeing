@@ -35,7 +35,7 @@ var ACT_DEFAULT_LISTS = {
          'rubymine64', 'datagrip64', 'rustrover64', 'winword', 'excel', 'powerpnt', 'outlook', 'olk'],
   // Item 30a: used for every project, so never asked about; work, with the project of the work around it.
   helpers: ['windowsterminal', 'wt', 'cmd', 'powershell', 'pwsh', 'wsl', 'conhost', 'notepad', 'notepad++', 'explorer',
-           'photos', 'systemsettings', 'applicationframehost', 'localhost', '127.0.0.1']
+           'photos', 'systemsettings', 'localhost', '127.0.0.1']
 };
 var ACT_LIST_KEYS = ['distract', 'private', 'meeting', 'work', 'helpers'];
 
@@ -52,9 +52,9 @@ var ACT_ENTRY_MAX = 80;
 var ACT_BROWSERS = ['chrome', 'msedge', 'brave', 'firefox', 'opera', 'vivaldi'];
 
 /* Item 30a: ProBeing's own page is neither work nor a distraction: dropped like the lock screen.
- * Its installed window has no site, only its title. */
+ * Its installed window has no site, only its own title, exactly ("ProBeing", maybe a browser's suffix). */
 var ACT_NEUTRAL_SITES = ['saad-jameel.github.io/probeing'];
-var ACT_NEUTRAL_TITLE = /^probeing($|[ \-\u2013\u2014|\u00b7:])/i;
+var ACT_NEUTRAL_TITLE = /^ProBeing( - ((Personal|Work|Profile [0-9]+) - )?(Google Chrome|Microsoft Edge|Mozilla Firefox|Brave|Opera|Vivaldi))?$/;
 
 /** Lower case, letters and digits only: "proBeing - VS Code" -> "probeingvscode". */
 function actNorm(s) {
@@ -151,8 +151,12 @@ function actAppName(app) {
 function actIsNeutral(seg) {
   var h = String(seg.host || '');
   if (!h) return actIsBrowser(seg.app) && ACT_NEUTRAL_TITLE.test(String(seg.title || '').trim());
+  var path = String(seg.path || '');
   for (var i = 0; i < ACT_NEUTRAL_SITES.length; i++) {
-    if (actEntryHits(ACT_NEUTRAL_SITES[i], { app: '', host: h, path: seg.path || '', title: '' }, false)) return true;
+    var site = ACT_NEUTRAL_SITES[i];
+    var slash = site.indexOf('/');
+    // The app's own path, or below it: never /probeing-notes.
+    if (h === site.slice(0, slash) && (path === site.slice(slash) || path.indexOf(site.slice(slash) + '/') === 0)) return true;
   }
   return false;
 }
@@ -647,7 +651,7 @@ var ACT_ASK_ENDS = ['work', 'voice', 'resume', 'break', 'off', 'sleep', 'wake'];
  */
 function actAskOpen(n, walk, rows) {
   var own = ['nw-', 'nr-', 'ns-', 'na-'].map(function (x) { return x + n.id; });
-  var pairs = new RegExp('^n[de]-' + String(n.id).replace(/[^0-9a-zA-Z-]/g, '') + '-[0-9]+$');   // item 30a's breaks
+  var pairs = new RegExp('^n[de]-' + String(n.id).replace(/[^0-9a-zA-Z-]/g, '') + '-[0-9a-z]+$');   // item 30a's breaks
   var moved = (rows || []).some(function (r) {
     var rid = String(r.rid || '');
     return r.at > n.streak_start && ACT_ASK_ENDS.indexOf(r.type) !== -1 && own.indexOf(rid) === -1 && !pairs.test(rid);
@@ -912,22 +916,83 @@ function actDistractWord(b) {
   return 'distraction';
 }
 
+var ACT_RUN_GAP_MS = 15 * 60000;       // non-work this long is a break, whatever it held
+
 /**
- * The breaks a Start (or Resume) answer writes inside its work run (item 30a): each distraction
- * the run held, from its start to its end, as a break and a resume. gaps: [[start, end]] (ms or
- * ISO); only those after `after` and ended by `now` count. Rids are fixed per question and gap,
- * so the push's button and the app's sheet write the same rows once.
+ * What a Start (or Resume) answer makes of the time since `from` (item 30a fix): every device's
+ * blocks, cut to [from, now]. Between two stretches of work, 15 minutes or more of anything else
+ * is a break; a shorter gap's distractions (2 minutes or more, joined across a minute) are.
+ * Returns {gaps: [[start, end]], last: the end of the last work, or null with no work}.
  */
-function actRunSteps(id, gaps, after, now) {
-  var out = [];
-  (Array.isArray(gaps) ? gaps : []).forEach(function (g, i) {
-    var a = typeof g[0] === 'number' ? g[0] : Date.parse(String(g[0]));
-    var z = typeof g[1] === 'number' ? g[1] : Date.parse(String(g[1]));
-    if (!(a > after) || !(z > a) || !(z <= now)) return;
-    out.push({ type: 'break', at: a, rid: 'nd-' + id + '-' + i, text: 'Distraction' });
-    out.push({ type: 'resume', at: z, rid: 'ne-' + id + '-' + i, text: 'Resume (after a distraction — answered the check)' });
+function actRunPlan(blocks, from, now) {
+  var list = [];
+  (blocks || []).forEach(function (b) {
+    var a = Math.max(b.start, from);
+    var z = Math.min(b.end, now);
+    if (z > a) list.push({ start: a, end: z, category: b.category });
   });
-  return out;
+  function isWork(b) { return b.category === 'work' || b.category === 'meeting'; }
+  var workAll = actMergeSpans(list.filter(isWork).map(function (b) { return [b.start, b.end]; }));
+  var work = workAll.filter(function (s) { return s[1] - s[0] >= 60000; });
+  if (!work.length) return { gaps: [], last: null };
+  var dist = actMergeSpans(list.filter(function (b) { return b.category === 'distraction'; }).map(function (b) { return [b.start, b.end]; }));
+  var gaps = [];
+  function distIn(a, z) {
+    var pieces = [];
+    actIntersect(a, z, dist).forEach(function (p) {
+      var at = p[0];
+      workAll.forEach(function (w) {
+        if (w[1] <= at || w[0] >= p[1]) return;
+        if (w[0] > at) pieces.push([at, w[0]]);
+        at = Math.max(at, w[1]);
+      });
+      if (p[1] > at) pieces.push([at, p[1]]);
+    });
+    var joined = [];
+    actMergeSpans(pieces).forEach(function (p) {
+      var last = joined[joined.length - 1];
+      if (last && p[0] - last[1] <= 60000) { last[1] = p[1]; last[2] += p[1] - p[0]; } else joined.push([p[0], p[1], p[1] - p[0]]);
+    });
+    joined.forEach(function (j) { if (j[2] >= ACT_GLANCE_MS) gaps.push([j[0], j[1]]); });
+  }
+  for (var i = 0; i < work.length; i++) {
+    var end = work[i][1];
+    var next = i + 1 < work.length ? work[i + 1][0] : now;
+    if (i + 1 < work.length && next - end >= ACT_RUN_GAP_MS) gaps.push([end, next]);
+    else distIn(end, next);
+  }
+  return { gaps: gaps, last: work[work.length - 1][1] };
+}
+
+/** ms from a number or an ISO string; NaN otherwise. */
+function actMs(v) {
+  return typeof v === 'number' ? v : v ? Date.parse(String(v)) : NaN;
+}
+
+/**
+ * The rows an answer writes after its resume at `after` (item 30a): each gap of `plan`
+ * (actRunPlan, or a bare [[start, end]] list) as a break and a resume; and when the last work
+ * ended 15 minutes or more before `now`, a break there and a resume now (he says he is working
+ * now). Rids carry the gap's start (seconds, base 36), so two answerers write the same rows once.
+ */
+function actRunSteps(id, plan, after, now) {
+  var gaps = Array.isArray(plan) ? plan : (plan && Array.isArray(plan.gaps) ? plan.gaps : []);
+  var last = Array.isArray(plan) || !plan ? NaN : actMs(plan.last);
+  var tail = isFinite(last) && last > after && now - last >= ACT_RUN_GAP_MS;
+  function key(t) { return Math.floor(t / 1000).toString(36); }
+  var out = [];
+  gaps.forEach(function (g) {
+    var a = actMs(g[0]);
+    var z = actMs(g[1]);
+    if (!(a > after) || !(z > a) || !(z <= now) || (tail && a >= last)) return;
+    out.push({ type: 'break', at: a, rid: 'nd-' + id + '-' + key(a), text: z - a >= ACT_RUN_GAP_MS ? 'Away' : 'Distraction' });
+    out.push({ type: 'resume', at: z, rid: 'ne-' + id + '-' + key(a), text: 'Resume (after a distraction — answered the check)' });
+  });
+  if (tail) {
+    out.push({ type: 'break', at: last, rid: 'nd-' + id + '-' + key(last), text: 'Away' });
+    out.push({ type: 'resume', at: now, rid: 'ne-' + id + '-' + key(last), text: 'Resume (working now — answered the check)' });
+  }
+  return out.sort(function (x, y) { return x.at - y.at; });
 }
 
 // What the Edge Function uses. The browser reads the globals directly.
@@ -993,5 +1058,7 @@ globalThis.ProBeingActivity = {
   ACT_LOSS_MS: ACT_LOSS_MS,
   actTier: actTier,
   actDistractWord: actDistractWord,
-  actRunSteps: actRunSteps
+  actRunSteps: actRunSteps,
+  actRunPlan: actRunPlan,
+  ACT_RUN_GAP_MS: ACT_RUN_GAP_MS
 };

@@ -411,10 +411,11 @@ function workRuns(blocks) {
   });
 }
 
-/** What a question keeps of its run (activity_nudges.run): minutes, the word, the break spans. */
-function runInfo(r) {
+/** What a question keeps (activity_nudges.run): the run's minutes and word, for the words; and
+ *  the plan its answer writes from (activity.js actRunPlan over every block since the run began). */
+function runInfo(r, plan) {
   return { work_min: Math.round(r.workMs / MIN_MS), dist_min: Math.round(r.distMs / MIN_MS), what: r.what,
-           gaps: r.gaps.map(function (g) { return [g[0], g[1]]; }) };
+           gaps: (plan ? plan.gaps : r.gaps).map(function (g) { return [g[0], g[1]]; }), last: plan && isFinite(plan.last) ? plan.last : null };
 }
 
 /**
@@ -492,7 +493,8 @@ function quietStep(d) {
       if (past < min) return;
       if (r.end >= now - USE_FRESH_MS) fresh = true;
       if (!best || r.start < best.start) {
-        best = { kind: kind, device_id: r.device_id, dev: r.dev, start: r.start, end: r.end, ref: ref, run: runInfo(r) };
+        best = { kind: kind, device_id: r.device_id, dev: r.dev, start: r.start, end: r.end, ref: ref,
+                 run: runInfo(r, A.actRunPlan(cutAll(from), r.start, now)) };
       }
     });
     return best ? Object.assign(best, { push: fresh }) : null;
@@ -548,12 +550,12 @@ function quietStep(d) {
     if (so !== null) add(findRun(so, ofrom, ofrom, START_MIN_MS, 'start', oref));
   }
 
-  // Item 30a: an open question's run grows while it waits; the breaks its answer writes follow it.
+  // Item 30a: an open question's plan follows every block since it began (later runs and long gaps too).
   nudges.forEach(function (n) {
     if (state[n.id] !== 'sent' || RUN_KINDS.indexOf(n.kind) === -1 || !isFinite(n.streak_start)) return;
     var r = workRuns(cutAll(n.streak_start))[0];
     if (!r || r.start >= n.streak_start + MIN_MS) return;
-    var info = runInfo(r);
+    var info = runInfo(r, A.actRunPlan(cutAll(n.streak_start), r.start, now));
     if (JSON.stringify(info) !== JSON.stringify(n.run || null)) out.runs.push({ id: n.id, run: info });
   });
 
@@ -591,7 +593,7 @@ function askAt(n) {
  *  n.run (item 30a): the run's distractions, each then a break and a resume. */
 function askRows(n, choice, now) {
   // Item 30a: the run's distractions as breaks, after the resume it starts with.
-  function pairs(from) { return A.actRunSteps(n.id, n.run && n.run.gaps, from, now); }
+  function pairs(from) { return A.actRunSteps(n.id, n.run, from, now); }
   if (n.kind === 'upwork') {
     var w = { type: 'wake', at: askAt(n), rid: 'nw-' + n.id, text: 'Wake up (I was awake — answered the check)' };
     return choice === 'start'
@@ -1075,14 +1077,16 @@ function blockOf(r: Record<string, any>, kinds?: Record<string, string>) {
 /** Item 30a: a question's run as stored (gaps as ISO pairs) and back (ms). */
 function runJson(r: Record<string, any>) {
   return { work_min: r.work_min, dist_min: r.dist_min, what: r.what,
-           gaps: (r.gaps || []).map((g: number[]) => [iso(g[0]), iso(g[1])]) };
+           gaps: (r.gaps || []).map((g: number[]) => [iso(g[0]), iso(g[1])]), last: isFinite(r.last) && r.last !== null ? iso(r.last) : null };
 }
 function runOf(v: unknown) {
   const r = v && typeof v === 'object' ? v as Record<string, any> : null;
   if (!r) return null;
   const gaps = (Array.isArray(r.gaps) ? r.gaps : []).map((g: unknown[]) => [ms(g && g[0]), ms(g && g[1])])
     .filter((g: number[]) => isFinite(g[0]) && isFinite(g[1]) && g[1] > g[0]);
-  return { work_min: Number(r.work_min) || 0, dist_min: Number(r.dist_min) || 0, what: String(r.what || 'distraction'), gaps };
+  const last = r.last ? ms(r.last) : NaN;
+  return { work_min: Number(r.work_min) || 0, dist_min: Number(r.dist_min) || 0, what: String(r.what || 'distraction'), gaps,
+           last: isFinite(last) ? last : null };
 }
 
 async function deviceKinds(sb: Sb, owner: string) {
@@ -1114,9 +1118,17 @@ async function runQuiet(sb: Sb, owner: string, now: number, set: Record<string, 
     .gte('ended_at', iso(now - QUIET_BACK_MS)).order('started_at', { ascending: true }).limit(5000))
     .map((r) => blockOf(r, kinds));
   const clipped = labelClip(blocks, await teachLabelled(sb, owner, now - QUIET_BACK_MS));
-  const cols = 'id, kind, device_id, streak_start, pushed_at, decided_at, state, ref_at, run';
-  const recent = must(await sb.from('activity_nudges').select(cols)
-    .eq('user_id', owner).in('kind', ASK_KINDS).gte('streak_start', iso(now - QUIET_BACK_MS)).limit(500));
+  // Item 30a: before its SQL there is no `run` column; the checks run without it.
+  let cols = 'id, kind, device_id, streak_start, pushed_at, decided_at, state, ref_at, run';
+  let probe = await sb.from('activity_nudges').select(cols).eq('user_id', owner).in('kind', ASK_KINDS)
+    .gte('streak_start', iso(now - QUIET_BACK_MS)).limit(500);
+  const hasRun = !(probe.error && /\brun\b|42703/.test(String(probe.error.message || '') + String(probe.error.code || '')));
+  if (!hasRun) {
+    cols = 'id, kind, device_id, streak_start, pushed_at, decided_at, state, ref_at';
+    probe = await sb.from('activity_nudges').select(cols).eq('user_id', owner).in('kind', ASK_KINDS)
+      .gte('streak_start', iso(now - QUIET_BACK_MS)).limit(500);
+  }
+  const recent = must(probe);
   // Item 26: a question still open, however old: it blocks a second one and is closed when he moves.
   const older = must(await sb.from('activity_nudges').select(cols)
     .eq('user_id', owner).in('kind', ASK_KINDS).eq('state', 'sent').limit(50));
@@ -1135,7 +1147,7 @@ async function runQuiet(sb: Sb, owner: string, now: number, set: Record<string, 
   }
   if (step.decide.length) await retireAsk(sb, owner, 'Noted');
   // Item 30a: an open question's run, as it grew.
-  for (const r of step.runs) {
+  for (const r of (hasRun ? step.runs : [])) {
     await sb.from('activity_nudges').update({ run: runJson(r.run) }).eq('id', r.id).eq('user_id', owner).eq('state', 'sent');
   }
   const anon = Deno.env.get('SUPABASE_ANON_KEY') || '';
@@ -1143,7 +1155,7 @@ async function runQuiet(sb: Sb, owner: string, now: number, set: Record<string, 
     const nonce = newNonce();
     const claim = await sb.from('activity_nudges').insert({
       user_id: owner, device_id: p.device_id, kind: p.kind, ref_at: iso(p.ref), streak_start: iso(p.start), what: p.dev,
-      pushed_at: iso(now), nonce_sha256: await sha256Hex(nonce), state: 'sent', run: p.run ? runJson(p.run) : null
+      pushed_at: iso(now), nonce_sha256: await sha256Hex(nonce), state: 'sent', ...(hasRun ? { run: p.run ? runJson(p.run) : null } : {})
     }).select('id');
     if (claim.error) continue;                       // another run claimed this one (one open per sleep or break)
     const id = String((claim.data || [])[0]?.id || '');
@@ -1548,6 +1560,16 @@ async function opClassify(sb: Sb, dev: Record<string, any>, body: Record<string,
 
 /** Item 23: I'm awake / Still asleep, Resume / It was a break; item 28: Start day / Just awake,
  *  Start / Not work. Open only while he is still in the state it asked about; late, "That one's over". */
+/** Item 30a fix: the plan an answer writes, from every device's blocks since the use began. */
+async function answerPlan(sb: Sb, owner: string, ask: Record<string, any>, choice: string, now: number) {
+  const kinds = await deviceKinds(sb, owner);
+  const blocks = must(await sb.from('activity_blocks').select('*').eq('user_id', owner).gte('ended_at', iso(ask.streak_start))
+    .order('started_at', { ascending: true }).limit(5000)).map((r) => blockOf(r, kinds));
+  const clipped = labelClip(blocks, await teachLabelled(sb, owner, ask.streak_start));
+  const from = ask.kind === 'upwork' && choice === 'start' ? askAt(ask) + 1000 : askAt(ask);
+  return A.actRunPlan(clipped, from, now);
+}
+
 async function answerAsk(sb: Sb, n: Record<string, any>, choice: string, set: Record<string, any>, now: number, from: string) {
   const ok = ASK_CHOICES[n.kind] || [];
   if (ok.indexOf(choice) === -1) return reply(400, { ok: false, error: 'not an answer to this check' });
@@ -1556,6 +1578,10 @@ async function answerAsk(sb: Sb, n: Record<string, any>, choice: string, set: Re
   const walk = A.actWalk(rows, now - READ_BACK_MS, now);
   const mine = rows.map((r) => ({ at: ms(r.at), type: r.type, rid: r.rid || '' }));
   if (n.state !== 'sent' || !askOpen(ask, walk, mine)) return reply(200, { ok: true, over: true, message: 'That one\'s over' });
+  // Item 30a fix: the breaks from every block known now, not the run as it was when last stored.
+  if (choice === 'start' || choice === 'resume') {
+    try { ask.run = await answerPlan(sb, n.user_id, ask, choice, now); } catch (_e) { /* the stored plan */ }
+  }
   for (const w of A.actSkipTies(askRows(ask, choice, now), rows)) await writeRow(sb, n.user_id, set.zone, w);
   const state = choice === 'start' ? 'started' : choice === 'resume' ? 'resumed' : choice === 'awake' ? 'awake'
               : NA_STATE[n.kind];

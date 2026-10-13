@@ -51,7 +51,7 @@ public final class PhoneRules {
             "rider64", "goland64", "rubymine64", "datagrip64", "rustrover64", "winword", "excel", "powerpnt", "outlook", "olk"};
     /** Item 30a: laptop helpers (work, project from the work around them). Never matched on the phone. */
     static final String[] DEFAULT_HELPER = {"windowsterminal", "wt", "cmd", "powershell", "pwsh", "wsl", "conhost", "notepad",
-            "notepad++", "explorer", "photos", "systemsettings", "applicationframehost", "localhost", "127.0.0.1"};
+            "notepad++", "explorer", "photos", "systemsettings", "localhost", "127.0.0.1"};
 
     static final String[] BROWSERS = {"chrome", "msedge", "brave", "firefox", "opera", "vivaldi"};
 

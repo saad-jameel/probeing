@@ -44,7 +44,7 @@ $ACT_DEFAULT_LISTS = @{
   work     = @('code', 'claude', 'idea64', 'pycharm64', 'webstorm64', 'phpstorm64', 'clion64', 'rider64', 'goland64',
                'rubymine64', 'datagrip64', 'rustrover64', 'winword', 'excel', 'powerpnt', 'outlook', 'olk')
   helpers  = @('windowsterminal', 'wt', 'cmd', 'powershell', 'pwsh', 'wsl', 'conhost', 'notepad', 'notepad++', 'explorer',
-               'photos', 'systemsettings', 'applicationframehost', 'localhost', '127.0.0.1')
+               'photos', 'systemsettings', 'localhost', '127.0.0.1')
 }
 $ACT_LIST_KEYS = @('distract', 'private', 'meeting', 'work', 'helpers')
 $ACT_MIN_BLOCK_MS = 60000
@@ -60,7 +60,7 @@ $ACT_BROWSERS = @('chrome', 'msedge', 'brave', 'firefox', 'opera', 'vivaldi')
 
 # Item 30a: ProBeing's own page or window is not activity (dropped like the lock screen).
 $ACT_NEUTRAL_SITES = @('saad-jameel.github.io/probeing')
-$ACT_NEUTRAL_TITLE = '^probeing($|[ \-\u2013\u2014|\u00b7:])'
+$ACT_NEUTRAL_TITLE = '^ProBeing( - ((Personal|Work|Profile [0-9]+) - )?(Google Chrome|Microsoft Edge|Mozilla Firefox|Brave|Opera|Vivaldi))?$'
 
 # Arrays come back whole (the comma), never unrolled to one item or to nothing.
 function Get-Prop($obj, [string]$name) {
@@ -168,10 +168,14 @@ function Act-AppName($app) {
 function Act-IsNeutral($seg) {
   $h = Act-Str (Get-Prop $seg 'host')
   if (-not $h) {
-    return ((Act-IsBrowser (Get-Prop $seg 'app')) -and ((Act-Str (Get-Prop $seg 'title')).Trim() -match $ACT_NEUTRAL_TITLE))
+    return ((Act-IsBrowser (Get-Prop $seg 'app')) -and ((Act-Str (Get-Prop $seg 'title')).Trim() -cmatch $ACT_NEUTRAL_TITLE))
   }
+  $path = Act-Str (Get-Prop $seg 'path')
   foreach ($e in $ACT_NEUTRAL_SITES) {
-    if (Act-EntryHits $e @{ app = ''; host = $h; path = (Act-Str (Get-Prop $seg 'path')); title = '' } $false) { return $true }
+    $slash = $e.IndexOf('/')
+    $sp = $e.Substring($slash)
+    # The app's own path, or below it: never /probeing-notes.
+    if ($h -ceq $e.Substring(0, $slash) -and ($path -ceq $sp -or $path.StartsWith($sp + '/', [System.StringComparison]::Ordinal))) { return $true }
   }
   return $false
 }
