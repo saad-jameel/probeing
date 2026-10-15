@@ -1173,6 +1173,40 @@
   </form>
 </dialog>
 
+<!-- Item 31d: the day-end check-in, after End day. Non-modal; every part may be left blank. -->
+<dialog id="checkinDlg" class="dlg checkin-dlg" aria-labelledby="checkinTitle">
+  <form method="dialog">
+    <h2 id="checkinTitle">How was today?</h2>
+    <p class="hint">Every part is optional.</p>
+    <p class="pick-head" id="checkinRatingHead">Rate your day</p>
+    <div id="checkinRating" class="pick-grid checkin-scale" role="group" aria-labelledby="checkinRatingHead"></div>
+    <label for="checkinComment">A word about it</label>
+    <input id="checkinComment" type="text" maxlength="300" autocomplete="off" placeholder="Optional">
+    <div id="checkinTasksWrap" hidden>
+      <p class="pick-head">Today's tasks</p>
+      <ul id="checkinTasks" class="checkin-tasks"></ul>
+    </div>
+    <p class="pick-head" id="checkinBlockersHead">What got in the way?</p>
+    <div id="checkinBlockers" class="pick-grid" role="group" aria-labelledby="checkinBlockersHead"></div>
+    <p class="pick-head" id="checkinEnergyHead">Energy</p>
+    <div id="checkinEnergy" class="pick-grid checkin-scale" role="group" aria-labelledby="checkinEnergyHead"></div>
+    <div id="checkinTopWrap" hidden>
+      <p class="pick-head">Tomorrow's top 3 (go into tomorrow's plan)</p>
+      <label for="checkinTop1">1st</label>
+      <select id="checkinTop1"></select>
+      <label for="checkinTop2">2nd</label>
+      <select id="checkinTop2"></select>
+      <label for="checkinTop3">3rd</label>
+      <select id="checkinTop3"></select>
+    </div>
+    <p id="checkinNote" class="hint"></p>
+    <div class="dlg-actions">
+      <button type="button" id="checkinSkip" class="btn">Skip</button>
+      <button type="button" id="checkinSave" class="btn btn-accent">Save</button>
+    </div>
+  </form>
+</dialog>
+
 <dialog id="helpDlg" class="dlg help-dlg" aria-labelledby="helpTitle">
   <div class="help-inner">
     <h2 id="helpTitle"></h2>

@@ -738,26 +738,9 @@ Deno.serve(async (req: Request): Promise<Response> => {
     // the night's last hours may be capped, but the day is not closed.
     const awake = await writeAwake(sb, owner, row, answeredMs);
 
-    /* The question went to every device, so the answer has to retire it on every
-     * device. A silent push is not an option — Chrome granted the subscription on
-     * the promise that each one shows something — so this REPLACES the question
-     * under the same tag instead of removing it. The device that answered is
-     * skipped; it closed its own notification already.
-     *
-     * After the update and never allowed to fail the call: a push service that is
-     * slow or down must not turn a recorded answer into a 500, which is exactly
-     * what sw.js reports to him as "could not record your answer". */
-    let retired = 0;
-    try {
-      const out = await pushAll(owner, JSON.stringify({
-        kind: 'answered',
-        title: 'ProBeing',
-        body: 'Answered on another device — your day is still running.'
-      }), 3600, String(ans.from || ''));
-      retired = Number(out.sent) || 0;
-    } catch (_e) { /* the answer is recorded; the tidying up is not worth a 500 */ }
-
-    return reply(200, { ok: true, answered: true, retired: retired, awake: awake });
+    /* Item 31c (16 Oct): no "Answered on another device" push any more. Android showed it as a
+     * new notification; each device's app now closes its own copy of the question when it opens. */
+    return reply(200, { ok: true, answered: true, awake: awake });
   }
 
   /* ─── 2. the test push ───────────────────────────────────────────────────
