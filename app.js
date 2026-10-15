@@ -16547,7 +16547,7 @@ function askStillOpen(n, rows, nowMs) {
 /* A distraction push he already answered by acting: a row of his after it (as activity-ingest answerOpen). */
 var ASK_RESPONSE_TYPES = { work: 1, voice: 1, resume: 1, 'break': 1, off: 1, sleep: 1, done: 1, subdone: 1, subdrop: 1,
                            substop: 1, pin: 1, unpin: 1, actanswer: 1 };
-var ASK_SERVER_RIDS = /^(ab|ar|aw|an|aq|qb|qr|kb|kr|as|nw|nr|ns|na|nd|ne)-|^wrapup-/;
+var ASK_SERVER_RIDS = /^(ab|ar|aw|an|aq|qb|qr|kb|kr|as|nw|nr|ns|na|nd|ne|jb|jr|jw)-|^wrapup-/;
 
 function distractActedOn(n) {
   var pushed = Date.parse(n.pushed_at);

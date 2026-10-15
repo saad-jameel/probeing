@@ -1676,7 +1676,9 @@ async function runJudge(sb: Sb, owner: string, now: number, set: Record<string, 
   // Every mode: a bare block (written after a break of his began, item 23) still says what the time was.
   const blocks = must(await sb.from('activity_blocks').select('*').eq('user_id', owner)
     .gte('ended_at', iso(from)).order('started_at', { ascending: true }).limit(5000)).map((r) => blockOf(r, kinds));
-  const clipped = A.actClip(labelClip(blocks, await teachLabelled(sb, owner, from)), domain);
+  // As the blocks are now: the judgement looks back (End day, the records), so a label given later counts
+  // from the start (unlike the live checks' labelClip, which never act on time before a label).
+  const clipped = A.actClip(blocks, domain);
   const extra = must(await sb.from('events').select('at, type, rid, detail').eq('user_id', owner)
     .in('type', ['prayer', 'actanswer']).gte('at', iso(from)).order('at', { ascending: true }).limit(3000));
   const prayers = extra.filter((r) => r.type === 'prayer').map((r) => ms(r.at));
@@ -1735,6 +1737,8 @@ async function runJudge(sb: Sb, owner: string, now: number, set: Record<string, 
       user_id: owner, device_id: null, kind: 'idle', ref_at: iso(c.start), streak_start: iso(c.start), span_end: iso(c.end),
       what: c.what, state: 'pending', pushed_at: c.push ? iso(now) : null
     }).select('id');
+    // A refusal other than "already asked" (23505) is said in the reply; the next run tries again.
+    if (claim.error && claim.error.code !== '23505') report.idleError = String(claim.error.message || claim.error.code);
     if (claim.error || !c.push) continue;
     const sent = await pushAll(sb, owner, JSON.stringify(idlePayload(c, offAt(c.start))),
                                { ttl: 3600, topic: 'probeing-watch-teach', urgency: 'normal' });

@@ -521,9 +521,9 @@ var ACT_AUTO_RID = /^ab-/;
 
 /* Rows written later for an earlier instant: the watcher's (ab-/ar-/aw-), the sheet's or
  * a question's (kb-/kr-/qb-/qr-), an awake or back-to-work answer's (nw-/nr-, item 23),
- * a Start answer's (ns-, item 28) and the distractions it writes as breaks (nd-/ne-, item 30a).
- * On a tie with his own row they go first, so his row decides. */
-var ACT_BACKDATED = /^(ab|ar|aw|kb|kr|qb|qr|nw|nr|ns|nd|ne)-/;
+ * a Start answer's (ns-, item 28), the distractions it writes as breaks (nd-/ne-, item 30a) and a
+ * judged gap's break and resume (jb-/jr-, item 31a). On a tie with his own row they go first, so his row decides. */
+var ACT_BACKDATED = /^(ab|ar|aw|kb|kr|qb|qr|nw|nr|ns|nd|ne|jb|jr)-/;
 
 /** Order of two rows at the same instant: backdated ones first, those by rid; else 0. */
 function actTie(x, y) {

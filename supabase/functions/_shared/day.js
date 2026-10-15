@@ -516,12 +516,12 @@ function userMap() {
 /* Stage 18b: rows written later for an earlier instant, by the laptop watcher (ab-/ar-/aw-)
  * or the catch-up sheet and its questions (kb-/kr-/qb-/qr-); item 23: an awake or
  * back-to-work answer (nw-/nr-); item 28: a Start answer (ns-); item 30a: its distractions
- * written as breaks (nd-/ne-). */
+ * written as breaks (nd-/ne-); item 31a: a judged gap's break and resume (jb-/jr-). */
 
 /** Two rows at the same instant: a backdated one replays first (two of them by rid), so his
  *  own row decides that instant whatever order the table returned them in; else 0. */
 function rowTie(x, y) {
-  var late = /^(ab|ar|aw|kb|kr|qb|qr|nw|nr|ns|nd|ne)-/;
+  var late = /^(ab|ar|aw|kb|kr|qb|qr|nw|nr|ns|nd|ne|jb|jr)-/;
   var bx = late.test(String((x && x.rid) || ''));
   var by = late.test(String((y && y.rid) || ''));
   if (bx !== by) return bx ? -1 : 1;
