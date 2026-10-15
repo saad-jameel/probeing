@@ -8615,6 +8615,20 @@ async function dayJudgement(day) {
            text: lines.length ? lines.map(function (l) { return '- ' + l; }).join('\n') : '- nothing was judged today' };
 }
 
+/** Item 31: the check-in's hook, fed from 31a's judgement. High/low focus losses, distraction breaks and
+ *  external distraction count against the day; a judged day with none of them counts for it. */
+async function dayJudgementExtra(day) {
+  var j = await dayJudgement(day);
+  if (!j || !j.summary) return null;
+  var s = j.summary;
+  function n(k) { return Number(s[k]) || 0; }
+  var poor = [];
+  if (n('highs') || n('lows')) poor.push('lost focus ' + (n('highs') + n('lows')) + ' time(s) (' + (n('highMin') + n('lowMin')) + ' min)');
+  if (n('dbreaks')) poor.push(n('dbreaks') + ' distraction break(s) (' + n('dbreakMin') + ' min)');
+  if (n('externals')) poor.push('chit-chat that ran long (' + n('externalMin') + ' min)');
+  return { good: poor.length ? [] : ['focus held'], poor: poor };
+}
+
 /** The focus rows that start in [startMs, endMs); null when the table is not there yet. */
 async function readFocus(startMs, endMs) {
   var res = await sb.from('activity_focus').select('tier,start_at,minutes,what,day')
@@ -8806,7 +8820,7 @@ function cutText(text, max) {
  * `f`: {workedMin, tasksDone, plannedLeft, focus}. `extra` is the hook for more figures
  * (31a/31b's focus losses, idle reasons): {good: ['...'], poor: ['...']}, each phrase one point.
  */
-function dayJudgement(f, extra) {
+function checkinJudgement(f, extra) {
   f = f || {};
   var good = [];
   var poor = [];
@@ -9129,7 +9143,7 @@ function checkinFigures(c, judgement) {
     f.focus = { losses: c.focus.losses, lossMin: c.focus.lossMin, slips: c.focus.slips, slipMin: c.focus.slipMin,
                 longestMin: c.focus.longestMin };
   }
-  var j = dayJudgement(f, judgement);
+  var j = checkinJudgement(f, judgement);
   f.verdict = j.verdict;
   f.good = j.good;
   f.poor = j.poor;
