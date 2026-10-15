@@ -8966,7 +8966,7 @@ function prefillCheckin(c, row) {
   $('checkinNote').textContent = 'Saved earlier today. Change anything and Save again.';
 }
 
-function pickButton(text, on, label, fn) {
+function checkinPick(text, on, label, fn) {
   var b = document.createElement('button');
   b.type = 'button';
   b.className = 'pick';
@@ -8989,14 +8989,14 @@ function paintCheckin() {
     var box = $(s[0]);
     box.textContent = '';
     [1, 2, 3, 4, 5].forEach(function (n) {
-      box.appendChild(pickButton(String(n), c[s[1]] === n, s[2] + n + ' of 5', function () { c[s[1]] = c[s[1]] === n ? 0 : n; }));
+      box.appendChild(checkinPick(String(n), c[s[1]] === n, s[2] + n + ' of 5', function () { c[s[1]] = c[s[1]] === n ? 0 : n; }));
     });
   });
   var bl = $('checkinBlockers');
   bl.textContent = '';
   CHECKIN_BLOCKERS.forEach(function (b) {
     var on = c.blockers.indexOf(b[0]) !== -1;
-    bl.appendChild(pickButton(b[1], on, '', function () {
+    bl.appendChild(checkinPick(b[1], on, '', function () {
       if (on) c.blockers = c.blockers.filter(function (x) { return x !== b[0]; });
       else if (b[0] === 'nothing') c.blockers = ['nothing'];          // "Nothing" stands alone
       else c.blockers = c.blockers.filter(function (x) { return x !== 'nothing'; }).concat([b[0]]);
@@ -9015,7 +9015,7 @@ function paintCheckin() {
     var acts = document.createElement('div');
     acts.className = 'pick-grid';
     CHECKIN_ANSWERS.forEach(function (a) {
-      var b = pickButton(a[1], c.answers[id] === a[0], a[1] + ': ' + title, function () {
+      var b = checkinPick(a[1], c.answers[id] === a[0], a[1] + ': ' + title, function () {
         if (c.answers[id] === a[0]) delete c.answers[id]; else c.answers[id] = a[0];
       });
       // Done is the Done button's: only where that button would be (no open items).
