@@ -1275,12 +1275,6 @@ function fnUrl(req: Request): string {
   return String(Deno.env.get('SUPABASE_URL') || new URL(req.url).origin).replace(/\/+$/, '') + '/functions/v1/activity-ingest';
 }
 
-/** Item 23: retire an answered or closed question on every device, quietly. */
-async function retireAsk(sb: Sb, owner: string, title: string, skip?: string) {
-  await pushAll(sb, owner, JSON.stringify({ kind: 'watch-ask-answered', tag: 'probeing-watch-ask', title, body: '' }),
-                { ttl: 300, topic: 'probeing-watch-ask', urgency: 'normal' }, skip || '');
-}
-
 /** Item 23: the awake and back-to-work checks, and the disturbed nights, after an ingest. */
 async function runQuiet(sb: Sb, owner: string, now: number, set: Record<string, any>, req: Request) {
   const rows = await readRows(sb, owner, now - READ_BACK_MS);
@@ -1320,7 +1314,7 @@ async function runQuiet(sb: Sb, owner: string, now: number, set: Record<string, 
   for (const d of step.decide) {
     await sb.from('activity_nudges').update({ state: d.state, decided_at: iso(now) }).eq('id', d.id).eq('user_id', owner);
   }
-  if (step.decide.length) await retireAsk(sb, owner, 'Noted');
+  // Item 31c: a closed question is not retired by a push ("Noted" showed as a new notification); the app closes it.
   // Item 30a: an open question's run, as it grew.
   for (const r of (hasRun ? step.runs : [])) {
     await sb.from('activity_nudges').update({ run: runJson(r.run) }).eq('id', r.id).eq('user_id', owner).eq('state', 'sent');
@@ -1806,7 +1800,7 @@ async function answerPlan(sb: Sb, owner: string, ask: Record<string, any>, choic
   return A.actRunPlan(clipped, from, now);
 }
 
-async function answerAsk(sb: Sb, n: Record<string, any>, choice: string, set: Record<string, any>, now: number, from: string) {
+async function answerAsk(sb: Sb, n: Record<string, any>, choice: string, set: Record<string, any>, now: number) {
   const ok = ASK_CHOICES[n.kind] || [];
   if (ok.indexOf(choice) === -1) return reply(400, { ok: false, error: 'not an answer to this check' });
   const ask = { id: n.id, kind: n.kind, streak_start: ms(n.streak_start), ref_at: ms(n.ref_at), run: runOf(n.run) };
@@ -1824,9 +1818,7 @@ async function answerAsk(sb: Sb, n: Record<string, any>, choice: string, set: Re
   const state = choice === 'start' ? 'started' : choice === 'resume' ? 'resumed' : choice === 'awake' ? 'awake'
               : NA_STATE[n.kind];
   await sb.from('activity_nudges').update({ state, decided_at: iso(now) }).eq('id', n.id);
-  const at = clock12(askAt(ask), set.offset);
-  await retireAsk(sb, n.user_id, choice === 'awake' ? 'Awake from ' + at : choice === 'resume' ? 'Back at work from ' + at
-                                 : choice === 'start' ? 'Working from ' + at : 'Noted', from);
+  // Item 31c: no "Noted" push to the other devices; each app closes its copy when it next opens.
   return reply(200, { ok: true, state });
 }
 
@@ -1844,7 +1836,7 @@ async function opAnswer(sb: Sb, ans: Record<string, any>, now: number) {
   const pinned = (Deno.env.get('ALLOWED_USER_ID') || '').trim();
   if (pinned && pinned !== n.user_id) return reply(403, { ok: false, error: 'not this account' });
   const set = await readSettings(sb, n.user_id, now);
-  if (ASK_KINDS.indexOf(n.kind) !== -1) return await answerAsk(sb, n, said, set, now, String(ans.from || ''));
+  if (ASK_KINDS.indexOf(n.kind) !== -1) return await answerAsk(sb, n, said, set, now);
   const choice = said === 'break' || said === 'working' ? said : '';
   if (!choice) return reply(400, { ok: false, error: 'not an answer to this check' });
   const nudge = { id: n.id, state: n.state, streak_start: ms(n.streak_start), span_end: ms(n.span_end), pushed_at: ms(n.pushed_at) };
@@ -1854,10 +1846,7 @@ async function opAnswer(sb: Sb, ans: Record<string, any>, now: number) {
   }
   for (const w of A.actSkipTies(answerRows(nudge, choice, now), rows)) await writeRow(sb, n.user_id, set.zone, w);
   await sb.from('activity_nudges').update({ state: choice, decided_at: iso(now) }).eq('id', id);
-  // Retire it on the other devices, quietly, under the same tag.
-  await pushAll(sb, n.user_id, JSON.stringify({ kind: 'distract-answered', tag: 'probeing-distract',
-    title: choice === 'break' ? 'Break from ' + clock12(nudge.streak_start, set.offset) : 'Noted: you were working', body: '' }),
-    { ttl: 300, topic: 'probeing-distract', urgency: 'normal' }, String(ans.from || ''));
+  // Item 31c: no "Noted" push to the other devices; each app closes its copy when it next opens.
   return reply(200, { ok: true, state: choice });
 }
 

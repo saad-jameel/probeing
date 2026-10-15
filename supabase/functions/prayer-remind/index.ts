@@ -3,9 +3,9 @@
 // For each of the five prayers, at his saved place: a push when its time begins,
 // and, while it is not logged, pushes 60, 30 and 15 minutes before its time ends
 // (Fajr -> sunrise, Dhuhr -> Asr, Asr -> Maghrib, Maghrib -> Isha, Isha -> next
-// Fajr). Each is sent at most once, through reminders_sent. When a reminded
-// prayer is logged, a quiet push under the same tag replaces the reminder on
-// every device.
+// Fajr). Each is sent at most once, through reminders_sent. Item 31c (16 Oct): a
+// logged prayer's reminder is closed by the app itself; no "<prayer> logged" push
+// any more (Android showed each one as a new notification).
 //
 // Its own function rather than a branch of wrapup: wrapup is live and stays untouched.
 // pg_cron calls it every minute, and an insert trigger when a prayer is logged
@@ -146,22 +146,6 @@ function dueReminders(list, now, logged, sent, on) {
   });
 }
 
-/** Prayers to clear from the shade: logged, reminded at least once, not yet cleared. */
-function clearsDue(list, logged, sent, on) {
-  if (on === false) return [];
-  var out = [];
-  list.forEach(function (r) {
-    if (r.left !== 0) return;                            // one per prayer and day
-    if (!(logged[r.day] && logged[r.day][r.prayer])) return;
-    if (sent[sentKey(r.prayer + '-clear', r.day)]) return;
-    var reminded = list.some(function (x) {
-      return x.day === r.day && x.prayer === r.prayer && sent[sentKey(x.kind, x.day)];
-    });
-    if (reminded) out.push({ kind: r.prayer + '-clear', day: r.day, prayer: r.prayer, end: r.end });
-  });
-  return out;
-}
-
 /** "6:12 pm" at `offsetMin`. */
 function clock12(ms, offsetMin) {
   var mins = Math.floor(ms / 60000) + offsetMin;
@@ -174,10 +158,6 @@ function clock12(ms, offsetMin) {
 /** The push's JSON. sw.js shows it under `tag`, one line per prayer. */
 function reminderPayload(r, offsetMin) {
   var tag = 'probeing-prayer-' + r.prayer;
-  if (/-clear$/.test(r.kind)) {
-    return { kind: 'prayer-logged', tag: tag, title: r.prayer + ' logged',
-             body: 'No more reminders for it.' };
-  }
   return { kind: 'prayer', tag: tag,
            title: r.left ? r.prayer + ': ' + r.left + ' min left — not logged yet'
                          : r.prayer + ' has begun',
@@ -651,24 +631,26 @@ Deno.serve(async (req: Request): Promise<Response> => {
     if (isNaN(t)) return reply(400, { ok: false, error: 'now is not a date' });
     now = t;
   }
-  // The insert trigger's call: a prayer was just logged, so look for reminders to clear.
-  const logged = Boolean(sent && sent.logged);
+  // The insert trigger's call (a prayer was just logged). Item 31c: the app closes the reminder
+  // itself, so there is nothing to send; the trigger can be dropped later.
+  if (sent && sent.logged) {
+    return reply(200, { ok: true, act: 'nothing', why: 'a logged prayer\'s reminder is closed by the app',
+                        tasks: { act: 'skipped' }, plan: { act: 'skipped' } });
+  }
 
   const sb = admin();
   const place = await readSettings(sb, owner, now);
   // Settings unreadable: skip this minute; the next run tries again.
   if ('error' in place) return reply(503, { ok: false, act: 'skipped', error: place.error });
-  // Deadlines first and on their own toggle; the prayer insert trigger's call skips them.
-  const tasks = logged ? { act: 'skipped' } : place.tasksOn
-    ? await remindTasks(sb, owner, now, place.offset) : { act: 'off' };
-  // Stage 17: likewise on its own toggle and skipped by the insert trigger's call.
-  const plan = logged ? { act: 'skipped' }
-    : await remindPlan(sb, owner, now, place.offset, place.planOn, place.planTime);
+  // Deadlines first and on their own toggle.
+  const tasks = place.tasksOn ? await remindTasks(sb, owner, now, place.offset) : { act: 'off' };
+  // Stage 17: likewise on its own toggle.
+  const plan = await remindPlan(sb, owner, now, place.offset, place.planOn, place.planTime);
   if (!place.on) return reply(200, { ok: true, act: 'off', why: 'prayer reminders are turned off', tasks, plan });
 
   const list = remindersAround(now, place.offset, (d: unknown) => Day.prayerTimes(d, place.offset));
   // The cheap gate: nothing could be due, so nothing more is read.
-  if (!logged && dueReminders(list, now, {}, {}, true).length === 0) {
+  if (dueReminders(list, now, {}, {}, true).length === 0) {
     return reply(200, { ok: true, act: 'nothing', zone: place.zone, tasks, plan });
   }
 
@@ -688,8 +670,7 @@ Deno.serve(async (req: Request): Promise<Response> => {
     already[sentKey(r.kind, String(r.day).slice(0, 10))] = true;
   });
 
-  const todo: Reminder[] = (dueReminders(list, now, done, already, place.on) as Reminder[])
-    .concat(clearsDue(list, done, already, place.on) as Reminder[]);
+  const todo: Reminder[] = dueReminders(list, now, done, already, place.on) as Reminder[];
   const report: Record<string, unknown>[] = [];
   for (const r of todo) {
     // Claimed before sending: a second run in the same minute hits the primary key and skips.
@@ -699,15 +680,14 @@ Deno.serve(async (req: Request): Promise<Response> => {
         ? 'already sent' : claim.error.message });
       continue;
     }
-    const clear = /-clear$/.test(r.kind);
     const out = await pushAll(sb, owner, JSON.stringify(reminderPayload(r, place.offset)), {
-      // A reminder is stale once the prayer's time is over; a clear, after an hour.
-      ttl: clear ? 3600 : Math.max(60, Math.floor((r.end - now) / 1000)),
+      // A reminder is stale once the prayer's time is over.
+      ttl: Math.max(60, Math.floor((r.end - now) / 1000)),
       topic: 'probeing-prayer-' + r.prayer,
-      urgency: clear ? 'normal' : 'high'
+      urgency: 'high'
     });
-    // Delivered nowhere: release the claim so the next minute tries again. Clears are best effort.
-    if (!out.sent && !clear) {
+    // Delivered nowhere: release the claim so the next minute tries again.
+    if (!out.sent) {
       await sb.from('reminders_sent').delete()
         .eq('user_id', owner).eq('kind', r.kind).eq('day', r.day);
     }

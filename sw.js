@@ -63,8 +63,9 @@
  * v38 (item 29): a work-apps list, and "What is <app>?" (a push that opens the sheet).
  * v39 (item 30c): Settings in three tabs; one panel per list with Add and ×.
  * v40 (item 30a): work runs, helpers, the focus card.
- * v41 (item 30b): auto-detected Working on (Accept / Reject on Home); Desktops -> project in Settings. */
-var CACHE = 'probeing-shell-v41';
+ * v41 (item 30b): auto-detected Working on (Accept / Reject on Home); Desktops -> project in Settings.
+ * v42 (item 31c/d): no "That one's over" notification (said in the app); the day-end check-in. */
+var CACHE = 'probeing-shell-v42';
 var SHELL = [
   './',
   'index.html',
@@ -145,14 +146,15 @@ function pushData(event) {
 }
 
 /* Prayer reminders (prayer-remind): one line per prayer, each replacing the last.
- * 'prayer-logged' is the quiet replacement once that prayer is logged. */
+ * Item 31c: the app closes a logged prayer's reminder. 'prayer-logged', and the '-answered' kinds
+ * below, are only shown for a push from a function deployed before item 31c (every push must show). */
 var PRAYER_TAG = /^probeing-prayer-[A-Za-z]+$/;
 // Deadline reminders (prayer-remind's task part): one line per task.
 var TASK_TAG = /^probeing-task-[A-Za-z0-9-]{1,64}$/;
 var PLAN_TAG = 'probeing-plan';
-// Stage 18b: the distraction push (activity-ingest), and its quiet "answered" replacement.
+// Stage 18b: the distraction push (activity-ingest).
 var DISTRACT_TAG = 'probeing-distract';
-// Item 23: "awake?" and "back to work?" (activity-ingest), one at a time, and their quiet replacement.
+// Item 23: "awake?" and "back to work?" (activity-ingest), one at a time.
 // Item 28: "Up and working?" and "start?".
 var ASK_TAG = 'probeing-watch-ask';
 var ASK_ACTIONS = {
@@ -267,7 +269,8 @@ self.addEventListener('push', function (event) {
    * It arrives as an ordinary push under the SAME tag, so it replaces the
    * question rather than stacking under it — replaced, not removed, because of
    * the userVisibleOnly promise above. Quiet, too: answering on the phone must
-   * not buzz the laptop a second time to tell it the matter is settled. */
+   * not buzz the laptop a second time to tell it the matter is settled.
+   * Item 31c: wrapup no longer sends it (the app closes an answered check); kept for an older wrapup. */
   var answered = data.kind === 'answered';
 
   var options = {
@@ -386,6 +389,19 @@ function showApp(openUrl) {
     });
 }
 
+/* Item 31c: a late button press is said in the app, if one is open, not as a new notification
+ * (Android showed each as a new one). Nothing was changed, so nothing is lost when none is open. */
+var OVER_WORDS = 'That one\'s over — nothing was changed.';
+
+function tellApp(words) {
+  var scope = self.registration.scope;
+  return self.clients.matchAll({ type: 'window', includeUncontrolled: true }).then(function (list) {
+    list.forEach(function (c) {
+      if (String(c.url).indexOf(scope) === 0 && typeof c.postMessage === 'function') c.postMessage({ note: words });
+    });
+  }).catch(function () { /* nobody to tell */ });
+}
+
 self.addEventListener('notificationclick', function (event) {
   /* Tested first and returned from, so nothing below runs for it. The glance is
    * deliberately NOT closed: it is a readout, and opening the app from it should
@@ -417,12 +433,7 @@ self.addEventListener('notificationclick', function (event) {
       return;
     }
     event.waitUntil(answerDistract(nd, choice).then(function (reply) {
-      if (reply && reply.ok && reply.over) {
-        return self.registration.showNotification('ProBeing', {
-          body: 'That one\'s over — nothing was changed.', icon: 'icons/icon-192.png', badge: 'icons/favicon-32.png',
-          tag: DISTRACT_TAG, silent: true
-        });
-      }
+      if (reply && reply.ok && reply.over) return tellApp(OVER_WORDS);
       if (reply && reply.ok) return;
       return self.registration.showNotification('ProBeing', {
         body: 'Could not record your answer. Open ProBeing to answer it there.',
@@ -444,12 +455,7 @@ self.addEventListener('notificationclick', function (event) {
       return;
     }
     event.waitUntil(answerDistract(ad, pick).then(function (reply) {
-      if (reply && reply.ok && reply.over) {
-        return self.registration.showNotification('ProBeing', {
-          body: 'That one\'s over — nothing was changed.', icon: 'icons/icon-192.png', badge: 'icons/favicon-32.png',
-          tag: ASK_TAG, silent: true
-        });
-      }
+      if (reply && reply.ok && reply.over) return tellApp(OVER_WORDS);
       if (reply && reply.ok) return;
       return self.registration.showNotification('ProBeing', {
         body: 'Could not record your answer. Open ProBeing to answer it there.',

@@ -1932,3 +1932,51 @@ alter table public.activity_nudges add constraint activity_nudges_state_check ch
 
 create unique index if not exists activity_nudges_open_auto_idx on public.activity_nudges (user_id)
   where kind = 'auto' and state = 'sent';
+
+-- ============================================================ item 31cd (16 Oct)
+-- 31c: no schema change. prayer-remind, activity-ingest and wrapup stop pushing "<prayer> logged",
+-- "Noted" and "Answered on another device"; the app closes notifications that are over. The prayer
+-- insert trigger still calls prayer-remind, which now just answers 'nothing'.
+-- 31d: the day-end check-in after End day. Append-only, one row per Save; the newest (at) per day
+-- wins, so a second Save that day, or the other device's, changes the answer without an update.
+-- Written through the app's outbox with a rid fixed before the first send, so a resend is a no-op
+-- on (user_id, rid). figures: the day's numbers and their judgement, worked out by the app. Safe to
+-- run twice.
+create table if not exists public.day_reflections (
+  id         uuid        primary key default gen_random_uuid(),
+  user_id    uuid        not null default auth.uid() references auth.users on delete cascade,
+  rid        text        not null check (char_length(rid) between 1 and 80),
+  day        date        not null,
+  at         timestamptz not null default now(),
+  rating     smallint    check (rating between 1 and 5),
+  energy     smallint    check (energy between 1 and 5),
+  comment    text        not null default '' check (char_length(comment) <= 300),
+  blockers   text[]      not null default '{}'
+             check (blockers <@ array['tired', 'interruptions', 'unclear', 'meetings', 'phone', 'nothing']::text[]),
+  tasks      jsonb       not null default '[]'
+             check (jsonb_typeof(tasks) = 'array' and jsonb_array_length(tasks) <= 40 and octet_length(tasks::text) <= 16000),
+  tomorrow   jsonb       not null default '[]'
+             check (jsonb_typeof(tomorrow) = 'array' and jsonb_array_length(tomorrow) <= 3),
+  figures    jsonb       check (figures is null or (jsonb_typeof(figures) = 'object' and octet_length(figures::text) <= 4000)),
+  created_at timestamptz not null default now(),
+  constraint day_reflections_rid_key unique (user_id, rid)
+);
+
+create index if not exists day_reflections_user_day_idx on public.day_reflections (user_id, day);
+
+alter table public.day_reflections enable row level security;
+
+do $$ begin
+  create policy "read own reflections" on public.day_reflections
+    for select using (auth.uid() = user_id);
+exception when duplicate_object then null; end $$;
+
+do $$ begin
+  create policy "insert own reflections" on public.day_reflections
+    for insert with check (auth.uid() = user_id);
+exception when duplicate_object then null; end $$;
+
+revoke all on table public.day_reflections from anon, authenticated;
+grant select on public.day_reflections to authenticated;
+grant insert (user_id, rid, day, at, rating, energy, comment, blockers, tasks, tomorrow, figures)
+  on public.day_reflections to authenticated;
