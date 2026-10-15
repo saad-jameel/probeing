@@ -63,8 +63,9 @@
  * v38 (item 29): a work-apps list, and "What is <app>?" (a push that opens the sheet).
  * v39 (item 30c): Settings in three tabs; one panel per list with Add and ×.
  * v40 (item 30a): work runs, helpers, the focus card.
- * v41 (item 30b): auto-detected Working on (Accept / Reject on Home); Desktops -> project in Settings. */
-var CACHE = 'probeing-shell-v41';
+ * v41 (item 30b): auto-detected Working on (Accept / Reject on Home); Desktops -> project in Settings.
+ * v42 (item 31ab): the catch-up sheet grouped by desktop, idle "Why?", the day's judgement in Review. */
+var CACHE = 'probeing-shell-v42';
 var SHELL = [
   './',
   'index.html',

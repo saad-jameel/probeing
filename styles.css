@@ -1067,7 +1067,18 @@ a.btn[hidden], a.link-btn[hidden] { display: none; }
 .catchup-acts .cat-pick { flex: 1 1 60%; min-width: 0; }
 .catchup-row.catchup-break .catchup-what { text-decoration: line-through; color: var(--muted); }
 .catchup-ask .dlg-actions { justify-content: flex-start; margin-top: 8px; }
-/* Looks right stays in reach however long the list is. */
+/* Item 31b: lines grouped by desktop; a line's name opens its info box. */
+.catchup-deskhead { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 12px; }
+.catchup-deskhead[hidden] { display: none; }
+.catchup-deskname { font-weight: 700; flex: 1 1 100%; overflow-wrap: anywhere; }
+.catchup-lines { list-style: none; margin: 4px 0 0; padding: 0 0 0 4px; }
+.catchup-lines > li { padding: 6px 0; }
+.catchup-lines > li p { margin: 0; overflow-wrap: anywhere; }
+.catchup-what.link-btn { padding: 0; text-align: left; color: inherit; }
+.catchup-rec { color: var(--muted); font-size: 13px; }
+.catchup-info { margin: 4px 0 0 24px; color: var(--muted); font-size: 13px; }
+.catchup-row.catchup-done { opacity: 0.6; }
+/* Accept all stays in reach however long the list is. */
 .catchup-dlg form > .dlg-actions { position: sticky; bottom: 0; background: var(--panel); padding: 10px 0 2px; margin-top: 10px; }
 #watchPairLine { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 12px; }
 /* Stage 18c: the whole phone code shows on a 360 px screen. */

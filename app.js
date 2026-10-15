@@ -8502,35 +8502,70 @@ async function reportActivityFigures(rows, windows) {
  * (YouTube, X... or "distraction"). One Gemini call a day turns a day's figures into a line or
  * two of advice, kept in focus_advice so every device shows the same and none asks twice. */
 
-/** activity_focus rows -> {losses, lossMin, slips, slipMin, longestMin, top}, or null with none. */
+/** activity_focus rows -> the figures (activity.js actJudgeSummary: item 30a's losses, lossMin, slips,
+ *  slipMin, longestMin, top, and item 31a's rests, breaks, focus lost, idle reasons...), or null with none. */
 function focusSummary(rows) {
-  var s = { losses: 0, lossMin: 0, slips: 0, slipMin: 0, longestMin: 0, top: '' };
-  var by = userMap();
-  var any = false;
-  (rows || []).forEach(function (r) {
-    var m = Math.round(Number(r && r.minutes));
-    if (!(m > 0)) return;
-    any = true;
-    if (r.tier === 'stretch') { s.longestMin = Math.max(s.longestMin, m); return; }
-    if (r.tier === 'loss') { s.losses += 1; s.lossMin += m; }
-    else if (r.tier === 'slip') { s.slips += 1; s.slipMin += m; }
-    else return;
-    var w = String(r.what || 'distraction');
-    by[w] = (by[w] || 0) + m;
-  });
-  s.top = Object.keys(by).sort(function (x, y) { return (by[y] - by[x]) || (x < y ? -1 : 1); })[0] || '';
-  return any ? s : null;
+  return actJudgeSummary(rows);
 }
 
-/** "Focus: 2 focus losses · 23 min lost (3 slips among them) · longest unbroken stretch 1h 10m · most: YouTube"; '' with none. */
+function minText(m) {
+  m = Math.round(Number(m) || 0);
+  return m < 60 ? m + ' min' : reviewDuration(m * 60000);
+}
+
+/** The judgement in short lines ("2 slips, 7 min", "lost focus: 1 high (40 min)"...); [] with none. A report
+ *  saved before item 31a has only the first six figures: the rest read as none. */
+function focusBits(s) {
+  if (!s || typeof s !== 'object') return [];
+  function n(k) { return Number(s[k]) || 0; }
+  function many(c, one, more) { return c + ' ' + (c === 1 ? one : more); }
+  var bits = [];
+  if (n('slips')) bits.push(many(n('slips'), 'slip', 'slips') + ' (' + minText(n('slipMin')) + ')');
+  if (n('losses')) bits.push(many(n('losses'), 'distraction', 'distractions') + ' (' + minText(n('lossMin')) + ')');
+  if (n('dbreaks')) bits.push(many(n('dbreaks'), 'distraction break', 'distraction breaks') + ' (' + minText(n('dbreakMin')) + ')');
+  if (n('highs') || n('lows')) {
+    var lost = [];
+    if (n('highs')) lost.push(n('highs') + ' high (' + minText(n('highMin')) + ')');
+    if (n('lows')) lost.push(n('lows') + ' low (' + minText(n('lowMin')) + ')');
+    bits.push('lost focus: ' + lost.join(', '));
+  }
+  if (n('rests')) bits.push(many(n('rests'), 'earned rest', 'earned rests') + ' (' + minText(n('restMin')) + ')');
+  if (n('deserved')) {
+    bits.push(many(n('deserved'), 'deserved break', 'deserved breaks') + ' (' + minText(n('deservedMin')) + ')' +
+              (n('deservedLong') ? ', ' + n('deservedLong') + ' ran 20-25 min (keep them under 20)' : ''));
+  }
+  var by = s.idleBy && typeof s.idleBy === 'object' ? s.idleBy : {};
+  var why = Object.keys(by).sort(function (x, y) { return (by[y] - by[x]) || (x < y ? -1 : 1); })
+    .map(function (k) { return actIdleWord(k).toLowerCase() + ' ' + minText(by[k]); });
+  if (n('idles')) bits.push('away from the screen ' + minText(n('idleMin')) + (why.length ? ' (' + why.join(', ') + ')' : ''));
+  if (n('aways')) bits.push('unclear browsing ' + minText(n('awayMin')));
+  if (n('externals')) bits.push('chit-chat that ran long ' + minText(n('externalMin')));
+  if (n('longestMin')) bits.push('longest unbroken stretch ' + reviewDuration(n('longestMin') * 60000));
+  var distracted = n('slipMin') + n('lossMin') + n('dbreakMin');
+  if (s.top && distracted) bits.push('most: ' + String(s.top));
+  return bits;
+}
+
+/** "Focus: 2 slips (7 min) · 1 distraction (9 min) · ... · most: YouTube"; '' with none. */
 function focusLine(s) {
-  if (!s || typeof s !== 'object') return '';
-  var lost = Number(s.lossMin || 0) + Number(s.slipMin || 0);
-  var bits = [Number(s.losses || 0) + ' focus loss' + (Number(s.losses) === 1 ? '' : 'es')];
-  if (lost) bits.push(lost + ' min lost' + (Number(s.slips) ? ' (' + s.slips + ' slip' + (Number(s.slips) === 1 ? '' : 's') + ' among them)' : ''));
-  if (Number(s.longestMin)) bits.push('longest unbroken stretch ' + reviewDuration(Number(s.longestMin) * 60000));
-  if (s.top && lost) bits.push('most: ' + String(s.top));
-  return 'Focus: ' + bits.join(' · ');
+  var bits = focusBits(s);
+  return bits.length ? 'Focus: ' + bits.join(' · ') : '';
+}
+
+/**
+ * Item 31a, for the day-end card and its one Gemini call (item 31d owns both): one counter day's
+ * judgement ('YYYY-MM-DD'), from activity-ingest's records. {day, summary (focusSummary, or null when
+ * nothing was judged), lines (focusBits: plain words, figures only), text (the lines for a prompt: no
+ * app, site, title or name, only words like YouTube and the idle reasons)}. Null when the table is
+ * not there yet; a failed read throws.
+ */
+async function dayJudgement(day) {
+  var rows = await readFocusDay(day);
+  if (rows === null) return null;
+  var s = focusSummary(rows);
+  var lines = focusBits(s);
+  return { day: day, summary: s, lines: lines,
+           text: lines.length ? lines.map(function (l) { return '- ' + l; }).join('\n') : '- nothing was judged today' };
 }
 
 /** The focus rows that start in [startMs, endMs); null when the table is not there yet. */
@@ -16230,6 +16265,11 @@ function catchupAsks(nudges, rids, since) {
   var out = [];
   (nudges || []).forEach(function (n) {
     var id = n.id;
+    // Item 31b: "Why?" about an idle gap, until answered (readIdleAsks leaves out the answered ones).
+    if (n.kind === 'idle') {
+      if (n.state === 'pending' || n.state === 'applied') out.push({ kind: 'idle', n: n });
+      return;
+    }
     // Item 29: "what is this app?" is open until the server sees the name sorted.
     if (n.kind === 'teach') {
       if (n.state === 'asking') out.push({ kind: 'teach', n: n });
@@ -16257,12 +16297,15 @@ async function readCatchUp() {
     .filter(function (t) { return isFinite(t); });
   var since = Math.max(now - CATCHUP_BACK_MS, seen.length ? Math.max.apply(null, seen) : -Infinity);
   // Only fully watched blocks: asleep or on a break they are bare, and not his to sort (item 23).
-  var res = await sb.from('activity_blocks').select('id,device_id,started_at,ended_at,app,domain,category,project,rule_key')
+  // '*': a database without item 30b's desktop column still shows the sheet (one "No desktop" group).
+  var res = await sb.from('activity_blocks').select('*')
     .eq('mode', 'work').gte('ended_at', new Date(since).toISOString()).order('started_at', { ascending: true }).limit(1000);
   if (res.error) throw errorFrom(res.error);
+  var kinds = await readDeviceKinds();
   var blocks = (res.data || []).map(function (r) {
     return { id: r.id, start: Math.max(Date.parse(r.started_at), since), end: Date.parse(r.ended_at), app: r.app || '',
-             domain: r.domain || '', category: r.category, project: r.project || '', rule_key: r.rule_key || '' };
+             domain: r.domain || '', category: r.category, project: r.project || '', rule_key: r.rule_key || '',
+             desktop: r.desktop || '', kind: kinds[r.device_id] || 'laptop' };
   }).filter(function (b) { return b.end > b.start; });
   var fixRes = await sb.from('events').select('at,type,detail,project,rid').eq('type', 'actfix')
     .gte('at', new Date(since - 86400000).toISOString()).order('at', { ascending: true }).limit(1000);
@@ -16280,9 +16323,8 @@ async function readCatchUp() {
   // A day that has turned closed its pushes and questions with it; a watch question lasts
   // while its sleep, break or day-off stretch does (askStillOpen, over the server's rows).
   var dayStart = counterDayStart(now);
-  if ((oRes.data || []).concat(nRes.data || []).some(function (n) { return WATCH_ASKS[n.kind] === 1; })) {
-    catchupStateRows = await readAskRows(now);
-  }
+  // Item 31b: always read, so the lines are judged by the same rows the server judges.
+  catchupStateRows = await readAskRows(now);
   var nudges = (oRes.data || []).concat(nRes.data || []).filter(function (n) {
     if (n.kind === 'auto') return false;          // item 30b: shown on Home, never in the sheet
     return WATCH_ASKS[n.kind] === 1 ? askStillOpen(n) : Date.parse(n.streak_start) >= dayStart;
@@ -16297,12 +16339,76 @@ async function readCatchUp() {
     outboxMine().forEach(function (it) { if (it.rid) rids[it.rid] = 1; });
   }
   await attachRuns(nudges);
-  var asks = catchupAsks(nudges.concat(await readTeachAsk(dayStart)), rids, since);
-  var groups = actGroups(blocks, fixes);
+  var idle = await readIdleAsks(dayStart);
+  var asks = catchupAsks(nudges.concat(await readTeachAsk(dayStart), idle.asks), rids, since);
+  var desk = { desktops: await readSheetDesktops(), projects: catchupProjects([]) };
+  var groups = actDeskGroups(blocks, fixes, desk);
+  judgeLines(groups, blocks, since, now);
   var total = groups.reduce(function (n, g) { return n + g.ms; }, 0);
   if (!asks.length && total < CATCHUP_MIN_MS) return null;
   var until = blocks.reduce(function (m, b) { return Math.max(m, b.end); }, since);
-  return { since: since, until: until, blocks: blocks, fixes: fixes, groups: groups, asks: asks, edits: [] };
+  return { since: since, until: until, blocks: blocks, fixes: fixes, groups: groups, asks: asks, reasons: idle.reasons };
+}
+
+/* ── Item 31b: what the sheet adds ──────────────────────────────────────── */
+
+/** device id -> 'phone' or 'laptop' (watch_devices); {} when it cannot be read. */
+async function readDeviceKinds() {
+  var out = userMap();
+  var res = await sb.from('watch_devices').select('id,kind').limit(50);
+  if (!res.error) (res.data || []).forEach(function (d) { out[d.id] = d.kind; });
+  return out;
+}
+
+/** His "Desktop name = Project" pairs for the sheet; [] before the item 30b part or on a failed read. */
+async function readSheetDesktops() {
+  var res = await sb.from('user_settings').select('activity_desktops').eq('user_id', sbUser.id).limit(1);
+  return res.error ? [] : actDeskPairs(((res.data || [])[0] || {}).activity_desktops);
+}
+
+/** Today's idle "Why?" questions still to show: pending ones, and End day's applied ones whose reason
+ *  he has not given himself (shown "(auto)", still changeable). Reasons: actIdleReasons of the jw- rows,
+ *  his held ones too. A database without the item 31ab part has none. */
+async function readIdleAsks(dayStart) {
+  var res = await sb.from('activity_nudges').select('id,kind,streak_start,span_end,state,what,decided_at')
+    .eq('kind', 'idle').in('state', ['pending', 'applied']).gte('streak_start', new Date(dayStart).toISOString())
+    .order('streak_start', { ascending: true }).limit(30);
+  if (res.error || !(res.data || []).length) return { asks: [], reasons: userMap() };
+  var jw = await sb.from('events').select('at,type,rid,detail').eq('type', 'actanswer').like('rid', 'jw-%')
+    .gte('at', new Date(dayStart).toISOString()).limit(500);
+  var reasons = actIdleReasons((jw.error ? [] : jw.data || []).concat(catchupHeld({ actanswer: 1 })));
+  var asks = res.data.filter(function (n) {
+    var g = { start: Date.parse(n.streak_start), end: Date.parse(n.span_end) };
+    var r = actGapReason(g, reasons);
+    return n.state === 'pending' ? !r : !r || r.auto;
+  });
+  return { asks: asks, reasons: reasons };
+}
+
+/* The order a line's judgement is told in: the worst gap it touches. */
+var JUDGE_RANK = { high: 7, low: 6, dbreak: 5, deserved: 4, distraction: 3, slip: 2, rest: 1 };
+
+/** Each distraction line's judgement (activity.js actJudge over the sheet's blocks and the server's rows):
+ *  line.judge = its words, line.judgeAuto = already a break written for him. */
+function judgeLines(groups, blocks, since, now) {
+  var rows = watchAskRows();
+  var domain = actJudgeDomain(rows, since, now);
+  var walk = actWalk(rows, since, now);
+  var sig = actSignals(actClip(blocks, domain), domain);
+  var gaps = actJudge({ signals: sig, spans: domain, work: walk.work, prayers: [] });
+  groups.forEach(function (g) {
+    g.lines.forEach(function (line) {
+      if (line.category !== 'distraction') return;
+      var best = null;
+      gaps.forEach(function (x) {
+        var hit = line.spans.some(function (sp) { return sp[0] < x.end && sp[1] > x.start; });
+        var rank = x.high ? JUDGE_RANK.high : x.low ? JUDGE_RANK.low : JUDGE_RANK[x.kind] || 0;
+        if (hit && rank && (!best || rank > best.rank)) best = { rank: rank, g: x };
+      });
+      line.judge = best ? actJudgeWords(best.g) : '';
+      line.judgeAuto = Boolean(best && best.g.applied && actJudgeBreaks(best.g));
+    });
+  });
 }
 
 /** Item 29: today's open "what is this app?" question, or none. A database without the item 29
@@ -16374,15 +16480,6 @@ function catchupProjects(groups) {
   (groups || []).forEach(function (g) { add(g.project); });
   knownNames().forEach(add);
   return out;
-}
-
-function catchupLabel(g) {
-  var mins = humanDuration(g.ms);
-  if (g.category === 'distraction') return 'Distraction: ' + (g.domains.concat(g.apps)[0] || 'unknown') + ' · ' + mins;
-  if (g.category === 'private') return 'Private · ' + mins;
-  if (g.category === 'meeting') return 'Meeting' + (g.project ? ' · ' + g.project : '') + ' · ' + mins;
-  if (g.category === 'unclear') return 'Not placed · ' + mins;
-  return (g.project || 'Work') + ' · ' + mins;
 }
 
 /* Item 23: the awake and back-to-work questions; item 28: "Up and working?" and "start?". */
@@ -16477,6 +16574,7 @@ function catchupAskRow(a) {
       : a.kind === 'teach' ? function () { answerTeach(a, choice, '', li); } : function () { answerCatchUp(a, choice, li); });
     acts.appendChild(b);
   }
+  if (a.kind === 'idle') return idleAskRow(a, li, text, acts, btn);
   if (a.kind === 'teach') {
     var r = teachAskName(n);
     var mins = Number(n.entry_min) > 0 ? ' ' + humanDuration(Number(n.entry_min) * 60000) + ' today, not sorted yet.' : '';
@@ -16538,56 +16636,142 @@ function catchupAskRow(a) {
   return li;
 }
 
-function catchupGroupRow(g, i, projects) {
+/** Item 31b: "Away 22 min (2:10 – 2:32 pm) — why?" with the six reasons; the recommended one (a prayer
+ *  logged in it, or End day's choice) is marked. */
+function idleAskRow(a, li, text, acts, btn) {
+  var n = a.n;
+  var start = Date.parse(n.streak_start);
+  var end = Date.parse(n.span_end);
+  var r = catchup && catchup.reasons ? actGapReason({ start: start, end: end }, catchup.reasons) : null;
+  var rec = r ? r.reason : actIdleReason(n.what);
+  text.textContent = 'Away ' + humanDuration(end - start) + ' (' + spanClock(start, end) + '), no device in use — why?' +
+    (n.state === 'applied' ? ' (auto: ' + actIdleWord(rec || ACT_IDLE_DEFAULT) + ')' : rec ? '' : ' No answer: Idle (break) at End day.');
+  ACT_IDLE_REASONS.forEach(function (reason) {
+    btn(actIdleWord(reason), function () { answerIdle(a, reason, li); });
+    var b = acts.lastChild;
+    if (reason === rec) { b.classList.add('btn-accent'); b.setAttribute('aria-pressed', 'true'); }
+  });
+  li.append(text, acts);
+  return li;
+}
+
+/** Item 31b: an idle gap's reason (jw-, the newest wins), and, unless the clock is already off there, its
+ *  break and resume (jb-/jr-, the server's rids, so End day never writes them twice). Through the outbox. */
+function answerIdle(a, reason, li) {
+  var n = a.n;
+  var start = Date.parse(n.streak_start);
+  var end = Date.parse(n.span_end);
+  var now = Date.now();
+  var key = actGapKey(start);
+  var rows = watchAskRows();
+  var work = actWalk(rows, start - ASK_BACK_MS, now).work;
+  var g = { start: start, end: end, ms: end - start, kind: 'idle', key: key, tail: false, prayer: false,
+            head: rows.some(function (r) { return instantOf(r.at) === start && ACT_STATE[r.type] === 1; }),
+            applied: actSpansMs(actIntersect(start, end, work)) * 2 < end - start };
+  var steps = [{ type: 'actanswer', raw_text: 'Idle ' + humanDuration(end - start) + ': ' + actIdleWord(reason), detail: reason,
+                 rid: 'jw-' + key + '-' + Math.floor(now / 1000).toString(36) }];
+  actJudgeSteps(g, reason).forEach(function (w) {
+    steps.push({ type: w.type, raw_text: w.text, rid: w.rid, at: new Date(w.at).toISOString(), local_time: humanLocalAt(w.at) });
+  });
+  dropAsk(a);
+  li.textContent = 'Noted: ' + actIdleWord(reason) + ', ' + spanClock(start, end) + '.';
+  runWrites(actSkipTies(steps, sessionLog())).then(function () { scheduleRefresh(800); });
+}
+
+/** A line's project as it will be written: his pick, else the recommendation. */
+function linePick(line) {
+  return line.edit && line.edit.project !== undefined ? line.edit.project : line.rec;
+}
+
+/** What a line's recommendation says, in words: "→ ProBeing (auto)", "→ Slip", "→ not placed". */
+function lineRecText(line) {
+  if (line.category === 'private') return '';
+  if (line.category === 'distraction') return line.judge ? '→ ' + line.judge + (line.judgeAuto ? ' (auto)' : '') : '';
+  var p = linePick(line);
+  if (!p) return line.category === 'unclear' ? '→ not placed' : '→ work, no project';
+  return '→ ' + p + (line.auto && p === line.project && !(line.edit && line.edit.project !== undefined) ? ' (auto)' : '');
+}
+
+/** The info box a line opens: sites, apps, desktop, minutes and when. Names only (textContent, rule 5). */
+function lineInfo(line) {
+  var box = document.createElement('div');
+  box.className = 'catchup-info';
+  box.hidden = true;
+  function add(label, value) {
+    if (!value) return;
+    var p = document.createElement('p');
+    p.textContent = label + ': ' + value;
+    box.appendChild(p);
+  }
+  add('Sites', line.sites.join(', '));
+  add('Apps', line.apps.join(', '));
+  add('Desktop', line.desktops.join(', ') || ACT_NO_DESKTOP);
+  add('Time', humanDuration(line.ms) + ' — ' + line.spans.map(function (sp) { return spanClock(sp[0], sp[1]); }).join(', '));
+  return box;
+}
+
+function catchupLineRow(line, projects) {
   var li = document.createElement('li');
   li.className = 'catchup-row';
+  line.li = li;
   var head = document.createElement('p');
-  var when = document.createElement('span');
-  when.className = 'catchup-when';
-  when.textContent = spanClock(g.start, g.end);
-  var what = document.createElement('span');
-  what.className = 'catchup-what';
-  what.textContent = catchupLabel(g);
-  head.append(when, ' ', what);
-  li.appendChild(head);
-  var where = g.apps.concat(g.domains).join(', ');
-  if (where && g.category !== 'private') {
-    var sub = document.createElement('p');
-    sub.className = 'hint';
-    sub.textContent = where;
-    li.appendChild(sub);
-  }
+  var pick = document.createElement('input');
+  pick.type = 'checkbox';
+  pick.className = 'catchup-pick';
+  pick.checked = line.category !== 'private' && (Boolean(line.rec) || Boolean(line.judge));
+  pick.setAttribute('aria-label', 'Accept ' + line.name);
+  pick.addEventListener('change', function () { line.picked = pick.checked; });
+  line.picked = pick.checked;
+  line.pickBox = pick;
+  var what = document.createElement('button');
+  what.type = 'button';
+  what.className = 'link-btn catchup-what';
+  what.textContent = line.name + ' · ' + humanDuration(line.ms);
+  what.setAttribute('aria-expanded', 'false');
+  var rec = document.createElement('span');
+  rec.className = 'catchup-rec';
+  rec.textContent = lineRecText(line);
+  head.append(pick, ' ', what, ' ', rec);
+  var info = lineInfo(line);
+  what.addEventListener('click', function () {
+    info.hidden = !info.hidden;
+    what.setAttribute('aria-expanded', String(!info.hidden));
+  });
+  li.append(head, info);
   var acts = document.createElement('div');
   acts.className = 'catchup-acts';
-  if (g.category === 'work' || g.category === 'meeting' || g.category === 'unclear') {
+  if (line.category === 'work' || line.category === 'meeting' || line.category === 'unclear') {
     var sel = document.createElement('select');
     sel.className = 'cat-pick';
-    sel.setAttribute('aria-label', 'Project for ' + spanClock(g.start, g.end));
+    sel.setAttribute('aria-label', 'Project for ' + line.name);
     var none = document.createElement('option');
     none.value = '';
     none.textContent = '— no project —';
     sel.appendChild(none);
-    projects.forEach(function (p) {
+    projects.concat(line.rec && projects.indexOf(line.rec) === -1 ? [line.rec] : []).forEach(function (p) {
       var o = document.createElement('option');
       o.value = p;
       o.textContent = p;
       sel.appendChild(o);
     });
-    sel.value = g.project;
+    sel.value = line.rec;
     sel.addEventListener('change', function () {
-      catchup.edits[i] = Object.assign({}, catchup.edits[i], { project: sel.value });
+      line.edit = Object.assign({}, line.edit, { project: sel.value });
+      line.picked = pick.checked = true;
+      rec.textContent = lineRecText(line);
     });
     acts.appendChild(sel);
   }
-  if (g.category !== 'private') {
+  if (line.category !== 'private') {
     var brk = document.createElement('button');
     brk.type = 'button';
     brk.className = 'link-btn';
     brk.textContent = 'It was a break';
     brk.setAttribute('aria-pressed', 'false');
     brk.addEventListener('click', function () {
-      var on = !(catchup.edits[i] && catchup.edits[i].brk);
-      catchup.edits[i] = Object.assign({}, catchup.edits[i], { brk: on });
+      var on = !(line.edit && line.edit.brk);
+      line.edit = Object.assign({}, line.edit, { brk: on });
+      if (on) line.picked = pick.checked = true;
       brk.setAttribute('aria-pressed', String(on));
       brk.textContent = on ? 'Break ✓' : 'It was a break';
       li.classList.toggle('catchup-break', on);
@@ -16595,6 +16779,35 @@ function catchupGroupRow(g, i, projects) {
     acts.appendChild(brk);
   }
   if (acts.children.length) li.appendChild(acts);
+  return li;
+}
+
+/** One desktop: its name (and project), Select all, Accept, then its lines. */
+function catchupDeskItem(g, projects) {
+  var li = document.createElement('li');
+  li.className = 'catchup-desk';
+  var head = document.createElement('div');
+  head.className = 'catchup-deskhead';
+  var name = document.createElement('span');
+  name.className = 'catchup-deskname';
+  name.textContent = g.desktop + (g.project && actNorm(g.project) !== actNorm(g.desktop) ? ' → ' + g.project : '') + ' · ' + humanDuration(g.ms);
+  var all = document.createElement('button');
+  all.type = 'button';
+  all.className = 'link-btn';
+  all.textContent = 'Select all';
+  all.addEventListener('click', function () {
+    g.lines.forEach(function (line) { if (line.pickBox && !line.done) { line.pickBox.checked = true; line.picked = true; } });
+  });
+  var ok = document.createElement('button');
+  ok.type = 'button';
+  ok.className = 'btn';
+  ok.textContent = 'Accept';
+  ok.addEventListener('click', function () { acceptLines(g.lines, false); });
+  head.append(name, all, ok);
+  var ul = document.createElement('ul');
+  ul.className = 'catchup-lines';
+  g.lines.forEach(function (line) { ul.appendChild(catchupLineRow(line, projects)); });
+  li.append(head, ul);
   return li;
 }
 
@@ -16611,8 +16824,10 @@ function renderCatchUp() {
   asks.hidden = !c.asks.length;
   var list = $('catchupList');
   list.textContent = '';
-  var projects = catchupProjects(c.groups);
-  c.groups.forEach(function (g, i) { list.appendChild(catchupGroupRow(g, i, projects)); });
+  var named = [];
+  c.groups.forEach(function (g) { named = named.concat([{ project: g.project }], g.lines.map(function (l) { return { project: l.rec || l.project }; })); });
+  var projects = catchupProjects(named);
+  c.groups.forEach(function (g) { list.appendChild(catchupDeskItem(g, projects)); });
   $('catchupNote').textContent = c.groups.length || c.asks.length ? '' : 'Nothing new from the laptop.';
 }
 
@@ -16623,6 +16838,7 @@ function catchupPrune() {
   var rids = userMap();
   sessionLog().forEach(function (r) { if (r.rid) rids[r.rid] = 1; });
   catchup.asks = catchup.asks.filter(function (a) {
+    if (a.kind === 'idle') return true;              // item 31b: its answer's rid carries a time; the next read decides
     var answered = !catchupAsks([a.n], rids, -Infinity).length;
     var over = WATCH_ASKS[a.kind] === 1 && !askStillOpen(a.n);
     if (!answered && !over) return true;
@@ -16877,38 +17093,62 @@ function answerAuto(n, yes, li) {
   renderProject();
 }
 
-/** Looks right: the edits as rows (a correction, a break), then "seen up to here". */
-function confirmCatchUp() {
+/**
+ * Item 31b: accept lines (a desktop's, or every one left): each picked line's project, when it is not the
+ * one it has, as a correction (actfix); "It was a break" as a break and resume per stretch (kb-/kr-, on
+ * the stretch's first block). Only a project he chose by hand teaches a rule: a desktop's suggestion is
+ * the desktop's, not the app's. Accepted lines are left as done.
+ */
+function acceptLines(lines, all) {
   var c = catchup;
-  if (!c) return;
+  if (!c) return [];
   var steps = [];
   var learn = [];
-  c.groups.forEach(function (g, i) {
-    var e = c.edits[i];
-    if (!e) return;
-    if (e.project !== undefined && e.project !== g.project) {
-      steps.push({ type: ACT_FIX_TYPE, raw_text: 'Activity ' + spanClock(g.start, g.end) + ' → ' + (e.project || 'no project'),
-                   project: e.project, detail: g.ids.join(',') });
-      if (e.project) {
+  lines.forEach(function (line) {
+    if (line.done || !line.picked) return;
+    line.done = true;
+    var want = linePick(line);
+    var placeable = line.category === 'work' || line.category === 'meeting' || line.category === 'unclear';
+    if (placeable && want !== line.project && line.ids.length) {
+      steps.push({ type: ACT_FIX_TYPE, raw_text: 'Activity ' + line.name + ' (' + humanDuration(line.ms) + ') → ' + (want || 'no project'),
+                   project: want, detail: line.ids.join(',') });
+      if (want && line.edit && line.edit.project !== undefined) {
         c.blocks.forEach(function (b) {
-          var k = g.ids.indexOf(b.id) !== -1 ? catchupRuleKey(b) : '';
-          if (k && !learn.some(function (r) { return r.keyword === k; })) learn.push({ keyword: k, project: e.project });
+          var k = line.ids.indexOf(b.id) !== -1 ? catchupRuleKey(b) : '';
+          if (k && !learn.some(function (r) { return r.keyword === k; })) learn.push({ keyword: k, project: want });
         });
       }
     }
-    if (e.brk && g.ids.length) {
-      steps.push({ type: 'break', raw_text: 'Break (checked later)', at: new Date(g.start).toISOString(),
-                   local_time: humanLocalAt(g.start), rid: 'kb-' + g.ids[0] });
-      steps.push({ type: 'resume', raw_text: 'Resume (checked later)', at: new Date(g.end).toISOString(),
-                   local_time: humanLocalAt(g.end), rid: 'kr-' + g.ids[0] });
+    if (line.edit && line.edit.brk) {
+      line.spans.forEach(function (sp) {
+        if (!sp[2]) return;
+        steps.push({ type: 'break', raw_text: 'Break (checked later)', at: new Date(sp[0]).toISOString(),
+                     local_time: humanLocalAt(sp[0]), rid: 'kb-' + sp[2] });
+        steps.push({ type: 'resume', raw_text: 'Resume (checked later)', at: new Date(sp[1]).toISOString(),
+                     local_time: humanLocalAt(sp[1]), rid: 'kr-' + sp[2] });
+      });
+    }
+    if (line.li && !all) {
+      line.li.classList.add('catchup-done');
+      line.li.querySelectorAll('button, select, input').forEach(function (x) { x.disabled = true; });
     }
   });
+  if (!all && steps.length) runWrites(actSkipTies(steps, sessionLog())).then(function () { scheduleRefresh(800); });
+  if (supabaseReady()) learn.forEach(learnRule);
+  return steps;
+}
+
+/** Accept all: every picked line left, then "seen up to here". */
+function confirmCatchUp() {
+  var c = catchup;
+  if (!c) return;
+  var lines = [];
+  c.groups.forEach(function (g) { lines = lines.concat(g.lines); });
+  var steps = acceptLines(lines, true);
   steps.push({ type: ACT_SEEN_TYPE, raw_text: 'Laptop activity checked up to ' + clockAt(c.until),
                detail: new Date(c.until).toISOString(), rid: 'as-' + c.until });
   closeCatchUp();
   runWrites(actSkipTies(steps, sessionLog())).then(function () { scheduleRefresh(800); });
-  // What he corrected becomes a rule: the block's site, else its app (a setting, not a press).
-  if (supabaseReady()) learn.forEach(learnRule);
 }
 
 /** The rule a correction teaches: the site's name, else the app's; never a title's words.
