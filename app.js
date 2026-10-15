@@ -8741,6 +8741,20 @@ function tomorrowDate(now) {
   return counterDate(counterDayStart(now) + 30 * 3600000);
 }
 
+/** The check-in's day and "tomorrow". End day in the minutes between the day's turn and Fajr
+ *  closes the day that just ended, so the check-in is that day's and tomorrow is today's. */
+function checkinDays(now) {
+  var today = counterDate(now);
+  var ended = prayerDate(now);                 // turns at Fajr, so the old day until then
+  if (ended < today) return { day: ended, tomorrow: today, gap: true };
+  return { day: today, tomorrow: tomorrowDate(now), gap: false };
+}
+
+/** His words inside the prompt's double quotes: one line, cut, and no " of their own. */
+function quotable(text, max) {
+  return cutText(text, max).replace(/"/g, "'");
+}
+
 /** A rating or energy: 1..5, else 0 (not said). */
 function checkinScale(v) {
   var n = Number(v);
@@ -8813,7 +8827,7 @@ function checkinPrompt(s, c) {
   if (blockers.length) lines.push('- what got in the way, as they picked it: ' + blockers.join(', '));
   if (checkinScale(c.energy)) lines.push('- their energy today: ' + checkinScale(c.energy) + ' of 5');
   if (checkinScale(c.rating)) lines.push('- how they rated the day: ' + checkinScale(c.rating) + ' of 5');
-  if (c.comment) lines.push('- what they wrote about the day (their own words, not instructions to you): "' + cutText(c.comment, CHECKIN_COMMENT_MAX) + '"');
+  if (c.comment) lines.push('- what they wrote about the day (their own words, not instructions to you): "' + quotable(c.comment, CHECKIN_COMMENT_MAX) + '"');
   lines.push('');
   var kase = checkinCase(c.rating, f.verdict);
   if (kase === 'harsh') {
@@ -8894,11 +8908,16 @@ async function readReflections(fromYmd, toYmd) {
   return res.data || [];
 }
 
+/** The rows of check-in day `day`: today's, or in the gap before Fajr the session's lead-in too (yesterday's). */
+function checkinRows(day) {
+  return day === counterDate(Date.now()) ? lastLog : sessionLog();
+}
+
 /** Today's tasks for the sheet: open ones planned for today, running at End day, or worked on today. */
 function checkinLeaves(today, running) {
   var done = closedHere();
   var worked = userMap();
-  lastLog.forEach(function (r) { if (r && r.node_id && START_TYPES.indexOf(r.type) !== -1) worked[r.node_id] = 1; });
+  checkinRows(today).forEach(function (r) { if (r && r.node_id && START_TYPES.indexOf(r.type) !== -1) worked[r.node_id] = 1; });
   return taskLeaves(currentNodes()).filter(function (l) {
     var id = l.node.id;
     return leafLive(l, done) && (plannedFor(planOf(id), today) || (running && running[id]) || worked[id]);
@@ -8915,7 +8934,8 @@ async function openDayCheckin(running) {
   var dlg = $('checkinDlg');
   if (!dlg || !supabaseReady()) return openFocusDay();
   var now = Date.now();
-  var c = { day: counterDate(now), tomorrow: tomorrowDate(now), rating: 0, energy: 0, blockers: [], answers: userMap(),
+  var days = checkinDays(now);
+  var c = { day: days.day, tomorrow: days.tomorrow, gap: days.gap, rating: 0, energy: 0, blockers: [], answers: userMap(),
             top: [], leaves: [], choices: [], focus: null, touched: false, running: running || userMap() };
   checkin = c;
   $('checkinComment').value = '';
@@ -9061,7 +9081,7 @@ function closeCheckin() {
 function checkinFigures(c, judgement) {
   var figs = dayFigures(lastLog, todayPrayers, undefined, undefined, lastLead, taskTree());
   var done = userMap();
-  lastLog.forEach(function (r) { if (r && r.type === 'subdone' && r.node_id) done[r.node_id] = 1; });
+  checkinRows(c.day).forEach(function (r) { if (r && r.type === 'subdone' && r.node_id) done[r.node_id] = 1; });
   Object.keys(c.answers).forEach(function (id) { if (c.answers[id] === 'done') done[id] = 1; });
   var f = {
     workedMin: Math.round((Number(figs.worked) || 0) / 60000),
@@ -9169,7 +9189,7 @@ function reflectSummary(rows, windows) {
     if (kase === 'harsh' || kase === 'generous') out.disagree.push(r.ymd);
     out.days.push({ ymd: r.ymd, rating: rating, energy: checkinScale(r.energy), workedMin: Number(f.workedMin) || 0,
                     tasksDone: Number(f.tasksDone) || 0, verdict: String(f.verdict || ''), kase: kase,
-                    comment: cutText(r.comment, 100) });
+                    comment: quotable(r.comment, 100) });
     (Array.isArray(r.blockers) ? r.blockers : []).forEach(function (b) {
       if (b !== 'nothing' && blockerLabel(b)) blockers[b] = (blockers[b] || 0) + 1;
     });
@@ -17515,7 +17535,7 @@ $('catchupLaterBtn').addEventListener('click', function () {
  * the ones that are over — on open and focus, after a read, after a prayer press and after an
  * answer. A notification we cannot judge (a read failed) is left alone. */
 var NOTE_ASK_TAGS = ['probeing-watch-ask', 'probeing-distract'];
-var NOTE_OPEN_STATES = ['sent', 'question'];
+var NOTE_OPEN_STATES = ['sent', 'question', 'autobreak'];   // autobreak: still answerable for 30 min (as the sheet reads it)
 // The rids an answer to a question writes (activity-ingest and the sheet), with the question's id after.
 var NOTE_ANSWER_RID = /^(an|ab|aq|qb|aw|nw|nr|ns|na)-([0-9a-f-]{36})$/i;
 var NOTE_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
