@@ -1046,18 +1046,18 @@ function helperFills(blocks, lists, desk) {
 }
 
 /**
- * Item 30b: watched blocks whose desktop stands for a project they do not carry yet (a pair he
- * added since, a project made since): [{id, project, category, was}]. An unclear block there is
- * that project's work. Private and distraction blocks are left alone. desk: {desktops, projects}.
+ * Item 30b: watched work and meeting blocks whose desktop stands for a project they do not carry yet
+ * (a pair he added since, a project made since): [{id, project, category, was}]. Unclear, private
+ * and distraction blocks are left alone. desk: {desktops, projects}.
  */
 function desktopFills(blocks, desk) {
   var out = [];
   (blocks || []).forEach(function (b) {
     if (!b || !b.id || !b.desktop || (b.mode && b.mode !== 'work')) return;
-    if (b.category !== 'work' && b.category !== 'meeting' && b.category !== 'unclear') return;
+    if (b.category !== 'work' && b.category !== 'meeting') return;
     var p = A.actDeskProject(b.desktop, desk);
-    if (!p || (p === b.project && b.category !== 'unclear')) return;
-    out.push({ id: b.id, project: p, category: b.category === 'unclear' ? 'work' : b.category, was: b.category });
+    if (!p || p === b.project) return;
+    out.push({ id: b.id, project: p, category: b.category, was: b.category });
   });
   return out;
 }

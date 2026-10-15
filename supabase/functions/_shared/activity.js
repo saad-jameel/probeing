@@ -1047,14 +1047,14 @@ function actDeskProject(name, cfg) {
   return '';
 }
 
-/** actClassify, then the desktop's project ahead of any other (seg.desktop: its name). Never for a
- *  private block or a distraction; an unclear one on a project's desktop is that project's work. */
+/** actClassify, then the desktop's project ahead of any other (seg.desktop: its name). Only work and
+ *  meetings take it: an unknown app on a project's desktop stays unclear (it may be a game). */
 function actDeskClassify(seg, cfg) {
   var c = actClassify(seg, cfg);
-  if (c.category === 'private' || c.category === 'distraction') return c;
+  if (c.category !== 'work' && c.category !== 'meeting') return c;
   var pick = actPickProject({ desktop: actDeskProject(seg.desktop, cfg), title: c.project });
   if (pick.from !== 'desktop') return c;
-  return { category: c.category === 'unclear' ? 'work' : c.category, project: pick.project,
+  return { category: c.category, project: pick.project,
            key: actNorm(c.project) === actNorm(pick.project) ? c.key : '' };
 }
 

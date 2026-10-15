@@ -596,14 +596,13 @@ function Act-DeskProject($name, $cfg) {
   return ''
 }
 
-# Act-Classify, then the desktop's project first. Never for private or a distraction; unclear becomes work.
+# Act-Classify, then the desktop's project first. Only work and meetings take it; unclear stays unclear.
 function Act-DeskClassify($seg, $cfg) {
   $c = Act-Classify $seg $cfg
-  if ($c.category -eq 'private' -or $c.category -eq 'distraction') { return $c }
+  if ($c.category -ne 'work' -and $c.category -ne 'meeting') { return $c }
   $dp = Act-DeskProject (Get-Prop $seg 'desktop') $cfg
   if (-not $dp) { return $c }
   $cat = $c.category
-  if ($cat -eq 'unclear') { $cat = 'work' }
   $key = ''
   if ((Act-Norm $c.project) -ceq (Act-Norm $dp)) { $key = $c.key }
   return @{ category = $cat; project = $dp; key = $key }
@@ -764,13 +763,16 @@ function Save-Json([string]$path, $obj) {
 # Item 30b: the tray's desktop spans, [start ms, end ms, name]; none when the file is missing or unreadable.
 function Read-Desktops([string]$path) {
   $list = New-Object System.Collections.Generic.List[object]
-  if (-not (Test-Path $path)) { return ,$list.ToArray() }
-  try {
-    $d = Get-Content -Raw -Encoding UTF8 $path | ConvertFrom-Json
-    foreach ($s in @($d.spans)) {
-      if ($null -ne $s -and @($s).Count -ge 3) { $list.Add(@([double]$s[0], [double]$s[1], [string]$s[2])) }
-    }
-  } catch { }
+  # The tray swaps the file in every 10 s: a read that lands on the swap is tried again (3 x 50 ms).
+  for ($try = 0; $try -lt 3; $try++) {
+    try {
+      $d = [System.IO.File]::ReadAllText($path, [System.Text.Encoding]::UTF8) | ConvertFrom-Json
+      foreach ($s in @($d.spans)) {
+        if ($null -ne $s -and @($s).Count -ge 3) { $list.Add(@([double]$s[0], [double]$s[1], [string]$s[2])) }
+      }
+      break
+    } catch [System.IO.IOException] { Start-Sleep -Milliseconds 50 } catch { break }
+  }
   return ,$list.ToArray()
 }
 

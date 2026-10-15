@@ -4529,7 +4529,7 @@
    ]
   },
   {
-   "name": "item 30b: on a project desktop an unknown app is its work; YouTube stays a distraction; private stays nameless",
+   "name": "item 30b fix: on a project desktop an unknown app stays unclear (it may be a game); YouTube a distraction; private nameless",
    "cut": {
     "from": "2026-10-13T05:00:00.000Z",
     "to": "2026-10-13T05:40:00.000Z",
@@ -4610,8 +4610,8 @@
      "end": "2026-10-13T05:10:00.000Z",
      "app": "Figma.exe",
      "domain": "",
-     "category": "work",
-     "project": "OneNet",
+     "category": "unclear",
+     "project": "",
      "key": "",
      "desktop": "OneNet"
     },

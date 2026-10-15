@@ -16842,7 +16842,8 @@ function autoAcceptSteps(n, now) {
                  at: new Date(at).toISOString(), local_time: humanLocalAt(at) }];
   var last = n.run && n.run.last ? Date.parse(n.run.last) : NaN;
   if (isFinite(last) && last > at && now - last >= ACT_RUN_GAP_MS) {
-    steps.push({ type: 'done', raw_text: p, project: p, rid: 'ne-' + n.id + '-' + Math.floor(last / 1000).toString(36),
+    // Keyed on the question only, so two devices' Accepts make one Done whatever end each read.
+    steps.push({ type: 'done', raw_text: p, project: p, rid: 'ne-' + n.id,
                  at: new Date(last).toISOString(), local_time: humanLocalAt(last) });
   }
   return steps;
