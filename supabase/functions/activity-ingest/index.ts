@@ -69,8 +69,19 @@
 // work, project set) instead of a bare resume. "back to work?" does not: once back, a project not in
 // Working on is the auto question's.
 //
+// Item 31a (16 Oct): every device's blocks become one line of signals (activity.js actSignals) and the
+// gaps between work are judged: earned rest, slips, distractions, distraction breaks (deserved when
+// earned), LOW and HIGH focus loss, idle and away breaks (activity.js actJudge; claudeWorkingDocs/
+// plan-item31.md R1-R8). The records go to activity_focus (runJudge). An idle gap of 15 minutes is
+// asked "Why?" (kind 'idle', state 'pending': the v41 app never reads it); a prayer logged in it
+// answers itself. At End day (20 minutes after the off row, so the phone has reported) every
+// unanswered recommendation is applied: the break rows (jb-/jr-), the idle reason (jw-...-auto),
+// and a run question still open when the day closed (state 'applied'). "Up and working?" is
+// pushed again every hour while work goes on, three times at most; then it is applied (R6).
+// A distraction is pushed at 15 minutes (R3), and not at all while another device works (R7).
+//
 // No cron: the laptop's own 5-minute run is the clock. A push goes out when a
-// distraction has run 10 minutes; 5 minutes later, with no answer and still on
+// distraction has run 15 minutes; 5 minutes later, with no answer and still on
 // it, a break is written back to when it started (or, when another device shows
 // work across the same span, a question waits for the catch-up popup). Back in a
 // work app, a resume is written where the work began.
@@ -79,7 +90,7 @@
 //   npx supabase functions deploy activity-ingest --project-ref <ref> --use-api
 // Secrets: ALLOWED_USER_ID, GEMINI_API_KEY, GEMINI_MODEL, VAPID_PRIVATE_KEY (set
 // for the other functions); GEMINI_DAILY optional. Needs the "stage 18b", "item 23",
-// "item 28", "item 29", "item 30a" and "item 30b" parts of supabase/sql/supabase_schema.sql.
+// "item 28", "item 29", "item 30a", "item 30b" and "item 31ab" parts of supabase/sql/supabase_schema.sql.
 
 import { createClient } from 'jsr:@supabase/supabase-js@2';
 import '../_shared/day.js';
@@ -105,7 +116,7 @@ function reply(status: number, body: unknown): Response {
  *    claudeWorkingDocs/tests/stage18b_*.js can lift it. A is activity.js. ── */
 
 var MIN_MS = 60000;
-var NUDGE_AFTER_MS = 10 * MIN_MS;      // a distraction this long gets a push
+var NUDGE_AFTER_MS = 15 * MIN_MS;      // a distraction this long gets a push (item 31a, R3)
 var NUDGE_IGNORE_MS = 5 * MIN_MS;      // no answer this long after it: a break
 var NUDGE_LIVE_MS = 7 * MIN_MS;        // the newest block must be this recent to be "still on it"
 var NUDGE_STALE_MS = 30 * MIN_MS;      // no news this long after a push: let it go
@@ -129,7 +140,7 @@ var PROJECTS_MAX = 60;
  * he stopped scrolling. Not the server's own rows or the popup's backdated ones. */
 var RESPONSE_TYPES = ['work', 'voice', 'resume', 'break', 'off', 'sleep', 'done', 'subdone', 'subdrop', 'substop',
                       'pin', 'unpin', 'actanswer'];
-var SERVER_RIDS = /^(ab|ar|aw|an|aq|qb|qr|kb|kr|as|nw|nr|ns|na|nd|ne)-|^wrapup-/;
+var SERVER_RIDS = /^(ab|ar|aw|an|aq|qb|qr|kb|kr|as|nw|nr|ns|na|nd|ne|jb|jr|jw)-|^wrapup-/;
 var STATE_TYPES = ['work', 'voice', 'resume', 'break', 'off', 'sleep', 'wake', 'done', 'awake', 'subdone', 'subdrop',
                    'substop', 'pin', 'unpin', 'actanswer'];
 
@@ -150,6 +161,12 @@ var RUN_GAP_MS = 15 * MIN_MS;          // item 30a: a work run goes on through g
 var AUTO_MIN_MS = 10 * MIN_MS;         // item 30b: work on a project not in Working on this long is shown
 var HELPER_BACK_MS = 6 * 3600000;      // helpers given a project again on each run
 var FOCUS_BACK_MS = 24 * 3600000;      // focus recounted from the counter day this long ago
+var UPWORK_REPEAT_MS = 60 * MIN_MS;       // item 31a, R6: "Up and working?" again after this long,
+var UPWORK_PUSHES = 3;                 // ...this many times in all; then it is applied
+var APPLY_DELAY_MS = 20 * MIN_MS;         // item 31a: End day's recommendations wait for the phone's last report
+var APPLY_BACK_MS = 26 * 3600000;      // ...and reach back over the day it closed
+var IDLE_SEEN_MS = 2 * 3600000;        // an idle gap is asked once every device seen this recently has reported past it
+var IDLE_FRESH_MS = 60 * MIN_MS;          // ...and only pushed while this recent
 var TEACH_PUSH_MAX = 2;                // ...pushed at most this many times a day; the rest wait in the sheet
 var TEACH_FIX_CHUNK = 100;             // block ids per update when today's blocks are filed again
 /* What an na- answer (the second button) leaves a question as; and each kind's two answers. */
@@ -273,7 +290,10 @@ function nudgeStep(d) {
       out.decide.push({ id: n.id, state: 'question', span_end: s.end, other: cover.what });
       return;
     }
-    out.write.push({ type: 'break', at: n.streak_start, rid: 'ab-' + n.id, text: 'Distraction (auto)', nudge: n.id });
+    // Item 31a: earned (R1) makes it a deserved break.
+    var deserved = typeof d.earnedAt === 'function' && d.earnedAt(n.streak_start);
+    out.write.push({ type: 'break', at: n.streak_start, rid: 'ab-' + n.id, text: deserved ? 'Break (deserved — auto)' : 'Distraction (auto)',
+                     nudge: n.id });
     out.decide.push({ id: n.id, state: 'autobreak' });
   });
 
@@ -287,7 +307,10 @@ function nudgeStep(d) {
     var known = (d.nudges || []).some(function (n) {
       return n.device_id === dev && (n.state === 'sent' || Math.abs(n.streak_start - s.start) < MIN_MS);
     });
-    if (!known) out.push.push({ device_id: dev, start: s.start, end: s.end, what: s.what });
+    // Item 31a, R7: phone use while the laptop works is work (music); no push.
+    if (otherCover(d.blocks, dev, s.start, s.end).ratio >= OTHER_COVER) return;
+    var earned = typeof d.earnedAt === 'function' && d.earnedAt(s.start);
+    if (!known) out.push.push({ device_id: dev, start: s.start, end: s.end, what: s.what, earned: earned });
   });
   return out;
 }
@@ -466,10 +489,12 @@ function runProject(blocks, r, active) {
  * questions, open ones closed; nights still kept), active (item 30b: Working on's names)}.
  * Returns {push: [{kind, device_id, dev, start, end, ref, push, run}], decide: [{id, state}],
  * nights: [{sleep_at, woke_at, fajr_at, first_at, last_at, minutes, kinds}], runs: [{id, run}]
- * (item 30a: an open question's run, when it changed; a nudge may carry `run`, gaps in ms)}.
+ * (item 30a: an open question's run, when it changed; a nudge may carry `run`, gaps in ms),
+ * write: rows an applied recommendation writes, repush: [{id, pushes, p}] (item 31a, R6)}.
+ * Item 31a: a nudge may carry `pushes` (how many times it went out) and `what` (its device's kind).
  */
 function quietStep(d) {
-  var out = { push: [], decide: [], nights: [], runs: [] };
+  var out = { push: [], decide: [], nights: [], runs: [], write: [], repush: [] };
   var walk = d.walk || {};
   var rows = d.rows || [];
   var nudges = (d.nudges || []).filter(function (n) { return ASK_KINDS.indexOf(n.kind) !== -1; });
@@ -481,6 +506,12 @@ function quietStep(d) {
     var to = hasRid(rows, 'ns-' + n.id) ? 'started' : hasRid(rows, 'nw-' + n.id) ? 'awake'
            : hasRid(rows, 'nr-' + n.id) ? 'resumed' : hasRid(rows, 'na-' + n.id) ? NA_STATE[n.kind]
            : d.checks !== false && askOpen(n, walk, rows) ? '' : 'closed';
+    // Item 31a: still open when he ended the day, so its recommendation is applied (marked auto).
+    var close = to === 'closed' && d.checks !== false ? dayClosedOn(n, rows) : null;
+    if (close && close.at >= now - APPLY_BACK_MS) {
+      askRows(n, APPLY_CHOICE[n.kind], close.at).forEach(function (w) { out.write.push(w); });
+      to = 'applied';
+    }
     if (to) { out.decide.push({ id: n.id, state: to }); state[n.id] = to; }
   });
 
@@ -598,6 +629,24 @@ function quietStep(d) {
     var info = runInfo(r, A.actRunPlan(cutAll(n.streak_start), r.start, now),
                        n.kind === 'resume' ? '' : runProject(cutAll(n.streak_start), r, d.active));
     if (JSON.stringify(info) !== JSON.stringify(n.run || null)) out.runs.push({ id: n.id, run: info });
+    n.run = info;
+  });
+
+  // Item 31a, R6: "Up and working?" unanswered and the work going on: asked again every hour, three
+  // times in all; an hour after the third, applied (wake and work from the first work minute).
+  nudges.forEach(function (n) {
+    if (n.kind !== 'upwork' || state[n.id] !== 'sent' || !isFinite(n.pushes) || !isFinite(n.pushed_at)) return;
+    if (now < n.pushed_at + UPWORK_REPEAT_MS) return;
+    var last = n.run && isFinite(n.run.last) && n.run.last !== null ? n.run.last : NaN;
+    if (!(last >= now - USE_FRESH_MS)) return;
+    if (n.pushes < UPWORK_PUSHES) {
+      out.repush.push({ id: n.id, pushes: n.pushes, p: { kind: n.kind, device_id: n.device_id, dev: n.what === 'phone' ? 'phone' : 'laptop',
+                                                         start: n.streak_start, end: last, ref: n.ref_at, run: n.run, push: true } });
+      return;
+    }
+    askRows(n, 'start', now).forEach(function (w) { out.write.push(w); });
+    out.decide.push({ id: n.id, state: 'applied' });
+    state[n.id] = 'applied';
   });
 
   // Disturbed nights: use before Fajr while asleep, brief checks left out, all devices together.
@@ -622,6 +671,30 @@ function quietStep(d) {
                       minutes: Math.round(A.actSpansMs(merged) / MIN_MS), kinds: kinds.sort().join(',') });
   });
   return out;
+}
+
+/* Item 31a: the answer an open question gets when the day closes on it. "awake?" has none: not his day. */
+var APPLY_CHOICE = { start: 'start', resume: 'resume', upwork: 'start' };
+
+/** The row of his that closed the day on a question still open just before it: his first state row
+ *  after the use (its own answer rows aside) when it is End day ('off'), or for "start?" (the day was
+ *  never on) a Sleep; else null. rows: [{at (ms), type, rid}]. */
+function dayClosedOn(n, rows) {
+  if (!APPLY_CHOICE[n.kind]) return null;
+  var own = ['nw-', 'nr-', 'ns-', 'na-'].map(function (x) { return x + n.id; });
+  var pairs = new RegExp('^n[de]-' + String(n.id).replace(/[^0-9a-zA-Z-]/g, '') + '-[0-9a-z]+$');
+  var first = null;
+  (rows || []).forEach(function (r) {
+    var rid = String(r.rid || '');
+    if (!(r.at > n.streak_start) || ASK_ENDS.indexOf(r.type) === -1 || own.indexOf(rid) !== -1 || pairs.test(rid)) return;
+    if (!first || r.at < first.at) first = r;
+  });
+  if (!first || !(first.type === 'off' || (first.type === 'sleep' && n.kind === 'start'))) return null;
+  // Open just before it: the same stretch, nothing of his in between.
+  var before = (rows || []).filter(function (r) { return r.at < first.at; })
+    .map(function (r) { return { at: new Date(r.at).toISOString(), type: r.type, rid: r.rid }; });
+  var walk = A.actWalk(before, first.at - READ_BACK_MS, first.at - 1);
+  return askOpen(n, walk, (rows || []).filter(function (r) { return r.at < first.at; })) ? first : null;
 }
 
 /** The backdated instant an answer writes: the use, never before the sleep or break row. */
@@ -767,10 +840,10 @@ function clock12(ms, offsetMin) {
 
 /** The push. sw.js shows it with Take a break / I'm working under one tag. */
 function nudgePayload(p, nudgeId, nonce, url, key, offsetMin) {
-  var mins = Math.max(10, Math.round((p.end - p.start) / 60000));
+  var mins = Math.max(15, Math.round((p.end - p.start) / 60000));
   return { kind: 'distract', tag: 'probeing-distract', nudge: nudgeId, nonce: nonce, url: url, key: key, goto: 'home',
            title: 'You\'ve been on ' + A.actCut(p.what, 60) + ' for ' + mins + ' min — take a break?',
-           body: 'No answer in 5 min and it counts as a break from ' + clock12(p.start, offsetMin) + '.' };
+           body: 'No answer in 5 min and it counts as a ' + (p.earned ? 'deserved ' : '') + 'break from ' + clock12(p.start, offsetMin) + '.' };
 }
 
 /** The awake or back-to-work push. sw.js shows it with two buttons under one tag. */
@@ -1062,46 +1135,74 @@ function desktopFills(blocks, desk) {
   return out;
 }
 
+/* ── Item 31a: the idle "Why?" and End day ───────────────────────────────── */
+
+/** Does a question (kind 'idle', streak_start = its gap's start) stand for this gap? Later blocks may
+ *  move a gap's start a little. */
+function idleMatch(n, g) {
+  return n.streak_start >= g.start - A.ACT_GLANCE_MS && n.streak_start < g.end;
+}
+
 /**
- * Focus while working (item 30a). blocks: watched ones (any device), cut as the checks see them;
- * work: the working spans; dayOf(t): the counter date 'YYYY-MM-DD'; keepFrom: nothing starting
- * earlier is returned (the window's edge cuts it). A distraction no work overlaps, joined across
- * STREAK_GAP_MS, is a slip (2-5 min) or a focus loss (5-15); a glance or a break is not kept.
- * Each day's longest unbroken stretch (work time between distractions of 2 minutes or more) is
- * a 'stretch' row. Returns [{start, end, minutes, tier, what, day}].
+ * The idle questions and End day. d: {now, gaps (activity.js actJudge), nudges [{id, streak_start,
+ * span_end, state}] (kind 'idle', ms), reasons (actIdleReasons), reported (every device seen lately has
+ * reported up to here), ask (his switch), canPush, closes: his End-day rows (ms) at least APPLY_DELAY_MS
+ * old, whether or not the day was started again since}. An idle gap of 15 minutes or more, over and
+ * reported, is asked "Why?" (a prayer logged in it answers itself: no push); answered by any route, the
+ * question closes; a gap later blocks filled is closed. Every gap before an End day is applied: a break
+ * of 15 minutes or more is written (actJudgeSteps), an idle one unexplained is kept as "Idle" (or
+ * "Prayer"), and its question is 'applied'. Returns {create: [{start, end, what, push}], decide: [{id,
+ * state}], spans: [{id, end}], write: [{type, at, rid, text, detail}]}.
  */
-function focusRecords(blocks, work, dayOf, keepFrom) {
-  var list = (blocks || []).filter(function (b) { return b && b.end > b.start; });
-  var workSpans = A.actMergeSpans(work || []);
-  var busy = A.actMergeSpans(list.filter(isWorkBlock).map(function (b) { return [b.start, b.end]; }));
-  var dist = list.filter(function (b) { return b.category === 'distraction'; });
-  var pieces = [];
-  dist.forEach(function (b) { A.actIntersect(b.start, b.end, workSpans).forEach(function (p) { pieces.push(p); }); });
-  var streaks = joinSpans(minusSpans(A.actMergeSpans(pieces), busy), STREAK_GAP_MS);
-  var out = [];
-  streaks.forEach(function (g) {
-    var tier = A.actTier(g[2]);
-    if ((tier === 'slip' || tier === 'loss') && g[0] >= keepFrom) {
-      out.push({ start: g[0], end: g[1], minutes: Math.max(1, Math.round(g[2] / MIN_MS)), tier: tier,
-                 what: distractWhat(dist, [[g[0], g[1]]]), day: dayOf(g[0]) });
-    }
+function judgeStep(d) {
+  var out = { create: [], decide: [], spans: [], write: [] };
+  var gaps = d.gaps || [];
+  var idle = gaps.filter(function (g) { return g.kind === 'idle' && g.ms >= A.ACT_BREAK_MS; });
+  var nudges = d.nudges || [];
+  var closes = d.closes || [];
+  function inClose(g) { return closes.some(function (c) { return g.end <= c && g.start >= c - APPLY_BACK_MS; }); }
+  nudges.forEach(function (n) {
+    if (n.state !== 'pending') return;
+    var g = idle.filter(function (x) { return idleMatch(n, x); })[0];
+    if (!g) { out.decide.push({ id: n.id, state: 'closed' }); return; }
+    if (A.actGapReason(g, d.reasons)) { out.decide.push({ id: n.id, state: 'answered' }); return; }
+    if (inClose(g)) { out.decide.push({ id: n.id, state: 'applied' }); return; }
+    if (g.end !== n.span_end) out.spans.push({ id: n.id, end: g.end });
   });
-  // Stretches: the working spans cut at every slip, loss or break; each measured in work time.
-  var cuts = streaks.filter(function (g) { return g[2] >= A.ACT_GLANCE_MS; }).map(function (g) { return [g[0], g[1]]; });
-  var best = {};
-  minusSpans(workSpans, cuts).forEach(function (sp) {
-    var inside = A.actIntersect(sp[0], sp[1], busy);
-    var ms = A.actSpansMs(inside);
-    if (!inside.length || ms < MIN_MS || inside[0][0] < keepFrom) return;
-    var day = dayOf(inside[0][0]);
-    if (!best[day] || ms > best[day].ms) best[day] = { start: inside[0][0], end: inside[inside.length - 1][1], ms: ms };
-  });
-  Object.keys(best).sort().forEach(function (day) {
-    var b = best[day];
-    out.push({ start: b.start, end: b.end, minutes: Math.min(1440, Math.max(1, Math.round(b.ms / MIN_MS))), tier: 'stretch',
-               what: '', day: day });
-  });
-  return out.sort(function (x, y) { return x.start - y.start; });
+  if (d.ask !== false) {
+    idle.forEach(function (g) {
+      if (g.tail || g.end > d.reported || nudges.some(function (n) { return idleMatch(n, g); })) return;
+      if (inClose(g)) return;                       // End day came first: applied below, nothing to ask
+      out.create.push({ start: g.start, end: g.end, what: g.prayer ? 'Prayer' : '',
+                        push: d.canPush === true && !g.prayer && g.end >= d.now - IDLE_FRESH_MS });
+    });
+  }
+  if (closes.length) {
+    gaps.filter(inClose).forEach(function (g) {
+      var r = g.kind === 'idle' ? A.actGapReason(g, d.reasons) : null;
+      A.actJudgeSteps(g, r ? r.reason : '').forEach(function (w) { out.write.push(w); });
+      if (g.kind === 'idle' && g.ms >= A.ACT_BREAK_MS && !r) {
+        var why = g.prayer ? 'Prayer' : A.ACT_IDLE_DEFAULT;
+        out.write.push({ type: 'actanswer', at: d.now, rid: 'jw-' + g.key + '-auto', detail: why,
+                         text: 'Idle ' + Math.round(g.ms / MIN_MS) + ' min: ' + A.actIdleWord(why) + ' (auto — End day)' });
+      }
+    });
+  }
+  return out;
+}
+
+/** The End-day rows (type 'off': his, Sleep's at night, or the 11:30 check's) in [from, upTo], as ms. */
+function dayCloses(rows, from, upTo) {
+  return (rows || []).filter(function (r) { return r.type === 'off' && r.at >= from && r.at <= upTo; })
+    .map(function (r) { return r.at; });
+}
+
+/** Item 31a: the "Why?" push. sw.js shows a watch-teach push with no buttons; a tap opens the sheet. */
+function idlePayload(g, offsetMin) {
+  return { kind: 'watch-teach', tag: 'probeing-watch-idle', goto: 'home',
+           title: 'Away ' + Math.round((g.end - g.start) / MIN_MS) + ' min (' + clock12(g.start, offsetMin) + '–' +
+                  clock12(g.end, offsetMin) + ') — why?',
+           body: 'Tap to say: Prayer, Washroom, Walk, Chit-chat, Food or Other. No answer: "Idle (break)" at End day.' };
 }
 
 function isDailyRefusal(msg) {
@@ -1291,12 +1392,19 @@ async function runQuiet(sb: Sb, owner: string, now: number, set: Record<string, 
     .map((r) => blockOf(r, kinds));
   const clipped = labelClip(blocks, await teachLabelled(sb, owner, now - QUIET_BACK_MS));
   // Item 30a: before its SQL there is no `run` column; the checks run without it.
-  let cols = 'id, kind, device_id, streak_start, pushed_at, decided_at, state, ref_at, run';
+  // Item 31a: `pushes` (R6) comes with its SQL; before it "Up and working?" is asked once, as before.
+  let cols = 'id, kind, device_id, streak_start, pushed_at, decided_at, state, ref_at, run, what, pushes';
   let probe = await sb.from('activity_nudges').select(cols).eq('user_id', owner).in('kind', ASK_KINDS)
     .gte('streak_start', iso(now - QUIET_BACK_MS)).limit(500);
+  const hasPushes = !probe.error;
+  if (!hasPushes) {
+    cols = 'id, kind, device_id, streak_start, pushed_at, decided_at, state, ref_at, run, what';
+    probe = await sb.from('activity_nudges').select(cols).eq('user_id', owner).in('kind', ASK_KINDS)
+      .gte('streak_start', iso(now - QUIET_BACK_MS)).limit(500);
+  }
   const hasRun = !(probe.error && /\brun\b|42703/.test(String(probe.error.message || '') + String(probe.error.code || '')));
   if (!hasRun) {
-    cols = 'id, kind, device_id, streak_start, pushed_at, decided_at, state, ref_at';
+    cols = 'id, kind, device_id, streak_start, pushed_at, decided_at, state, ref_at, what';
     probe = await sb.from('activity_nudges').select(cols).eq('user_id', owner).in('kind', ASK_KINDS)
       .gte('streak_start', iso(now - QUIET_BACK_MS)).limit(500);
   }
@@ -1307,7 +1415,8 @@ async function runQuiet(sb: Sb, owner: string, now: number, set: Record<string, 
   const seen: Record<string, boolean> = {};
   const nudges = recent.concat(older).filter((n) => !seen[n.id] && (seen[n.id] = true))
     .map((n) => ({ id: n.id, kind: n.kind, device_id: n.device_id, streak_start: ms(n.streak_start), pushed_at: ms(n.pushed_at),
-                   decided_at: ms(n.decided_at), state: n.state, ref_at: ms(n.ref_at), run: runOf(n.run) }));
+                   decided_at: ms(n.decided_at), state: n.state, ref_at: ms(n.ref_at), run: runOf(n.run), what: n.what || '',
+                   pushes: hasPushes ? Number(n.pushes) || 1 : NaN }));
   const fajrAfter = fajrAfterFn(set);
   // Item 30b: a run question names its project only when it is not in Working on.
   let active: string[] = [];
@@ -1316,7 +1425,9 @@ async function runQuiet(sb: Sb, owner: string, now: number, set: Record<string, 
                            rows: rows.map((r) => ({ at: ms(r.at), type: r.type, rid: r.rid || '' })),
                            nightEnd: (t: number, until: number) => nightEnd(t, fajrAfter, Day.zoneOffsetMin(set.zone, t, set.offset), until),
                            fajrAfter, offsetAt: (t: number) => Day.zoneOffsetMin(set.zone, t, set.offset) });
-  const report: Record<string, unknown> = { decided: step.decide.length, pushed: [], nights: 0 };
+  const report: Record<string, unknown> = { decided: step.decide.length, pushed: [], nights: 0, wrote: step.write.length };
+  // Item 31a: an applied recommendation's rows first, then the question is marked.
+  for (const w of A.actSkipTies(step.write, rows)) await writeRow(sb, owner, set.zone, w);
   for (const d of step.decide) {
     await sb.from('activity_nudges').update({ state: d.state, decided_at: iso(now) }).eq('id', d.id).eq('user_id', owner);
   }
@@ -1339,6 +1450,16 @@ async function runQuiet(sb: Sb, owner: string, now: number, set: Record<string, 
     const sent = await pushAll(sb, owner, JSON.stringify(askPayload(p, id, nonce, fnUrl(req), anon, set.offset)),
                                { ttl: 1800, topic: 'probeing-watch-ask', urgency: 'high' });
     (report.pushed as unknown[]).push({ kind: p.kind, ...sent });
+  }
+  // Item 31a, R6: "Up and working?" again, claimed first so two devices' runs push it once.
+  for (const r of (hasPushes ? step.repush : [])) {
+    const nonce = newNonce();
+    const mark = await sb.from('activity_nudges').update({ pushes: r.pushes + 1, pushed_at: iso(now), nonce_sha256: await sha256Hex(nonce) })
+      .eq('id', r.id).eq('user_id', owner).eq('state', 'sent').eq('pushes', r.pushes).select('id');
+    if (mark.error || !(mark.data || []).length) continue;
+    const sent = await pushAll(sb, owner, JSON.stringify(askPayload(r.p, r.id, nonce, fnUrl(req), anon, set.offset)),
+                               { ttl: 1800, topic: 'probeing-watch-ask', urgency: 'high' });
+    (report.pushed as unknown[]).push({ kind: 'upwork', again: r.pushes + 1, ...sent });
   }
   for (const n of step.nights) {
     if (n.minutes > 0) {
@@ -1540,36 +1661,86 @@ async function runAuto(sb: Sb, owner: string, now: number, set: Record<string, a
   return { decided: step.decide.length, asked };
 }
 
-/** Item 30a: slips, focus losses and each day's longest stretch, recounted from yesterday's counter day. */
-async function runFocus(sb: Sb, owner: string, now: number, set: Record<string, any>) {
+/** Item 31a: the day judged (activity.js actSignals -> actJudge), recounted from yesterday's counter day:
+ *  the records (activity_focus), the idle "Why?" questions and their push, and End day's applied
+ *  recommendations. Replaces item 30a's slips and focus losses. */
+async function runJudge(sb: Sb, owner: string, now: number, set: Record<string, any>) {
   const offAt = (t: number) => Day.zoneOffsetMin(set.zone, t, set.offset);
   const keepFrom = Day.counterDayStart(now - FOCUS_BACK_MS, offAt(now - FOCUS_BACK_MS));
   const from = keepFrom - 2 * 3600000;
   const rows = await readRows(sb, owner, from);
+  const mine = rows.map((r) => ({ at: ms(r.at), type: r.type, rid: r.rid || '' }));
   const walk = A.actWalk(rows, from, now);
+  const domain = A.actJudgeDomain(rows, from, now);
   const kinds = await deviceKinds(sb, owner);
-  const blocks = must(await sb.from('activity_blocks').select('*').eq('user_id', owner).eq('mode', 'work')
+  // Every mode: a bare block (written after a break of his began, item 23) still says what the time was.
+  const blocks = must(await sb.from('activity_blocks').select('*').eq('user_id', owner)
     .gte('ended_at', iso(from)).order('started_at', { ascending: true }).limit(5000)).map((r) => blockOf(r, kinds));
-  const clipped = labelClip(blocks, await teachLabelled(sb, owner, from));
-  const recs = focusRecords(clipped, walk.work, (t: number) => Day.counterDate(t, offAt(t)), keepFrom);
+  const clipped = A.actClip(labelClip(blocks, await teachLabelled(sb, owner, from)), domain);
+  const extra = must(await sb.from('events').select('at, type, rid, detail').eq('user_id', owner)
+    .in('type', ['prayer', 'actanswer']).gte('at', iso(from)).order('at', { ascending: true }).limit(3000));
+  const prayers = extra.filter((r) => r.type === 'prayer').map((r) => ms(r.at));
+  const reasons = A.actIdleReasons(extra.filter((r) => /^jw-/.test(String(r.rid || ''))));
+  const signals = A.actSignals(clipped, domain);
+  const gaps = A.actJudge({ signals, spans: domain, work: walk.work, prayers });
+  const recs = A.actJudgeRecords(gaps, { dayOf: (t: number) => Day.counterDate(t, offAt(t)), keepFrom, reasons, signals });
+  const report: Record<string, unknown> = { kept: recs.length, dropped: 0 };
   const want: Record<string, boolean> = {};
   if (recs.length) {
-    const up = await sb.from('activity_focus').upsert(recs.map((r: Record<string, any>) => {
-      want[r.tier + '|' + r.start] = true;
-      return { user_id: owner, tier: r.tier, start_at: iso(r.start), end_at: iso(r.end), day: r.day, minutes: r.minutes,
-               what: r.what, updated_at: iso(now) };
-    }), { onConflict: 'user_id,tier,start_at' });
+    const toRow = (r: Record<string, any>) => ({ user_id: owner, tier: r.tier, start_at: iso(r.start), end_at: iso(r.end), day: r.day,
+                                                 minutes: r.minutes, what: r.what, updated_at: iso(now) });
+    let kept = recs;
+    let up = await sb.from('activity_focus').upsert(kept.map(toRow), { onConflict: 'user_id,tier,start_at' });
+    // Before the item 31ab SQL only item 30a's tiers are allowed: keep those.
+    if (up.error && /23514|check/i.test(String(up.error.code || '') + String(up.error.message || ''))) {
+      kept = recs.filter((r: Record<string, any>) => ['slip', 'loss', 'stretch'].indexOf(r.tier) !== -1);
+      up = kept.length ? await sb.from('activity_focus').upsert(kept.map(toRow), { onConflict: 'user_id,tier,start_at' }) : up;
+      if (!kept.length) up = { error: null } as typeof up;
+    }
     if (up.error) throw new Error(up.error.message);
+    kept.forEach((r: Record<string, any>) => { want[r.tier + '|' + r.start] = true; });
+    report.kept = kept.length;
   }
-  // A streak that grew into a break, or a stretch a later block cut: gone.
-  let dropped = 0;
+  // A record the gaps no longer make (a later block, a label, an applied break): gone.
   const have = must(await sb.from('activity_focus').select('tier, start_at').eq('user_id', owner).gte('start_at', iso(keepFrom)).limit(2000));
   for (const h of have) {
     if (want[h.tier + '|' + ms(h.start_at)]) continue;
     await sb.from('activity_focus').delete().eq('user_id', owner).eq('tier', h.tier).eq('start_at', h.start_at);
-    dropped += 1;
+    report.dropped = Number(report.dropped) + 1;
   }
-  return { kept: recs.length, dropped };
+
+  // The idle questions; before the item 31ab SQL kind 'idle' is refused and nothing is asked.
+  const probe = await sb.from('activity_nudges').select('id, streak_start, span_end, state').eq('user_id', owner).eq('kind', 'idle')
+    .gte('streak_start', iso(from)).limit(300);
+  if (probe.error) return Object.assign(report, { idle: 'no table' });
+  const nudges = must(probe).map((n) => ({ id: n.id, streak_start: ms(n.streak_start), span_end: ms(n.span_end), state: n.state }));
+  const seen = must(await sb.from('watch_devices').select('last_seen_at').eq('user_id', owner).limit(50))
+    .map((x) => ms(x.last_seen_at)).filter((t) => isFinite(t) && t >= now - IDLE_SEEN_MS);
+  const reported = seen.length ? Math.min(...seen) - 2 * MIN_MS : -Infinity;
+  const fajrAfter = fajrAfterFn(set);
+  const canPush = !walk.asleep && !nightNow(now, offAt(now), fajrAfter);
+  const closes = dayCloses(mine, from, now - APPLY_DELAY_MS);
+  const step = judgeStep({ now, gaps, nudges, reasons, reported, ask: set.checks, canPush, closes });
+  for (const w of A.actSkipTies(step.write, rows)) await writeRow(sb, owner, set.zone, w);
+  for (const dd of step.decide) {
+    await sb.from('activity_nudges').update({ state: dd.state, decided_at: iso(now) }).eq('id', dd.id).eq('user_id', owner).eq('state', 'pending');
+  }
+  for (const sp of step.spans) {
+    await sb.from('activity_nudges').update({ span_end: iso(sp.end) }).eq('id', sp.id).eq('user_id', owner).eq('state', 'pending');
+  }
+  let pushed = 0;
+  for (const c of step.create) {
+    // One question per gap (activity_nudges_idle_gap_idx): a second run loses here.
+    const claim = await sb.from('activity_nudges').insert({
+      user_id: owner, device_id: null, kind: 'idle', ref_at: iso(c.start), streak_start: iso(c.start), span_end: iso(c.end),
+      what: c.what, state: 'pending', pushed_at: c.push ? iso(now) : null
+    }).select('id');
+    if (claim.error || !c.push) continue;
+    const sent = await pushAll(sb, owner, JSON.stringify(idlePayload(c, offAt(c.start))),
+                               { ttl: 3600, topic: 'probeing-watch-teach', urgency: 'normal' });
+    pushed += sent.sent ? 1 : 0;
+  }
+  return Object.assign(report, { asked: step.create.length, pushed, wrote: step.write.length, closes: closes.length });
 }
 
 /** The distraction check after an ingest: decisions, rows, pushes. */
@@ -1586,7 +1757,10 @@ async function runNudges(sb: Sb, owner: string, now: number, set: Record<string,
     .eq('user_id', owner).eq('kind', 'distract').gte('streak_start', iso(now - 12 * 3600000)).limit(500));
   const nudges = nudgeRows.map((n) => ({ id: n.id, device_id: n.device_id, streak_start: ms(n.streak_start),
                                          pushed_at: ms(n.pushed_at), state: n.state }));
-  const step = nudgeStep({ now, on: set.on, walk, blocks: clipped, nudges,
+  // Item 31a: earned (R1) at an instant, from the signals over the time he meant to work.
+  const domain = A.actJudgeDomain(rows, now - 6 * 3600000, now);
+  const signals = A.actSignals(A.actClip(clipped, domain), domain);
+  const step = nudgeStep({ now, on: set.on, walk, blocks: clipped, nudges, earnedAt: (t: number) => A.actEarnedAt(signals, t),
                            rows: rows.map((r) => ({ at: ms(r.at), type: r.type, rid: r.rid || '' })) });
   const report: Record<string, unknown> = { decided: step.decide.length, wrote: [], pushed: [] };
 
@@ -1721,7 +1895,7 @@ async function opIngest(sb: Sb, dev: Record<string, any>, body: Record<string, a
   }
   let focus: Record<string, unknown> = {};
   try {
-    focus = await runFocus(sb, dev.user_id, now, set);
+    focus = await runJudge(sb, dev.user_id, now, set);
   } catch (e) {
     focus = { error: String((e as Error)?.message || e) };
   }

@@ -663,14 +663,14 @@ public final class PhoneRules {
 
     /* ── When to look again ───────────────────────────────────────────────── */
 
-    static final long NUDGE_AFTER_MS = 10 * MIN;     // the server pushes at 10 minutes
+    static final long NUDGE_AFTER_MS = 15 * MIN;     // the server pushes at 15 minutes (item 31a)
     static final long IGNORE_CHECK_MS = 5 * MIN + 30000L;  // and breaks 5 minutes after the push
     static final long STREAK_GAP_MS = 2 * MIN;
     static final long LIVE_MS = 2 * MIN;
 
     /**
      * Android runs the watcher every 15 minutes at best. While a distraction is
-     * on screen now, look again sooner: at its 10-minute mark (so the push is
+     * on screen now, look again sooner: at its 15-minute mark (so the push is
      * not late), then 5.5 minutes on (so an ignored push becomes a break).
      * Returns the delay in ms, or -1 when nothing is on.
      */

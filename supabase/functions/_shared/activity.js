@@ -1102,6 +1102,490 @@ function actAutoOpen(n, walk, rows, active) {
   return cur <= n.ref_at;
 }
 
+/* ── Item 31a: minute signals and the day's judgement ─────────────────────
+ * Every device's blocks become one line of signals inside his working time: work (laptop work,
+ * helpers, meetings: the laptop sends only minutes with input, so a screen left on is not work),
+ * distraction (laptop work halted and a distraction on either device), idle (no device in use),
+ * unclear. Phone use while the laptop works is work (music, R7); laptop idle, the phone decides.
+ * The gaps between work are then judged (R1-R5); activity-ingest keeps the records, the app's
+ * sheet and day-end card read the same judgement. Rules: claudeWorkingDocs/plan-item31.md. */
+
+var ACT_EARN_MS = 40 * 60000;          // R1: this much work with no distraction earns a rest
+var ACT_BREAK_MS = 15 * 60000;         // a gap this long is a break (R3, R5)
+var ACT_DESERVED_NOTE_MS = 20 * 60000; // a deserved break past this gets a note in the day-end card
+var ACT_LOW_MS = 25 * 60000;           // R3: distraction past this in one break is a LOW-tier focus loss
+var ACT_HIGH_FIRST_MS = 20 * 60000;    // R4: good work, then distraction past this,
+var ACT_HIGH_GOOD_MS = 20 * 60000;     // ...("good work": this much before it)
+var ACT_HIGH_LITTLE_MS = 15 * 60000;   // ...a little work (less than this), distraction again,
+var ACT_HIGH_CYCLE_MS = 30 * 60000;    // ...and the cycle's distraction past this: HIGH tier
+var ACT_CHAT_ONE_MS = 20 * 60000;      // R5: Chit-chat this long at once, or
+var ACT_CHAT_DAY_MS = 30 * 60000;      // ...this much in a day, is an external distraction
+var ACT_PRAYER_AFTER_MS = 5 * 60000;   // a prayer logged this soon after an idle gap was in it
+var ACT_UNWATCHED_MS = 2 * 3600000;    // no device at all this long: the watchers were off, not him
+var ACT_IDLE_REASONS = ['Prayer', 'Washroom', 'Walk', 'Chitchat', 'Food', 'Other'];
+var ACT_IDLE_DEFAULT = 'Idle';         // R5: an idle gap nobody explained
+/* The rows a judgement writes: jb-/jr- a break and its resume, jw- the reason for an idle gap. */
+var ACT_JUDGE_RID = /^(jb|jr|jw)-/;
+/* Breaks and resumes written for him or by a sheet answer. Left out when finding the time he
+ * meant to work (actJudgeDomain), so a gap stays a gap after its break is written. */
+var ACT_JUDGED_RID = /^(ab|ar|aw|qb|qr|kb|kr|nd|ne|jb|jr)-/;
+
+/** The word for a distraction block: its site's well-known name, else a phone app's (the phone
+ *  sends "YouTube", no site), else 'distraction'. */
+function actDistractName(b) {
+  var w = actDistractWord(b);
+  if (w !== 'distraction') return w;
+  var app = actNorm(String((b && b.app) || '').replace(/\.exe$/i, ''));
+  if (!app) return w;
+  var keys = Object.keys(ACT_DISTRACT_NAMES);
+  for (var i = 0; i < keys.length; i++) {
+    var label = keys[i].split('.')[0];
+    if (label.length >= 5 && app.indexOf(label) !== -1) return ACT_DISTRACT_NAMES[keys[i]];
+  }
+  return w;
+}
+
+/**
+ * The signals over `spans` (his working time): [{start, end, sig, meet, what}] in order, covering
+ * the spans whole. sig: work, distraction, idle or unclear; meet: only meetings were on; what: the
+ * distraction's word. blocks: {start, end, category, kind ('phone' or the laptop), domain, app}.
+ */
+function actSignals(blocks, spans) {
+  var out = [];
+  actMergeSpans(spans || []).forEach(function (s) {
+    var ev = [];
+    (blocks || []).forEach(function (b) {
+      var a = Math.max(b.start, s[0]);
+      var z = Math.min(b.end, s[1]);
+      if (!(z > a)) return;
+      var c = b.category;
+      var cls = c === 'distraction' ? 'd' : c === 'work' || c === 'meeting' ? (b.kind === 'phone' ? 'pw' : 'lw') : 'o';
+      var x = { cls: cls, meet: c === 'meeting', word: cls === 'd' ? actDistractName(b) : '' };
+      ev.push({ t: a, x: x, d: 1 });
+      ev.push({ t: z, x: x, d: -1 });
+    });
+    ev.sort(function (p, q) { return p.t - q.t; });
+    var n = { lw: 0, pw: 0, d: 0, o: 0, m: 0 };
+    var words = Object.create(null);
+    var at = s[0];
+    var i = 0;
+    while (at < s[1]) {
+      while (i < ev.length && ev[i].t <= at) {
+        var e = ev[i++];
+        n[e.x.cls] += e.d;
+        if (e.x.meet) n.m += e.d;
+        if (e.x.word) words[e.x.word] = (words[e.x.word] || 0) + e.d;
+      }
+      var next = i < ev.length ? Math.min(ev[i].t, s[1]) : s[1];
+      var sig = n.lw > 0 ? 'work' : n.d > 0 ? 'distraction' : n.pw > 0 ? 'work' : n.o > 0 ? 'unclear' : 'idle';
+      var meet = sig === 'work' && n.m > 0 && n.m === n.lw + n.pw;
+      var what = sig === 'distraction' ? Object.keys(words).filter(function (k) { return words[k] > 0; }).sort()[0] || 'distraction' : '';
+      var last = out[out.length - 1];
+      if (last && last.end === at && last.sig === sig && last.meet === meet && last.what === what) last.end = next;
+      else if (next > at) out.push({ start: at, end: next, sig: sig, meet: meet, what: what });
+      at = next;
+    }
+  });
+  return out;
+}
+
+/** The time he meant to work: actWalk's work spans over his rows, without the breaks written for
+ *  him or by an answer (ACT_JUDGED_RID). rows: [{at, type, rid}]. */
+function actJudgeDomain(rows, fromMs, toMs) {
+  var own = (rows || []).filter(function (r) { return !ACT_JUDGED_RID.test(String((r && r.rid) || '')); });
+  return actWalk(own, fromMs, toMs).work;
+}
+
+/** A gap's key, from its start: 'g' + seconds in base 36. Rows written for it carry it. */
+function actGapKey(start) {
+  return 'g' + Math.floor(start / 1000).toString(36);
+}
+
+/** The instant a key stands for, or NaN. */
+function actGapKeyAt(key) {
+  var m = /^g([0-9a-z]{1,12})$/.exec(String(key || ''));
+  return m ? parseInt(m[1], 36) * 1000 : NaN;
+}
+
+/**
+ * The day judged: every gap of 2 minutes or more between work, inside `d.spans` (actJudgeDomain).
+ * d: {signals (actSignals over the spans), spans, work (the clock's own work spans, all rows),
+ * prayers [ms]}. Returns [{start, end, ms, distMs, idleMs, unclearMs, what, earned, kind, low, high,
+ * note, head, tail, applied, prayer, key}] in order. kind: rest (earned, R1), slip / distraction
+ * (2-5 / 5-15, R2), dbreak / deserved (a distraction break, earned or not, R3), idle (R5), away
+ * (unclear), meeting (idle between two meetings: still the meeting), unwatched (nothing from any
+ * device for 2 hours or more: never judged). A span with no work at all is not judged: the watchers
+ * saw nothing to judge it by. applied: the clock is already off for most of it (a break of his, an
+ * auto break, or one written for it).
+ */
+function actJudge(d) {
+  var sigs = (d && d.signals) || [];
+  var out = [];
+  actMergeSpans((d && d.spans) || []).forEach(function (sp) {
+    var mine = sigs.filter(function (x) { return x.start >= sp[0] && x.end <= sp[1]; });
+    // Runs: work, and the time between (non-work) as one piece.
+    var runs = [];
+    mine.forEach(function (x) {
+      var w = x.sig === 'work';
+      var last = runs[runs.length - 1];
+      if (last && last.work === w) { last.end = x.end; last.segs.push(x); } else runs.push({ work: w, start: x.start, end: x.end, segs: [x] });
+    });
+    // A gap under 2 minutes is a glance: work goes on through it.
+    var items = [];
+    runs.forEach(function (r) {
+      var short = !r.work && r.end - r.start < ACT_GLANCE_MS;
+      var last = items[items.length - 1];
+      var w = r.work || short;
+      var ms = r.work ? r.end - r.start : 0;
+      if (last && last.work && w) { last.end = r.end; last.ms += ms; last.segs = last.segs.concat(r.segs); }
+      else items.push({ work: w, start: r.start, end: r.end, ms: ms, segs: r.segs });
+    });
+    if (!items.some(function (it) { return it.work && it.ms > 0; })) return;
+    var solid = 0;                       // work since the last distraction or break (R1)
+    var gaps = [];
+    items.forEach(function (it, k) {
+      if (it.work) { solid += it.ms; return; }
+      var g = { start: it.start, end: it.end, ms: it.end - it.start, distMs: 0, idleMs: 0, unclearMs: 0, what: '',
+                earned: solid >= ACT_EARN_MS, kind: '', low: false, high: false, note: false,
+                head: k === 0, tail: k === items.length - 1, applied: false, prayer: false, key: actGapKey(it.start),
+                before: k > 0 ? items[k - 1] : null, after: k + 1 < items.length ? items[k + 1] : null };
+      var words = Object.create(null);
+      it.segs.forEach(function (x) {
+        var ms = x.end - x.start;
+        if (x.sig === 'distraction') { g.distMs += ms; words[x.what] = (words[x.what] || 0) + ms; }
+        else if (x.sig === 'idle') g.idleMs += ms;
+        else g.unclearMs += ms;
+      });
+      g.what = Object.keys(words).sort(function (a, b) { return (words[b] - words[a]) || (a < b ? -1 : 1); })[0] || '';
+      var bseg = g.before ? g.before.segs[g.before.segs.length - 1] : null;
+      var aseg = g.after ? g.after.segs[0] : null;
+      if (g.idleMs >= ACT_UNWATCHED_MS && g.distMs === 0 && g.unclearMs === 0) {
+        g.kind = 'unwatched';
+      } else if (g.ms < ACT_BREAK_MS) {
+        if (g.distMs < ACT_GLANCE_MS) g.kind = 'pause';        // a short idle or unclear gap: a good break
+        else if (g.earned) g.kind = 'rest';
+        else g.kind = g.distMs < ACT_SLIP_MS ? 'slip' : 'distraction';
+      } else if (g.idleMs > g.distMs && g.idleMs >= g.unclearMs && bseg && aseg && bseg.meet && aseg.meet) {
+        g.kind = 'meeting';                                      // no input between two meetings: the meeting
+      } else if (g.distMs >= ACT_BREAK_MS || (g.distMs >= g.idleMs && g.distMs >= g.unclearMs)) {
+        g.kind = g.earned ? 'deserved' : 'dbreak';
+        g.low = g.distMs > ACT_LOW_MS;
+        g.note = g.earned && g.ms >= ACT_DESERVED_NOTE_MS && g.ms <= ACT_LOW_MS;
+      } else {
+        g.kind = g.idleMs >= g.unclearMs ? 'idle' : 'away';
+      }
+      if (g.kind !== 'pause' && g.kind !== 'meeting' && g.kind !== 'unwatched') solid = 0;
+      gaps.push(g);
+    });
+    // R4: good work, a long distraction, a little work, distraction again: one HIGH-tier loss.
+    for (var i = 0; i < gaps.length; i++) {
+      var g1 = gaps[i];
+      if (!(g1.distMs > ACT_HIGH_FIRST_MS) || !g1.before || g1.before.ms < ACT_HIGH_GOOD_MS) continue;
+      var chain = [g1];
+      var dist = g1.distMs;
+      for (var j = i + 1; j < gaps.length; j++) {
+        var prev = chain[chain.length - 1];
+        var between = prev.after;
+        if (!between || between !== gaps[j].before || !(between.ms > 0) || between.ms >= ACT_HIGH_LITTLE_MS) break;
+        if (gaps[j].distMs < ACT_GLANCE_MS) break;
+        chain.push(gaps[j]);
+        dist += gaps[j].distMs;
+      }
+      if (chain.length < 2 || !(dist > ACT_HIGH_CYCLE_MS)) continue;
+      chain.forEach(function (g) { g.high = true; g.low = false; });
+      g1.highEnd = chain[chain.length - 1].end;
+      g1.highMs = dist;
+      i += chain.length - 1;
+    }
+    gaps.forEach(function (g) { delete g.before; delete g.after; out.push(g); });
+  });
+  var work = actMergeSpans((d && d.work) || []);
+  var prayers = ((d && d.prayers) || []).filter(function (t) { return isFinite(t); });
+  out.forEach(function (g) {
+    g.applied = actSpansMs(actIntersect(g.start, g.end, work)) * 2 < g.ms;
+    g.prayer = g.kind === 'idle' && prayers.some(function (t) { return t >= g.start && t <= g.end + ACT_PRAYER_AFTER_MS; });
+  });
+  return out;
+}
+
+/** R1 at instant t: 40 minutes of work or more since the last distraction (2 minutes or more), the
+ *  last break (15 or more) or his own last break. The non-work just before t is the gap t is in. */
+function actEarnedAt(signals, t) {
+  var list = (signals || []).filter(function (x) { return x.start < t; }).sort(function (a, b) { return b.start - a.start; });
+  var solid = 0;
+  var gap = null;                       // {ms, dist}: the non-work run being walked back through
+  var lead = true;                      // still in the gap t itself is in
+  var edge = null;
+  for (var i = 0; i < list.length; i++) {
+    var x = list[i];
+    var end = Math.min(x.end, t);
+    if (edge !== null && end !== edge) break;          // his own break: nothing before it counts
+    edge = x.start;
+    var ms = end - x.start;
+    if (x.sig === 'work') {
+      if (gap && (gap.dist >= ACT_GLANCE_MS || gap.ms >= ACT_BREAK_MS)) break;
+      lead = false;
+      gap = null;
+      solid += ms;
+    } else if (!lead) {
+      gap = gap || { ms: 0, dist: 0 };
+      gap.ms += ms;
+      if (x.sig === 'distraction') gap.dist += ms;
+    }
+  }
+  return solid >= ACT_EARN_MS;
+}
+
+/** Does a gap become a break when its recommendation is applied? (15 minutes or more, not a meeting). */
+function actJudgeBreaks(g) {
+  return g.ms >= ACT_BREAK_MS && g.kind !== 'meeting' && g.kind !== 'pause' && g.kind !== 'unwatched';
+}
+
+/** A gap's recommendation in words, for the sheet and the day-end card. reason: an idle gap's. */
+function actJudgeWords(g, reason) {
+  if (g.high) return 'Lost focus (high)';
+  if (g.low) return 'Lost focus (low)';
+  var r = reason || (g.prayer ? 'Prayer' : '');
+  return { rest: 'Rest (earned)', slip: 'Slip', distraction: 'Distraction', dbreak: 'Distraction break',
+           deserved: 'Deserved break', idle: 'Idle — ' + actIdleWord(r || ACT_IDLE_DEFAULT), away: 'Away (break)',
+           meeting: 'Meeting', pause: 'Short break', unwatched: 'Not watched' }[g.kind] || '';
+}
+
+/** An idle reason as shown: "Chit-chat" for the stored word. */
+function actIdleWord(r) {
+  return r === 'Chitchat' ? 'Chit-chat' : r === ACT_IDLE_DEFAULT ? 'Idle (break)' : String(r || '');
+}
+
+/** An idle reason as kept, or '' for anything else. */
+function actIdleReason(r) {
+  var s = String(r == null ? '' : r).replace(/[^A-Za-z]/g, '').toLowerCase();
+  var all = ACT_IDLE_REASONS.concat([ACT_IDLE_DEFAULT]);
+  for (var i = 0; i < all.length; i++) if (all[i].toLowerCase() === s) return all[i];
+  return '';
+}
+
+/** Idle reasons from jw- actanswer rows: key -> the newest reason (by `at`, then order). rows:
+ *  [{at, type, rid, detail}]. A row's key is the gap's: jw-<key>-<anything>. */
+function actIdleReasons(rows) {
+  var best = Object.create(null);
+  (rows || []).forEach(function (r, i) {
+    var m = /^jw-(g[0-9a-z]{1,12})-/.exec(String((r && r.rid) || ''));
+    var reason = m ? actIdleReason(r.detail) : '';
+    if (!reason) return;
+    var t = actMs(r.at);
+    var have = best[m[1]];
+    if (!have || t > have.t || (t === have.t && i > have.i)) best[m[1]] = { t: t, i: i, reason: reason, auto: /-auto$/.test(r.rid) };
+  });
+  return best;
+}
+
+/** The reason kept for an idle gap: the newest answer whose key falls inside it (blocks that came
+ *  later may move its start a little), {reason, auto}; else null. */
+function actGapReason(g, reasons) {
+  var best = null;
+  Object.keys(reasons || {}).forEach(function (k) {
+    var t = actGapKeyAt(k);
+    if (!(t >= g.start - ACT_GLANCE_MS && t < g.end)) return;
+    var r = reasons[k];
+    if (!best || r.t > best.t) best = r;
+  });
+  return best ? { reason: best.reason, auto: best.auto } : null;
+}
+
+/**
+ * The records the gaps make (activity_focus rows): [{tier, start, end, minutes, what, day}].
+ * tiers: slip, loss (a 5-15 min distraction; the name the v41 app knows), rest, dbreak, deserved,
+ * low, high, idle (what: the reason), away, external (Chit-chat, R5), stretch (each day's longest
+ * work between distractions and breaks). opts: {dayOf(t), keepFrom, reasons (actIdleReasons),
+ * signals (for the stretches)}.
+ */
+function actJudgeRecords(gaps, opts) {
+  var o = opts || {};
+  var keep = isFinite(o.keepFrom) ? o.keepFrom : -Infinity;
+  var dayOf = o.dayOf || function () { return ''; };
+  var out = [];
+  function rec(tier, a, z, ms, what) {
+    if (a < keep) return;
+    out.push({ tier: tier, start: a, end: z, minutes: Math.min(1440, Math.max(1, Math.round(ms / 60000))),
+               what: String(what || '').replace(/[^A-Za-z ]/g, '').slice(0, 20), day: dayOf(a) });
+  }
+  var chat = [];
+  (gaps || []).forEach(function (g) {
+    var tier = { rest: 'rest', slip: 'slip', distraction: 'loss', dbreak: 'dbreak', deserved: 'deserved', away: 'away' }[g.kind];
+    if (tier) rec(tier, g.start, g.end, tier === 'slip' || tier === 'loss' ? g.distMs : g.ms, tier === 'rest' || tier === 'away' ? '' : g.what || 'distraction');
+    if (g.kind === 'idle') {
+      var r = actGapReason(g, o.reasons);
+      var why = r ? r.reason : g.prayer ? 'Prayer' : ACT_IDLE_DEFAULT;
+      rec('idle', g.start, g.end, g.ms, why);
+      if (why === 'Chitchat') chat.push(g);
+    }
+    if (g.low) rec('low', g.start, g.end, g.distMs, g.what || 'distraction');
+    if (g.high && isFinite(g.highEnd)) rec('high', g.start, g.highEnd, g.highMs, g.what || 'distraction');
+  });
+  // R5: Chit-chat is an external distraction when one is long, or the day's add up.
+  var byDay = Object.create(null);
+  chat.forEach(function (g) { var k = dayOf(g.start); byDay[k] = (byDay[k] || 0) + g.ms; });
+  chat.forEach(function (g) {
+    if (g.ms > ACT_CHAT_ONE_MS || byDay[dayOf(g.start)] > ACT_CHAT_DAY_MS) rec('external', g.start, g.end, g.ms, 'Chitchat');
+  });
+  // Stretches: work between gaps that broke focus (anything but a short pause or a meeting) and
+  // between his own breaks (the signals stop there).
+  var cut = (gaps || []).filter(function (g) { return g.kind !== 'pause' && g.kind !== 'meeting' && g.kind !== 'unwatched'; });
+  var best = Object.create(null);
+  var cur = null;
+  var prevEnd = null;
+  function close(c) {
+    if (!c || c.ms < 60000) return;
+    var k = dayOf(c.start);
+    if (!best[k] || c.ms > best[k].ms) best[k] = c;
+  }
+  (o.signals || []).forEach(function (x) {
+    var broken = cut.some(function (g) { return x.start >= g.start && x.start < g.end; });
+    if (broken || (prevEnd !== null && x.start !== prevEnd)) { close(cur); cur = null; }
+    prevEnd = x.end;
+    if (broken || x.sig !== 'work') return;
+    if (!cur) cur = { start: x.start, end: x.end, ms: 0 };
+    cur.end = x.end;
+    cur.ms += x.end - x.start;
+  });
+  close(cur);
+  Object.keys(best).sort().forEach(function (k) { rec('stretch', best[k].start, best[k].end, best[k].ms, ''); });
+  return out.sort(function (x, y) { return (x.start - y.start) || (x.tier < y.tier ? -1 : 1); });
+}
+
+/**
+ * The rows that apply a gap's recommendation (R3/R5, at End day or on an idle answer): a break at
+ * its start and, unless it ran to the end of the working time, a resume where work came back.
+ * Rids carry the gap's key, so the server and every device write them once. Nothing for a gap
+ * already off the clock, or one that is not a break. reason: an idle gap's.
+ */
+function actJudgeSteps(g, reason) {
+  if (!actJudgeBreaks(g) || g.applied) return [];
+  var text = g.kind === 'idle' ? actIdleWord(reason || (g.prayer ? 'Prayer' : ACT_IDLE_DEFAULT))
+           : g.kind === 'away' ? 'Away (auto)' : g.kind === 'deserved' ? 'Break (deserved — auto)' : 'Distraction (auto)';
+  // At the very start of his working time his own row is there: the break goes a second after it.
+  var out = [{ type: 'break', at: g.head ? g.start + 1000 : g.start, rid: 'jb-' + g.key, text: text }];
+  if (!g.tail) out.push({ type: 'resume', at: g.end, rid: 'jr-' + g.key, text: 'Resume (back at work — auto)' });
+  return out;
+}
+
+/** activity_focus rows (any days) -> the figures the day-end card, Review and the reports show. The
+ *  first six are item 30a's, kept so a saved report reads as it did. */
+function actJudgeSummary(rows) {
+  var s = { losses: 0, lossMin: 0, slips: 0, slipMin: 0, longestMin: 0, top: '',
+            rests: 0, restMin: 0, dbreaks: 0, dbreakMin: 0, deserved: 0, deservedMin: 0, deservedLong: 0,
+            lows: 0, lowMin: 0, highs: 0, highMin: 0, idles: 0, idleMin: 0, idleBy: {}, aways: 0, awayMin: 0,
+            externals: 0, externalMin: 0 };
+  var by = Object.create(null);
+  var any = false;
+  (rows || []).forEach(function (r) {
+    var m = Math.round(Number(r && r.minutes));
+    if (!(m > 0)) return;
+    any = true;
+    var w = String(r.what || '');
+    switch (r.tier) {
+      case 'stretch': s.longestMin = Math.max(s.longestMin, m); return;
+      case 'loss': s.losses += 1; s.lossMin += m; break;
+      case 'slip': s.slips += 1; s.slipMin += m; break;
+      case 'rest': s.rests += 1; s.restMin += m; return;
+      case 'dbreak': s.dbreaks += 1; s.dbreakMin += m; break;
+      case 'deserved': s.deserved += 1; s.deservedMin += m; if (m >= 20 && m <= 25) s.deservedLong += 1; return;
+      case 'low': s.lows += 1; s.lowMin += m; return;
+      case 'high': s.highs += 1; s.highMin += m; return;
+      case 'idle': s.idles += 1; s.idleMin += m; s.idleBy[w || ACT_IDLE_DEFAULT] = (s.idleBy[w || ACT_IDLE_DEFAULT] || 0) + m; return;
+      case 'away': s.aways += 1; s.awayMin += m; return;
+      case 'external': s.externals += 1; s.externalMin += m; return;
+      default: return;
+    }
+    by[w || 'distraction'] = (by[w || 'distraction'] || 0) + m;
+  });
+  s.top = Object.keys(by).sort(function (x, y) { return (by[y] - by[x]) || (x < y ? -1 : 1); })[0] || '';
+  return any ? s : null;
+}
+
+/* ── Item 31b: the catch-up sheet's lines ─────────────────────────────────
+ * Grouped by the laptop's virtual desktop, then merged by what they were, in plain words. */
+
+var ACT_PLAIN_NAMES = { windowsterminal: 'Terminal', wt: 'Terminal', cmd: 'Terminal', powershell: 'Terminal',
+  pwsh: 'Terminal', conhost: 'Terminal', wsl: 'Terminal', code: 'VS Code', notepad: 'Notepad', 'notepad++': 'Notepad++',
+  explorer: 'File Explorer', winword: 'Word', excel: 'Excel', powerpnt: 'PowerPoint', outlook: 'Outlook', olk: 'Outlook',
+  discord: 'Discord', zoom: 'Zoom', teams: 'Teams', msteams: 'Teams', claude: 'Claude', idea64: 'IntelliJ',
+  pycharm64: 'PyCharm', webstorm64: 'WebStorm', systemsettings: 'Settings', photos: 'Photos' };
+var ACT_NO_DESKTOP = 'No desktop';
+
+/** A block's line name: Meeting, a distraction's word, Private, Browsing (a browser or a site), a phone
+ *  app ("Phone · YouTube"), else the app in plain words (WindowsTerminal -> Terminal). */
+function actLineName(b) {
+  if (b.category === 'meeting') return 'Meeting';
+  if (b.category === 'private') return 'Private';
+  if (b.category === 'distraction') {
+    var w = actDistractName(b);
+    return w === 'distraction' ? (b.kind === 'phone' && b.app ? 'Phone · ' + b.app : b.domain || 'Distraction') : w;
+  }
+  if (b.kind === 'phone') return 'Phone · ' + (String(b.app || '').trim() || 'app');
+  if (b.domain || actIsBrowser(b.app)) return 'Browsing';
+  var raw = String(b.app || '').replace(/\.exe$/i, '').trim();
+  var k = actWorkName(raw);
+  return ACT_PLAIN_NAMES[k] || raw || 'Unknown app';
+}
+
+/**
+ * The sheet's groups: [{desktop, project (the desktop's), ms, lines: [{name, category, project, rec,
+ * ms, start, end, apps, sites, desktops, ids, spans, auto}]}], most time first, "No desktop" last.
+ * Inside a desktop, blocks of the same name, category and (corrected) project are one line, however
+ * far apart. rec: the project the line should carry (its own, else the desktop's; a meeting or an
+ * unplaced line on a project's desktop is offered the desktop's project), '' for none. auto: the
+ * project was set by the watchers, not by him. blocks: {id, start, end, category, project, app,
+ * domain, desktop, kind}; fixes: actFixMap; cfg: {desktops, projects}.
+ */
+function actDeskGroups(blocks, fixes, cfg) {
+  var groups = Object.create(null);
+  var order = [];
+  (blocks || []).slice().sort(function (a, b) { return a.start - b.start; }).forEach(function (raw) {
+    var b = actFixed(raw, fixes);
+    if (!(b.end > b.start)) return;
+    var desk = actCleanDesktop(b.desktop) || ACT_NO_DESKTOP;
+    var gk = 'd' + actNorm(desk);
+    var g = groups[gk];
+    if (!g) {
+      g = groups[gk] = { desktop: desk, project: desk === ACT_NO_DESKTOP ? '' : actDeskProject(desk, cfg), ms: 0, lines: [], by: Object.create(null) };
+      order.push(g);
+    }
+    var name = actLineName(b);
+    var lk = [name, b.category, b.project || ''].join('|');
+    var line = g.by[lk];
+    if (!line) {
+      var placeable = b.category === 'work' || b.category === 'meeting' || b.category === 'unclear';
+      line = g.by[lk] = { name: name, category: b.category, project: b.project || '',
+                          rec: placeable ? (b.project || g.project || '') : '', ms: 0, start: b.start, end: b.end,
+                          apps: [], sites: [], desktops: [], ids: [], spans: [],
+                          auto: Boolean(b.project) && !(fixes && b.id && fixes[b.id]) };
+      g.lines.push(line);
+    }
+    line.ms += b.end - b.start;
+    line.start = Math.min(line.start, b.start);
+    line.end = Math.max(line.end, b.end);
+    g.ms += b.end - b.start;
+    var app = b.category === 'private' ? '' : String(b.app || '').replace(/\.exe$/i, '');
+    if (app && !actIsBrowser(b.app) && line.apps.indexOf(app) === -1) line.apps.push(app);
+    if (b.domain && b.category !== 'private' && line.sites.indexOf(b.domain) === -1) line.sites.push(b.domain);
+    if (desk !== ACT_NO_DESKTOP && line.desktops.indexOf(desk) === -1) line.desktops.push(desk);
+    if (b.id) line.ids.push(b.id);
+    var sp = line.spans[line.spans.length - 1];
+    if (sp && b.start - sp[1] <= ACT_GROUP_GAP_MS) sp[1] = Math.max(sp[1], b.end);
+    else line.spans.push([b.start, b.end, b.id || '']);
+  });
+  return order.map(function (g) {
+    g.lines.sort(function (x, y) { return (y.ms - x.ms) || (x.start - y.start); });
+    delete g.by;
+    return g;
+  }).sort(function (x, y) {
+    var nx = x.desktop === ACT_NO_DESKTOP;
+    var ny = y.desktop === ACT_NO_DESKTOP;
+    return nx !== ny ? (nx ? 1 : -1) : (y.ms - x.ms) || (x.desktop < y.desktop ? -1 : 1);
+  });
+}
+
 // What the Edge Function uses. The browser reads the globals directly.
 globalThis.ProBeingActivity = {
   ACT_CATEGORIES: ACT_CATEGORIES,
@@ -1175,5 +1659,31 @@ globalThis.ProBeingActivity = {
   actDeskProject: actDeskProject,
   actDeskClassify: actDeskClassify,
   actDesktopSplit: actDesktopSplit,
-  actAutoOpen: actAutoOpen
+  actAutoOpen: actAutoOpen,
+  ACT_EARN_MS: ACT_EARN_MS,
+  ACT_BREAK_MS: ACT_BREAK_MS,
+  ACT_LOW_MS: ACT_LOW_MS,
+  ACT_IDLE_REASONS: ACT_IDLE_REASONS,
+  ACT_IDLE_DEFAULT: ACT_IDLE_DEFAULT,
+  ACT_JUDGE_RID: ACT_JUDGE_RID,
+  ACT_JUDGED_RID: ACT_JUDGED_RID,
+  actDistractName: actDistractName,
+  actSignals: actSignals,
+  actJudgeDomain: actJudgeDomain,
+  actGapKey: actGapKey,
+  actGapKeyAt: actGapKeyAt,
+  actJudge: actJudge,
+  actJudgeBreaks: actJudgeBreaks,
+  actEarnedAt: actEarnedAt,
+  actJudgeWords: actJudgeWords,
+  actIdleWord: actIdleWord,
+  actIdleReason: actIdleReason,
+  actIdleReasons: actIdleReasons,
+  actGapReason: actGapReason,
+  actJudgeRecords: actJudgeRecords,
+  actJudgeSteps: actJudgeSteps,
+  actJudgeSummary: actJudgeSummary,
+  actLineName: actLineName,
+  actDeskGroups: actDeskGroups,
+  ACT_NO_DESKTOP: ACT_NO_DESKTOP
 };

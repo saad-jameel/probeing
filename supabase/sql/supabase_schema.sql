@@ -1663,7 +1663,7 @@ exception when duplicate_object then null; end $$;
 alter table public.activity_nudges drop constraint if exists activity_nudges_state_check;
 alter table public.activity_nudges add constraint activity_nudges_state_check check (state in ('sent', 'working', 'break',
   'answered', 'left', 'autobreak', 'question', 'stale', 'closed', 'awake', 'asleep', 'resumed', 'started', 'notwork',
-  'asking', 'rejected'));   -- rejected: item 30b
+  'asking', 'rejected', 'pending', 'applied'));   -- rejected: item 30b; pending, applied: item 31ab
 
 -- One per device, kind and start: an awake run and a distraction streak never collide.
 alter table public.activity_nudges drop constraint if exists activity_nudges_streak_key;
@@ -1728,12 +1728,12 @@ alter table public.activity_blocks add constraint activity_blocks_mode check (mo
 
 alter table public.activity_nudges drop constraint if exists activity_nudges_kind;
 alter table public.activity_nudges add constraint activity_nudges_kind
-  check (kind in ('distract', 'awake', 'resume', 'upwork', 'start', 'teach', 'auto'));   -- teach: item 29, auto: item 30b, so a re-run keeps their rows
+  check (kind in ('distract', 'awake', 'resume', 'upwork', 'start', 'teach', 'auto', 'idle'));   -- teach: item 29, auto: item 30b, so a re-run keeps their rows
 
 alter table public.activity_nudges drop constraint if exists activity_nudges_state_check;
 alter table public.activity_nudges add constraint activity_nudges_state_check check (state in ('sent', 'working', 'break',
   'answered', 'left', 'autobreak', 'question', 'stale', 'closed', 'awake', 'asleep', 'resumed', 'started', 'notwork',
-  'asking', 'rejected'));
+  'asking', 'rejected', 'pending', 'applied'));
 
 -- One open question per sleep, break or day-off stretch: "awake?" and "Up and working?"
 -- about one sleep count as one. It covers item 23's index, which is dropped.
@@ -1761,12 +1761,12 @@ alter table public.activity_nudges add column if not exists entry_min integer
 
 alter table public.activity_nudges drop constraint if exists activity_nudges_kind;
 alter table public.activity_nudges add constraint activity_nudges_kind
-  check (kind in ('distract', 'awake', 'resume', 'upwork', 'start', 'teach', 'auto'));
+  check (kind in ('distract', 'awake', 'resume', 'upwork', 'start', 'teach', 'auto', 'idle'));
 
 alter table public.activity_nudges drop constraint if exists activity_nudges_state_check;
 alter table public.activity_nudges add constraint activity_nudges_state_check check (state in ('sent', 'working', 'break',
   'answered', 'left', 'autobreak', 'question', 'stale', 'closed', 'awake', 'asleep', 'resumed', 'started', 'notwork',
-  'asking', 'rejected'));
+  'asking', 'rejected', 'pending', 'applied'));
 
 -- One open question at a time, and each name asked at most once a day. A name he made private is
 -- blanked on its rows (entry ''), so blank rows are left out of the second.
@@ -1923,12 +1923,53 @@ alter table public.user_settings add column if not exists activity_desktops json
 -- carry a project too (jsonb, no change).
 alter table public.activity_nudges drop constraint if exists activity_nudges_kind;
 alter table public.activity_nudges add constraint activity_nudges_kind
-  check (kind in ('distract', 'awake', 'resume', 'upwork', 'start', 'teach', 'auto'));
+  check (kind in ('distract', 'awake', 'resume', 'upwork', 'start', 'teach', 'auto', 'idle'));
 
 alter table public.activity_nudges drop constraint if exists activity_nudges_state_check;
 alter table public.activity_nudges add constraint activity_nudges_state_check check (state in ('sent', 'working', 'break',
   'answered', 'left', 'autobreak', 'question', 'stale', 'closed', 'awake', 'asleep', 'resumed', 'started', 'notwork',
-  'asking', 'rejected'));
+  'asking', 'rejected', 'pending', 'applied'));
 
 create unique index if not exists activity_nudges_open_auto_idx on public.activity_nudges (user_id)
   where kind = 'auto' and state = 'sent';
+
+-- ============================================================ item 31ab (16 Oct)
+-- Judgement and the catch-up sheet (claudeWorkingDocs/plan-item31.md). activity-ingest judges every
+-- gap between work (activity.js actJudge) and keeps more records; asks "Why?" about an idle gap;
+-- at End day applies every unanswered recommendation. New events rid prefixes, no schema change:
+-- jb- / jr- (the break and resume an applied recommendation writes), jw- (an idle gap's reason: an
+-- actanswer row, detail = Prayer / Washroom / Walk / Chitchat / Food / Other / Idle; the newest
+-- wins; "-auto" when End day chose it). The v41 app reads none of the new kinds or states.
+-- Safe to run twice.
+
+-- activity_focus: the day's judgement. slip / loss (a 5-15 min distraction) / stretch as before;
+-- rest (earned, R1), dbreak / deserved (a distraction break, R3), low / high (focus lost, R3 / R4),
+-- idle (what = the reason, R5), away (unclear), external (Chit-chat, R5).
+alter table public.activity_focus drop constraint if exists activity_focus_tier_check;
+alter table public.activity_focus add constraint activity_focus_tier_check check (tier in ('slip', 'loss', 'stretch',
+  'rest', 'dbreak', 'deserved', 'low', 'high', 'idle', 'away', 'external'));
+
+-- activity_nudges kind 'idle': "Why?" about an idle gap (streak_start = the gap's start, span_end = its
+-- end, what = the recommended reason: 'Prayer' when one was logged in it, else ''). No device, no
+-- nonce: answered in the app's sheet. State 'pending' -> answered / applied (End day) / closed (later
+-- blocks filled the gap). 'pending' and 'applied' are states the v41 app never reads.
+-- A run question ("start?", "back to work?", "Up and working?") still open when he ends the day is
+-- 'applied' too (its recommended answer written).
+alter table public.activity_nudges drop constraint if exists activity_nudges_kind;
+alter table public.activity_nudges add constraint activity_nudges_kind
+  check (kind in ('distract', 'awake', 'resume', 'upwork', 'start', 'teach', 'auto', 'idle'));
+
+alter table public.activity_nudges drop constraint if exists activity_nudges_state_check;
+alter table public.activity_nudges add constraint activity_nudges_state_check check (state in ('sent', 'working', 'break',
+  'answered', 'left', 'autobreak', 'question', 'stale', 'closed', 'awake', 'asleep', 'resumed', 'started', 'notwork',
+  'asking', 'rejected', 'pending', 'applied'));
+
+-- One question per idle gap.
+create unique index if not exists activity_nudges_idle_gap_idx on public.activity_nudges (user_id, streak_start)
+  where kind = 'idle';
+
+-- R6: how many times a question went out. "Up and working?" goes out again every hour while the work
+-- goes on, three times at most; then it is applied.
+alter table public.activity_nudges add column if not exists pushes integer not null default 1
+  check (pushes between 1 and 10);
+grant select (pushes) on public.activity_nudges to authenticated;
