@@ -167,6 +167,7 @@ var APPLY_DELAY_MS = 20 * MIN_MS;         // item 31a: End day's recommendations
 var APPLY_BACK_MS = 26 * 3600000;      // ...and reach back over the day it closed
 var IDLE_SEEN_MS = 2 * 3600000;        // an idle gap is asked once every device seen this recently has reported past it
 var IDLE_FRESH_MS = 60 * MIN_MS;          // ...and only pushed while this recent
+var IDLE_PUSH_MAX = 3;                  // ...at most this many "Why?" pushes a counter day
 var TEACH_PUSH_MAX = 2;                // ...pushed at most this many times a day; the rest wait in the sheet
 var TEACH_FIX_CHUNK = 100;             // block ids per update when today's blocks are filed again
 /* What an na- answer (the second button) leaves a question as; and each kind's two answers. */
@@ -1146,7 +1147,7 @@ function idleMatch(n, g) {
 /**
  * The idle questions and End day. d: {now, gaps (activity.js actJudge), nudges [{id, streak_start,
  * span_end, state}] (kind 'idle', ms), reasons (actIdleReasons), reported (every device seen lately has
- * reported up to here), ask (his switch), canPush, closes: his End-day rows (ms) at least APPLY_DELAY_MS
+ * reported up to here), ask (his switch), canPush, pushedToday ("Why?" pushes so far today, IDLE_PUSH_MAX), closes: his End-day rows (ms) at least APPLY_DELAY_MS
  * old, whether or not the day was started again since}. An idle gap of 15 minutes or more, over and
  * reported, is asked "Why?" (a prayer logged in it answers itself: no push); answered by any route, the
  * question closes; a gap later blocks filled is closed. Every gap before an End day is applied: a break
@@ -1170,11 +1171,13 @@ function judgeStep(d) {
     if (g.end !== n.span_end) out.spans.push({ id: n.id, end: g.end });
   });
   if (d.ask !== false) {
+    var budget = IDLE_PUSH_MAX - (Number(d.pushedToday) || 0);   // the rest wait in the sheet
     idle.forEach(function (g) {
       if (g.tail || g.end > d.reported || nudges.some(function (n) { return idleMatch(n, g); })) return;
       if (inClose(g)) return;                       // End day came first: applied below, nothing to ask
-      out.create.push({ start: g.start, end: g.end, what: g.prayer ? 'Prayer' : '',
-                        push: d.canPush === true && !g.prayer && g.end >= d.now - IDLE_FRESH_MS });
+      var push = d.canPush === true && !g.prayer && g.end >= d.now - IDLE_FRESH_MS && budget > 0;
+      if (push) budget -= 1;
+      out.create.push({ start: g.start, end: g.end, what: g.prayer ? 'Prayer' : '', push: push });
     });
   }
   if (closes.length) {
@@ -1672,13 +1675,15 @@ async function runJudge(sb: Sb, owner: string, now: number, set: Record<string, 
     .gte('ended_at', iso(from)).order('started_at', { ascending: true }).limit(5000)).map((r) => blockOf(r, kinds));
   // As the blocks are now: the judgement looks back (End day, the records), so a label given later counts
   // from the start (unlike the live checks' labelClip, which never act on time before a label).
-  const clipped = A.actClip(blocks, domain);
-  const extra = must(await sb.from('events').select('at, type, rid, detail').eq('user_id', owner)
-    .in('type', ['prayer', 'actanswer']).gte('at', iso(from)).order('at', { ascending: true }).limit(3000));
+  const extra = must(await sb.from('events').select('at, type, rid, detail, project').eq('user_id', owner)
+    .in('type', ['prayer', 'actanswer', 'actfix']).gte('at', iso(from - 86400000)).order('at', { ascending: true }).limit(3000));
+  // His corrections in the sheet (actfix) count here as they do in the sheet.
+  const fixes = A.actFixMap(extra.filter((r) => r.type === 'actfix'));
+  const clipped = A.actClip(blocks.map((b) => A.actFixed(b, fixes)), domain);
   const prayers = extra.filter((r) => r.type === 'prayer').map((r) => ms(r.at));
   const reasons = A.actIdleReasons(extra.filter((r) => /^jw-/.test(String(r.rid || ''))));
   const signals = A.actSignals(clipped, domain);
-  const gaps = A.actJudge({ signals, spans: domain, work: walk.work, prayers });
+  const gaps = A.actJudge({ signals, spans: domain, work: walk.work, prayers, rows });
   const recs = A.actJudgeRecords(gaps, { dayOf: (t: number) => Day.counterDate(t, offAt(t)), keepFrom, reasons, signals });
   const report: Record<string, unknown> = { kept: recs.length, dropped: 0 };
   const want: Record<string, boolean> = {};
@@ -1706,18 +1711,22 @@ async function runJudge(sb: Sb, owner: string, now: number, set: Record<string, 
   }
 
   // The idle questions; before the item 31ab SQL kind 'idle' is refused and nothing is asked.
-  const probe = await sb.from('activity_nudges').select('id, streak_start, span_end, state').eq('user_id', owner).eq('kind', 'idle')
+  const probe = await sb.from('activity_nudges').select('id, streak_start, span_end, state, pushed_at').eq('user_id', owner).eq('kind', 'idle')
     .gte('streak_start', iso(from)).limit(300);
   if (probe.error) return Object.assign(report, { idle: 'no table' });
   const nudges = must(probe).map((n) => ({ id: n.id, streak_start: ms(n.streak_start), span_end: ms(n.span_end), state: n.state }));
+  const dayFrom = Day.counterDayStart(now, offAt(now));
+  const pushedToday = must(probe).filter((n) => ms(n.pushed_at) >= dayFrom).length;
   const seen = must(await sb.from('watch_devices').select('last_seen_at').eq('user_id', owner).limit(50))
     .map((x) => ms(x.last_seen_at)).filter((t) => isFinite(t) && t >= now - IDLE_SEEN_MS);
   const reported = seen.length ? Math.min(...seen) - 2 * MIN_MS : -Infinity;
   const fajrAfter = fajrAfterFn(set);
   const canPush = !walk.asleep && !nightNow(now, offAt(now), fajrAfter);
   const closes = dayCloses(mine, from, now - APPLY_DELAY_MS);
-  const step = judgeStep({ now, gaps, nudges, reasons, reported, ask: set.checks, canPush, closes });
-  for (const w of A.actSkipTies(step.write, rows)) await writeRow(sb, owner, set.zone, w);
+  const step = judgeStep({ now, gaps, nudges, reasons, reported, ask: set.checks, canPush, closes, pushedToday });
+  // A rid already in the table is never written again: applied once per gap part.
+  const written = new Set(rows.map((r) => String(r.rid || '')));
+  for (const w of A.actSkipTies(step.write, rows)) if (!written.has(w.rid)) await writeRow(sb, owner, set.zone, w);
   for (const dd of step.decide) {
     await sb.from('activity_nudges').update({ state: dd.state, decided_at: iso(now) }).eq('id', dd.id).eq('user_id', owner).eq('state', 'pending');
   }

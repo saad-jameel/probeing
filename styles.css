@@ -1078,6 +1078,9 @@ a.btn[hidden], a.link-btn[hidden] { display: none; }
 .catchup-rec { color: var(--muted); font-size: 13px; }
 .catchup-info { margin: 4px 0 0 24px; color: var(--muted); font-size: 13px; }
 .catchup-row.catchup-done { opacity: 0.6; }
+/* Item 31: 32 px tap targets in the sheet at 360 px. */
+.catchup-pick { width: 32px; height: 32px; margin: 0; vertical-align: middle; }
+.catchup-acts .link-btn, .catchup-deskhead .link-btn, .catchup-what.link-btn { min-height: 32px; }
 /* Accept all stays in reach however long the list is. */
 .catchup-dlg form > .dlg-actions { position: sticky; bottom: 0; background: var(--panel); padding: 10px 0 2px; margin-top: 10px; }
 #watchPairLine { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 12px; }

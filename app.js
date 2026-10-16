@@ -8644,14 +8644,18 @@ async function judgePendingRows() {
     .order('started_at', { ascending: true }).limit(5000);
   if (res.error) throw errorFrom(res.error);
   var kinds = await readDeviceKinds();
+  var fixRes = await sb.from('events').select('at,type,detail,project,rid').eq('type', 'actfix')
+    .gte('at', new Date(from - 86400000).toISOString()).order('at', { ascending: true }).limit(1000);
+  if (fixRes.error) throw errorFrom(fixRes.error);
+  var fixes = actFixMap((fixRes.data || []).concat(catchupHeld({ actfix: 1 })));
   var blocks = (res.data || []).map(function (r) {
-    return { id: r.id, start: Date.parse(r.started_at), end: Date.parse(r.ended_at), app: r.app || '', domain: r.domain || '',
-             category: r.category, project: r.project || '', rule_key: r.rule_key || '', desktop: r.desktop || '',
-             kind: kinds[r.device_id] || 'laptop' };
+    return actFixed({ id: r.id, start: Date.parse(r.started_at), end: Date.parse(r.ended_at), app: r.app || '', domain: r.domain || '',
+                      category: r.category, project: r.project || '', rule_key: r.rule_key || '', desktop: r.desktop || '',
+                      kind: kinds[r.device_id] || 'laptop' }, fixes);
   }).filter(function (b) { return b.end > b.start; });
   var domain = actJudgeDomain(rows, from, now);
   var gaps = actJudge({ signals: actSignals(actClip(blocks, domain), domain), spans: domain,
-                        work: actWalk(rows, from, now).work, prayers: [] });
+                        work: actWalk(rows, from, now).work, prayers: [], rows: rows });
   var steps = [];
   gaps.forEach(function (g) {
     actJudgeSteps(g, '').forEach(function (w) {
@@ -17004,7 +17008,7 @@ async function readCatchUp() {
   var asks = catchupAsks(nudges.concat(await readTeachAsk(dayStart), idle.asks), rids, since);
   var desk = { desktops: await readSheetDesktops(), projects: catchupProjects([]) };
   var groups = actDeskGroups(blocks, fixes, desk);
-  judgeLines(groups, blocks, since, now);
+  judgeLines(groups, blocks.map(function (b) { return actFixed(b, fixes); }), since, now);   // his corrections, as End day reads them
   var total = groups.reduce(function (n, g) { return n + g.ms; }, 0);
   if (!asks.length && total < CATCHUP_MIN_MS) return null;
   var until = blocks.reduce(function (m, b) { return Math.max(m, b.end); }, since);
@@ -17047,27 +17051,31 @@ async function readIdleAsks(dayStart) {
 }
 
 /* The order a line's judgement is told in: the worst gap it touches. */
-var JUDGE_RANK = { high: 7, low: 6, dbreak: 5, deserved: 4, distraction: 3, slip: 2, rest: 1 };
+var JUDGE_RANK = { high: 7, low: 6, dbreak: 5, deserved: 4, idle: 3.5, distraction: 3, slip: 2, rest: 1, meeting: 0.5 };
 
-/** Each distraction line's judgement (activity.js actJudge over the sheet's blocks and the server's rows):
- *  line.judge = its words, line.judgeAuto = already a break written for him. */
+/** Each line's judgement (activity.js actJudge over the sheet's blocks and the server's rows): line.judge =
+ *  what End day will write for the gap it is in (a break, idle, rest...), line.judgeAuto = already written.
+ *  An unclear line is only judged when its gap becomes a break; else it stays "what was this?". */
 function judgeLines(groups, blocks, since, now) {
   var rows = watchAskRows();
   var domain = actJudgeDomain(rows, since, now);
   var walk = actWalk(rows, since, now);
   var sig = actSignals(actClip(blocks, domain), domain);
-  var gaps = actJudge({ signals: sig, spans: domain, work: walk.work, prayers: [] });
+  var gaps = actJudge({ signals: sig, spans: domain, work: walk.work, prayers: [], rows: rows });
   groups.forEach(function (g) {
     g.lines.forEach(function (line) {
-      if (line.category !== 'distraction') return;
+      line.judge = '';
+      line.judgeAuto = false;
+      if (line.category === 'private') return;
       var best = null;
       gaps.forEach(function (x) {
         var hit = line.spans.some(function (sp) { return sp[0] < x.end && sp[1] > x.start; });
         var rank = x.high ? JUDGE_RANK.high : x.low ? JUDGE_RANK.low : JUDGE_RANK[x.kind] || 0;
         if (hit && rank && (!best || rank > best.rank)) best = { rank: rank, g: x };
       });
-      line.judge = best ? actJudgeWords(best.g) : '';
-      line.judgeAuto = Boolean(best && best.g.applied && actJudgeBreaks(best.g));
+      if (!best || (line.category !== 'distraction' && !actJudgeBreaks(best.g) && best.g.kind !== 'meeting')) return;
+      line.judge = actJudgeWords(best.g);
+      line.judgeAuto = Boolean(best.g.applied && actJudgeBreaks(best.g));
     });
   });
 }
@@ -17347,9 +17355,13 @@ function linePick(line) {
 /** What a line's recommendation says, in words: "→ ProBeing (auto)", "→ Slip", "→ not placed". */
 function lineRecText(line) {
   if (line.category === 'private') return '';
-  if (line.category === 'distraction') return line.judge ? '→ ' + line.judge + (line.judgeAuto ? ' (auto)' : '') : '';
+  var chose = Boolean(line.edit && line.edit.project !== undefined);
+  if (line.judge && !chose) return '→ ' + line.judge + (line.judgeAuto ? ' (auto)' : '');
+  if (line.category === 'distraction') return '';
   var p = linePick(line);
-  if (!p) return line.category === 'unclear' ? '→ not placed' : '→ work, no project';
+  // Item 31: unclear time stays on the clock; the sheet asks what it was, Work (or the desktop's project) meanwhile.
+  if (line.category === 'unclear' && !chose) return '? — what was this? → ' + (p || 'Work');
+  if (!p) return '→ work, no project';
   return '→ ' + p + (line.auto && p === line.project && !(line.edit && line.edit.project !== undefined) ? ' (auto)' : '');
 }
 

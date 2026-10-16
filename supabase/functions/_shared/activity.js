@@ -1121,7 +1121,9 @@ var ACT_HIGH_CYCLE_MS = 30 * 60000;    // ...and the cycle's distraction past th
 var ACT_CHAT_ONE_MS = 20 * 60000;      // R5: Chit-chat this long at once, or
 var ACT_CHAT_DAY_MS = 30 * 60000;      // ...this much in a day, is an external distraction
 var ACT_PRAYER_AFTER_MS = 5 * 60000;   // a prayer logged this soon after an idle gap was in it
-var ACT_UNWATCHED_MS = 2 * 3600000;    // no device at all this long: the watchers were off, not him
+var ACT_UNWATCHED_MS = 2 * 3600000;    // no laptop block this long: the watchers were off, not him
+var ACT_ON_MIN_MS = 60000;
+var ACT_CLOCK_ON = { work: 1, voice: 1, resume: 1, wake: 1 };             // a part of a gap still on the clock shorter than this is not written
 var ACT_IDLE_REASONS = ['Prayer', 'Washroom', 'Walk', 'Chitchat', 'Food', 'Other'];
 var ACT_IDLE_DEFAULT = 'Idle';         // R5: an idle gap nobody explained
 /* The rows a judgement writes: jb-/jr- a break and its resume, jw- the reason for an idle gap. */
@@ -1148,7 +1150,7 @@ function actDistractName(b) {
 /**
  * The signals over `spans` (his working time): [{start, end, sig, meet, what}] in order, covering
  * the spans whole. sig: work, distraction, idle or unclear; meet: only meetings were on; what: the
- * distraction's word. blocks: {start, end, category, kind ('phone' or the laptop), domain, app}.
+ * distraction's word; lap: the laptop reported a block there. blocks: {start, end, category, kind ('phone' or the laptop), domain, app}.
  */
 function actSignals(blocks, spans) {
   var out = [];
@@ -1160,12 +1162,12 @@ function actSignals(blocks, spans) {
       if (!(z > a)) return;
       var c = b.category;
       var cls = c === 'distraction' ? 'd' : c === 'work' || c === 'meeting' ? (b.kind === 'phone' ? 'pw' : 'lw') : 'o';
-      var x = { cls: cls, meet: c === 'meeting', word: cls === 'd' ? actDistractName(b) : '' };
+      var x = { cls: cls, meet: c === 'meeting', word: cls === 'd' ? actDistractName(b) : '', lap: b.kind !== 'phone' };
       ev.push({ t: a, x: x, d: 1 });
       ev.push({ t: z, x: x, d: -1 });
     });
     ev.sort(function (p, q) { return p.t - q.t; });
-    var n = { lw: 0, pw: 0, d: 0, o: 0, m: 0 };
+    var n = { lw: 0, pw: 0, d: 0, o: 0, m: 0, lap: 0 };
     var words = Object.create(null);
     var at = s[0];
     var i = 0;
@@ -1174,15 +1176,17 @@ function actSignals(blocks, spans) {
         var e = ev[i++];
         n[e.x.cls] += e.d;
         if (e.x.meet) n.m += e.d;
+        if (e.x.lap) n.lap += e.d;
         if (e.x.word) words[e.x.word] = (words[e.x.word] || 0) + e.d;
       }
       var next = i < ev.length ? Math.min(ev[i].t, s[1]) : s[1];
       var sig = n.lw > 0 ? 'work' : n.d > 0 ? 'distraction' : n.pw > 0 ? 'work' : n.o > 0 ? 'unclear' : 'idle';
       var meet = sig === 'work' && n.m > 0 && n.m === n.lw + n.pw;
       var what = sig === 'distraction' ? Object.keys(words).filter(function (k) { return words[k] > 0; }).sort()[0] || 'distraction' : '';
+      var lap = n.lap > 0;
       var last = out[out.length - 1];
-      if (last && last.end === at && last.sig === sig && last.meet === meet && last.what === what) last.end = next;
-      else if (next > at) out.push({ start: at, end: next, sig: sig, meet: meet, what: what });
+      if (last && last.end === at && last.sig === sig && last.meet === meet && last.what === what && last.lap === lap) last.end = next;
+      else if (next > at) out.push({ start: at, end: next, sig: sig, meet: meet, what: what, lap: lap });
       at = next;
     }
   });
@@ -1210,7 +1214,7 @@ function actGapKeyAt(key) {
 /**
  * The day judged: every gap of 2 minutes or more between work, inside `d.spans` (actJudgeDomain).
  * d: {signals (actSignals over the spans), spans, work (the clock's own work spans, all rows),
- * prayers [ms]}. Returns [{start, end, ms, distMs, idleMs, unclearMs, what, earned, kind, low, high,
+ * prayers [ms], rows (the event rows: where the clock is turned on inside a gap)}. Returns [{start, end, ms, distMs, idleMs, unclearMs, what, earned, kind, low, high,
  * note, head, tail, applied, prayer, key}] in order. kind: rest (earned, R1), slip / distraction
  * (2-5 / 5-15, R2), dbreak / deserved (a distraction break, earned or not, R3), idle (R5), away
  * (unclear), meeting (idle between two meetings: still the meeting), unwatched (nothing from any
@@ -1222,31 +1226,41 @@ function actJudge(d) {
   var sigs = (d && d.signals) || [];
   var out = [];
   actMergeSpans((d && d.spans) || []).forEach(function (sp) {
-    var mine = sigs.filter(function (x) { return x.start >= sp[0] && x.end <= sp[1]; });
-    // Runs: work, and the time between (non-work) as one piece.
+    var mine = actSilences(sigs.filter(function (x) { return x.start >= sp[0] && x.end <= sp[1]; }));
+    // Runs: work, not watched, unclear (actLongUnclear: its own piece, on the clock, never a
+    // break, so it never joins a distraction or idle stretch beside it), and the rest between as one piece.
     var runs = [];
-    mine.forEach(function (x) {
-      var w = x.sig === 'work';
+    actLongUnclear(mine).forEach(function (x) {
+      var c = x.sig === 'none' ? 'none' : x.sig === 'work' ? 'work' : x.longUnclear ? 'clear' : 'gap';
       var last = runs[runs.length - 1];
-      if (last && last.work === w) { last.end = x.end; last.segs.push(x); } else runs.push({ work: w, start: x.start, end: x.end, segs: [x] });
+      if (last && last.c === c) { last.end = x.end; last.segs.push(x); } else runs.push({ c: c, work: c === 'work', start: x.start, end: x.end, segs: [x] });
     });
     // A gap under 2 minutes is a glance: work goes on through it.
     var items = [];
     runs.forEach(function (r) {
-      var short = !r.work && r.end - r.start < ACT_GLANCE_MS;
+      var short = r.c === 'gap' && r.end - r.start < ACT_GLANCE_MS;
       var last = items[items.length - 1];
       var w = r.work || short;
       var ms = r.work ? r.end - r.start : 0;
       if (last && last.work && w) { last.end = r.end; last.ms += ms; last.segs = last.segs.concat(r.segs); }
-      else items.push({ work: w, start: r.start, end: r.end, ms: ms, segs: r.segs });
+      else items.push({ work: w, none: r.c === 'none', start: r.start, end: r.end, ms: ms, segs: r.segs });
     });
     if (!items.some(function (it) { return it.work && it.ms > 0; })) return;
     var solid = 0;                       // work since the last distraction or break (R1)
     var gaps = [];
     items.forEach(function (it, k) {
       if (it.work) { solid += it.ms; return; }
+      if (it.none) {                     // the laptop said nothing: not judged
+        gaps.push({ start: it.start, end: it.end, ms: it.end - it.start, distMs: 0, idleMs: it.end - it.start, unclearMs: 0, what: '',
+                    earned: false, kind: 'unwatched', low: false, high: false, note: false, head: k === 0, tail: k === items.length - 1,
+                    applied: false, prayer: false, key: actGapKey(it.start), before: k > 0 ? items[k - 1] : null,
+                    after: k + 1 < items.length ? items[k + 1] : null });
+        return;
+      }
       var g = { start: it.start, end: it.end, ms: it.end - it.start, distMs: 0, idleMs: 0, unclearMs: 0, what: '',
-                earned: solid >= ACT_EARN_MS, kind: '', low: false, high: false, note: false,
+                // Right after another non-work piece (a long unclear one): earned as that stretch began.
+                earned: k > 0 && !items[k - 1].work && gaps.length ? gaps[gaps.length - 1].earned : solid >= ACT_EARN_MS,
+                kind: '', low: false, high: false, note: false,
                 head: k === 0, tail: k === items.length - 1, applied: false, prayer: false, key: actGapKey(it.start),
                 before: k > 0 ? items[k - 1] : null, after: k + 1 < items.length ? items[k + 1] : null };
       var words = Object.create(null);
@@ -1265,6 +1279,8 @@ function actJudge(d) {
         if (g.distMs < ACT_GLANCE_MS) g.kind = 'pause';        // a short idle or unclear gap: a good break
         else if (g.earned) g.kind = 'rest';
         else g.kind = g.distMs < ACT_SLIP_MS ? 'slip' : 'distraction';
+      } else if (g.unclearMs > g.distMs && g.unclearMs > g.idleMs) {
+        g.kind = 'away';                                         // mostly unclear: stays on the clock, never a break
       } else if (g.idleMs > g.distMs && g.idleMs >= g.unclearMs && bseg && aseg && bseg.meet && aseg.meet) {
         g.kind = 'meeting';                                      // no input between two meetings: the meeting
       } else if (g.distMs >= ACT_BREAK_MS || (g.distMs >= g.idleMs && g.distMs >= g.unclearMs)) {
@@ -1272,7 +1288,7 @@ function actJudge(d) {
         g.low = g.distMs > ACT_LOW_MS;
         g.note = g.earned && g.ms >= ACT_DESERVED_NOTE_MS && g.ms <= ACT_LOW_MS;
       } else {
-        g.kind = g.idleMs >= g.unclearMs ? 'idle' : 'away';
+        g.kind = 'idle';
       }
       if (g.kind !== 'pause' && g.kind !== 'meeting' && g.kind !== 'unwatched') solid = 0;
       gaps.push(g);
@@ -1301,21 +1317,83 @@ function actJudge(d) {
   });
   var work = actMergeSpans((d && d.work) || []);
   var prayers = ((d && d.prayers) || []).filter(function (t) { return isFinite(t); });
+  // Rows that turn the clock on (his, or a watcher's resume): a break written before one would end there.
+  var starts = ((d && d.rows) || []).filter(function (r) { return r && ACT_CLOCK_ON[r.type]; })
+    .map(function (r) { return actMs(r.at); }).filter(function (t) { return isFinite(t); });
   out.forEach(function (g) {
-    g.applied = actSpansMs(actIntersect(g.start, g.end, work)) * 2 < g.ms;
+    // The parts still on the clock, each [a, z, a row is at a]: such a row inside the gap splits it,
+    // and each part is applied on its own (actJudgeSteps), so a second run finds nothing left.
+    g.on = [];
+    actIntersect(g.start, g.end, work).forEach(function (p) {
+      var cuts = starts.filter(function (t) { return t > p[0] && t < p[1]; }).sort(function (x, y) { return x - y; })
+        .filter(function (t, i, all) { return all.indexOf(t) === i; });
+      var a = p[0];
+      var row = work.some(function (s) { return s[0] === p[0]; }) || starts.indexOf(p[0]) !== -1;
+      cuts.concat([p[1]]).forEach(function (z) {
+        g.on.push([a, z, row]);
+        a = z;
+        row = true;
+      });
+    });
+    g.applied = !g.on.some(function (p) { return p[1] - p[0] >= ACT_ON_MIN_MS; });
     g.prayer = g.kind === 'idle' && prayers.some(function (t) { return t >= g.start && t <= g.end + ACT_PRAYER_AFTER_MS; });
   });
+  return out;
+}
+
+/** Item 31: unclear segments that stay on the clock, marked longUnclear: every unclear stretch except
+ *  one under 5 minutes beside a distraction (a tab between two videos goes with the distraction). */
+function actLongUnclear(segs) {
+  var out = segs.slice();
+  var i = 0;
+  while (i < out.length) {
+    if (out[i].sig !== 'unclear') { i++; continue; }
+    var j = i;
+    while (j + 1 < out.length && out[j + 1].sig === 'unclear' && out[j + 1].start === out[j].end) j++;
+    var prev = i > 0 && out[i - 1].end === out[i].start ? out[i - 1] : null;
+    var next = j + 1 < out.length && out[j + 1].start === out[j].end ? out[j + 1] : null;
+    var inDistraction = (prev && prev.sig === 'distraction') || (next && next.sig === 'distraction');
+    if (out[j].end - out[i].start >= ACT_SLIP_MS || !inDistraction) {
+      for (var k = i; k <= j; k++) out[k] = Object.assign({}, out[k], { longUnclear: true });
+    }
+    i = j + 1;
+  }
+  return out;
+}
+
+/** Item 31 (FAIL 3): a stretch of 2 hours or more with no laptop block and no work is not watched
+ *  (sig 'none'): the phone alone is no evidence he was idle. Phone distraction inside it is still
+ *  judged when it adds up to 15 minutes or more; less is not watched either. */
+function actSilences(segs) {
+  var out = segs.slice();
+  var i = 0;
+  while (i < out.length) {
+    if (out[i].lap || out[i].sig === 'work') { i++; continue; }
+    var j = i;
+    while (j + 1 < out.length && !out[j + 1].lap && out[j + 1].sig !== 'work' && out[j + 1].start === out[j].end) j++;
+    if (out[j].end - out[i].start >= ACT_UNWATCHED_MS) {
+      var dist = 0;
+      for (var k = i; k <= j; k++) if (out[k].sig === 'distraction') dist += out[k].end - out[k].start;
+      for (var m = i; m <= j; m++) {
+        if (out[m].sig !== 'distraction' || dist < ACT_BREAK_MS) out[m] = Object.assign({}, out[m], { sig: 'none', what: '' });
+      }
+    }
+    i = j + 1;
+  }
   return out;
 }
 
 /** R1 at instant t: 40 minutes of work or more since the last distraction (2 minutes or more), the
  *  last break (15 or more) or his own last break. The non-work just before t is the gap t is in. */
 function actEarnedAt(signals, t) {
-  var list = (signals || []).filter(function (x) { return x.start < t; }).sort(function (a, b) { return b.start - a.start; });
+  var list = actLongUnclear((signals || []).slice().sort(function (a, b) { return a.start - b.start; }))
+    .filter(function (x) { return x.start < t; }).sort(function (a, b) { return b.start - a.start; });
   var solid = 0;
   var gap = null;                       // {ms, dist}: the non-work run being walked back through
+  var clear = 0;                        // the unclear piece being walked back through (actJudge: on the clock)
   var lead = true;                      // still in the gap t itself is in
   var edge = null;
+  function breaks(g) { return g && (g.dist >= ACT_GLANCE_MS || g.ms >= ACT_BREAK_MS); }
   for (var i = 0; i < list.length; i++) {
     var x = list[i];
     var end = Math.min(x.end, t);
@@ -1323,11 +1401,20 @@ function actEarnedAt(signals, t) {
     edge = x.start;
     var ms = end - x.start;
     if (x.sig === 'work') {
-      if (gap && (gap.dist >= ACT_GLANCE_MS || gap.ms >= ACT_BREAK_MS)) break;
+      if (breaks(gap) || clear >= ACT_BREAK_MS) break;
       lead = false;
       gap = null;
+      clear = 0;
       solid += ms;
-    } else if (!lead) {
+    } else if (lead) {
+      continue;
+    } else if (x.longUnclear) {
+      if (breaks(gap)) break;            // the gap after this piece is its own (actJudge splits there)
+      gap = null;
+      clear += ms;
+    } else {
+      if (clear >= ACT_BREAK_MS) break;
+      clear = 0;
       gap = gap || { ms: 0, dist: 0 };
       gap.ms += ms;
       if (x.sig === 'distraction') gap.dist += ms;
@@ -1336,9 +1423,10 @@ function actEarnedAt(signals, t) {
   return solid >= ACT_EARN_MS;
 }
 
-/** Does a gap become a break when its recommendation is applied? (15 minutes or more, not a meeting). */
+/** Does a gap become a break when its recommendation is applied? 15 minutes or more of mostly idle
+ *  or mostly distraction. Mostly unclear ('away') is never a break: it may well be work. */
 function actJudgeBreaks(g) {
-  return g.ms >= ACT_BREAK_MS && g.kind !== 'meeting' && g.kind !== 'pause' && g.kind !== 'unwatched';
+  return g.ms >= ACT_BREAK_MS && (g.kind === 'idle' || g.kind === 'dbreak' || g.kind === 'deserved');
 }
 
 /** A gap's recommendation in words, for the sheet and the day-end card. reason: an idle gap's. */
@@ -1347,7 +1435,7 @@ function actJudgeWords(g, reason) {
   if (g.low) return 'Lost focus (low)';
   var r = reason || (g.prayer ? 'Prayer' : '');
   return { rest: 'Rest (earned)', slip: 'Slip', distraction: 'Distraction', dbreak: 'Distraction break',
-           deserved: 'Deserved break', idle: 'Idle — ' + actIdleWord(r || ACT_IDLE_DEFAULT), away: 'Away (break)',
+           deserved: 'Deserved break', idle: 'Idle — ' + actIdleWord(r || ACT_IDLE_DEFAULT), away: '? — what was this? (on the clock)',
            meeting: 'Meeting', pause: 'Short break', unwatched: 'Not watched' }[g.kind] || '';
 }
 
@@ -1460,12 +1548,26 @@ function actJudgeRecords(gaps, opts) {
  * already off the clock, or one that is not a break. reason: an idle gap's.
  */
 function actJudgeSteps(g, reason) {
-  if (!actJudgeBreaks(g) || g.applied) return [];
+  if (!actJudgeBreaks(g)) return [];
   var text = g.kind === 'idle' ? actIdleWord(reason || (g.prayer ? 'Prayer' : ACT_IDLE_DEFAULT))
            : g.kind === 'away' ? 'Away (auto)' : g.kind === 'deserved' ? 'Break (deserved — auto)' : 'Distraction (auto)';
-  // At the very start of his working time his own row is there: the break goes a second after it.
-  var out = [{ type: 'break', at: g.head ? g.start + 1000 : g.start, rid: 'jb-' + g.key, text: text }];
-  if (!g.tail) out.push({ type: 'resume', at: g.end, rid: 'jr-' + g.key, text: 'Resume (back at work — auto)' });
+  var resume = 'Resume (back at work — auto)';
+  if (!g.on) {                           // a gap built by hand (an idle answer): as one piece
+    if (g.applied) return [];
+    var one = [{ type: 'break', at: g.head ? g.start + 1000 : g.start, rid: 'jb-' + g.key, text: text }];
+    if (!g.tail) one.push({ type: 'resume', at: g.end, rid: 'jr-' + g.key, text: resume });
+    return one;
+  }
+  // Each part still on the clock: a break where it starts (a second after the row that turned the
+  // clock on there, so that row cannot end it), and a resume only where work came back at the gap's
+  // end. Once written the part is off the clock, so a second run writes nothing.
+  var out = [];
+  g.on.forEach(function (p) {
+    if (p[1] - p[0] < ACT_ON_MIN_MS) return;
+    var key = p[0] === g.start ? g.key : actGapKey(p[0]);
+    out.push({ type: 'break', at: p[2] ? p[0] + 1000 : p[0], rid: 'jb-' + key, text: text });
+    if (p[1] === g.end && !g.tail) out.push({ type: 'resume', at: g.end, rid: 'jr-' + key, text: resume });
+  });
   return out;
 }
 
