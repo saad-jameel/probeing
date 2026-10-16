@@ -972,7 +972,7 @@ var PARKED_MAX = 50;
 /* The writes a person makes. `label` is deliberately absent: it only ever
  * fills in a project name on a row, and a name that never arrives leaves the
  * entry called by its own sentence — which is what it was called anyway. */
-var QUEUEABLE = { log: 1, m: 1, prayer: 1, money: 1, loan: 1, due: 1, buy: 1, file: 1, mark: 1, item: 1,
+var QUEUEABLE = { log: 1, m: 1, prayer: 1, money: 1, loan: 1, due: 1, wallet: 1, buy: 1, file: 1, mark: 1, item: 1,
                   reflect: 1 };
 
 function trimUrl(u) { return String(u || '').trim().replace(/\/+$/, ''); }
