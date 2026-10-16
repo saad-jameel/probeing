@@ -972,7 +972,7 @@ var PARKED_MAX = 50;
 /* The writes a person makes. `label` is deliberately absent: it only ever
  * fills in a project name on a row, and a name that never arrives leaves the
  * entry called by its own sentence — which is what it was called anyway. */
-var QUEUEABLE = { log: 1, m: 1, prayer: 1, money: 1, loan: 1, due: 1, wallet: 1, buy: 1, file: 1, mark: 1, item: 1,
+var QUEUEABLE = { log: 1, m: 1, prayer: 1, money: 1, loan: 1, due: 1, buy: 1, file: 1, mark: 1, item: 1,
                   reflect: 1 };
 
 function trimUrl(u) { return String(u || '').trim().replace(/\/+$/, ''); }
@@ -8616,7 +8616,8 @@ async function dayJudgement(day) {
 }
 
 /** Item 31: the check-in's hook, fed from 31a's judgement. High/low focus losses, distraction breaks and
- *  external distraction count against the day; a judged day with none of them counts for it. */
+ *  external distraction count against the day; a judged day with none of them counts for it.
+ *  lostFocus: an even day with a loss of focus (R4) is judged poor, as 31a's 15-Oct day is. */
 async function dayJudgementExtra(day) {
   var j = await dayJudgement(day);
   if (!j || !j.summary) return null;
@@ -8626,7 +8627,7 @@ async function dayJudgementExtra(day) {
   if (n('highs') || n('lows')) poor.push('lost focus ' + (n('highs') + n('lows')) + ' time(s) (' + (n('highMin') + n('lowMin')) + ' min)');
   if (n('dbreaks')) poor.push(n('dbreaks') + ' distraction break(s) (' + n('dbreakMin') + ' min)');
   if (n('externals')) poor.push('chit-chat that ran long (' + n('externalMin') + ' min)');
-  return { good: poor.length ? [] : ['focus held'], poor: poor };
+  return { good: poor.length ? [] : ['focus held'], poor: poor, lostFocus: Boolean(n('highs') || n('lows')) };
 }
 
 /** The focus rows that start in [startMs, endMs); null when the table is not there yet. */
@@ -8650,6 +8651,14 @@ async function readFocusDay(day) {
   return res.data || [];
 }
 
+/** Item 31 (R8): the rest of 31a's judgement for the advice prompt, the figures the lines above it
+ *  do not already carry (lost focus, breaks, idle reasons...); [] when the day has none of them. */
+function focusJudgedLines(s) {
+  if (!s) return [];
+  var bits = focusBits(Object.assign({}, s, { slips: 0, losses: 0, longestMin: 0, top: '' }));
+  return bits.length ? ['- also judged today: ' + bits.join('; ')] : [];
+}
+
 /** The advice prompt: figures and a word only, never a name or a title. Item 31d: with the
  *  day-end check-in (`check`), checkinPrompt() instead, still the one call. */
 function focusAdvicePrompt(s, check) {
@@ -8658,10 +8667,10 @@ function focusAdvicePrompt(s, check) {
           '- focus losses (5 to 15 minutes distracted while working): ' + s.losses + ', ' + s.lossMin + ' min',
           '- slips (2 to 5 minutes): ' + s.slips + ', ' + s.slipMin + ' min',
           '- longest unbroken work stretch: ' + s.longestMin + ' min',
-          '- what distracted most: ' + (s.top || 'nothing'),
+          '- what distracted most: ' + (s.top || 'nothing')].concat(focusJudgedLines(s), [
           '',
           'Write one or two short sentences of practical advice for tomorrow. Plain words, no greeting, no list, ' +
-          'do not repeat the figures.'].join('\n');
+          'do not repeat the figures.']).join('\n');
 }
 
 /** A model's advice, trimmed to two lines and 300 characters; '' when there is none. */
@@ -8697,9 +8706,10 @@ async function focusAdvice(day, s, allowCall, check) {
   } else {
     await sb.from('focus_advice').update({ state: 'writing', tries: tries, made_at: stamp }).eq('day', day).eq('tries', tries - 1);
     // Ours only if the row now carries this claim: two devices retrying at once, one wins.
-    var check = await sb.from('focus_advice').select('state,tries,made_at').eq('day', day).limit(1);
-    var now = (check.data || [])[0];
-    if (check.error || !now || now.state !== 'writing' || Number(now.tries) !== tries || Date.parse(now.made_at) !== Date.parse(stamp)) {
+    // `claimed`, not `check`: that name is the check-in parameter, and a var would overwrite it.
+    var claimed = await sb.from('focus_advice').select('state,tries,made_at').eq('day', day).limit(1);
+    var now = (claimed.data || [])[0];
+    if (claimed.error || !now || now.state !== 'writing' || Number(now.tries) !== tries || Date.parse(now.made_at) !== Date.parse(stamp)) {
       return { text: '', why: 'other' };
     }
   }
@@ -8775,6 +8785,7 @@ var CHECKIN_TASKS_MAX = 10;
 var CHECKIN_TOP_MAX = 3;
 var CHECKIN_COMMENT_MAX = 300;
 var CHECKIN_TITLE_MAX = 120;
+var CHECKIN_JUDGE_MS = 2500;   // the judgement read may not hold the check-in off the device (rule 0)
 var CHECKIN_ID = /^[A-Za-z0-9-]{1,64}$/;
 var CHECKIN_DAY = /^\d{4}-\d{2}-\d{2}$/;
 // The judgement's lines (Saad can move these): a good day is 6 h worked, 2 tasks finished or a
@@ -8842,6 +8853,7 @@ function checkinJudgement(f, extra) {
     (Array.isArray(extra.poor) ? extra.poor : []).forEach(function (p) { if (p) poor.push(cutText(p, 80)); });
   }
   var verdict = good.length > poor.length ? 'good' : poor.length > good.length ? 'poor' : 'mixed';
+  if (verdict === 'mixed' && extra && extra.lostFocus) verdict = 'poor';   // item 31: lost focus tips an even day
   return { verdict: verdict, good: good, poor: poor };
 }
 
@@ -8871,6 +8883,7 @@ function checkinPrompt(s, c) {
                '- slips (2 to 5 minutes): ' + s.slips + ', ' + s.slipMin + ' min',
                '- longest unbroken work stretch: ' + s.longestMin + ' min',
                '- what distracted most: ' + (s.top || 'nothing'));
+    lines = lines.concat(focusJudgedLines(s));
   }
   var blockers = (c.blockers || []).map(blockerLabel).filter(Boolean);
   if (blockers.length) lines.push('- what got in the way, as they picked it: ' + blockers.join(', '));
@@ -9173,8 +9186,14 @@ async function saveCheckin() {
   closeCheckin();
   if (!checkinSaid(payload)) { openFocusDay().catch(function () {}); return; }   // nothing said: a Skip
   // The hook for more day figures (31a/31b): define dayJudgementExtra(day) -> {good: [], poor: []} (or a promise of it).
+  // Offline, or a read that stalls (supabase-js retries for 20s+): judge without it rather than wait.
   var extra = null;
-  try { extra = typeof dayJudgementExtra === 'function' ? await dayJudgementExtra(c.day) : null; } catch (e) { extra = null; }
+  if (typeof dayJudgementExtra === 'function' && navigator.onLine !== false) {
+    var timer = null;
+    var late = new Promise(function (resolve) { timer = setTimeout(function () { resolve(null); }, CHECKIN_JUDGE_MS); });
+    try { extra = await Promise.race([dayJudgementExtra(c.day), late]); } catch (e) { extra = null; }
+    clearTimeout(timer);
+  }
   payload.figures = checkinFigures(c, extra);
   payload.tasks.forEach(function (t) { if (t.answer === 'done') finishTask(t.id, false, true); });
   runWrite('reflect', payload);
