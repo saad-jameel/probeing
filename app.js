@@ -8627,7 +8627,39 @@ async function dayJudgementExtra(day) {
   if (n('highs') || n('lows')) poor.push('lost focus ' + (n('highs') + n('lows')) + ' time(s) (' + (n('highMin') + n('lowMin')) + ' min)');
   if (n('dbreaks')) poor.push(n('dbreaks') + ' distraction break(s) (' + n('dbreakMin') + ' min)');
   if (n('externals')) poor.push('chit-chat that ran long (' + n('externalMin') + ' min)');
-  return { good: poor.length ? [] : ['focus held'], poor: poor, lostFocus: Boolean(n('highs') || n('lows')) };
+  return { good: poor.length ? [] : ['focus held'], poor: poor, lostFocus: Boolean(n('highs') || n('lows')),
+           pending: await judgePendingRows() };
+}
+
+/**
+ * Item 31: the break/resume rows the server will write ~20 min after End day (judgeStep: actJudgeSteps
+ * for every gap of the day), worked out here from the same rows and blocks with activity.js, so the
+ * check-in's hours already leave them out. Rows already written (or already off the clock) give none.
+ */
+async function judgePendingRows() {
+  var now = Date.now();
+  var from = counterDayStart(now) - 2 * 3600000;
+  var rows = watchAskRows(await readAskRows(now));
+  var res = await sb.from('activity_blocks').select('*').gte('ended_at', new Date(from).toISOString())
+    .order('started_at', { ascending: true }).limit(5000);
+  if (res.error) throw errorFrom(res.error);
+  var kinds = await readDeviceKinds();
+  var blocks = (res.data || []).map(function (r) {
+    return { id: r.id, start: Date.parse(r.started_at), end: Date.parse(r.ended_at), app: r.app || '', domain: r.domain || '',
+             category: r.category, project: r.project || '', rule_key: r.rule_key || '', desktop: r.desktop || '',
+             kind: kinds[r.device_id] || 'laptop' };
+  }).filter(function (b) { return b.end > b.start; });
+  var domain = actJudgeDomain(rows, from, now);
+  var gaps = actJudge({ signals: actSignals(actClip(blocks, domain), domain), spans: domain,
+                        work: actWalk(rows, from, now).work, prayers: [] });
+  var steps = [];
+  gaps.forEach(function (g) {
+    actJudgeSteps(g, '').forEach(function (w) {
+      if (rows.some(function (r) { return r.rid === w.rid; })) return;
+      steps.push({ type: w.type, raw_text: w.text, rid: w.rid, at: new Date(w.at).toISOString() });
+    });
+  });
+  return actSkipTies(steps, rows);
 }
 
 /** The focus rows that start in [startMs, endMs); null when the table is not there yet. */
@@ -8785,7 +8817,7 @@ var CHECKIN_TASKS_MAX = 10;
 var CHECKIN_TOP_MAX = 3;
 var CHECKIN_COMMENT_MAX = 300;
 var CHECKIN_TITLE_MAX = 120;
-var CHECKIN_JUDGE_MS = 2500;   // the judgement read may not hold the check-in off the device (rule 0)
+var CHECKIN_JUDGE_MS = 4000;   // the judgement read may not hold the check-in off the device (rule 0)
 var CHECKIN_ID = /^[A-Za-z0-9-]{1,64}$/;
 var CHECKIN_DAY = /^\d{4}-\d{2}-\d{2}$/;
 // The judgement's lines (Saad can move these): a good day is 6 h worked, 2 tasks finished or a
@@ -8876,7 +8908,8 @@ function checkinPrompt(s, c) {
   var f = (c && c.figures) || {};
   var lines = ['You are helping one person look back on their day so that tomorrow goes better. ' +
                'These are today\'s figures, worked out already:',
-               '- hours worked: ' + reviewDuration((Number(f.workedMin) || 0) * 60000),
+               '- hours worked: ' + reviewDuration((Number(f.workedMin) || 0) * 60000) +
+                 (f.beforeJudgement ? ' (before the day\'s judgement)' : ''),
                '- tasks finished: ' + (Number(f.tasksDone) || 0) + '; planned for today and still open: ' + (Number(f.plannedLeft) || 0)];
   if (s) {
     lines.push('- focus losses (5 to 15 minutes distracted while working): ' + s.losses + ', ' + s.lossMin + ' min',
@@ -8912,7 +8945,8 @@ function checkinPrompt(s, c) {
 function checkinFiguresLine(f) {
   if (!f) return '';
   var n = Number(f.tasksDone) || 0;
-  return 'Worked ' + reviewDuration((Number(f.workedMin) || 0) * 60000) + ' · ' + n + ' task' + (n === 1 ? '' : 's') + ' finished';
+  return 'Worked ' + reviewDuration((Number(f.workedMin) || 0) * 60000) +
+    (f.beforeJudgement ? ' (before the day\'s judgement)' : '') + ' · ' + n + ' task' + (n === 1 ? '' : 's') + ' finished';
 }
 
 /** A check-in payload as a day_reflections row; null when it is not one. Checked again on every send. */
@@ -9141,7 +9175,10 @@ function closeCheckin() {
 
 /** The figures saved with the check-in, judged (dayJudgement), for the advice and the reports. */
 function checkinFigures(c, judgement) {
-  var figs = dayFigures(lastLog, todayPrayers, undefined, undefined, lastLead, taskTree());
+  // Item 31: hours worked as they will read once the server applies the day's judgement; the raw
+  // figure, marked, when the judgement could not be read.
+  var pending = judgement && Array.isArray(judgement.pending) ? judgement.pending : [];
+  var figs = dayFigures(pending.concat(lastLog), todayPrayers, undefined, undefined, lastLead, taskTree());
   var done = userMap();
   checkinRows(c.day).forEach(function (r) { if (r && r.type === 'subdone' && r.node_id) done[r.node_id] = 1; });
   Object.keys(c.answers).forEach(function (id) { if (c.answers[id] === 'done') done[id] = 1; });
@@ -9152,6 +9189,7 @@ function checkinFigures(c, judgement) {
       return plannedFor(planOf(l.node.id), c.day) && c.answers[l.node.id] !== 'done';
     }).length
   };
+  if (judgement && judgement.failed) f.beforeJudgement = true;
   if (c.focus) {
     f.focus = { losses: c.focus.losses, lossMin: c.focus.lossMin, slips: c.focus.slips, slipMin: c.focus.slipMin,
                 longestMin: c.focus.longestMin };
@@ -9187,12 +9225,16 @@ async function saveCheckin() {
   if (!checkinSaid(payload)) { openFocusDay().catch(function () {}); return; }   // nothing said: a Skip
   // The hook for more day figures (31a/31b): define dayJudgementExtra(day) -> {good: [], poor: []} (or a promise of it).
   // Offline, or a read that stalls (supabase-js retries for 20s+): judge without it rather than wait.
+  // A failed or capped read is marked (figures "before the day's judgement"); no table, no mark.
   var extra = null;
-  if (typeof dayJudgementExtra === 'function' && navigator.onLine !== false) {
-    var timer = null;
-    var late = new Promise(function (resolve) { timer = setTimeout(function () { resolve(null); }, CHECKIN_JUDGE_MS); });
-    try { extra = await Promise.race([dayJudgementExtra(c.day), late]); } catch (e) { extra = null; }
-    clearTimeout(timer);
+  if (typeof dayJudgementExtra === 'function') {
+    if (navigator.onLine === false) extra = { failed: true };
+    else {
+      var timer = null;
+      var late = new Promise(function (resolve) { timer = setTimeout(function () { resolve({ failed: true }); }, CHECKIN_JUDGE_MS); });
+      try { extra = await Promise.race([dayJudgementExtra(c.day), late]); } catch (e) { extra = { failed: true }; }
+      clearTimeout(timer);
+    }
   }
   payload.figures = checkinFigures(c, extra);
   payload.tasks.forEach(function (t) { if (t.answer === 'done') finishTask(t.id, false, true); });
@@ -17130,12 +17172,12 @@ async function readAskRows(now) {
 }
 
 /** The sheet's rows, then the refreshed day's and this device's held presses, once per rid, oldest first. */
-function watchAskRows() {
+function watchAskRows(base) {
   var held = userMap();
   ASK_STATE_TYPES.forEach(function (t) { held[t] = 1; });
   var seen = userMap();
   var out = [];
-  catchupStateRows.concat(sessionLog(), catchupHeld(held)).forEach(function (r) {
+  (base || catchupStateRows).concat(sessionLog(), catchupHeld(held)).forEach(function (r) {
     // A row with no rid is an optimistic copy; its held twin carries the rid.
     if (!r || !r.rid || ASK_STATE_TYPES.indexOf(r.type) === -1 || seen[r.rid]) return;
     seen[r.rid] = 1;
