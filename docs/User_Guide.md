@@ -104,8 +104,9 @@ on the tab you used last.
 - **Home-screen widget** — **Pair a widget** (General tab).
 - **ProBeing training** — at the top, apps and sites seen recently that nothing sorted:
   one tap files each as Work, Meeting, Distraction, Private or Ignore. Below, one panel
-  per list (work apps, work sites, meetings, distractions, private, ignore, keyword
-  rules): type a name and press **Add**, or × to remove one. Saved at once.
+  per list (desktops → project, work sites, meetings, distractions, private; work apps,
+  helpers, ignore and keyword rules under **Advanced**): type a name and press **Add**;
+  **Show the list** opens the entries, × removes one. Saved at once.
 - **Developer options** — the backend address, Gemini limits, the taskboard link, and
   **Test** / **Test Gemini**.
 
@@ -122,8 +123,9 @@ paste the line it gives you into PowerShell, done.
 - Using the laptop after Fajr while marked asleep, or a work app during a break or before
   starting the day, gets a question ("awake?", "back to work?", "start?") that records
   the right time when you answer.
-- When you open ProBeing it may show **"From … to … you were doing"**: fix a block's
-  project or mark it as a break, then **Looks right**.
+- When you open ProBeing it may show **"From … to … you were doing"**, grouped by
+  desktop. Work on a project already in Working on is not asked about. **Accept** or
+  **It was a break** removes a line at once; the popup closes when nothing is left.
 - **The dot by the clock**: green working, amber on a break, blue asleep, grey day over;
   a red ring means it cannot reach ProBeing. Hover for today's figures; click to open
   the app.

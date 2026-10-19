@@ -16295,24 +16295,25 @@ $('watchTeachOn').addEventListener('change', async function () {
  * activity_ignore, activity_rules), so the server and the watchers need nothing new.
  * A 'list' panel whose key the data layer (ACT_LIST_KEYS) lacks is not drawn, so a
  * new list is one line here. Work apps and Work sites are two views of the one work list. */
+// Item 32: the everyday lists first; adv ones sit under "Advanced".
 var ACT_LIST_PANELS = [
-  { id: 'workApps', title: 'Work apps', store: 'list', key: 'work', part: 'app', ph: 'code',
-    hint: 'Work with no project needed. The app\'s whole name: code for Code.exe.' },
+  // Item 30b: user_settings.activity_desktops, read and written on its own (a database without it still shows the rest).
+  { id: 'desktops', title: 'Desktops → project', store: 'desktops', ph: 'Desktop 2',
+    hint: 'A Windows desktop named after a project is that project already. Pair the others here: everything on that desktop, the terminal too, goes to the project.' },
   { id: 'workSites', title: 'Work sites', store: 'list', key: 'work', part: 'site', ph: 'docs.google.com',
-    hint: 'Work with no project needed. A site, or a site/path.' },
+    hint: 'Work. The desktop you are on gives the project. A site, or a site/path.' },
   { id: 'meeting', title: 'Meetings', store: 'list', key: 'meeting', ph: 'zoom', hint: 'A site or an app word.' },
   { id: 'distract', title: 'Distractions', store: 'list', key: 'distract', ph: 'reddit.com',
     hint: 'A site, a site/path, or an app word.' },
   { id: 'private', title: 'Private', store: 'list', key: 'private', ph: 'mybank.com',
     hint: 'Sent only as "private", never with a site or title.' },
-  { id: 'helpers', title: 'Helpers', store: 'list', key: 'helpers', ph: 'notepad',
-    hint: 'Used for every project: they take the project of the work around them.' },
-  { id: 'ignore', title: 'Ignore', store: 'ignore', ph: 'spotify', hint: 'Never asked about. An app word or a site.' },
-  { id: 'rules', title: 'Keyword rules', store: 'rules', ph: 'docker',
-    hint: 'A window whose title, app or site holds the keyword goes to that project.' },
-  // Item 30b: user_settings.activity_desktops, read and written on its own (a database without it still shows the rest).
-  { id: 'desktops', title: 'Desktops → project', store: 'desktops', ph: 'Desktop 2',
-    hint: 'A Windows desktop named after a project is that project already. Pair the others here: everything on that desktop, the terminal too, goes to the project.' }
+  { id: 'workApps', title: 'Work apps', store: 'list', key: 'work', part: 'app', ph: 'code', adv: true,
+    hint: 'Apps that are work (Terminal, VS Code…); the desktop gives the project. The app\'s whole name: code for Code.exe.' },
+  { id: 'helpers', title: 'Helpers', store: 'list', key: 'helpers', ph: 'notepad', adv: true,
+    hint: 'Count as work only next to work (File Explorer, Notepad); they take its project.' },
+  { id: 'ignore', title: 'Ignore', store: 'ignore', ph: 'spotify', adv: true, hint: 'Never asked about. An app word or a site.' },
+  { id: 'rules', title: 'Keyword rules', store: 'rules', ph: 'docker', adv: true,
+    hint: 'A window whose title, app or site holds the keyword goes to that project.' }
 ];
 
 var actSet = { lists: null, ignore: null, desktops: null, seenDesktops: [] };   // as last read; null until read (rule 3: re-read after every write)
@@ -16349,6 +16350,7 @@ function listPanelLoaded(p) {
 function buildListPanels() {
   var box = $('actListPanels');
   if (!box || box.childNodes.length) return;
+  var adv = null;
   ACT_LIST_PANELS.forEach(function (p) {
     if (!listPanelOn(p)) return;
     var sec = document.createElement('section');
@@ -16365,6 +16367,11 @@ function buildListPanels() {
     hint.textContent = p.hint;
     var chips = document.createElement('ul');
     chips.className = 'list-chips';
+    // Item 32: the entries stay folded until asked for.
+    var more = document.createElement('details');
+    more.className = 'list-more';
+    var moreSum = document.createElement('summary');
+    more.append(moreSum, chips);
     var row = document.createElement('div');
     row.className = 'list-add';
     var input = document.createElement('input');
@@ -16400,7 +16407,7 @@ function buildListPanels() {
     out.className = 'hint';
     out.id = 'listResult-' + p.id;
     out.setAttribute('role', 'status');
-    sec.append(h, hint, chips, row, out);
+    sec.append(h, hint, more, row, out);
     var seen = null;
     if (p.store === 'desktops') {
       // Item 30b: desktops the laptop reported lately that stand for no project yet.
@@ -16410,8 +16417,16 @@ function buildListPanels() {
       seen.hidden = true;
       sec.appendChild(seen);
     }
-    box.appendChild(sec);
-    p.el = { count: count, chips: chips, input: input, proj: proj, add: add, out: out, seen: seen };
+    if (p.adv && !adv) {
+      adv = document.createElement('details');
+      adv.className = 'sub-details list-adv';
+      var advSum = document.createElement('summary');
+      advSum.textContent = 'Advanced: work apps, helpers, ignore, keyword rules';
+      adv.appendChild(advSum);
+      box.appendChild(adv);
+    }
+    (p.adv ? adv : box).appendChild(sec);
+    p.el = { more: moreSum, count: count, chips: chips, input: input, proj: proj, add: add, out: out, seen: seen };
     add.addEventListener('click', function () { listAdd(p); });
     [input, proj].forEach(function (f) {
       if (!f) return;
@@ -16432,6 +16447,7 @@ function listFill() {
     p.el.add.disabled = !loaded || p.busy === true;
     var items = loaded ? listPanelItems(p) : [];
     p.el.count.textContent = loaded ? ' · ' + items.length : '';
+    p.el.more.textContent = loaded ? 'Show the list (' + items.length + ')' : 'Show the list';
     if (!loaded) return;
     if (!items.length) {
       var none = document.createElement('li');
@@ -17009,7 +17025,7 @@ async function readCatchUp() {
   var desk = { desktops: await readSheetDesktops(), projects: catchupProjects([]) };
   var groups = actDeskGroups(blocks, fixes, desk);
   judgeLines(groups, blocks.map(function (b) { return actFixed(b, fixes); }), since, now);   // his corrections, as End day reads them
-  var total = groups.reduce(function (n, g) { return n + g.ms; }, 0);
+  var total = settleLines(groups, replayDay(named(sessionLog())).activeProjects);
   if (!asks.length && total < CATCHUP_MIN_MS) return null;
   var until = blocks.reduce(function (m, b) { return Math.max(m, b.end); }, since);
   return { since: since, until: until, blocks: blocks, fixes: fixes, groups: groups, asks: asks, reasons: idle.reasons };
@@ -17052,6 +17068,45 @@ async function readIdleAsks(dayStart) {
 
 /* The order a line's judgement is told in: the worst gap it touches. */
 var JUDGE_RANK = { high: 7, low: 6, dbreak: 5, deserved: 4, idle: 3.5, distraction: 3, slip: 2, rest: 1, meeting: 0.5 };
+
+/** Item 32: a line with nothing to ask — work or a meeting on a project in Working on, phone use while
+ *  working (R7), private time — is accepted with the rest but not shown. */
+function lineSettled(line, active) {
+  if (line.category === 'private') return true;
+  if (line.judge) return false;
+  if (line.phone && (line.category === 'unclear' || line.category === 'distraction')) return true;   // no judgement: R7 made it work
+  if (line.category === 'distraction') return false;
+  if (line.category !== 'work' && line.category !== 'meeting') return false;
+  var p = actNorm(linePick(line) || '');
+  return p !== '' && (active || []).some(function (a) { return actNorm(a) === p; });
+}
+
+/** Marks each line settled or not; the shown lines' total time. */
+function settleLines(groups, active) {
+  var ms = 0;
+  groups.forEach(function (g) {
+    g.lines.forEach(function (line) {
+      line.settled = lineSettled(line, active);
+      if (line.settled) line.picked = line.category !== 'private' && Boolean(line.rec);
+      else ms += line.ms;
+    });
+  });
+  return ms;
+}
+
+/** Item 32: lines still to decide in a group. */
+function groupOpenLines(g) {
+  return g.lines.filter(function (l) { return !l.settled && !l.done; });
+}
+
+/** Item 32: nothing left to answer — accept the hidden lines, mark seen and close, after a moment
+ *  so the last "Noted" can be read. */
+function catchupMaybeDone() {
+  var c = catchup;
+  if (!c || !catchupDlg.open || c.asks.length) return;
+  if (c.groups.some(function (g) { return groupOpenLines(g).length; })) return;
+  setTimeout(function () { if (catchup === c && !c.asks.length) confirmCatchUp(); }, 1200);
+}
 
 /** Each line's judgement (activity.js actJudge over the sheet's blocks and the server's rows): line.judge =
  *  what End day will write for the gap it is in (a break, idle, rest...), line.judgeAuto = already written.
@@ -17383,7 +17438,7 @@ function lineInfo(line) {
   return box;
 }
 
-function catchupLineRow(line, projects) {
+function catchupLineRow(line, projects, g) {
   var li = document.createElement('li');
   li.className = 'catchup-row';
   line.li = li;
@@ -17441,13 +17496,13 @@ function catchupLineRow(line, projects) {
     brk.className = 'link-btn';
     brk.textContent = 'It was a break';
     brk.setAttribute('aria-pressed', 'false');
+    // Item 32: written at once; the line leaves the sheet.
     brk.addEventListener('click', function () {
-      var on = !(line.edit && line.edit.brk);
-      line.edit = Object.assign({}, line.edit, { brk: on });
-      if (on) line.picked = pick.checked = true;
-      brk.setAttribute('aria-pressed', String(on));
-      brk.textContent = on ? 'Break ✓' : 'It was a break';
-      li.classList.toggle('catchup-break', on);
+      line.edit = Object.assign({}, line.edit, { brk: true });
+      line.picked = pick.checked = true;
+      acceptLines([line], false);
+      if (g && g.li && !groupOpenLines(g).length) g.li.remove();
+      catchupMaybeDone();
     });
     acts.appendChild(brk);
   }
@@ -17461,25 +17516,32 @@ function catchupDeskItem(g, projects) {
   li.className = 'catchup-desk';
   var head = document.createElement('div');
   head.className = 'catchup-deskhead';
+  g.li = li;
+  var open = groupOpenLines(g);
   var name = document.createElement('span');
   name.className = 'catchup-deskname';
-  name.textContent = g.desktop + (g.project && actNorm(g.project) !== actNorm(g.desktop) ? ' → ' + g.project : '') + ' · ' + humanDuration(g.ms);
+  name.textContent = g.desktop + (g.project && actNorm(g.project) !== actNorm(g.desktop) ? ' → ' + g.project : '') + ' · ' +
+    humanDuration(open.reduce(function (n, l) { return n + l.ms; }, 0));
   var all = document.createElement('button');
   all.type = 'button';
   all.className = 'link-btn';
   all.textContent = 'Select all';
   all.addEventListener('click', function () {
-    g.lines.forEach(function (line) { if (line.pickBox && !line.done) { line.pickBox.checked = true; line.picked = true; } });
+    open.forEach(function (line) { if (line.pickBox) { line.pickBox.checked = true; line.picked = true; } });
   });
   var ok = document.createElement('button');
   ok.type = 'button';
   ok.className = 'btn';
   ok.textContent = 'Accept';
-  ok.addEventListener('click', function () { acceptLines(g.lines, false); });
+  ok.addEventListener('click', function () {
+    acceptLines(g.lines, false);
+    if (!groupOpenLines(g).length) li.remove();     // unticked lines stay to decide
+    catchupMaybeDone();
+  });
   head.append(name, all, ok);
   var ul = document.createElement('ul');
   ul.className = 'catchup-lines';
-  g.lines.forEach(function (line) { ul.appendChild(catchupLineRow(line, projects)); });
+  open.forEach(function (line) { ul.appendChild(catchupLineRow(line, projects, g)); });
   li.append(head, ul);
   return li;
 }
@@ -17488,7 +17550,8 @@ function renderCatchUp() {
   var c = catchup;
   // Questions first (item 23); the title speaks for the list under them.
   var onlyTeach = c.asks.length && c.asks.every(function (a) { return a.kind === 'teach'; });
-  $('catchupTitle').textContent = c.groups.length || !c.asks.length
+  var shown = c.groups.filter(function (g) { return groupOpenLines(g).length; });
+  $('catchupTitle').textContent = shown.length || !c.asks.length
     ? 'From ' + clockAt(c.since) + ' to ' + clockAt(c.until) + ' you were doing:'
     : onlyTeach ? 'A quick question' : 'Missed while you were away';
   var asks = $('catchupAsks');
@@ -17500,8 +17563,8 @@ function renderCatchUp() {
   var named = [];
   c.groups.forEach(function (g) { named = named.concat([{ project: g.project }], g.lines.map(function (l) { return { project: l.rec || l.project }; })); });
   var projects = catchupProjects(named);
-  c.groups.forEach(function (g) { list.appendChild(catchupDeskItem(g, projects)); });
-  $('catchupNote').textContent = c.groups.length || c.asks.length ? '' : 'Nothing new from the laptop.';
+  c.groups.forEach(function (g) { if (groupOpenLines(g).length) list.appendChild(catchupDeskItem(g, projects)); });
+  $('catchupNote').textContent = shown.length || c.asks.length ? '' : 'Nothing new from the laptop.';
 }
 
 /** A read landed while the sheet is open: a question answered on another device, or one
@@ -17531,6 +17594,7 @@ function teachAskName(n) {
 async function answerTeach(a, kind, project, li) {
   var r = teachAskName(a.n);
   catchup.asks = catchup.asks.filter(function (x) { return x !== a; });
+  catchupMaybeDone();
   li.textContent = 'Saving…';
   try {
     var did = await teachApply(r, kind, project);
@@ -17603,6 +17667,7 @@ function answerCatchUp(a, choice, li) {
                local_time: humanLocalAt(start + 1000), rid: 'aw-' + id }];
   }
   catchup.asks = catchup.asks.filter(function (x) { return x !== a; });
+  catchupMaybeDone();
   li.textContent = choice === 'break' ? 'Noted: a break.' : 'Noted: working.';
   runWrites(actSkipTies(steps, sessionLog())).then(function () { scheduleRefresh(800); });
 }
@@ -17610,6 +17675,7 @@ function answerCatchUp(a, choice, li) {
 /** A question answered (in the sheet or on Home) leaves the sheet's list, when the sheet is open. */
 function dropAsk(a) {
   if (catchup) catchup.asks = catchup.asks.filter(function (x) { return x !== a && x.n !== a.n && !(x.n && a.n && x.n.id === a.n.id); });
+  catchupMaybeDone();
 }
 
 /** Item 30b: the project a run question names (its run.project), cut as the server cuts it; '' for none. */
@@ -17801,10 +17867,7 @@ function acceptLines(lines, all) {
                      local_time: humanLocalAt(sp[1]), rid: 'kr-' + sp[2] });
       });
     }
-    if (line.li && !all) {
-      line.li.classList.add('catchup-done');
-      line.li.querySelectorAll('button, select, input').forEach(function (x) { x.disabled = true; });
-    }
+    if (line.li && !all) line.li.remove();     // item 32: accepted lines leave the sheet
   });
   if (!all && steps.length) runWrites(actSkipTies(steps, sessionLog())).then(function () { scheduleRefresh(800); });
   if (supabaseReady()) learn.forEach(learnRule);

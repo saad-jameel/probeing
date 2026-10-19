@@ -66,7 +66,7 @@
  * v41 (item 30b): auto-detected Working on (Accept / Reject on Home); Desktops -> project in Settings.
  * v42 (item 31): the catch-up sheet grouped by desktop, idle "Why?", the day's judgement in Review;
  *   no "That one's over" notification (said in the app); the day-end check-in. */
-var CACHE = 'probeing-shell-v42';
+var CACHE = 'probeing-shell-v43';
 var SHELL = [
   './',
   'index.html',

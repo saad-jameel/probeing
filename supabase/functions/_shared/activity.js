@@ -1633,7 +1633,7 @@ function actLineName(b) {
 
 /**
  * The sheet's groups: [{desktop, project (the desktop's), ms, lines: [{name, category, project, rec,
- * ms, start, end, apps, sites, desktops, ids, spans, auto}]}], most time first, "No desktop" last.
+ * ms, start, end, apps, sites, desktops, ids, spans, phone, auto}]}], most time first, "No desktop" last.
  * Inside a desktop, blocks of the same name, category and (corrected) project are one line, however
  * far apart. rec: the project the line should carry (its own, else the desktop's; a meeting or an
  * unplaced line on a project's desktop is offered the desktop's project), '' for none. auto: the
@@ -1660,7 +1660,7 @@ function actDeskGroups(blocks, fixes, cfg) {
       var placeable = b.category === 'work' || b.category === 'meeting' || b.category === 'unclear';
       line = g.by[lk] = { name: name, category: b.category, project: b.project || '',
                           rec: placeable ? (b.project || g.project || '') : '', ms: 0, start: b.start, end: b.end,
-                          apps: [], sites: [], desktops: [], ids: [], spans: [],
+                          apps: [], sites: [], desktops: [], ids: [], spans: [], phone: b.kind === 'phone',
                           auto: Boolean(b.project) && !(fixes && b.id && fixes[b.id]) };
       g.lines.push(line);
     }
