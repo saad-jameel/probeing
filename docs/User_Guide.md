@@ -37,7 +37,8 @@ The two pills at the top always say where you are: **Awake / Asleep** and
 - **Working on** — every task running now, with its time and deadline. Per task:
   ✓ done, ⏸ pause, ✕ drop, 📌 pin (only the pinned task collects time), **+ item** to
   add a checklist item. After Done, Drop or Pause you may add a one-line note on what
-  happened, or skip it.
+  happened, or skip it. A deadline lives only here: Pause clears it (and the due date
+  ProBeing set in Google Tasks), and the next Start asks again.
 - **Upcoming tasks** — what you planned for today. **Start** asks for priority, effort
   and an expected finish (or **Skip**). Plans from earlier days wait in **Backlog**.
 - **End the day / Start the day** — closes or opens the working day without going to

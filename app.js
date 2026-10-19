@@ -2528,6 +2528,7 @@ function stopTask(id, name) {
                rid: newRid(), at: at, local_time: humanLocal() };
   noteLocalRow(STOP_TYPE, text, e.project, e.detail, id, at).rid = step.rid;
   runWrites([step]);
+  clearDeadline(id);
   if (last) closeProject(name);
   paintPlan();
   paintTasksPage();
@@ -2758,8 +2759,19 @@ function stopSteps(name, except) {
     row.rid = step.rid;
     row.at = at;
     out.push(step);
+    clearDeadline(task.id);
   });
   return out;
+}
+
+/** Item 33: a deadline belongs to Working on. A stopped task loses it (Google's due too, when
+ *  ProBeing sent it: tasks-sync duePush); Start asks again. A plan write, straight to the table. */
+function clearDeadline(id) {
+  var plan = planOf(id);
+  if (!plan || !plan.expected_at || !supabaseReady()) return;
+  savePlan(id, { expected_at: null }).then(paintTasks, function (err) {
+    flash('Deadline not cleared: ' + ((err && err.message) || 'no answer') + '.', 'err');
+  });
 }
 
 /** node id -> when it was stopped, for tasks stopped and not picked up since:
@@ -14140,6 +14152,7 @@ function openTaskDlg(id, opener, listId) {
 function paintTaskDlg() {
   var plan = planOf(taskDlgNode);
   $('taskPlanBtn').textContent = plannedFor(plan, counterDate(Date.now())) ? 'Remove from plan' : 'Plan for today';
+  $('taskWhenBox').hidden = !runningIds()[taskDlgNode];     // item 33: deadlines are for Working on
   paintMetaPicks($('taskPriority'), $('taskEffort'), metaOf(taskDlgNode), function (m) {
     if (writeMeta(taskDlgNode, m.priority, m.effort)) $('taskDlgNote').textContent = 'Saved: ' + metaLabel(m) + '.';
     paintTaskDlg();
