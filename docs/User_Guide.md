@@ -53,7 +53,8 @@ newest first. **Refresh** re-reads it.
 
 Your Google Tasks list, kept in step every 15 minutes and when you open the app.
 
-- **Unsorted** — entries Gemini could not file. Tap the project, then the task.
+- **Unsorted** — entries Gemini could not file. Tap the project, then the task, or
+  **Ignore** to keep its time with no project (End day stops asking about it).
 - **Working on** and **Planned** — the same tasks as on Home, with Start, Done, Drop and
   Remove.
 - **All tasks** — the whole list. **Plan** puts a task on today's plan; **+** on a

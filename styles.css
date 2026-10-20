@@ -1109,3 +1109,6 @@ a.btn[hidden], a.link-btn[hidden] { display: none; }
 .checkin-tasks .pick { flex: 1 1 28%; padding: 8px 4px; font-size: 14px; }
 .checkin-tasks .pick[disabled] { opacity: .45; cursor: default; }
 .checkin-dlg form > .dlg-actions { position: sticky; bottom: 0; background: var(--panel); padding: 10px 0 2px; margin-top: 10px; }
+
+/* Item 34: Ignore sits apart from the project chips. */
+.chip.tray-ignore { color: var(--muted); border-style: dashed; }

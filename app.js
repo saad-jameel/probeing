@@ -2036,7 +2036,7 @@ function renderLogList() {
   // A Stop's substop rows (tree.js STOP_TYPE) are for Upcoming; its `done` row already says it.
   // Stage 18a: a priority/effort answer is a setting, not an entry.
   var entries = todayEntries({ log: lastLog, prayers: todayPrayers }).filter(function (e) {
-    return e.type !== 'substop' && e.type !== 'taskmeta' && e.type !== SUBNEW_OFF &&
+    return e.type !== 'substop' && e.type !== 'taskmeta' && e.type !== SUBNEW_OFF && e.type !== TRAY_SKIP &&
            CATCHUP_TYPES[e.type] !== 1;   // 18b: answers, not entries
   });
   var list = $('logList');
@@ -3348,7 +3348,7 @@ function missingPrayers(now) {
 /** Stage 18a: entries waiting in the Unsorted tray, asked about like a missing prayer. */
 function unsortedCount() {
   if (typeof trayEntries === 'undefined' || !Array.isArray(trayEntries) || !tasksConnected() || !serverFiles()) return 0;
-  return trayEntries.filter(function (e) { return !queuedFile(e.rid); }).length;
+  return trayShown().length;
 }
 
 function askDayPrayers(go) {
@@ -14679,6 +14679,10 @@ async function readTray() {
     if (!rids.length) { trayEntries = []; return; }
     var ev = await sb.from('events').select('rid,at,raw_text,project,node_id').in('rid', rids);
     if (ev.error) return;
+    var sk = await sb.from('events').select('detail').eq('type', TRAY_SKIP).in('detail', rids).limit(500);
+    if (sk.error) return;
+    traySkipped = userMap();
+    (sk.data || []).forEach(function (r) { traySkipped[r.detail] = 1; });
     var it = await sb.from('items').select('rid,source_rid,title').in('source_rid', rids).limit(500);
     var byRid = userMap();
     (ev.data || []).forEach(function (e) { byRid[e.rid] = e; });
@@ -14723,12 +14727,39 @@ function trayChip(text, onTap) {
   return b;
 }
 
+/* Item 34: Ignore leaves an entry unfiled (its time stays, no project): a TRAY_SKIP row whose
+ * detail is the entry's rid, through the outbox. */
+var TRAY_SKIP = 'unsortskip';
+var traySkipped = userMap();              // entry rid -> 1, as last read
+
+/** Ignored: read, or held on this device. */
+function trayIgnored(rid) {
+  return traySkipped[rid] === 1 || outboxMine().some(function (it) {
+    var r = queuedRow(it);
+    return r && r.type === TRAY_SKIP && r.detail === rid;
+  });
+}
+
+/** Unsorted entries still to sort: not filed or ignored on this device meanwhile. */
+function trayShown() {
+  return trayEntries.filter(function (e) { return !queuedFile(e.rid) && !trayIgnored(e.rid); });
+}
+
+function ignoreFromTray(e) {
+  delete trayPick[e.rid];
+  // api() directly: the press is held before this returns, so the tray drops it now.
+  api('log', { type: TRAY_SKIP, raw_text: 'Left unsorted: ' + e.text, detail: e.rid, rid: 'us-' + e.rid })
+    .then(function () { scheduleFiling(); }, function (err) { flash(String((err && err.message) || err), 'err'); scheduleFiling(); });
+  paintFiling();                            // the held press takes it out of the tray now
+  flash('Ignored: it keeps its time, with no project.', 'ok');
+}
+
 /** The tray: each entry, then its projects; a project with open tasks, then its tasks. */
 function paintTray() {
   var card = $('tasksTrayCard');
   var list = $('tasksTray');
   var on = tasksConnected() && serverFiles() && typeof mirrorTree === 'function';
-  var shown = on ? trayEntries.filter(function (e) { return !queuedFile(e.rid); }) : [];
+  var shown = on ? trayShown() : [];
   list.textContent = '';
   card.hidden = !shown.length;
   if (!shown.length) return;
@@ -14778,6 +14809,9 @@ function paintTray() {
         }));
       });
     }
+    var skip = trayChip('Ignore', function () { ignoreFromTray(e); });
+    skip.classList.add('tray-ignore');
+    pick.appendChild(skip);
     li.appendChild(pick);
     list.appendChild(li);
   });
@@ -14820,6 +14854,7 @@ function stopFiling() {
   filingAsked = userMap();
   trayEntries = [];
   trayPick = userMap();
+  traySkipped = userMap();
   if (!filingChannel) return;
   try { sb.removeChannel(filingChannel); } catch (e) { /* already gone */ }
   filingChannel = null;
