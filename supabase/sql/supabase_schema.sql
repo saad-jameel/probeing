@@ -2021,3 +2021,45 @@ revoke all on table public.day_reflections from anon, authenticated;
 grant select on public.day_reflections to authenticated;
 grant insert (user_id, rid, day, at, rating, energy, comment, blockers, tasks, tomorrow, figures)
   on public.day_reflections to authenticated;
+
+-- ── Item 35a (27 Oct): "Did you make progress?" 1–5 in the day-end check-in ──
+alter table public.day_reflections add column if not exists progress smallint check (progress between 1 and 5);
+grant insert (progress) on public.day_reflections to authenticated;
+
+-- ── Item 35b (27 Oct): weekly/monthly reports are read and acknowledged; a week's 3 goals ──
+-- The ack lives on the report row (the update policy above covers it). Regenerating a report
+-- upserts only its own columns, so an ack survives a rewrite.
+alter table public.reports add column if not exists acked_at  timestamptz;
+alter table public.reports add column if not exists ack_note  text not null default '' check (char_length(ack_note) <= 1000);
+alter table public.reports add column if not exists goals_hit jsonb
+  check (goals_hit is null or (jsonb_typeof(goals_hit) = 'array' and jsonb_array_length(goals_hit) <= 3));
+
+-- Append-only like day_reflections: the newest row for a week wins.
+create table if not exists public.week_goals (
+  id         uuid        primary key default gen_random_uuid(),
+  user_id    uuid        not null default auth.uid() references auth.users on delete cascade,
+  rid        text        not null check (char_length(rid) between 1 and 80),
+  week_start date        not null,
+  goals      jsonb       not null
+             check (jsonb_typeof(goals) = 'array' and jsonb_array_length(goals) between 1 and 3 and octet_length(goals::text) <= 1200),
+  at         timestamptz not null default now(),
+  constraint week_goals_rid_key unique (user_id, rid)
+);
+
+create index if not exists week_goals_user_week_idx on public.week_goals (user_id, week_start);
+
+alter table public.week_goals enable row level security;
+
+do $$ begin
+  create policy "read own week goals" on public.week_goals
+    for select using (auth.uid() = user_id);
+exception when duplicate_object then null; end $$;
+
+do $$ begin
+  create policy "insert own week goals" on public.week_goals
+    for insert with check (auth.uid() = user_id);
+exception when duplicate_object then null; end $$;
+
+revoke all on table public.week_goals from anon, authenticated;
+grant select on public.week_goals to authenticated;
+grant insert (user_id, rid, week_start, goals, at) on public.week_goals to authenticated;

@@ -147,6 +147,31 @@
        are none, every open task (13b). A tap opens the task's box. Last on the
        screen, under every logging control, so it costs no taps (rule 4).
        Hidden until Google is connected. -->
+  <!-- Item 35: a weekly or monthly report waiting to be read and acknowledged. -->
+  <section id="reportAckCard" class="card" hidden>
+    <p id="reportAckText"></p>
+    <div class="dlg-actions" style="justify-content: flex-start">
+      <button type="button" id="reportAckOpen" class="btn btn-accent">Open the report</button>
+    </div>
+  </section>
+
+  <!-- Item 35: this week's three goals; the weekly report asks which were hit. -->
+  <section id="goalsCard" class="card" hidden>
+    <h2 class="card-head">This week's goals</h2>
+    <ol id="goalsList" class="goals-list"></ol>
+    <div id="goalsEdit" hidden>
+      <input id="goal1" type="text" maxlength="120" autocomplete="off" placeholder="Goal 1" aria-label="Goal 1">
+      <input id="goal2" type="text" maxlength="120" autocomplete="off" placeholder="Goal 2 (optional)" aria-label="Goal 2">
+      <input id="goal3" type="text" maxlength="120" autocomplete="off" placeholder="Goal 3 (optional)" aria-label="Goal 3">
+      <div class="dlg-actions" style="justify-content: flex-start">
+        <button type="button" id="goalsSave" class="btn btn-accent">Save goals</button>
+        <button type="button" id="goalsLater" class="link-btn">Later</button>
+      </div>
+    </div>
+    <button type="button" id="goalsEditBtn" class="link-btn" hidden>Edit</button>
+    <p id="goalsNote" class="hint" role="status"></p>
+  </section>
+
   <!-- Stage 18a: only what is planned for today (and stopped tasks); planned on an
        earlier day and not finished waits in the Backlog bar. -->
   <section id="planCard" class="card" hidden>
@@ -158,6 +183,7 @@
       <ul id="backlogList" class="plan-list"></ul>
     </details>
   </section>
+
 </section>
 
 <!-- ============================================================ TASKS -->
@@ -399,6 +425,20 @@
     </div>
     <div class="dlg-actions">
       <button type="button" id="dayPrayersAnyway" class="btn">End day anyway</button>
+    </div>
+  </form>
+</dialog>
+
+<!-- Item 35: before End day, each task in Working on: Done, Stop or Carry, and a line about it. -->
+<dialog id="dayEndDlg" class="dlg" aria-labelledby="dayEndTitle">
+  <form method="dialog">
+    <h2 id="dayEndTitle">Before the day ends: Working on</h2>
+    <p class="hint">Pick one for each task. The line is optional and goes into today's advice.</p>
+    <ul id="dayEndList" class="checkin-tasks"></ul>
+    <p id="dayEndNote" class="hint" role="status"></p>
+    <div class="dlg-actions">
+      <button type="button" id="dayEndCancel" class="btn">Not yet</button>
+      <button type="button" id="dayEndGo" class="btn btn-accent">End day</button>
     </div>
   </form>
 </dialog>
@@ -1182,8 +1222,11 @@
     <p class="hint">Every part is optional.</p>
     <p class="pick-head" id="checkinRatingHead">Rate your day</p>
     <div id="checkinRating" class="pick-grid checkin-scale" role="group" aria-labelledby="checkinRatingHead"></div>
+    <p class="pick-head" id="checkinProgressHead">Did you make progress?</p>
+    <div id="checkinProgress" class="pick-grid checkin-scale" role="group" aria-labelledby="checkinProgressHead"></div>
     <label for="checkinComment">A word about it</label>
     <input id="checkinComment" type="text" maxlength="300" autocomplete="off" placeholder="Optional">
+    <p id="checkinSettled" class="hint" hidden></p>
     <div id="checkinTasksWrap" hidden>
       <p class="pick-head">Today's tasks</p>
       <ul id="checkinTasks" class="checkin-tasks"></ul>

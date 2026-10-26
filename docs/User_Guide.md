@@ -42,7 +42,12 @@ The two pills at the top always say where you are: **Awake / Asleep** and
 - **Upcoming tasks** — what you planned for today. **Start** asks for priority, effort
   and an expected finish (or **Skip**). Plans from earlier days wait in **Backlog**.
 - **End the day / Start the day** — closes or opens the working day without going to
-  sleep.
+  sleep. End day first asks about each task in Working on: **Done**, **Stop** or
+  **Carry to tomorrow**, with an optional line. Then a short check-in: rating, sense of
+  progress, tasks, what got in the way, energy and tomorrow's top 3. A task left running
+  when the day closes some other way (Sleep, the night check) goes to **Backlog**.
+- **This week's goals** — Home asks for up to three goals each week; the weekly report
+  asks which you hit.
 
 ## Today
 
@@ -87,8 +92,11 @@ Pick a range: last 2 or 7 days, this week, last week, or last 30 days.
   is unavailable you still get every figure.
 - **Projects** — hours per project, grouped by kind of work. The first time a project
   appears you are asked which kind it is (Office, Personal, PhD, Personal working).
-- **Past reports** — a weekly and a monthly report are written and saved when you open
-  Review after a week or month ends.
+- **Past reports** — a weekly (Monday to Sunday) and a monthly report are written and
+  saved when you open Review after a week or month ends. Home reminds you until you read
+  one and press **I've read it**; the weekly one also asks for your own line on the week
+  and which goals you hit. Daily advice comes after End day; **Last 2 days** is a Review
+  range.
 
 ## Settings
 

@@ -1112,3 +1112,9 @@ a.btn[hidden], a.link-btn[hidden] { display: none; }
 
 /* Item 34: Ignore sits apart from the project chips. */
 .chip.tray-ignore { color: var(--muted); border-style: dashed; }
+
+/* Item 35: the week's goals and a report's acknowledgement. */
+.goals-list { margin: 4px 0 0; padding-left: 20px; }
+#goalsEdit input { width: 100%; margin-top: 6px; }
+.report-ack { margin-top: 10px; padding-top: 8px; border-top: 1px solid var(--line); }
+.report-ack textarea { width: 100%; margin-top: 6px; }
