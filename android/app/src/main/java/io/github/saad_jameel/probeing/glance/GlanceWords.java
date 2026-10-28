@@ -310,7 +310,7 @@ final class GlanceWords {
     }
 
     /**
-     * "5:42 PM" on the device's own clock. A fixed shape rather than the
+     * "17:42" on the device's own clock. A fixed shape rather than the
      * locale's, because that is the wording Saad chose for the notification
      * glance in 7b (app.js:glanceClock) and the two are read side by side.
      */
@@ -319,11 +319,7 @@ final class GlanceWords {
         c.setTimeInMillis(ms);
         int h = c.get(Calendar.HOUR_OF_DAY);
         int m = c.get(Calendar.MINUTE);
-        int twelve = h % 12;
-        if (twelve == 0) {
-            twelve = 12;
-        }
-        return twelve + ":" + (m < 10 ? "0" : "") + m + (h < 12 ? " AM" : " PM");
+        return (h < 10 ? "0" : "") + h + ":" + (m < 10 ? "0" : "") + m;   // item 37: 24-hour
     }
 
     /**

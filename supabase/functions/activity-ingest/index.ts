@@ -926,7 +926,7 @@ function clock12(ms, offsetMin) {
   var m = ((mins % 1440) + 1440) % 1440;
   var h = Math.floor(m / 60);
   var mm = m % 60;
-  return ((h % 12) || 12) + ':' + (mm < 10 ? '0' : '') + mm + (h < 12 ? ' am' : ' pm');
+  return (h < 10 ? '0' : '') + h + ':' + (mm < 10 ? '0' : '') + mm;         // item 37: 24-hour
 }
 
 /** The push. sw.js shows it with Take a break / I'm working under one tag. */
@@ -1431,7 +1431,7 @@ async function readProjects(sb: Sb, owner: string, now: number) {
 function humanLocal(t: number, zone: string): string {
   try {
     return new Date(t).toLocaleString('en-GB', { weekday: 'short', day: '2-digit', month: 'short', hour: '2-digit',
-                                                 minute: '2-digit', hour12: true, timeZone: zone });
+                                                 minute: '2-digit', hour12: false, timeZone: zone });   // item 37
   } catch (_e) {
     return iso(t);
   }

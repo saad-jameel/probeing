@@ -1183,12 +1183,15 @@
 <!-- Item 36: the page behind the sheet dimmed. Taps pass through it, so M and Prayer still work (rule 4). -->
 <div id="catchupShade" class="catchup-shade" hidden></div>
 <dialog id="catchupDlg" class="dlg catchup-dlg" aria-labelledby="catchupTitle">
-  <form method="dialog">
-    <h2 id="catchupTitle"></h2>
-    <ul id="catchupAsks" class="catchup-list" hidden></ul>
-    <ul id="catchupList" class="catchup-list"></ul>
-    <p id="catchupNote" class="hint"></p>
-    <div class="dlg-actions">
+  <form method="dialog" class="catchup-form">
+    <!-- Item 37: the lines scroll; the footer with Later and Accept all stays solid under them. -->
+    <div class="catchup-body">
+      <h2 id="catchupTitle"></h2>
+      <ul id="catchupAsks" class="catchup-list" hidden></ul>
+      <ul id="catchupList" class="catchup-list"></ul>
+      <p id="catchupNote" class="hint"></p>
+    </div>
+    <div class="dlg-actions catchup-foot">
       <button type="button" id="catchupLaterBtn" class="link-btn">Later</button>
       <button type="button" id="catchupOkBtn" class="btn btn-accent">Accept all</button>
     </div>

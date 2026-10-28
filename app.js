@@ -373,7 +373,7 @@ function humanLocal() {
   try {
     return new Date().toLocaleString(undefined, {
       weekday: 'short', day: '2-digit', month: 'short',
-      hour: '2-digit', minute: '2-digit'
+      hour: '2-digit', minute: '2-digit', hourCycle: 'h23'      // item 37: 24-hour
     });
   } catch (e) {
     return '';
@@ -1665,8 +1665,11 @@ function clockOf(entry) {
     var d = new Date(t);
     return String(d.getHours()).padStart(2, '0') + ':' + String(d.getMinutes()).padStart(2, '0');
   }
-  var h = /(\d{1,2}:\d{2}\s*[AaPp][Mm])/.exec(entry.local || '');
-  return h ? h[1] : '';
+  // A stamp in either shape ("02:05 PM" before item 37, "14:05" after), always shown as 24-hour.
+  var h = /(\d{1,2}):(\d{2})(\s*([AaPp])[Mm])?/.exec(entry.local || '');
+  if (!h) return '';
+  var hr = Number(h[1]) % (h[4] ? 12 : 24) + (h[4] && /p/i.test(h[4]) ? 12 : 0);
+  return pad2(hr) + ':' + h[2];
 }
 
 // instantOf() and humanDuration() live in day.js.
@@ -14741,10 +14744,9 @@ function deadlineLevel(ms, now) {
   return left <= DEADLINE_NEAR_MS ? 'soon' : 'ok';
 }
 
-/** "4:30 PM" on this device's clock. */
+/** "16:30" on this device's clock (item 37: 24-hour). */
 function clockAmPm(d) {
-  var h = d.getHours();
-  return ((h % 12) || 12) + ':' + pad2(d.getMinutes()) + (h < 12 ? ' AM' : ' PM');
+  return pad2(d.getHours()) + ':' + pad2(d.getMinutes());
 }
 
 /** "by 4:30 PM" today (the counter day), "by Thu 4:30 PM" within a week, else "by 12 Oct 4:30 PM". */
@@ -17076,27 +17078,22 @@ function watchInstallLine(url, key, token) {
          '-Url "' + trimUrl(url) + '" -Key "' + String(key || '').trim() + '" -Token "' + pairCodeDisplay(token) + '"';
 }
 
-/** "9:40 am" by this device's clock. */
+/** "09:40" by this device's clock (item 37, Saad: 24-hour time everywhere). */
 function clockAt(ms) {
   var d = new Date(ms);
-  var h = d.getHours();
-  var m = d.getMinutes();
-  return ((h % 12) || 12) + ':' + (m < 10 ? '0' : '') + m + (h < 12 ? ' am' : ' pm');
+  return pad2(d.getHours()) + ':' + pad2(d.getMinutes());
 }
 
-/** "3:10 – 4:05 pm" */
+/** "15:10 – 16:05" */
 function spanClock(a, b) {
-  var x = clockAt(a);
-  var y = clockAt(b);
-  if (x.slice(-2) === y.slice(-2)) x = x.slice(0, -3);
-  return x + ' – ' + y;
+  return clockAt(a) + ' – ' + clockAt(b);
 }
 
 /** The readable stamp of a backdated row: its own instant, not the press. */
 function humanLocalAt(ms) {
   try {
     return new Date(ms).toLocaleString(undefined, { weekday: 'short', day: '2-digit', month: 'short',
-                                                    hour: '2-digit', minute: '2-digit' });
+                                                    hour: '2-digit', minute: '2-digit', hourCycle: 'h23' });
   } catch (e) {
     return '';
   }
@@ -18498,7 +18495,7 @@ function lineInfo(line) {
   }
   add('Sites', line.sites.join(', '));
   add('Apps', line.apps.join(', '));
-  add('Desktop', line.desktops.join(', ') || ACT_NO_DESKTOP);
+  add('Desktop', line.desktops.join(', ') || (line.phone ? ACT_PHONE_GROUP : ACT_NO_DESKTOP));
   add('Time', humanDuration(line.ms) + ' — ' + line.spans.map(function (sp) { return spanClock(sp[0], sp[1]); }).join(', '));
   return box;
 }
@@ -18526,6 +18523,11 @@ function catchupLineRow(line, projects, g) {
   var rec = document.createElement('span');
   rec.className = 'catchup-rec';
   rec.textContent = lineRecText(line);
+  // Item 37 (Saad, 28 Oct): work already on its desktop's project says nothing more (the heading says it).
+  var placeable = line.category === 'work' || line.category === 'meeting' || line.category === 'unclear';
+  var onDesk = placeable && line.category !== 'unclear' && !line.judge && g && g.project &&
+               actNorm(linePick(line) || '') === actNorm(g.project);
+  rec.hidden = onDesk || !rec.textContent;
   head.className = 'catchup-line';
   head.append(pick, what, rec);
   var info = lineInfo(line);
@@ -18536,7 +18538,7 @@ function catchupLineRow(line, projects, g) {
   li.append(head, info);
   var acts = document.createElement('div');
   acts.className = 'catchup-acts';
-  if (line.category === 'work' || line.category === 'meeting' || line.category === 'unclear') {
+  if (placeable) {
     var sel = document.createElement('select');
     sel.className = 'cat-pick';
     sel.setAttribute('aria-label', 'Project for ' + line.name);
@@ -18555,10 +18557,22 @@ function catchupLineRow(line, projects, g) {
       line.edit = Object.assign({}, line.edit, { project: sel.value });
       line.picked = pick.checked = true;
       rec.textContent = lineRecText(line);
+      rec.hidden = false;
     });
     acts.appendChild(sel);
+    if (onDesk) {
+      // The drop-down waits behind a small Change, so one desktop fits on one screen.
+      sel.hidden = true;
+      var change = document.createElement('button');
+      change.type = 'button';
+      change.className = 'link-btn';
+      change.textContent = 'Change';
+      change.addEventListener('click', function () { sel.hidden = false; change.hidden = true; sel.focus(); });
+      acts.appendChild(change);
+    }
   }
-  if (line.category !== 'private') {
+  // Item 37: a distraction is accepted as it is; "It was a break" is for time on the clock only.
+  if (placeable) {
     var brk = document.createElement('button');
     brk.type = 'button';
     brk.className = 'link-btn';
@@ -18609,7 +18623,7 @@ function catchupDeskItem(g, projects) {
   head.append(name, all, ok);
   li.appendChild(head);
   // Item 36 (Saad, 28 Oct): a desktop no pair or project name places is asked here (never pushed).
-  if (g.desktop && g.desktop !== ACT_NO_DESKTOP && !g.project) li.appendChild(deskAsk(g, projects));
+  if (g.desktop && g.desktop !== ACT_NO_DESKTOP && !g.phone && !g.project) li.appendChild(deskAsk(g, projects));
   var ul = document.createElement('ul');
   ul.className = 'catchup-lines';
   open.forEach(function (line) { ul.appendChild(catchupLineRow(line, projects, g)); });

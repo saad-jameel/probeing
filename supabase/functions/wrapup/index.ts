@@ -260,7 +260,7 @@ function checkClock(ms) {
   var m = localMinuteOfDay(ms);
   var h = Math.floor(m / 60);
   var mm = m % 60;
-  return ((h % 12) || 12) + ':' + (mm < 10 ? '0' : '') + mm + (h < 12 ? ' am' : ' pm');
+  return (h < 10 ? '0' : '') + h + ':' + (mm < 10 ? '0' : '') + mm;         // item 37: 24-hour
 }
 
 /**
@@ -399,7 +399,7 @@ function humanLocal(ms: number): string {
   try {
     return new Date(ms).toLocaleString('en-GB', {
       weekday: 'short', day: '2-digit', month: 'short',
-      hour: '2-digit', minute: '2-digit', hour12: true, timeZone: userZone
+      hour: '2-digit', minute: '2-digit', hour12: false, timeZone: userZone
     });
   } catch (_e) {
     return new Date(ms).toISOString();
@@ -410,7 +410,7 @@ function humanLocal(ms: number): string {
 function clockLocal(ms: number): string {
   try {
     return new Date(ms).toLocaleString('en-GB', {
-      hour: '2-digit', minute: '2-digit', hour12: true, timeZone: userZone
+      hour: '2-digit', minute: '2-digit', hour12: false, timeZone: userZone
     });
   } catch (_e) {
     return '';

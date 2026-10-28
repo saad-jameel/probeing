@@ -60,7 +60,7 @@ Today's totals (worked, breaks, prayers, M, time per project) and every entry of
 newest first, coloured by kind: work white, prayer blue, distraction red, a break amber, a
 break that ran too long orange (over 45 minutes unless 90 minutes of work came before and
 after it, or longer than half the work before it). Work and breaks show when they ran
-("5:29 → 6:12 pm · 43m"). **Refresh** re-reads it.
+("17:29 → 18:12 · 43m"). Every time in the app is 24-hour. **Refresh** re-reads it.
 
 ## Tasks
 
@@ -153,10 +153,12 @@ paste the line it gives you into PowerShell, done.
 - Using the laptop after Fajr while marked asleep, or a work app during a break or before
   starting the day, gets a question ("awake?", "back to work?", "start?") that records
   the right time when you answer.
-- When you open ProBeing it may show **"Unknown work 5:06 – 6:12 pm"**, one box per
-  desktop. Work on a project already in Working on is not asked about; a desktop not
-  linked to a project asks which one it is. **Accept** or **It was a break** removes a
-  line at once; the popup closes when nothing is left.
+- When you open ProBeing it may show **"Unknown work 17:06 – 18:12"**, one box per
+  desktop (the phone's in its own, **Phone**). Work on a project already in Working on is
+  not asked about; a line already on its desktop's project shows just its name and time
+  (**Change** picks another); a desktop not linked to a project asks which one it is.
+  **Accept** removes a desktop's lines at once; **It was a break** is for time on the clock
+  (never a distraction, which is only accepted); the popup closes when nothing is left.
 - On a project's desktop for 30 minutes while Working on says another, Home asks, and the
   laptop gets a push.
 - **The dot by the clock**: green working, amber on a break, blue asleep, grey day over;

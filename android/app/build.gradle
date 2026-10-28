@@ -98,8 +98,8 @@ android {
         applicationId "io.github.saad_jameel.probeing"
         minSdkVersion 26
         targetSdkVersion 36
-        versionCode 9
-        versionName "9"
+        versionCode 10
+        versionName "10"
 
         // The name for the application
         resValue "string", "appName", twaManifest.name

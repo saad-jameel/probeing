@@ -152,7 +152,7 @@ function clock12(ms, offsetMin) {
   var m = ((mins % 1440) + 1440) % 1440;
   var h = Math.floor(m / 60);
   var mm = m % 60;
-  return ((h % 12) || 12) + ':' + (mm < 10 ? '0' : '') + mm + (h < 12 ? ' am' : ' pm');
+  return (h < 10 ? '0' : '') + h + ':' + (mm < 10 ? '0' : '') + mm;         // item 37: 24-hour
 }
 
 /** The push's JSON. sw.js shows it under `tag`, one line per prayer. */

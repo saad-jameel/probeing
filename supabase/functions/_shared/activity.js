@@ -222,6 +222,12 @@ function actTitleNamesSite(host, path, title) {
 }
 
 /** The first entry of `list` that matches, or ''. */
+/** A list entry's site ("youtube.com/shorts" -> "youtube.com"); '' for an app entry. */
+function actEntrySite(entry) {
+  var e = String(entry == null ? '' : entry).trim().toLowerCase().split('/')[0];
+  return e.indexOf('.') !== -1 ? actCleanDomain(e) : '';
+}
+
 function actListHit(list, seg, withTitle) {
   for (var i = 0; i < (list || []).length; i++) {
     if (actEntryHits(list[i], seg, withTitle)) return list[i];
@@ -314,7 +320,9 @@ function actClassify(seg, cfg) {
   if (seg.incognito === true || ACT_PRIVATE_TITLE.test(String(seg.title || '')) || actListHit(lists['private'], seg, true)) {
     return { category: 'private', project: '', key: '' };
   }
-  if (actListHit(lists.distract, seg, false)) return { category: 'distraction', project: '', key: '' };
+  var dist = actListHit(lists.distract, seg, false);
+  // Item 37: a browser with no URL hit by its title still names the site, from his own list entry.
+  if (dist) return { category: 'distraction', project: '', key: '', site: actEntrySite(dist) };
   var hit = actRuleHit(seg, actRules(cfg));
   if (actListHit(lists.meeting, seg, false)) {
     return { category: 'meeting', project: hit ? hit.project : '', key: hit ? hit.key : '' };
@@ -451,7 +459,7 @@ function actJoin(list) {
 function actBlocks(pieces, cfg) {
   var list = (pieces || []).map(function (p) {
     var c = actDeskClassify(p, cfg);
-    var b = { start: p.start, end: p.end, app: actCleanApp(p.app), domain: c.category === 'private' ? '' : (p.host || ''),
+    var b = { start: p.start, end: p.end, app: actCleanApp(p.app), domain: c.category === 'private' ? '' : (p.host || c.site || ''),
               category: c.category, project: c.project, key: c.key,
               desktop: c.category === 'private' ? '' : actCleanDesktop(p.desktop),
               title: c.category === 'unclear' && actTitleSendable(p.app, p.title) && !(actIsBrowser(p.app) && !p.host)
@@ -1685,6 +1693,7 @@ var ACT_PLAIN_NAMES = { windowsterminal: 'Terminal', wt: 'Terminal', cmd: 'Termi
   discord: 'Discord', zoom: 'Zoom', teams: 'Teams', msteams: 'Teams', claude: 'Claude', idea64: 'IntelliJ',
   pycharm64: 'PyCharm', webstorm64: 'WebStorm', systemsettings: 'Settings', photos: 'Photos' };
 var ACT_NO_DESKTOP = 'No desktop';
+var ACT_PHONE_GROUP = 'Phone';
 
 /** A block's line name: Meeting, a distraction's word, Private, Browsing (a browser or a site), a phone
  *  app ("Phone · YouTube"), else the app in plain words (WindowsTerminal -> Terminal). */
@@ -1717,11 +1726,13 @@ function actDeskGroups(blocks, fixes, cfg) {
   (blocks || []).slice().sort(function (a, b) { return a.start - b.start; }).forEach(function (raw) {
     var b = actFixed(raw, fixes);
     if (!(b.end > b.start)) return;
-    var desk = actCleanDesktop(b.desktop) || ACT_NO_DESKTOP;
+    // Item 37: the phone's lines are their own group, "Phone".
+    var desk = b.kind === 'phone' ? ACT_PHONE_GROUP : actCleanDesktop(b.desktop) || ACT_NO_DESKTOP;
     var gk = 'd' + actNorm(desk);
     var g = groups[gk];
     if (!g) {
-      g = groups[gk] = { desktop: desk, project: desk === ACT_NO_DESKTOP ? '' : actDeskProject(desk, cfg), ms: 0, lines: [], by: Object.create(null) };
+      g = groups[gk] = { desktop: desk, project: desk === ACT_NO_DESKTOP || desk === ACT_PHONE_GROUP ? '' : actDeskProject(desk, cfg), ms: 0, lines: [],
+                         by: Object.create(null), phone: desk === ACT_PHONE_GROUP };
       order.push(g);
     }
     var name = actLineName(b);
@@ -1743,7 +1754,7 @@ function actDeskGroups(blocks, fixes, cfg) {
     var app = b.category === 'private' ? '' : String(b.app || '').replace(/\.exe$/i, '');
     if (app && !actIsBrowser(b.app) && line.apps.indexOf(app) === -1) line.apps.push(app);
     if (b.domain && b.category !== 'private' && line.sites.indexOf(b.domain) === -1) line.sites.push(b.domain);
-    if (desk !== ACT_NO_DESKTOP && line.desktops.indexOf(desk) === -1) line.desktops.push(desk);
+    if (desk !== ACT_NO_DESKTOP && desk !== ACT_PHONE_GROUP && line.desktops.indexOf(desk) === -1) line.desktops.push(desk);
     if (b.id) line.ids.push(b.id);
     var sp = line.spans[line.spans.length - 1];
     if (sp && b.start - sp[1] <= ACT_GROUP_GAP_MS) sp[1] = Math.max(sp[1], b.end);
@@ -1754,8 +1765,8 @@ function actDeskGroups(blocks, fixes, cfg) {
     delete g.by;
     return g;
   }).sort(function (x, y) {
-    var nx = x.desktop === ACT_NO_DESKTOP;
-    var ny = y.desktop === ACT_NO_DESKTOP;
+    var nx = x.desktop === ACT_NO_DESKTOP || x.phone;
+    var ny = y.desktop === ACT_NO_DESKTOP || y.phone;
     return nx !== ny ? (nx ? 1 : -1) : (y.ms - x.ms) || (x.desktop < y.desktop ? -1 : 1);
   });
 }
@@ -1862,5 +1873,7 @@ globalThis.ProBeingActivity = {
   actJudgeSummary: actJudgeSummary,
   actLineName: actLineName,
   actDeskGroups: actDeskGroups,
-  ACT_NO_DESKTOP: ACT_NO_DESKTOP
+  ACT_NO_DESKTOP: ACT_NO_DESKTOP,
+  ACT_PHONE_GROUP: ACT_PHONE_GROUP,
+  actEntrySite: actEntrySite
 };

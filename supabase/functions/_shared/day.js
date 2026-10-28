@@ -1098,7 +1098,7 @@ function shiftedDate(ms, offsetMin) {
   return new Date(ms + offsetMin * 60000);
 }
 
-/** "5:42 PM". A fixed shape rather than the locale's, because that is the
+/** "17:42". A fixed shape rather than the locale's, because that is the
  *  wording Saad chose. By the device's clock, unless `offsetMin` is given —
  *  the server runs in UTC and passes Karachi's 300. */
 function glanceClock(ms, offsetMin) {
@@ -1106,7 +1106,7 @@ function glanceClock(ms, offsetMin) {
   var d = zoned ? shiftedDate(ms, offsetMin) : new Date(ms);
   var h = zoned ? d.getUTCHours() : d.getHours();
   var m = zoned ? d.getUTCMinutes() : d.getMinutes();
-  return ((h % 12) || 12) + ':' + (m < 10 ? '0' : '') + m + (h < 12 ? ' AM' : ' PM');
+  return (h < 10 ? '0' : '') + h + ':' + (m < 10 ? '0' : '') + m;            // item 37: 24-hour
 }
 
 /**

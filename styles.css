@@ -1163,3 +1163,22 @@ a.btn[hidden], a.link-btn[hidden] { display: none; }
 /* Item 36: the week's self-check. */
 .goal-hit { display: block; margin: 6px 0; }
 #weekCheckNote { width: 100%; }
+
+/* Item 37 (Saad, 28 Oct): compact, so one desktop fits on one screen; the footer never has lines behind it. */
+#catchupDlg[open] { display: flex; flex-direction: column; overflow: hidden; padding-bottom: 0; }
+#catchupDlg .catchup-form { display: flex; flex-direction: column; min-height: 0; flex: 1 1 auto; }
+#catchupDlg .catchup-form[hidden] { display: none; }
+#catchupDlg .catchup-body { overflow-y: auto; min-height: 0; flex: 1 1 auto; }
+#catchupDlg form > .catchup-foot { position: static; flex: none; margin: 0; padding: 10px 0 12px; background: var(--panel);
+                                   border-top: 1px solid var(--line); }
+#catchupDlg h2 { font-size: 17px; margin: 0 0 8px; }
+#catchupList > li.catchup-desk { padding: 8px 10px; margin-bottom: 8px; }
+#catchupDlg .catchup-deskhead { flex-wrap: nowrap; gap: 8px; }
+#catchupDlg .catchup-deskname { flex: 1 1 auto; }
+#catchupDlg .catchup-deskhead .btn { padding: 4px 12px; min-height: 30px; font-size: 14px; }
+#catchupDlg .catchup-lines > li { padding: 3px 0; }
+#catchupDlg .catchup-line { font-size: 14px; gap: 2px 8px; }
+#catchupDlg .catchup-line .catchup-rec { padding-left: 26px; font-size: 12px; }
+#catchupDlg .catchup-acts { margin-top: 2px; gap: 8px; padding-left: 26px; }
+#catchupDlg .catchup-acts .link-btn { min-height: 26px; font-size: 13px; }
+#catchupDlg .catchup-acts .cat-pick { min-height: 28px; font-size: 13px; padding: 2px 6px; }

@@ -358,6 +358,14 @@ public final class PhoneRules {
      */
     static final String OTHER_APP = "Other app";
 
+    /** "Other app (securitycenter)" for com.miui.securitycenter; plain "Other app" with nothing usable. */
+    static String otherApp(String pkg) {
+        String[] parts = (pkg == null ? "" : pkg).split("\\.");
+        String tail = parts.length == 0 ? "" : parts[parts.length - 1].replaceAll("[^A-Za-z0-9]", "");
+        if (tail.length() > 24) tail = tail.substring(0, 24);
+        return tail.isEmpty() ? OTHER_APP : OTHER_APP + " (" + tail + ")";
+    }
+
     public static String[] classifyApp(String pkg, String label, Cfg cfg) {
         String name = cleanApp(label == null || label.isEmpty() ? pkg : label);
         Seg seg = new Seg();
@@ -373,7 +381,8 @@ public final class PhoneRules {
         }
         if (isCallApp(pkg)) return new String[]{"meeting", "Phone call", "", ""};
         // No name to show: never the package itself.
-        if (label == null || label.trim().isEmpty()) return new String[]{"unclear", OTHER_APP, "", ""};
+        // Item 37 (Saad, 28 Oct): an app with no label is named by the last part of its package.
+        if (label == null || label.trim().isEmpty()) return new String[]{"unclear", otherApp(pkg), "", ""};
         // The package is matched only for privacy: rules see the app's name, like a laptop app.
         seg.title = "";
         String[] c = classify(seg, cfg);

@@ -104,6 +104,13 @@ function Act-CleanApp($a) {
   return Act-Cut (($last -creplace '[\u0000-\u001f]', '').Trim()) $ACT_APP_MAX
 }
 
+# A list entry's site ("youtube.com/shorts" -> "youtube.com"); '' for an app entry. As activity.js.
+function Act-EntrySite($entry) {
+  $e = ((Act-Str $entry).Trim().ToLowerInvariant() -split '/')[0]
+  if ($e.Contains('.')) { return Act-CleanDomain $e }
+  return ''
+}
+
 function Act-CleanDomain($d) {
   $h = (Act-Str $d).Trim().ToLowerInvariant() -creplace '^www\.', ''
   $h = $h -creplace '\.$', ''
@@ -319,7 +326,9 @@ function Act-Classify($seg, $cfg) {
       (Act-ListHit $lists['private'] $seg $true)) {
     return @{ category = 'private'; project = ''; key = '' }
   }
-  if (Act-ListHit $lists['distract'] $seg $false) { return @{ category = 'distraction'; project = ''; key = '' } }
+  $dist = Act-ListHit $lists['distract'] $seg $false
+  # Item 37: a browser with no URL hit by its title still names the site, from his own list entry.
+  if ($dist) { return @{ category = 'distraction'; project = ''; key = ''; site = (Act-EntrySite $dist) } }
   $hit = Act-RuleHit $seg (Act-Rules $cfg)
   if (Act-ListHit $lists['meeting'] $seg $false) {
     if ($hit) { return @{ category = 'meeting'; project = $hit.project; key = $hit.key } }
@@ -485,6 +494,7 @@ function Act-Blocks($pieces, $cfg) {
     if ($null -eq $p) { continue }
     $c = Act-DeskClassify $p $cfg
     $domain = $p.host
+    if (-not $domain -and $c.site) { $domain = $c.site }
     $desk = Act-CleanDesktop $p.desktop
     if ($c.category -eq 'private') { $domain = ''; $desk = '' }
     $title = ''
