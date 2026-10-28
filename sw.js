@@ -65,8 +65,9 @@
  * v40 (item 30a): work runs, helpers, the focus card.
  * v41 (item 30b): auto-detected Working on (Accept / Reject on Home); Desktops -> project in Settings.
  * v42 (item 31): the catch-up sheet grouped by desktop, idle "Why?", the day's judgement in Review;
- *   no "That one's over" notification (said in the app); the day-end check-in. */
-var CACHE = 'probeing-shell-v46';
+ *   no "That one's over" notification (said in the app); the day-end check-in.
+ * v47 (item 36): a private app's push asks "Work / Not work". */
+var CACHE = 'probeing-shell-v47';
 var SHELL = [
   './',
   'index.html',
@@ -212,7 +213,10 @@ self.addEventListener('push', function (event) {
       data: { nudge: data.nudge || '', nonce: data.nonce || '', url: data.url || '', key: data.key || '' }
     };
     if (!settled && data.nudge && data.nonce && data.url) {
-      opts.actions = [{ action: 'break', title: 'Take a break' }, { action: 'working', title: 'I\'m working' }];
+      // Item 36: a private app is asked "work or not?".
+      opts.actions = data.private === true
+        ? [{ action: 'working', title: 'Work' }, { action: 'break', title: 'Not work' }]
+        : [{ action: 'break', title: 'Take a break' }, { action: 'working', title: 'I\'m working' }];
     }
     event.waitUntil(self.registration.showNotification(String(data.title || 'ProBeing'), opts));
     return;

@@ -615,6 +615,9 @@ function replayDay(log, endMs, fromMs, weightOf) {
   var bySubtask = userMap();
   var weightedByProject = userMap();
   var weighted = 0;
+  var parallel = [];                        // item 36: [{a, z, names}] while two projects or more ran at once
+  var offAt = null;                         // item 36: his End day, until he sleeps or starts again
+  var END_GAP = 'After End day';            // ...and the break reason the time to a same-day start gets
 
   function dropSub(id) {
     if (!subs[id]) return;
@@ -657,6 +660,12 @@ function replayDay(log, endMs, fromMs, weightOf) {
         names.forEach(function (p) {
           byProject[p] = (byProject[p] || 0) + span;
         });
+        if (names.length > 1) {
+          var key = names.slice().sort().join('\u0000');
+          var lastP = parallel[parallel.length - 1];
+          if (lastP && lastP.z === from && lastP.key === key) lastP.z = until;
+          else parallel.push({ a: from, z: until, names: names.slice().sort(), key: key });
+        }
         if (typeof weightOf === 'function') {
           // Wall clock, at the highest weight running: never more than worked x the top weight.
           var top = 0;
@@ -691,6 +700,17 @@ function replayDay(log, endMs, fromMs, weightOf) {
     if (IDLE_RESET_TYPES.indexOf(row.type) !== -1 && t > lastTended) lastTended = t;
 
     var text = String(row.raw_text || '').trim();
+
+    // Item 36 (Saad, 28 Oct): End day, then work again the same day: the time between is a break.
+    if ((row.type === 'work' || row.type === 'voice' || row.type === 'resume') && dayClosed && offAt !== null && t <= ceiling) {
+      var ga = Math.max(offAt, floor);
+      var gz = Math.min(t, ceiling);
+      if (gz > ga) {
+        paused += gz - ga;
+        byReason[END_GAP] = (byReason[END_GAP] || 0) + gz - ga;
+      }
+    }
+    if (row.type === 'sleep' || row.type === 'work' || row.type === 'voice' || row.type === 'resume') offAt = null;
 
     if (row.type === 'work' || row.type === 'voice') {
       // Adds, never replaces — that is the whole point of multitasking.
@@ -752,6 +772,8 @@ function replayDay(log, endMs, fromMs, weightOf) {
        * starts empty. Every Sleep that ends the day writes `off` too; a lone
        * `sleep` is a nap on a break, which keeps them (Saad, 29 Sep), and its
        * sub-task, which the resume carries on (1 Oct). */
+      // Only an End day inside the window counts towards a same-day gap (a 4 am close is yesterday's).
+      offAt = row.type === 'off' && t >= floor ? t : null;
       if (row.type === 'off') {
         active = userMap();
         order = [];
@@ -799,8 +821,60 @@ function replayDay(log, endMs, fromMs, weightOf) {
     subtaskKeys: subKeys,                   // running task id -> its project key
     pinned: pinned,                         // '' when nothing is pinned
     weightedByProject: weightedByProject,   // with weightOf only: project -> wall-clock ms x weight
-    weighted: weighted                      // with weightOf only: worked ms x the top weight running
+    weighted: weighted,                     // with weightOf only: worked ms x the top weight running
+    parallel: parallel.map(function (x) { return { a: x.a, z: x.z, names: x.names }; })   // item 36
   };
+}
+
+/* Item 36 (Saad, 28 Oct): time two projects ran at once, given to where the laptop was. In each such
+ * stretch, by the laptop's stints (one project's desktop without a break of 2 minutes or more): when some
+ * stint reached 30 minutes he was working on one thing at a time, so a project under 10 minutes in all was
+ * only dragging along and gets none, and the rest share the stretch by their laptop time. Only short hops
+ * (no stint that long) leave both their full time: parallel work, flagged. blocks: laptop {start, end,
+ * category, project} (ms). Returns {byProject (a copy), parallelMs, split: [{a, z, by}]}. */
+function splitParallel(day, blocks) {
+  var MAIN_MS = 30 * 60000;
+  var DRAG_MS = 10 * 60000;
+  var JOIN_MS = 2 * 60000;
+  var by = userMap();
+  Object.keys((day && day.byProject) || {}).forEach(function (k) { by[k] = day.byProject[k]; });
+  var out = { byProject: by, parallelMs: 0, split: [] };
+  function norm(x) { return String(x || '').toLowerCase().replace(/[^a-z0-9]+/g, ''); }
+  ((day && day.parallel) || []).forEach(function (p) {
+    var span = p.z - p.a;
+    if (!(span > 0)) return;
+    var lap = userMap();
+    var longest = 0;
+    p.names.forEach(function (n) {
+      var parts = [];
+      (blocks || []).forEach(function (b) {
+        if (b.kind === 'phone' || (b.category !== 'work' && b.category !== 'meeting') || !norm(n) || norm(n) !== norm(b.project)) return;
+        var a = Math.max(b.start, p.a);
+        var z = Math.min(b.end, p.z);
+        if (z > a) parts.push([a, z]);
+      });
+      parts.sort(function (x, y) { return x[0] - y[0]; });
+      var total = 0;
+      var stint = null;
+      parts.forEach(function (x) {
+        if (stint && x[0] - stint[1] < JOIN_MS) stint[1] = Math.max(stint[1], x[1]);
+        else { if (stint) longest = Math.max(longest, stint[1] - stint[0]); stint = [x[0], x[1]]; }
+        total += x[1] - x[0];
+      });
+      if (stint) longest = Math.max(longest, stint[1] - stint[0]);
+      lap[n] = total;
+    });
+    if (longest < MAIN_MS) { out.parallelMs += span; return; }      // hops: both keep it
+    var keep = p.names.filter(function (n) { return lap[n] >= DRAG_MS; });
+    var sum = keep.reduce(function (n, k) { return n + lap[k]; }, 0);
+    var share = userMap();
+    p.names.forEach(function (n) {
+      share[n] = keep.indexOf(n) === -1 || !sum ? 0 : Math.round(span * lap[n] / sum);
+      by[n] = Math.max(0, (by[n] || 0) - span + share[n]);
+    });
+    out.split.push({ a: p.a, z: p.z, by: share });
+  });
+  return out;
 }
 
 /* The Today card's figures AND the notification-shade glance's (Stage 7b). One
@@ -1220,6 +1294,7 @@ globalThis.ProBeingDay = {
   LEAD_TYPES: LEAD_TYPES,
   dayFigures: dayFigures,
   replayDay: replayDay,                     // item 30b: activity-ingest reads Working on with it
+  splitParallel: splitParallel,
   isOpenAt: isOpenAt,
   canRename: canRename,
   openBeforeToday: openBeforeToday,

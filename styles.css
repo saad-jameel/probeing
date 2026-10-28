@@ -505,6 +505,15 @@ a.btn[hidden], a.link-btn[hidden] { display: none; }
   padding: 2px 8px; white-space: nowrap;
 }
 .log-list .empty { color: var(--muted); justify-content: center; }
+/* Item 36 (Saad, 28 Oct): a row's kind at a glance — a stripe and a tint; its span under the words. */
+:root { --log-work: #f2eee9; --log-prayer: #4f8ff7; --log-distract: #e5484d; --log-break: #e8b04b; --log-badbreak: #f07a2a; }
+.log-list li.log-work { border-left: 4px solid var(--log-work); }
+.log-list li.log-prayer { border-left: 4px solid var(--log-prayer); background: color-mix(in srgb, var(--log-prayer) 12%, var(--panel)); }
+.log-list li.log-distract { border-left: 4px solid var(--log-distract); background: color-mix(in srgb, var(--log-distract) 14%, var(--panel)); }
+.log-list li.log-break { border-left: 4px solid var(--log-break); background: color-mix(in srgb, var(--log-break) 10%, var(--panel)); }
+.log-list li.log-badbreak { border-left: 4px solid var(--log-badbreak); background: color-mix(in srgb, var(--log-badbreak) 14%, var(--panel)); }
+.log-list .span { display: block; color: var(--muted); font-size: 13px; margin-top: 2px; font-variant-numeric: tabular-nums; }
+.log-list .span.bad { color: var(--log-badbreak); }
 
 /* ----------------------------------------------------------------- money */
 
@@ -1060,6 +1069,23 @@ a.btn[hidden], a.link-btn[hidden] { display: none; }
    the M and Prayer tiles above it stay tappable (rule 4). Item 23 puts the missed
    questions first in it; 55% of the screen keeps the tile row clear on a phone. */
 .catchup-dlg[open] { position: fixed; inset: auto 0 0 0; margin: 0 auto 8px; max-height: 55vh; max-height: 55dvh; z-index: 20; }
+/* Item 36 (Saad, 28 Oct): the sheet in the middle, the page behind it dimmed; the shade lets taps through (rule 4). */
+#catchupDlg[open] { inset: 50% auto auto 50%; transform: translate(-50%, -50%); margin: 0; width: min(560px, calc(100vw - 32px));
+                    max-height: 82vh; max-height: 82dvh; box-shadow: 0 18px 60px rgba(0, 0, 0, 0.45); border: 1px solid var(--line); }
+.catchup-shade { position: fixed; inset: 0; z-index: 19; background: rgba(8, 10, 14, 0.55); backdrop-filter: blur(3px);
+                 -webkit-backdrop-filter: blur(3px); pointer-events: none; }
+.catchup-shade[hidden] { display: none; }
+#catchupList > li.catchup-desk { border: 1px solid var(--line); border-radius: 12px; padding: 10px 12px; margin-bottom: 10px; }
+#catchupList > li.catchup-desk + li.catchup-desk { border-top: 1px solid var(--line); }
+.catchup-line { display: flex; align-items: center; flex-wrap: wrap; gap: 4px 8px; font-size: 15px; }
+.catchup-line[hidden] { display: none; }
+.catchup-line .catchup-what { font-size: inherit; }
+.catchup-line .catchup-rec { flex: 1 1 100%; padding-left: 26px; }
+#catchupDlg .catchup-pick { width: 18px; height: 18px; flex: none; accent-color: var(--accent); }
+#catchupDlg .catchup-acts .cat-pick { flex: 0 1 auto; max-width: 220px; font-size: 14px; padding: 4px 8px; min-height: 32px; }
+.catchup-deskask { margin: 6px 0 4px; padding: 8px 10px; border-radius: 8px; background: var(--bg); }
+.catchup-deskask p { margin: 0; }
+#catchupDlg form > .dlg-actions { justify-content: center; }
 .catchup-list { list-style: none; margin: 10px 0 0; padding: 0; }
 .catchup-list > li { padding: 8px 0; border-top: 1px solid var(--line); }
 .catchup-list > li p { margin: 0; overflow-wrap: anywhere; }
@@ -1115,6 +1141,25 @@ a.btn[hidden], a.link-btn[hidden] { display: none; }
 
 /* Item 35: the week's goals and a report's acknowledgement. */
 .goals-list { margin: 4px 0 0; padding-left: 20px; }
-#goalsEdit input { width: 100%; margin-top: 6px; }
+/* Item 36 (Saad, 28 Oct): a button on Home, the goals in a popup. */
+.goals-card { margin: 0; }
+.goals-btn { display: flex; align-items: center; justify-content: space-between; gap: 10px; text-align: left; }
+.goals-btn[hidden] { display: none; }
+.goals-btn.goals-unset { border-color: var(--accent); color: var(--accent); }
+.goals-btn .goals-count { color: var(--muted); font-size: 14px; }
+.goals-dlg .goals-list { font-size: 16px; line-height: 1.6; }
+.goal-field { display: flex; align-items: center; gap: 10px; margin-top: 10px; }
+.goal-field[hidden] { display: none; }
+.goal-field span { flex: none; width: 26px; height: 26px; border-radius: 50%; background: var(--accent); color: var(--accent-ink);
+                   display: grid; place-items: center; font-weight: 700; font-size: 14px; }
+.goal-field input { flex: 1; min-width: 0; }
 .report-ack { margin-top: 10px; padding-top: 8px; border-top: 1px solid var(--line); }
 .report-ack textarea { width: 100%; margin-top: 6px; }
+
+/* Item 36: Move all to Backlog (End day / Sleep), red on purpose: nothing is answered one by one. */
+.btn-danger { background: var(--danger); border-color: var(--danger); color: #fff; }
+.btn-danger:disabled { opacity: 0.6; }
+#dayEndBacklog { margin-top: 10px; }
+/* Item 36: the week's self-check. */
+.goal-hit { display: block; margin: 6px 0; }
+#weekCheckNote { width: 100%; }

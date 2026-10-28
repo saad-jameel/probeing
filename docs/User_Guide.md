@@ -28,7 +28,8 @@ The two pills at the top always say where you are: **Awake / Asleep** and
   Jamat*, *Individual*), then **Save**. A prayer opens only once its time begins and
   logs once a day. **Prayer times** at the bottom of that box shows today's and
   tomorrow's timetable.
-- **Sleep / Wake up** — at night it ends the day; in daylight it counts as a nap.
+- **Sleep / Wake up** — at night it ends the day; in daylight it counts as a nap. At night it first asks
+  about anything still in Working on, like End day does.
 - **Break / Work** — pause and resume. The chips below (*Lunch*, *Coffee*…) start a
   break with that reason; **+** adds your own.
 - **What are you working on?** — type a line and press **Log**. With Google connected
@@ -37,22 +38,29 @@ The two pills at the top always say where you are: **Awake / Asleep** and
 - **Working on** — every task running now, with its time and deadline. Per task:
   ✓ done, ⏸ pause, ✕ drop, 📌 pin (only the pinned task collects time), **+ item** to
   add a checklist item. After Done, Drop or Pause you may add a one-line note on what
-  happened, or skip it. A deadline lives only here: Pause clears it (and the due date
-  ProBeing set in Google Tasks), and the next Start asks again.
+  happened, or skip it. A deadline lives only here and is for that day: Pause, Carry and Backlog
+  clear it (and the due date ProBeing set in Google Tasks), and the next Start asks again.
+  Two tasks can run at once; when the laptop shows you on one project's desktop for 30 minutes
+  or more, that project gets the time (one under 10 minutes gets none). Short hops between
+  desktops keep both, shown as **Parallel work** on Today.
 - **Upcoming tasks** — what you planned for today. **Start** asks for priority, effort
   and an expected finish (or **Skip**). Plans from earlier days wait in **Backlog**.
 - **End the day / Start the day** — closes or opens the working day without going to
   sleep. End day first asks about each task in Working on: **Done**, **Stop** or
-  **Carry to tomorrow**, with an optional line. Then a short check-in: rating, sense of
-  progress, tasks, what got in the way, energy and tomorrow's top 3. A task left running
-  when the day closes some other way (Sleep, the night check) goes to **Backlog**.
-- **This week's goals** — Home asks for up to three goals each week; the weekly report
-  asks which you hit.
+  **Carry to tomorrow**, with an optional line — or the red **Move all to Backlog** when
+  you are too tired to answer each. Then a short check-in: rating, sense of progress,
+  tasks, what got in the way, energy and tomorrow's top 3. A task left running when the
+  day closes some other way (the night check) goes to **Backlog** the next morning. End
+  day, then starting again the same day, counts the time between as a break.
+- **This week's goals** — a button on Home opens them: up to three for the week.
 
 ## Today
 
 Today's totals (worked, breaks, prayers, M, time per project) and every entry of the day,
-newest first. **Refresh** re-reads it.
+newest first, coloured by kind: work white, prayer blue, distraction red, a break amber, a
+break that ran too long orange (over 45 minutes unless 90 minutes of work came before and
+after it, or longer than half the work before it). Work and breaks show when they ran
+("5:29 → 6:12 pm · 43m"). **Refresh** re-reads it.
 
 ## Tasks
 
@@ -93,10 +101,14 @@ Pick a range: last 2 or 7 days, this week, last week, or last 30 days.
 - **Projects** — hours per project, grouped by kind of work. The first time a project
   appears you are asked which kind it is (Office, Personal, PhD, Personal working).
 - **Past reports** — a weekly (Monday to Sunday) and a monthly report are written and
-  saved when you open Review after a week or month ends. Home reminds you until you read
-  one and press **I've read it**; the weekly one also asks for your own line on the week
-  and which goals you hit. Daily advice comes after End day; **Last 2 days** is a Review
-  range.
+  saved after a week or month ends. Before a weekly one, Home asks **How was my week?**:
+  rate work, prayers, M, sleep, energy and distraction 1–5, tick the goals you hit and
+  say it in your own words. The report then judges the week against that, bluntly —
+  including where you rate yourself higher or lower than the figures show. It adds
+  breaks a day, prayers out of all of them, sleep a day, days the work never started
+  and the time on distraction apps then, and any task that keeps sliding (carried,
+  backlogged, deadline missed or moved). Home reminds you until you press **I've read
+  it**. Daily advice comes after End day; **Last 2 days** is a Review range.
 
 ## Settings
 
@@ -126,16 +138,27 @@ Optional. It needs [ActivityWatch](https://activitywatch.net/) running. Setup st
 in [`watcher/windows/README.md`](../watcher/windows/README.md): press **Pair this laptop**,
 paste the line it gives you into PowerShell, done.
 
-- Every 5 minutes, while you are working, it sends time blocks: app, site name,
-  project, and whether it was work, a meeting, a distraction or private.
-- A distraction for 10 minutes sends a push. Ignore it for 5 minutes and it becomes a
-  break from when the distraction started.
+- Every 5 minutes it sends time blocks: app, site name, project, and whether it was
+  work, a meeting, a distraction or private. Asleep or on a break only the kind of use is
+  kept; awake with the day not started (a weekend) everything is, so the report can say
+  where that time went.
+- A distraction (or a private app like WhatsApp, asked "work or not?") for 10 minutes
+  sends a push. Ignore it for 5 minutes and it becomes a distraction from when it began.
+  A distraction is never an earned break. On the phone while the laptop has real input,
+  only music apps (YouTube, Spotify…) are let through.
+- At End day: a slip of 5 minutes or more becomes a Distraction; three slips inside 30
+  minutes become **Lost focus** for that whole stretch. **Away** means nothing was in use.
+- Pressing Sleep, then using the laptop for 15 minutes, asks "asleep or working?". A
+  **disturbed night** is the phone only: three pickups or more, or one over 10 minutes.
 - Using the laptop after Fajr while marked asleep, or a work app during a break or before
   starting the day, gets a question ("awake?", "back to work?", "start?") that records
   the right time when you answer.
-- When you open ProBeing it may show **"From … to … you were doing"**, grouped by
-  desktop. Work on a project already in Working on is not asked about. **Accept** or
-  **It was a break** removes a line at once; the popup closes when nothing is left.
+- When you open ProBeing it may show **"Unknown work 5:06 – 6:12 pm"**, one box per
+  desktop. Work on a project already in Working on is not asked about; a desktop not
+  linked to a project asks which one it is. **Accept** or **It was a break** removes a
+  line at once; the popup closes when nothing is left.
+- On a project's desktop for 30 minutes while Working on says another, Home asks, and the
+  laptop gets a push.
 - **The dot by the clock**: green working, amber on a break, blue asleep, grey day over;
   a red ring means it cannot reach ProBeing. Hover for today's figures; click to open
   the app.

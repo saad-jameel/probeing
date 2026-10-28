@@ -2063,3 +2063,42 @@ exception when duplicate_object then null; end $$;
 revoke all on table public.week_goals from anon, authenticated;
 grant select on public.week_goals to authenticated;
 grant insert (user_id, rid, week_start, goals, at) on public.week_goals to authenticated;
+
+-- ─────────────────────────────────────────────────────────────────────────────
+-- Item 36 (Saad, 28 Oct): awake with the day off (a weekend) is watched whole, so its
+-- distraction can be named in the reports. Asleep and on a break stay bare.
+alter table public.activity_blocks drop constraint if exists activity_blocks_bare;
+alter table public.activity_blocks add constraint activity_blocks_bare
+  check (mode in ('work', 'off') or (app = '' and domain = '' and rule_key = ''));
+alter table public.activity_blocks drop constraint if exists activity_blocks_bare_desktop;
+alter table public.activity_blocks add constraint activity_blocks_bare_desktop check (mode in ('work', 'off') or desktop = '');
+
+-- Item 36 (Saad, 28 Oct): his own view of a week, asked BEFORE its report is written, so the one
+-- report call can judge it against the figures. Append-only: the newest row for a week wins.
+create table if not exists public.week_checks (
+  id         uuid        primary key default gen_random_uuid(),
+  user_id    uuid        not null default auth.uid() references auth.users on delete cascade,
+  rid        text        not null check (char_length(rid) between 1 and 80),
+  week_start date        not null,
+  answers    jsonb       not null check (jsonb_typeof(answers) = 'object' and octet_length(answers::text) <= 4000),
+  at         timestamptz not null default now(),
+  constraint week_checks_rid_key unique (user_id, rid)
+);
+
+create index if not exists week_checks_user_week_idx on public.week_checks (user_id, week_start);
+
+alter table public.week_checks enable row level security;
+
+do $$ begin
+  create policy "read own week checks" on public.week_checks
+    for select using (auth.uid() = user_id);
+exception when duplicate_object then null; end $$;
+
+do $$ begin
+  create policy "insert own week checks" on public.week_checks
+    for insert with check (auth.uid() = user_id);
+exception when duplicate_object then null; end $$;
+
+revoke all on table public.week_checks from anon, authenticated;
+grant select on public.week_checks to authenticated;
+grant insert (user_id, rid, week_start, answers, at) on public.week_checks to authenticated;

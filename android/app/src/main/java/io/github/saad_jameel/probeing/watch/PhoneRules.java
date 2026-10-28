@@ -26,7 +26,8 @@ import java.util.regex.Pattern;
  *
  * What the phone adds: an app stands in for a website (the YouTube app is
  * youtube.com), a site entry's path is ignored because the phone cannot see one
- * (Saad, 9 Oct: phone YouTube counts whole), and a private block names no app.
+ * (Saad, 9 Oct: phone YouTube counts whole), and a private block names its app (item 36,
+ * Saad 28 Oct: private is a category, not hidden from ProBeing; the push asks "work or not?" by name).
  */
 public final class PhoneRules {
 
@@ -353,7 +354,7 @@ public final class PhoneRules {
     /**
      * One app on the phone as a block's fields: {category, app, project, key}.
      * The package is matched like a laptop title (private words only) and never
-     * sent; a private block carries no app name at all.
+     * sent; a private block carries the app's name (item 36), never the package.
      */
     static final String OTHER_APP = "Other app";
 
@@ -367,7 +368,9 @@ public final class PhoneRules {
         seg.phone = true;
         List<String> priv = new ArrayList<>(cfg.lists.get("private"));
         priv.addAll(Arrays.asList(PHONE_PRIVATE));
-        if (!listHit(priv, seg, true).isEmpty()) return new String[]{"private", "", "", ""};
+        if (!listHit(priv, seg, true).isEmpty()) {
+            return new String[]{"private", label == null || label.trim().isEmpty() ? "" : name, "", ""};
+        }
         if (isCallApp(pkg)) return new String[]{"meeting", "Phone call", "", ""};
         // No name to show: never the package itself.
         if (label == null || label.trim().isEmpty()) return new String[]{"unclear", OTHER_APP, "", ""};
@@ -663,30 +666,35 @@ public final class PhoneRules {
 
     /* ── When to look again ───────────────────────────────────────────────── */
 
-    static final long NUDGE_AFTER_MS = 15 * MIN;     // the server pushes at 15 minutes (item 31a)
+    static final long NUDGE_AFTER_MS = 10 * MIN;     // the server pushes at 10 minutes (item 36)
     static final long IGNORE_CHECK_MS = 5 * MIN + 30000L;  // and breaks 5 minutes after the push
     static final long STREAK_GAP_MS = 2 * MIN;
     static final long LIVE_MS = 2 * MIN;
 
     /**
-     * Android runs the watcher every 15 minutes at best. While a distraction is
-     * on screen now, look again sooner: at its 15-minute mark (so the push is
+     * Android runs the watcher every 15 minutes at best. While a distraction (or a
+     * private app) is on screen now, look again sooner: at its 10-minute mark (so the push is
      * not late), then 5.5 minutes on (so an ignored push becomes a break).
      * Returns the delay in ms, or -1 when nothing is on.
      */
     public static long followUpMs(List<Block> blocks, long now) {
         if (blocks.isEmpty()) return -1;
         Block last = blocks.get(blocks.size() - 1);
-        if (!last.category.equals("distraction") || now - last.end > LIVE_MS) return -1;
+        if (!offWork(last) || now - last.end > LIVE_MS) return -1;
         long start = last.start;
         for (int i = blocks.size() - 2; i >= 0; i--) {
             Block b = blocks.get(i);
-            if (!b.category.equals("distraction") || start - b.end > STREAK_GAP_MS) break;
+            if (!offWork(b) || start - b.end > STREAK_GAP_MS) break;
             start = Math.min(start, b.start);
         }
         long on = now - start;
         if (on >= NUDGE_AFTER_MS) return IGNORE_CHECK_MS;
         return Math.max(MIN, Math.min(IGNORE_CHECK_MS, NUDGE_AFTER_MS - on + 30000L));
+    }
+
+    /** A distraction or a private app: what the server's push is about (item 36). */
+    private static boolean offWork(Block b) {
+        return b.category.equals("distraction") || b.category.equals("private");
     }
 
     /** Where the next run starts: a block that may still grow is sent again whole. */

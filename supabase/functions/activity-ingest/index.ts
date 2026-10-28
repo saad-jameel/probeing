@@ -116,7 +116,7 @@ function reply(status: number, body: unknown): Response {
  *    claudeWorkingDocs/tests/stage18b_*.js can lift it. A is activity.js. ── */
 
 var MIN_MS = 60000;
-var NUDGE_AFTER_MS = 15 * MIN_MS;      // a distraction this long gets a push (item 31a, R3)
+var NUDGE_AFTER_MS = 10 * MIN_MS;      // a distraction or private app this long gets a push (item 36; was 15, R3)
 var NUDGE_IGNORE_MS = 5 * MIN_MS;      // no answer this long after it: a break
 var NUDGE_LIVE_MS = 7 * MIN_MS;        // the newest block must be this recent to be "still on it"
 var NUDGE_STALE_MS = 30 * MIN_MS;      // no news this long after a push: let it go
@@ -152,6 +152,9 @@ var NIGHT_FROM_H = 21;                 // a sleep from 9 pm (the Sleep button's 
 var QUIET_BACK_MS = 40 * 3600000;      // blocks read for the asleep/break checks and the nights
 var NIGHTS_BACK_MS = 36 * 3600000;     // nights recounted on each run
 var ASK_KINDS = ['awake', 'resume', 'upwork', 'start'];
+var NIGHT_LAPTOP_MS = 15 * MIN_MS;     // item 36: the laptop this long after Sleep, before Fajr: "asleep or working?"
+var NIGHT_PICKUPS = 3;                 // ...the phone picked up this many times is a disturbed night,
+var NIGHT_LONG_MS = 10 * MIN_MS;       // ...or once for longer than this
 var RUN_KINDS = ['resume', 'upwork', 'start'];        // item 30a: the questions about a work run
 var ASK_QUIET_MS = 30 * MIN_MS;        // after "Still asleep", "It was a break" or "Not work", not asked again this long
 var START_MIN_MS = 10 * MIN_MS;        // item 28: work this long in a row, day not started, asks "start?"
@@ -159,6 +162,7 @@ var TEACH_MIN_MS = 15 * MIN_MS;        // item 29: an unsorted app this long tod
 var TEACH_SITE_MIN_MS = 10 * MIN_MS;   // item 30a: ...a site this long
 var RUN_GAP_MS = 15 * MIN_MS;          // item 30a: a work run goes on through gaps shorter than this
 var AUTO_MIN_MS = 10 * MIN_MS;         // item 30b: work on a project not in Working on this long is shown
+var AUTO_PUSH_MIN = 30;                // item 36: ...and pushed to the laptop at this many minutes
 var HELPER_BACK_MS = 6 * 3600000;      // helpers given a project again on each run
 var FOCUS_BACK_MS = 24 * 3600000;      // focus recounted from the counter day this long ago
 var UPWORK_REPEAT_MS = 60 * MIN_MS;       // item 31a, R6: "Up and working?" again after this long,
@@ -181,25 +185,36 @@ function tokenText(t) {
   return String(t || '').replace(/[^0-9A-Za-z]/g, '').toUpperCase();
 }
 
-/** The distraction one device is on now: {start, end, what}, or null. */
+/** The distraction one device is on now: {start, end, what, private, music, phone}, or null. Item 36: a
+ *  private app (WhatsApp...) is one too, asked "work or not?"; music: every block is music on the phone. */
 function streakOf(blocks) {
   var s = (blocks || []).slice().sort(function (a, b) { return a.start - b.start; });
-  if (!s.length || s[s.length - 1].category !== 'distraction') return null;
+  function off(b) { return b.category === 'distraction' || b.category === 'private'; }
+  if (!s.length || !off(s[s.length - 1])) return null;
   var last = s[s.length - 1];
   var start = last.start;
   var time = {};
+  var priv = 0;
+  var all = 0;
+  var music = true;
+  var phone = true;
   function add(b) {
-    var w = b.domain || b.app || 'a distraction';
+    var w = A.actDistractName(b);
+    if (w === 'distraction') w = b.domain || b.app || (b.category === 'private' ? 'a private app' : 'a distraction');
     time['w' + w] = (time['w' + w] || 0) + (b.end - b.start);
+    all += b.end - b.start;
+    if (b.category === 'private') priv += b.end - b.start;
+    if (!A.actIsMusic(b)) music = false;
+    if (b.kind !== 'phone') phone = false;
   }
   add(last);
   for (var i = s.length - 2; i >= 0; i--) {
-    if (s[i].category !== 'distraction' || start - s[i].end > STREAK_GAP_MS) break;
+    if (!off(s[i]) || start - s[i].end > STREAK_GAP_MS) break;
     start = Math.min(start, s[i].start);
     add(s[i]);
   }
   var what = Object.keys(time).sort(function (a, b) { return time[b] - time[a]; })[0].slice(1);
-  return { start: start, end: last.end, what: what };
+  return { start: start, end: last.end, what: what, private: priv * 2 > all, music: music, phone: phone };
 }
 
 /**
@@ -227,6 +242,26 @@ function otherCover(blocks, device, a, b) {
   var ms = A.actSpansMs(A.actMergeSpans(spans));
   var top = Object.keys(time).sort(function (x, y) { return time[y] - time[x]; })[0];
   return { ratio: ms / (upTo - a), what: top ? top.slice(1) : '' };
+}
+
+/** Item 36: a distraction or private streak he answered "I'm working" (or "Work") counts as work in the
+ *  judgement. said: [{device_id, start}]; the streak runs on through gaps under STREAK_GAP_MS. */
+function workedThrough(blocks, said) {
+  var out = (blocks || []).slice();
+  (said || []).forEach(function (n) {
+    var mine = out.map(function (b, i) { return { b: b, i: i }; })
+      .filter(function (x) { return x.b.device_id === n.device_id && x.b.end > n.start - STREAK_GAP_MS; })
+      .sort(function (x, y) { return x.b.start - y.b.start; });
+    var at = n.start;
+    for (var k = 0; k < mine.length; k++) {
+      var b = mine[k].b;
+      if (b.category !== 'distraction' && b.category !== 'private') { if (b.start >= at) break; continue; }
+      if (b.start - at > STREAK_GAP_MS) break;
+      out[mine[k].i] = Object.assign({}, b, { category: 'work' });
+      at = Math.max(at, b.end);
+    }
+  });
+  return out;
 }
 
 function hasRid(rows, rid) {
@@ -286,15 +321,14 @@ function nudgeStep(d) {
       if (d.now - n.pushed_at >= NUDGE_STALE_MS) out.decide.push({ id: n.id, state: 'stale' });
       return;
     }
-    var cover = otherCover(d.blocks, n.device_id, n.streak_start, s.end);
+    // Item 36: a phone distraction (not music) while the laptop works is not excused by it.
+    var cover = s.music || !s.phone ? otherCover(d.blocks, n.device_id, n.streak_start, s.end) : { ratio: 0, what: '' };
     if (cover.ratio >= OTHER_COVER) {
       out.decide.push({ id: n.id, state: 'question', span_end: s.end, other: cover.what });
       return;
     }
-    // Item 31a: earned (R1) makes it a deserved break.
-    var deserved = typeof d.earnedAt === 'function' && d.earnedAt(n.streak_start);
-    out.write.push({ type: 'break', at: n.streak_start, rid: 'ab-' + n.id, text: deserved ? 'Break (deserved — auto)' : 'Distraction (auto)',
-                     nudge: n.id });
+    // Item 36 (Saad, 28 Oct): a distraction is never a deserved break.
+    out.write.push({ type: 'break', at: n.streak_start, rid: 'ab-' + n.id, text: 'Distraction (auto)', nudge: n.id });
     out.decide.push({ id: n.id, state: 'autobreak' });
   });
 
@@ -308,10 +342,9 @@ function nudgeStep(d) {
     var known = (d.nudges || []).some(function (n) {
       return n.device_id === dev && (n.state === 'sent' || Math.abs(n.streak_start - s.start) < MIN_MS);
     });
-    // Item 31a, R7: phone use while the laptop works is work (music); no push.
-    if (otherCover(d.blocks, dev, s.start, s.end).ratio >= OTHER_COVER) return;
-    var earned = typeof d.earnedAt === 'function' && d.earnedAt(s.start);
-    if (!known) out.push.push({ device_id: dev, start: s.start, end: s.end, what: s.what, earned: earned });
+    // R7, narrowed by item 36: music on the phone while the laptop works is work; no push.
+    if ((s.music || !s.phone) && otherCover(d.blocks, dev, s.start, s.end).ratio >= OTHER_COVER) return;
+    if (!known) out.push.push({ device_id: dev, start: s.start, end: s.end, what: s.what, private: s.private });
   });
   return out;
 }
@@ -450,10 +483,35 @@ function workRuns(blocks) {
 /** What a question keeps (activity_nudges.run): the run's minutes and word, for the words; and
  *  the plan its answer writes from (activity.js actRunPlan over every block since the run began).
  *  Item 30b: the project Start names (runProject), '' for none. */
-function runInfo(r, plan, project) {
+function runInfo(r, plan, project, projects) {
+  var list = projects && projects.length ? projects : project ? [{ name: project, at: r.start }] : [];
   return { work_min: Math.round(r.workMs / MIN_MS), dist_min: Math.round(r.distMs / MIN_MS), what: r.what,
-           gaps: (plan ? plan.gaps : r.gaps).map(function (g) { return [g[0], g[1]]; }), last: plan && isFinite(plan.last) ? plan.last : null,
-           project: project || '' };
+           gaps: (plan ? plan.gaps : r.gaps).map(function (g) { return g.length > 2 ? [g[0], g[1], g[2]] : [g[0], g[1]]; }),
+           last: plan && isFinite(plan.last) ? plan.last : null, tail: plan && plan.tail ? plan.tail : null,
+           project: list.length ? list[0].name : project || '', projects: list };
+}
+
+/** Item 36 (Saad, 27 Oct): every project a run held 10 minutes or more, not already in Working on, by
+ *  when it first came up: [{name, at}]. The answer starts them all. */
+function runProjects(blocks, r, active) {
+  var time = Object.create(null);
+  var first = Object.create(null);
+  var names = Object.create(null);
+  (blocks || []).forEach(function (b) {
+    if (!isWorkBlock(b) || !b.project) return;
+    var k = A.actNorm(b.project);
+    var parts = r.work.reduce(function (all, s) { return all.concat(A.actIntersect(b.start, b.end, [s])); }, []);
+    var ms = A.actSpansMs(A.actMergeSpans(parts));
+    if (!k || !(ms > 0)) return;
+    time[k] = (time[k] || 0) + ms;
+    first[k] = Math.min(first[k] === undefined ? Infinity : first[k], parts[0][0]);
+    var by = names[k] = names[k] || Object.create(null);
+    by[b.project] = (by[b.project] || 0) + ms;
+  });
+  return Object.keys(time).filter(function (k) { return time[k] >= AUTO_MIN_MS; }).map(function (k) {
+    var name = Object.keys(names[k]).sort(function (x, y) { return (names[k][y] - names[k][x]) || (x < y ? -1 : 1); })[0];
+    return { name: name, at: first[k] };
+  }).filter(function (p) { return !isActive(p.name, active); }).sort(function (x, y) { return (x.at - y.at) || (x.name < y.name ? -1 : 1); });
 }
 
 /** Is `name` in Working on (names as replayDay keys them; case, spaces and punctuation ignored)? */
@@ -555,10 +613,10 @@ function quietStep(d) {
     return best ? Object.assign(best, { push: fresh }) : null;
   }
   // Item 30a: a work run (every device together) that began after `after`, with `min` of work past `thr`.
-  function findRun(after, from, thr, min, kind, ref) {
+  function findRun(after, from, thr, min, kind, ref, keep) {
     var best = null;
     var fresh = false;
-    workRuns(cutAll(from)).forEach(function (r) {
+    workRuns(cutAll(from, keep)).forEach(function (r) {
       if (r.start <= after) return;
       var past = 0;
       r.work.forEach(function (s) { past += A.actSpansMs(A.actIntersect(s[0], s[1], [[thr, r.end]])); });
@@ -566,17 +624,18 @@ function quietStep(d) {
       if (r.end >= now - USE_FRESH_MS) fresh = true;
       if (!best || r.start < best.start) {
         best = { kind: kind, device_id: r.device_id, dev: r.dev, start: r.start, end: r.end, ref: ref,
-                 run: runInfo(r, A.actRunPlan(cutAll(from), r.start, now), kind === 'resume' ? '' : runProject(cutAll(from), r, d.active)) };
+                 run: runInfo(r, A.actRunPlan(cutAll(from), r.start, now), kind === 'resume' ? '' : runProject(cutAll(from), r, d.active),
+                              kind === 'resume' ? [] : runProjects(cutAll(from), r, d.active)) };
       }
     });
     return best ? Object.assign(best, { push: fresh }) : null;
   }
-  function cutAll(from) {
+  function cutAll(from, keep) {
     var cut = [];
     (d.blocks || []).forEach(function (b) {
       var a = Math.max(b.start, from);
       var z = Math.min(b.end, now);
-      if (b.device_id && z > a) cut.push(Object.assign({}, b, { start: a, end: z }));
+      if (b.device_id && z > a && (!keep || keep(b))) cut.push(Object.assign({}, b, { start: a, end: z }));
     });
     return cut;
   }
@@ -599,6 +658,17 @@ function quietStep(d) {
       night = now >= midnightAfter(thr, d.offsetAt(thr));
     }
     var sa = night ? null : since(['awake', 'upwork'], walk.asleep.at);
+    if (f !== null && f > now && sa !== null) {
+      // Item 36 (Saad, 28 Oct): before Fajr, the laptop in use 15 minutes after Sleep asks "asleep or
+      // working?" (the phone never does: phone use in bed is never work, it is a disturbed night).
+      var nfrom = afterMine(walk.asleep.at);
+      var lap = function (b) { return b.kind !== 'phone'; };
+      var np = findRun(sa, nfrom, nfrom, NIGHT_LAPTOP_MS, 'upwork', walk.asleep.at, lap) ||
+               find(sa, nfrom, nfrom, lap, NIGHT_LAPTOP_MS, 'awake', walk.asleep.at);
+      if (np) np.night = true;
+      add(np);
+      sa = null;
+    }
     // Item 28: work is "Up and working?"; any other use the plain "awake?".
     if (sa !== null) {
       var afrom = afterMine(walk.asleep.at);
@@ -628,7 +698,8 @@ function quietStep(d) {
     var r = workRuns(cutAll(n.streak_start))[0];
     if (!r || r.start >= n.streak_start + MIN_MS) return;
     var info = runInfo(r, A.actRunPlan(cutAll(n.streak_start), r.start, now),
-                       n.kind === 'resume' ? '' : runProject(cutAll(n.streak_start), r, d.active));
+                       n.kind === 'resume' ? '' : runProject(cutAll(n.streak_start), r, d.active),
+                       n.kind === 'resume' ? [] : runProjects(cutAll(n.streak_start), r, d.active));
     if (JSON.stringify(info) !== JSON.stringify(n.run || null)) out.runs.push({ id: n.id, run: info });
     n.run = info;
   });
@@ -650,21 +721,22 @@ function quietStep(d) {
     state[n.id] = 'applied';
   });
 
-  // Disturbed nights: use before Fajr while asleep, brief checks left out, all devices together.
+  // Disturbed nights (item 36, Saad 28 Oct): the phone picked up NIGHT_PICKUPS times or more (any
+  // length), or once for more than NIGHT_LONG_MS, before Fajr while asleep. The laptop is never a
+  // disturbance: it is asked about ("asleep or working?").
   (walk.sleeps || []).forEach(function (s) {
     var fajr = d.nightEnd(s.at, s.end === null ? now : s.end);
     if (fajr === null || s.at < now - NIGHTS_BACK_MS) return;
     var end = Math.min(fajr, s.end === null ? now : s.end, now);
     var spans = [];
     var kinds = [];
-    var by = cutByDevice(d.blocks, s.at, end, null);
+    var by = cutByDevice(d.blocks, s.at, end, function (b) { return b.kind === 'phone'; });
     Object.keys(by).forEach(function (k) {
-      A.actUseRuns(by[k], USE_GAP_MS).forEach(function (r) {
-        if (r.ms < USE_MIN_MS) return;
-        inUseSpans(by[k], r.start, r.end).forEach(function (p) { spans.push(p); });
-        var kd = by[k][0].kind || 'laptop';
-        if (kinds.indexOf(kd) === -1) kinds.push(kd);
-      });
+      var runs = A.actUseRuns(by[k], USE_GAP_MS);
+      var long = runs.some(function (r) { return r.ms > NIGHT_LONG_MS; });
+      if (!long && runs.length < NIGHT_PICKUPS) return;
+      runs.forEach(function (r) { inUseSpans(by[k], r.start, r.end).forEach(function (p) { spans.push(p); }); });
+      if (kinds.indexOf('phone') === -1) kinds.push('phone');
     });
     var merged = A.actMergeSpans(spans);
     out.nights.push({ sleep_at: s.at, woke_at: s.end, fajr_at: fajr, first_at: merged.length ? merged[0][0] : null,
@@ -713,13 +785,13 @@ function askRows(n, choice, now) {
     var w = { type: 'wake', at: askAt(n), rid: 'nw-' + n.id, text: 'Wake up (I was awake — answered the check)' };
     return choice === 'start'
       ? [w, projectRow(n, { type: 'resume', at: askAt(n) + 1000, rid: 'ns-' + n.id, text: 'Day started (up and working — answered the check)' })]
-        .concat(pairs(askAt(n) + 1000))
+        .concat(moreProjects(n, askAt(n) + 1000), pairs(askAt(n) + 1000))
       : [w];
   }
   if (n.kind === 'start') {
     return choice === 'start'
       ? [projectRow(n, { type: 'resume', at: askAt(n), rid: 'ns-' + n.id, text: 'Day started (I was working — answered the check)' })]
-        .concat(pairs(askAt(n)))
+        .concat(moreProjects(n, askAt(n)), pairs(askAt(n)))
       : [{ type: 'actanswer', at: now, rid: 'na-' + n.id, text: 'Not work — answered the check', detail: 'notwork' }];
   }
   if (n.kind === 'awake') {
@@ -737,6 +809,16 @@ function askRows(n, choice, now) {
 function projectRow(n, row) {
   var p = n.run && n.run.project ? A.actCut(String(n.run.project).trim(), A.ACT_PROJECT_MAX) : '';
   return p ? Object.assign({}, row, { type: 'work', project: p }) : row;
+}
+
+/** Item 36: the run's other projects, each a work row from when it first came up (after `from`). */
+function moreProjects(n, from) {
+  var list = n.run && Array.isArray(n.run.projects) ? n.run.projects.slice(1) : [];
+  return list.map(function (p, k) {
+    var name = A.actCut(String(p.name || '').trim(), A.ACT_PROJECT_MAX);
+    var at = Math.max(Number(p.at) || 0, from + 1000 * (k + 1));
+    return name ? { type: 'work', at: at, rid: 'ns-' + n.id + '-p' + (k + 1), text: name, project: name } : null;
+  }).filter(Boolean);
 }
 
 /* ── Item 30b: auto-detected Working on ────────────────────────────────── */
@@ -830,6 +912,14 @@ function autoStep(d) {
   return out;
 }
 
+/** Item 36: the laptop push about a desktop that is not Working on's project. A tap opens the sheet. */
+function autoPayload(run, active) {
+  var p = A.actCut(String((run && run.project) || ''), 40);
+  var on = (active || []).slice(0, 2).join(', ');
+  return { kind: 'watch-teach', goto: 'home', title: 'On ' + p + ' for ' + run.work_min + ' min — working on ' + p + '?',
+           body: (on ? 'Working on says ' + A.actCut(on, 60) + '. ' : '') + 'Tap to answer in ProBeing.' };
+}
+
 /** "6:12 pm" at `offsetMin`. */
 function clock12(ms, offsetMin) {
   var mins = Math.floor(ms / 60000) + offsetMin;
@@ -841,10 +931,16 @@ function clock12(ms, offsetMin) {
 
 /** The push. sw.js shows it with Take a break / I'm working under one tag. */
 function nudgePayload(p, nudgeId, nonce, url, key, offsetMin) {
-  var mins = Math.max(15, Math.round((p.end - p.start) / 60000));
+  var mins = Math.max(10, Math.round((p.end - p.start) / 60000));
+  if (p.private) {
+    // Item 36 (Saad, 28 Oct): a private app while working is asked, by name.
+    return { kind: 'distract', tag: 'probeing-distract', nudge: nudgeId, nonce: nonce, url: url, key: key, goto: 'home', private: true,
+             title: A.actCut(p.what, 60) + ' for ' + mins + ' min — work (a call) or not?',
+             body: 'No answer in 5 min and it counts as a distraction from ' + clock12(p.start, offsetMin) + '.' };
+  }
   return { kind: 'distract', tag: 'probeing-distract', nudge: nudgeId, nonce: nonce, url: url, key: key, goto: 'home',
            title: 'You\'ve been on ' + A.actCut(p.what, 60) + ' for ' + mins + ' min — take a break?',
-           body: 'No answer in 5 min and it counts as a ' + (p.earned ? 'deserved ' : '') + 'break from ' + clock12(p.start, offsetMin) + '.' };
+           body: 'No answer in 5 min and it counts as a distraction from ' + clock12(p.start, offsetMin) + '.' };
 }
 
 /** The awake or back-to-work push. sw.js shows it with two buttons under one tag. */
@@ -853,6 +949,12 @@ function askPayload(p, nudgeId, nonce, url, key, offsetMin) {
   var dev = p.dev === 'laptop' ? 'laptop' : 'phone';
   var base = { kind: 'watch-ask', ask: p.kind, tag: 'probeing-watch-ask', nudge: nudgeId, nonce: nonce, url: url, key: key,
                goto: 'home' };
+  if (p.night) {
+    // Item 36 (Saad, 28 Oct): Sleep pressed, then the laptop.
+    return Object.assign(base, { title: 'You marked sleep — asleep or working?',
+                                 body: 'Your laptop is in use since ' + at + '. ' + (p.kind === 'upwork' ? 'Start day records work from then.'
+                                                                                         : 'I\'m awake records waking then.') });
+  }
   if (p.kind === 'awake') {
     return Object.assign(base, { title: 'You\'re marked asleep but using your ' + dev + ' — awake?',
                                  body: 'I\'m awake records waking at ' + at + '.' });
@@ -866,7 +968,8 @@ function askPayload(p, nudgeId, nonce, url, key, offsetMin) {
   if (p.kind === 'start') {
     // Item 30a (Saad, 13 Oct): "Working since 13:02 · 18 min work · 12 min YouTube in between — start?"
     var mins = Math.max(10, run ? run.work_min : Math.round((p.end - p.start) / 60000));
-    var proj = run && run.project ? A.actCut(String(run.project), 40) : '';
+    var names = run && Array.isArray(run.projects) && run.projects.length ? run.projects.map(function (x) { return x.name; }) : [];
+    var proj = names.length > 1 ? A.actCut(names.join(' + '), 60) : run && run.project ? A.actCut(String(run.project), 40) : '';
     return Object.assign(base, { title: (proj ? proj + ' since ' : 'Working since ') + at + ' · ' + mins + ' min work' +
                                         (dist ? ' · ' + dist + ' in between' : '') + ' — start?',
                                  body: 'Start records ' + (proj || 'work') + ' from ' + at + (dist ? ', and the ' + dist + ' as a break' : '') + '.' });
@@ -985,7 +1088,9 @@ function keptPieces(clean, walk) {
       return Object.assign({}, b, { app: '', domain: '', key: '', desktop: '', project: named ? b.project : '', mode: mode });
     });
   }
-  return full.concat(bare(walk.sleep, 'sleep'), bare(walk.rest, 'break'), bare(walk.awakeOff, 'off'));
+  // Item 36 (Saad, 28 Oct): awake with the day off (a weekend) is kept whole, so its distraction is named.
+  var off = A.actClip(clean, walk.awakeOff || []).map(function (b) { return Object.assign({}, b, { mode: 'off' }); });
+  return full.concat(bare(walk.sleep, 'sleep'), bare(walk.rest, 'break'), off);
 }
 
 /** What the watchers are told about now: work, sleep, break or off. */
@@ -1351,18 +1456,29 @@ function blockOf(r: Record<string, any>, kinds?: Record<string, string>) {
 
 /** Item 30a: a question's run as stored (gaps as ISO pairs) and back (ms). */
 function runJson(r: Record<string, any>) {
+  const parts = (p: unknown) => Array.isArray(p) ? p.map((x: any[]) => [iso(x[0]), String(x[1])]) : null;
   return { work_min: r.work_min, dist_min: r.dist_min, what: r.what,
-           gaps: (r.gaps || []).map((g: number[]) => [iso(g[0]), iso(g[1])]), last: isFinite(r.last) && r.last !== null ? iso(r.last) : null,
-           project: String(r.project || '') };
+           gaps: (r.gaps || []).map((g: any[]) => g.length > 2 && g[2] ? [iso(g[0]), iso(g[1]), parts(g[2])] : [iso(g[0]), iso(g[1])]),
+           last: isFinite(r.last) && r.last !== null ? iso(r.last) : null, tail: parts(r.tail),
+           project: String(r.project || ''), projects: (r.projects || []).map((p: any) => ({ name: String(p.name || ''), at: iso(p.at) })) };
 }
 function runOf(v: unknown) {
   const r = v && typeof v === 'object' ? v as Record<string, any> : null;
   if (!r) return null;
-  const gaps = (Array.isArray(r.gaps) ? r.gaps : []).map((g: unknown[]) => [ms(g && g[0]), ms(g && g[1])])
-    .filter((g: number[]) => isFinite(g[0]) && isFinite(g[1]) && g[1] > g[0]);
+  const parts = (p: unknown) => Array.isArray(p) ? p.map((x: any) => [ms(x && x[0]), String((x && x[1]) || '')])
+    .filter((x: any[]) => isFinite(x[0] as number)) : null;
+  const gaps = (Array.isArray(r.gaps) ? r.gaps : []).map((g: any[]) => {
+    const a = ms(g && g[0]);
+    const z = ms(g && g[1]);
+    const p = g && g.length > 2 ? parts(g[2]) : null;
+    return p ? [a, z, p] : [a, z];
+  }).filter((g: any[]) => isFinite(g[0]) && isFinite(g[1]) && g[1] > g[0]);
   const last = r.last ? ms(r.last) : NaN;
+  const projects = (Array.isArray(r.projects) ? r.projects : []).map((p: any) => ({
+    name: A.actCut(String((p && p.name) || '').trim(), A.ACT_PROJECT_MAX), at: ms(p && p.at) })).filter((p: any) => p.name && isFinite(p.at));
   return { work_min: Number(r.work_min) || 0, dist_min: Number(r.dist_min) || 0, what: String(r.what || 'distraction'), gaps,
-           last: isFinite(last) ? last : null, project: A.actCut(String(r.project || '').trim(), A.ACT_PROJECT_MAX) };
+           last: isFinite(last) ? last : null, tail: parts(r.tail), project: A.actCut(String(r.project || '').trim(), A.ACT_PROJECT_MAX),
+           projects };
 }
 
 async function deviceKinds(sb: Sb, owner: string) {
@@ -1646,6 +1762,14 @@ async function runAuto(sb: Sb, owner: string, now: number, set: Record<string, a
   for (const r of step.runs) {
     await sb.from('activity_nudges').update({ run: runJson(r.run) }).eq('id', r.id).eq('user_id', owner).eq('state', 'sent');
   }
+  // Item 36 (Saad, 28 Oct): an open one 30 minutes on is pushed once, to the laptop only.
+  for (const n of nudges) {
+    if (n.state !== 'sent' || isFinite(n.pushed_at) || !n.run || !(n.run.work_min >= AUTO_PUSH_MIN) || set.checks === false) continue;
+    const mark = await sb.from('activity_nudges').update({ pushed_at: iso(now) }).eq('id', n.id).eq('user_id', owner)
+      .eq('state', 'sent').is('pushed_at', null).select('id');
+    if (mark.error || !(mark.data || []).length) continue;
+    await pushAll(sb, owner, JSON.stringify(autoPayload(n.run, active)), { ttl: 3600, topic: 'probeing-watch-teach', urgency: 'normal' }, '', 'Laptop');
+  }
   let asked = false;
   if (step.ask) {
     // One open at a time (activity_nudges_open_auto_idx): a second run loses here.
@@ -1679,7 +1803,10 @@ async function runJudge(sb: Sb, owner: string, now: number, set: Record<string, 
     .in('type', ['prayer', 'actanswer', 'actfix']).gte('at', iso(from - 86400000)).order('at', { ascending: true }).limit(3000));
   // His corrections in the sheet (actfix) count here as they do in the sheet.
   const fixes = A.actFixMap(extra.filter((r) => r.type === 'actfix'));
-  const clipped = A.actClip(blocks.map((b) => A.actFixed(b, fixes)), domain);
+  // Item 36: a distraction or private app he said was work.
+  const said = must(await sb.from('activity_nudges').select('device_id, streak_start').eq('user_id', owner).eq('kind', 'distract')
+    .eq('state', 'working').gte('streak_start', iso(from)).limit(300)).map((n) => ({ device_id: n.device_id, start: ms(n.streak_start) }));
+  const clipped = A.actClip(workedThrough(blocks.map((b) => A.actFixed(b, fixes)), said), domain);
   const prayers = extra.filter((r) => r.type === 'prayer').map((r) => ms(r.at));
   const reasons = A.actIdleReasons(extra.filter((r) => /^jw-/.test(String(r.rid || ''))));
   const signals = A.actSignals(clipped, domain);
@@ -1764,10 +1891,7 @@ async function runNudges(sb: Sb, owner: string, now: number, set: Record<string,
     .eq('user_id', owner).eq('kind', 'distract').gte('streak_start', iso(now - 12 * 3600000)).limit(500));
   const nudges = nudgeRows.map((n) => ({ id: n.id, device_id: n.device_id, streak_start: ms(n.streak_start),
                                          pushed_at: ms(n.pushed_at), state: n.state }));
-  // Item 31a: earned (R1) at an instant, from the signals over the time he meant to work.
-  const domain = A.actJudgeDomain(rows, now - 6 * 3600000, now);
-  const signals = A.actSignals(A.actClip(clipped, domain), domain);
-  const step = nudgeStep({ now, on: set.on, walk, blocks: clipped, nudges, earnedAt: (t: number) => A.actEarnedAt(signals, t),
+  const step = nudgeStep({ now, on: set.on, walk, blocks: clipped, nudges,
                            rows: rows.map((r) => ({ at: ms(r.at), type: r.type, rid: r.rid || '' })) });
   const report: Record<string, unknown> = { decided: step.decide.length, wrote: [], pushed: [] };
 
@@ -1807,8 +1931,9 @@ async function runNudges(sb: Sb, owner: string, now: number, set: Record<string,
 async function watchSpans(sb: Sb, owner: string, from: number, now: number) {
   const rows = await readRows(sb, owner, from - READ_BACK_MS);
   const walk = A.actWalk(rows, from, now);
-  const quiet = (walk.sleep || []).concat(walk.rest || [], walk.awakeOff || []);
-  return { walk, spans: walk.watch as number[][], quiet: A.actMergeSpans(quiet) as number[][] };
+  // Item 36: awake with the day off is watched whole (named); asleep and breaks stay bare.
+  const quiet = (walk.sleep || []).concat(walk.rest || []);
+  return { walk, spans: A.actMergeSpans((walk.watch || []).concat(walk.awakeOff || [])) as number[][], quiet: A.actMergeSpans(quiet) as number[][] };
 }
 
 async function opConfig(sb: Sb, dev: Record<string, any>, body: Record<string, any>, now: number) {
@@ -1860,14 +1985,14 @@ async function opIngest(sb: Sb, dev: Record<string, any>, body: Record<string, a
       // Item 30b: before its SQL there is no desktop column; the blocks are stored without it.
       const deskCol = !(await sb.from('activity_blocks').select('desktop').limit(1)).error;
       const rows = pieces.map((p: any) => {
-        const b = p.mode === 'work' ? keepPlaced(p, had[String(p.start)]) : p;
+        const b = p.mode === 'work' || p.mode === 'off' ? keepPlaced(p, had[String(p.start)]) : p;
         // A category it did not have before counts from now (item 29 fix): kept while it stays.
         const h = had[String(p.start)];
         const became = h && h.category !== b.category ? now : h && isFinite(h.became) ? h.became : NaN;
         return { user_id: dev.user_id, device_id: dev.id, started_at: iso(b.start), ended_at: iso(b.end), app: b.app,
                  domain: b.domain, category: b.category, project: b.project, rule_key: b.key, mode: p.mode,
                  updated_at: iso(now), became_at: isFinite(became) ? iso(became) : null,
-                 ...(deskCol ? { desktop: p.mode === 'work' ? (b.desktop || '') : '' } : {}) };
+                 ...(deskCol ? { desktop: (p.mode === 'work' || p.mode === 'off') && b.category !== 'private' ? (b.desktop || '') : '' } : {}) };
       });
       const up = await sb.from('activity_blocks').upsert(rows, { onConflict: 'device_id,started_at' });
       if (up.error) return reply(500, { ok: false, error: up.error.message });
@@ -1999,7 +2124,8 @@ async function answerAsk(sb: Sb, n: Record<string, any>, choice: string, set: Re
   if (choice === 'start' || choice === 'resume') {
     // Item 30b: the project the question named stays named.
     const project = ask.run ? ask.run.project : '';
-    try { ask.run = Object.assign(await answerPlan(sb, n.user_id, ask, choice, now), { project }); } catch (_e) { /* the stored plan */ }
+    const projects = ask.run ? ask.run.projects : [];         // item 36: every project it named
+    try { ask.run = Object.assign(await answerPlan(sb, n.user_id, ask, choice, now), { project, projects }); } catch (_e) { /* the stored plan */ }
   }
   for (const w of A.actSkipTies(askRows(ask, choice, now), rows)) await writeRow(sb, n.user_id, set.zone, w);
   const state = choice === 'start' ? 'started' : choice === 'resume' ? 'resumed' : choice === 'awake' ? 'awake'

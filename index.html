@@ -156,20 +156,9 @@
   </section>
 
   <!-- Item 35: this week's three goals; the weekly report asks which were hit. -->
-  <section id="goalsCard" class="card" hidden>
-    <h2 class="card-head">This week's goals</h2>
-    <ol id="goalsList" class="goals-list"></ol>
-    <div id="goalsEdit" hidden>
-      <input id="goal1" type="text" maxlength="120" autocomplete="off" placeholder="Goal 1" aria-label="Goal 1">
-      <input id="goal2" type="text" maxlength="120" autocomplete="off" placeholder="Goal 2 (optional)" aria-label="Goal 2">
-      <input id="goal3" type="text" maxlength="120" autocomplete="off" placeholder="Goal 3 (optional)" aria-label="Goal 3">
-      <div class="dlg-actions" style="justify-content: flex-start">
-        <button type="button" id="goalsSave" class="btn btn-accent">Save goals</button>
-        <button type="button" id="goalsLater" class="link-btn">Later</button>
-      </div>
-    </div>
-    <button type="button" id="goalsEditBtn" class="link-btn" hidden>Edit</button>
-    <p id="goalsNote" class="hint" role="status"></p>
+  <!-- Item 36 (Saad, 28 Oct): the week's goals behind one button; the goals themselves in a popup. -->
+  <section id="goalsCard" class="goals-card" hidden>
+    <button type="button" id="goalsBtn" class="btn btn-wide goals-btn">This week's goals</button>
   </section>
 
   <!-- Stage 18a: only what is planned for today (and stopped tasks); planned on an
@@ -436,6 +425,8 @@
     <p class="hint">Pick one for each task. The line is optional and goes into today's advice.</p>
     <ul id="dayEndList" class="checkin-tasks"></ul>
     <p id="dayEndNote" class="hint" role="status"></p>
+    <!-- Item 36 (Saad, 28 Oct): too tired to answer each one. -->
+    <button type="button" id="dayEndBacklog" class="btn btn-danger btn-wide">Move all to Backlog</button>
     <div class="dlg-actions">
       <button type="button" id="dayEndCancel" class="btn">Not yet</button>
       <button type="button" id="dayEndGo" class="btn btn-accent">End day</button>
@@ -1189,6 +1180,8 @@
      The inner box fills the dialog, so a click on the dialog itself is the backdrop. -->
 <!-- Stage 18b: what the laptop saw since he last looked. Non-modal, so M and
      Prayer stay one tap away under it. Project names are his text (textContent). -->
+<!-- Item 36: the page behind the sheet dimmed. Taps pass through it, so M and Prayer still work (rule 4). -->
+<div id="catchupShade" class="catchup-shade" hidden></div>
 <dialog id="catchupDlg" class="dlg catchup-dlg" aria-labelledby="catchupTitle">
   <form method="dialog">
     <h2 id="catchupTitle"></h2>
@@ -1216,6 +1209,44 @@
 </dialog>
 
 <!-- Item 31d: the day-end check-in, after End day. Non-modal; every part may be left blank. -->
+<!-- Item 36 (Saad, 28 Oct): how the week went, in his own eyes, before its report is written. -->
+<dialog id="weekCheckDlg" class="dlg checkin-dlg" aria-labelledby="weekCheckTitle">
+  <form method="dialog">
+    <h2 id="weekCheckTitle">How was your week?</h2>
+    <p id="weekCheckSpan" class="hint"></p>
+    <div id="weekCheckRatings"></div>
+    <div id="weekCheckGoals" hidden></div>
+    <label for="weekCheckNote" class="pick-head">In your own words</label>
+    <textarea id="weekCheckNote" rows="3" maxlength="1000" placeholder="Was it a good week, and why? Be honest — the report will be."></textarea>
+    <p id="weekCheckSay" class="hint" role="status"></p>
+    <div class="dlg-actions">
+      <button type="button" id="weekCheckLater" class="link-btn">Later</button>
+      <button type="button" id="weekCheckGo" class="btn btn-accent">Save and write the report</button>
+    </div>
+  </form>
+</dialog>
+
+<!-- Item 36: this week's goals. Up to three; the weekly report asks which were hit. -->
+<dialog id="goalsDlg" class="dlg goals-dlg" aria-labelledby="goalsTitle">
+  <form method="dialog">
+    <h2 id="goalsTitle">This week's goals</h2>
+    <p id="goalsWeek" class="hint"></p>
+    <ol id="goalsList" class="goals-list"></ol>
+    <div id="goalsEdit" hidden>
+      <label class="goal-field"><span>1</span><input id="goal1" type="text" maxlength="120" autocomplete="off" placeholder="The one that matters most" aria-label="Goal 1"></label>
+      <label class="goal-field"><span>2</span><input id="goal2" type="text" maxlength="120" autocomplete="off" placeholder="Optional" aria-label="Goal 2"></label>
+      <label class="goal-field"><span>3</span><input id="goal3" type="text" maxlength="120" autocomplete="off" placeholder="Optional" aria-label="Goal 3"></label>
+    </div>
+    <p id="goalsNote" class="hint" role="status"></p>
+    <div class="dlg-actions">
+      <button type="button" id="goalsLater" class="link-btn">Later</button>
+      <button type="button" id="goalsEditBtn" class="btn" hidden>Edit</button>
+      <button type="button" id="goalsSave" class="btn btn-accent">Save goals</button>
+      <button type="button" id="goalsClose" class="btn btn-accent" hidden>Close</button>
+    </div>
+  </form>
+</dialog>
+
 <dialog id="checkinDlg" class="dlg checkin-dlg" aria-labelledby="checkinTitle">
   <form method="dialog">
     <h2 id="checkinTitle">How was today?</h2>

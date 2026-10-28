@@ -927,12 +927,16 @@ function actDistractWord(b) {
 }
 
 var ACT_RUN_GAP_MS = 15 * 60000;       // non-work this long is a break, whatever it held
+var ACT_SCATTER_N = 3;                  // item 36: this many slips...
+var ACT_SCATTER_MS = 30 * 60000;        // ...inside this long is focus lost for the whole stretch
 
 /**
  * What a Start (or Resume) answer makes of the time since `from` (item 30a fix): every device's
  * blocks, cut to [from, now]. Between two stretches of work, 15 minutes or more of anything else
- * is a break; a shorter gap's distractions (2 minutes or more, joined across a minute) are.
- * Returns {gaps: [[start, end]], last: the end of the last work, or null with no work}.
+ * is a break; a shorter gap's distractions (5 minutes or more, joined across a minute) are.
+ * Item 36 (Saad, 28 Oct): a long gap is Away only where no device was in use; its distraction
+ * (and private apps) is Distraction: such a gap is [start, end, [[at, 'Away' | 'Distraction'], ...]].
+ * Returns {gaps: [[start, end(, parts)]], last: the end of the last work, or null with no work}.
  */
 function actRunPlan(blocks, from, now) {
   var list = [];
@@ -945,9 +949,11 @@ function actRunPlan(blocks, from, now) {
   var workAll = actMergeSpans(list.filter(isWork).map(function (b) { return [b.start, b.end]; }));
   var work = workAll.filter(function (s) { return s[1] - s[0] >= 60000; });
   if (!work.length) return { gaps: [], last: null };
-  var dist = actMergeSpans(list.filter(function (b) { return b.category === 'distraction'; }).map(function (b) { return [b.start, b.end]; }));
+  var dist = actMergeSpans(list.filter(function (b) { return b.category === 'distraction' || b.category === 'private'; })
+    .map(function (b) { return [b.start, b.end]; }));
   var gaps = [];
-  function distIn(a, z) {
+  // The distraction in [a, z] no work overlaps, joined across a minute, each piece `min` or more.
+  function distPieces(a, z, min) {
     var pieces = [];
     actIntersect(a, z, dist).forEach(function (p) {
       var at = p[0];
@@ -963,15 +969,28 @@ function actRunPlan(blocks, from, now) {
       var last = joined[joined.length - 1];
       if (last && p[0] - last[1] <= 60000) { last[1] = p[1]; last[2] += p[1] - p[0]; } else joined.push([p[0], p[1], p[1] - p[0]]);
     });
-    joined.forEach(function (j) { if (j[2] >= ACT_GLANCE_MS) gaps.push([j[0], j[1]]); });
+    return joined.filter(function (j) { return j[2] >= min; });
+  }
+  // A long gap's parts: Away where nothing was in use, Distraction where it was.
+  function parts(a, z) {
+    var out = [];
+    var t = a;
+    distPieces(a, z, ACT_SLIP_MS).forEach(function (p) {
+      if (p[0] - t >= 60000) out.push([t, 'Away']);
+      out.push([out.length ? p[0] : t, 'Distraction']);
+      t = p[1];
+    });
+    if (!out.length || z - t >= 60000) out.push([t, 'Away']);
+    return out;
   }
   for (var i = 0; i < work.length; i++) {
     var end = work[i][1];
     var next = i + 1 < work.length ? work[i + 1][0] : now;
-    if (i + 1 < work.length && next - end >= ACT_RUN_GAP_MS) gaps.push([end, next]);
-    else distIn(end, next);
+    if (i + 1 < work.length && next - end >= ACT_RUN_GAP_MS) gaps.push([end, next, parts(end, next)]);
+    else distPieces(end, next, ACT_SLIP_MS).forEach(function (j) { gaps.push([j[0], j[1]]); });
   }
-  return { gaps: gaps, last: work[work.length - 1][1] };
+  var last = work[work.length - 1][1];
+  return { gaps: gaps, last: last, tail: now - last >= ACT_RUN_GAP_MS ? parts(last, now) : null };
 }
 
 /** ms from a number or an ISO string; NaN otherwise. */
@@ -981,9 +1000,10 @@ function actMs(v) {
 
 /**
  * The rows an answer writes after its resume at `after` (item 30a): each gap of `plan`
- * (actRunPlan, or a bare [[start, end]] list) as a break and a resume; and when the last work
- * ended 15 minutes or more before `now`, a break there and a resume now (he says he is working
- * now). Rids carry the gap's start (seconds, base 36), so two answerers write the same rows once.
+ * (actRunPlan, or a bare [[start, end]] list) as a break and a resume (a long gap's parts each a
+ * break of their own, item 36); and when the last work ended 15 minutes or more before `now`, a
+ * break there and a resume now (he says he is working now). Rids carry the gap's start (seconds,
+ * base 36), so two answerers write the same rows once.
  */
 function actRunSteps(id, plan, after, now) {
   var gaps = Array.isArray(plan) ? plan : (plan && Array.isArray(plan.gaps) ? plan.gaps : []);
@@ -991,15 +1011,23 @@ function actRunSteps(id, plan, after, now) {
   var tail = isFinite(last) && last > after && now - last >= ACT_RUN_GAP_MS;
   function key(t) { return Math.floor(t / 1000).toString(36); }
   var out = [];
+  function breaks(a, z, list, fallback) {
+    var ok = Array.isArray(list) ? list.filter(function (p) { var t = actMs(p && p[0]); return t >= a && t < z; }) : [];
+    if (!ok.length) ok = [[a, fallback]];
+    ok.forEach(function (p, k) {
+      var t = k ? actMs(p[0]) : a;
+      out.push({ type: 'break', at: t, rid: 'nd-' + id + '-' + key(t), text: p[1] === 'Distraction' ? 'Distraction' : 'Away' });
+    });
+  }
   gaps.forEach(function (g) {
     var a = actMs(g[0]);
     var z = actMs(g[1]);
     if (!(a > after) || !(z > a) || !(z <= now) || (tail && a >= last)) return;
-    out.push({ type: 'break', at: a, rid: 'nd-' + id + '-' + key(a), text: z - a >= ACT_RUN_GAP_MS ? 'Away' : 'Distraction' });
+    breaks(a, z, g[2], z - a >= ACT_RUN_GAP_MS ? 'Away' : 'Distraction');
     out.push({ type: 'resume', at: z, rid: 'ne-' + id + '-' + key(a), text: 'Resume (after a distraction — answered the check)' });
   });
   if (tail) {
-    out.push({ type: 'break', at: last, rid: 'nd-' + id + '-' + key(last), text: 'Away' });
+    breaks(last, now, plan.tail, 'Away');
     out.push({ type: 'resume', at: now, rid: 'ne-' + id + '-' + key(last), text: 'Resume (working now — answered the check)' });
   }
   return out.sort(function (x, y) { return x.at - y.at; });
@@ -1137,14 +1165,29 @@ var ACT_JUDGED_RID = /^(ab|ar|aw|qb|qr|kb|kr|nd|ne|jb|jr)-/;
 function actDistractName(b) {
   var w = actDistractWord(b);
   if (w !== 'distraction') return w;
-  var app = actNorm(String((b && b.app) || '').replace(/\.exe$/i, ''));
-  if (!app) return w;
-  var keys = Object.keys(ACT_DISTRACT_NAMES);
-  for (var i = 0; i < keys.length; i++) {
-    var label = keys[i].split('.')[0];
-    if (label.length >= 5 && app.indexOf(label) !== -1) return ACT_DISTRACT_NAMES[keys[i]];
+  var raw = String((b && b.app) || '').replace(/\.exe$/i, '').replace(/\.Root$/i, '');
+  var app = actNorm(raw);
+  if (app && !actIsBrowser(raw)) {
+    var keys = Object.keys(ACT_DISTRACT_NAMES);
+    for (var i = 0; i < keys.length; i++) {
+      var label = keys[i].split('.')[0];
+      if (label.length >= 5 && app.indexOf(label) !== -1) return ACT_DISTRACT_NAMES[keys[i]];
+    }
+    // Item 36 (Saad, 28 Oct): name the platform, private apps too.
+    return actCut(raw.replace(/[^A-Za-z0-9 ]+/g, ' ').trim(), 20) || w;
   }
-  return w;
+  var d = actCleanDomain(b && b.domain);
+  var site = d ? d.split('.').slice(0, -1).join(' ') : '';
+  return site ? actCut(site.charAt(0).toUpperCase() + site.slice(1), 20) : w;
+}
+
+/* Item 36 (Saad, 28 Oct): music on the phone while the laptop has input is work (R7 narrowed).
+ * Any other phone distraction or private app at the same time counts against the work. */
+var ACT_MUSIC_APPS = /youtube|spotify|soundcloud|deezer|music|gaana|saavn|wynk|audible|podcast|anghami/i;
+
+/** A phone block that may be music playing while he works. */
+function actIsMusic(b) {
+  return Boolean(b) && b.kind === 'phone' && ACT_MUSIC_APPS.test(String(b.app || '') + ' ' + String(b.domain || ''));
 }
 
 /**
@@ -1161,13 +1204,16 @@ function actSignals(blocks, spans) {
       var z = Math.min(b.end, s[1]);
       if (!(z > a)) return;
       var c = b.category;
-      var cls = c === 'distraction' ? 'd' : c === 'work' || c === 'meeting' ? (b.kind === 'phone' ? 'pw' : 'lw') : 'o';
-      var x = { cls: cls, meet: c === 'meeting', word: cls === 'd' ? actDistractName(b) : '', lap: b.kind !== 'phone' };
+      // Item 36: a private app while working is a distraction until he says it was work; a phone
+      // one (not music) counts even while the laptop works.
+      var off = c === 'distraction' || c === 'private';
+      var cls = off ? (b.kind === 'phone' && !actIsMusic(b) ? 'pd' : 'd') : c === 'work' || c === 'meeting' ? (b.kind === 'phone' ? 'pw' : 'lw') : 'o';
+      var x = { cls: cls, meet: c === 'meeting', word: off ? actDistractName(b) : '', lap: b.kind !== 'phone' };
       ev.push({ t: a, x: x, d: 1 });
       ev.push({ t: z, x: x, d: -1 });
     });
     ev.sort(function (p, q) { return p.t - q.t; });
-    var n = { lw: 0, pw: 0, d: 0, o: 0, m: 0, lap: 0 };
+    var n = { lw: 0, pw: 0, d: 0, pd: 0, o: 0, m: 0, lap: 0 };
     var words = Object.create(null);
     var at = s[0];
     var i = 0;
@@ -1180,7 +1226,7 @@ function actSignals(blocks, spans) {
         if (e.x.word) words[e.x.word] = (words[e.x.word] || 0) + e.d;
       }
       var next = i < ev.length ? Math.min(ev[i].t, s[1]) : s[1];
-      var sig = n.lw > 0 ? 'work' : n.d > 0 ? 'distraction' : n.pw > 0 ? 'work' : n.o > 0 ? 'unclear' : 'idle';
+      var sig = n.pd > 0 ? 'distraction' : n.lw > 0 ? 'work' : n.d > 0 ? 'distraction' : n.pw > 0 ? 'work' : n.o > 0 ? 'unclear' : 'idle';
       var meet = sig === 'work' && n.m > 0 && n.m === n.lw + n.pw;
       var what = sig === 'distraction' ? Object.keys(words).filter(function (k) { return words[k] > 0; }).sort()[0] || 'distraction' : '';
       var lap = n.lap > 0;
@@ -1276,17 +1322,16 @@ function actJudge(d) {
       if (g.idleMs >= ACT_UNWATCHED_MS && g.distMs === 0 && g.unclearMs === 0) {
         g.kind = 'unwatched';
       } else if (g.ms < ACT_BREAK_MS) {
+        // Item 36 (Saad, 28 Oct): a distraction is never earned rest; 5 minutes or more is a distraction.
         if (g.distMs < ACT_GLANCE_MS) g.kind = 'pause';        // a short idle or unclear gap: a good break
-        else if (g.earned) g.kind = 'rest';
         else g.kind = g.distMs < ACT_SLIP_MS ? 'slip' : 'distraction';
       } else if (g.unclearMs > g.distMs && g.unclearMs > g.idleMs) {
         g.kind = 'away';                                         // mostly unclear: stays on the clock, never a break
       } else if (g.idleMs > g.distMs && g.idleMs >= g.unclearMs && bseg && aseg && bseg.meet && aseg.meet) {
         g.kind = 'meeting';                                      // no input between two meetings: the meeting
       } else if (g.distMs >= ACT_BREAK_MS || (g.distMs >= g.idleMs && g.distMs >= g.unclearMs)) {
-        g.kind = g.earned ? 'deserved' : 'dbreak';
+        g.kind = 'dbreak';
         g.low = g.distMs > ACT_LOW_MS;
-        g.note = g.earned && g.ms >= ACT_DESERVED_NOTE_MS && g.ms <= ACT_LOW_MS;
       } else {
         g.kind = 'idle';
       }
@@ -1313,8 +1358,29 @@ function actJudge(d) {
       g1.highMs = dist;
       i += chain.length - 1;
     }
+    // Item 36 (Saad, 28 Oct): three slips or more inside 30 minutes, only work between them: focus
+    // lost for that whole stretch (one 'scatter' gap; its slips are not written on their own).
+    var scat = [];
+    for (var a = 0; a < gaps.length; a++) {
+      if (gaps[a].kind !== 'slip' && gaps[a].kind !== 'distraction') continue;
+      var b2 = a;
+      while (b2 + 1 < gaps.length && (gaps[b2 + 1].kind === 'slip' || gaps[b2 + 1].kind === 'distraction') &&
+             gaps[b2 + 1].end - gaps[a].start <= ACT_SCATTER_MS) b2++;
+      if (b2 - a + 1 < ACT_SCATTER_N) continue;
+      var set = gaps.slice(a, b2 + 1);
+      var dms = 0;
+      var top = Object.create(null);
+      set.forEach(function (g) { g.inScatter = true; dms += g.distMs; top[g.what] = (top[g.what] || 0) + g.distMs; });
+      scat.push({ start: set[0].start, end: set[set.length - 1].end, ms: set[set.length - 1].end - set[0].start, distMs: dms, idleMs: 0,
+                  unclearMs: 0, what: Object.keys(top).sort(function (x, y) { return (top[y] - top[x]) || (x < y ? -1 : 1); })[0] || '',
+                  earned: false, kind: 'scatter', low: false, high: false, note: false, head: set[0].head, tail: set[set.length - 1].tail,
+                  applied: false, prayer: false, key: actGapKey(set[0].start) + 's', count: set.length });
+      a = b2;
+    }
     gaps.forEach(function (g) { delete g.before; delete g.after; out.push(g); });
+    scat.forEach(function (g) { out.push(g); });
   });
+  out.sort(function (x, y) { return (x.start - y.start) || (x.kind === 'scatter' ? 1 : y.kind === 'scatter' ? -1 : 0); });
   var work = actMergeSpans((d && d.work) || []);
   var prayers = ((d && d.prayers) || []).filter(function (t) { return isFinite(t); });
   // Rows that turn the clock on (his, or a watcher's resume): a break written before one would end there.
@@ -1426,6 +1492,9 @@ function actEarnedAt(signals, t) {
 /** Does a gap become a break when its recommendation is applied? 15 minutes or more of mostly idle
  *  or mostly distraction. Mostly unclear ('away') is never a break: it may well be work. */
 function actJudgeBreaks(g) {
+  if (g.inScatter) return false;
+  // Item 36: a distraction of 5 minutes or more and a scattered stretch are breaks too.
+  if (g.kind === 'distraction' || g.kind === 'scatter') return true;
   return g.ms >= ACT_BREAK_MS && (g.kind === 'idle' || g.kind === 'dbreak' || g.kind === 'deserved');
 }
 
@@ -1436,7 +1505,7 @@ function actJudgeWords(g, reason) {
   var r = reason || (g.prayer ? 'Prayer' : '');
   return { rest: 'Rest (earned)', slip: 'Slip', distraction: 'Distraction', dbreak: 'Distraction break',
            deserved: 'Deserved break', idle: 'Idle — ' + actIdleWord(r || ACT_IDLE_DEFAULT), away: '? — what was this? (on the clock)',
-           meeting: 'Meeting', pause: 'Short break', unwatched: 'Not watched' }[g.kind] || '';
+           meeting: 'Meeting', pause: 'Short break', unwatched: 'Not watched', scatter: 'Lost focus (slips)' }[g.kind] || '';
 }
 
 /** An idle reason as shown: "Chit-chat" for the stored word. */
@@ -1508,6 +1577,7 @@ function actJudgeRecords(gaps, opts) {
       if (why === 'Chitchat') chat.push(g);
     }
     if (g.low) rec('low', g.start, g.end, g.distMs, g.what || 'distraction');
+    if (g.kind === 'scatter') rec('low', g.start, g.end, g.ms, g.what || 'distraction');
     if (g.high && isFinite(g.highEnd)) rec('high', g.start, g.highEnd, g.highMs, g.what || 'distraction');
   });
   // R5: Chit-chat is an external distraction when one is long, or the day's add up.
@@ -1518,7 +1588,7 @@ function actJudgeRecords(gaps, opts) {
   });
   // Stretches: work between gaps that broke focus (anything but a short pause or a meeting) and
   // between his own breaks (the signals stop there).
-  var cut = (gaps || []).filter(function (g) { return g.kind !== 'pause' && g.kind !== 'meeting' && g.kind !== 'unwatched'; });
+  var cut = (gaps || []).filter(function (g) { return g.kind !== 'pause' && g.kind !== 'meeting' && g.kind !== 'unwatched' && g.kind !== 'scatter'; });
   var best = Object.create(null);
   var cur = null;
   var prevEnd = null;
@@ -1550,7 +1620,8 @@ function actJudgeRecords(gaps, opts) {
 function actJudgeSteps(g, reason) {
   if (!actJudgeBreaks(g)) return [];
   var text = g.kind === 'idle' ? actIdleWord(reason || (g.prayer ? 'Prayer' : ACT_IDLE_DEFAULT))
-           : g.kind === 'away' ? 'Away (auto)' : g.kind === 'deserved' ? 'Break (deserved — auto)' : 'Distraction (auto)';
+           : g.kind === 'away' ? 'Away (auto)' : g.kind === 'deserved' ? 'Break (deserved — auto)'
+           : g.kind === 'scatter' ? 'Lost focus (auto)' : 'Distraction (auto)';
   var resume = 'Resume (back at work — auto)';
   if (!g.on) {                           // a gap built by hand (an idle answer): as one piece
     if (g.applied) return [];
@@ -1654,7 +1725,8 @@ function actDeskGroups(blocks, fixes, cfg) {
       order.push(g);
     }
     var name = actLineName(b);
-    var lk = [name, b.category, b.project || ''].join('|');
+    // Item 36: the phone's distraction is its own line (music while the laptop works is not asked about).
+    var lk = [name, b.category, b.project || '', b.category === 'distraction' && b.kind === 'phone' ? 'phone' : ''].join('|');
     var line = g.by[lk];
     if (!line) {
       var placeable = b.category === 'work' || b.category === 'meeting' || b.category === 'unclear';
@@ -1770,6 +1842,9 @@ globalThis.ProBeingActivity = {
   ACT_JUDGE_RID: ACT_JUDGE_RID,
   ACT_JUDGED_RID: ACT_JUDGED_RID,
   actDistractName: actDistractName,
+  actIsMusic: actIsMusic,
+  ACT_SCATTER_N: ACT_SCATTER_N,
+  ACT_SCATTER_MS: ACT_SCATTER_MS,
   actSignals: actSignals,
   actJudgeDomain: actJudgeDomain,
   actGapKey: actGapKey,

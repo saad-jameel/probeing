@@ -167,9 +167,11 @@ export async function sendPush(sub: Sub, payload: string, opts: PushOptions): Pr
  *  deleted (the app re-subscribes at launch). `sb` is a service-role client. */
 // deno-lint-ignore no-explicit-any
 export async function pushAll(sb: any, owner: string, payload: string, opts: PushOptions,
-                              skipEndpoint = '') {
-  const subs = await sb.from('push_subscriptions')
-    .select('id, endpoint, p256dh, auth').eq('user_id', owner);
+                              skipEndpoint = '', only = '') {
+  // Item 36: `only` ('Laptop' or 'Phone') sends to that device alone, by the label app.js gives it.
+  let q = sb.from('push_subscriptions').select('id, endpoint, p256dh, auth').eq('user_id', owner);
+  if (only) q = q.like('label', only + '%');
+  const subs = await q;
   if (subs.error) return { sent: 0, failed: 0, dropped: 0, error: String(subs.error.message) };
 
   let ok = 0;
