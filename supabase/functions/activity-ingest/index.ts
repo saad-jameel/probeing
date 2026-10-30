@@ -805,7 +805,9 @@ function phoneUse(blocks, a, z) {
     if (!(y > x)) return;
     ms += y - x;
     var name = A.actDistractName(b);
-    if (name === 'distraction') name = b.app || ({ private: 'private apps', meeting: 'calls', work: 'work apps' }[b.category] || 'other');
+    if (name === 'distraction') {
+      name = b.app || ({ distraction: 'distraction apps', private: 'private apps', meeting: 'calls', work: 'work apps' }[b.category] || 'other apps');
+    }
     by[name] = (by[name] || 0) + y - x;
   });
   if (ms < MIN_MS) return null;
@@ -888,9 +890,14 @@ function nightStep(d) {
   if (w === null) return out;
   var pickups = runs.filter(function (r) { return r.start >= s && r.start < w && r.end <= w; }).length;
   // The day's end (an off row, or the last work when the day was never ended).
+  // After a wake (a day off, nothing ended) there is no day end; late phone then counts from 23:30.
   var off = null;
-  rows.forEach(function (r) { if (r.type === 'off' && r.at <= e0 && r.at > e0 - 24 * 3600000) off = r; });
-  var late = phoneUse(d.blocks, off ? off.at : e0, s);
+  if (anchor.type !== 'wake') rows.forEach(function (r) { if (r.type === 'off' && r.at <= e0 && r.at > e0 - 24 * 3600000) off = r; });
+  var lateFrom = off ? off.at : anchor.type === 'wake' ? null : e0;
+  var at2330 = s - ((local(s) - NIGHT_CLOSE_MIN + 1440) % 1440) * MIN_MS;
+  if (s - at2330 > 12 * 3600000) at2330 = s;                        // asleep before 23:30: nothing late
+  if (lateFrom === null || s - lateFrom > 16 * 3600000) lateFrom = at2330;
+  var late = phoneUse(d.blocks, lateFrom, s);
   var silent = !manual && !runs.some(function (r) { return r.start < w && r.end > e0; });
   out.night = { ref: e0, s: s, w: w, run: { e: off ? off.at : null, s: s, w: w, manual: manual, silent: silent, pickups: pickups,
                                              late: late, fajr: f } };
