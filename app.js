@@ -10335,7 +10335,7 @@ async function readNightSummary(startMs, endMs, perDay) {
       if (r.late && r.late.min) lateMin += r.late.min;
     });
     if (nights.length === 1) {
-      lines.push('Night: ' + nightWords(nights[0]) + (nights[0].state === 'sent' ? ' (not confirmed yet).' : '.'));
+      lines.push(nightWords(nights[0]) + (nights[0].state === 'sent' ? ' (Not confirmed yet.)' : ''));
     } else if (nights.length > 1) {
       var slept = nights.reduce(function (n, x) { return n + (Date.parse(x.span_end) - Date.parse(x.streak_start)); }, 0);
       lines.push(nights.length + ' nights: slept ' + humanDuration(slept / nights.length) + ' a night on average' +
@@ -18116,19 +18116,25 @@ function catchupTiers(c) {
   return Object.keys(t).map(Number).sort();
 }
 
-/** "Last night: day ended 21:08 · phone 2h 35m (YouTube) · slept 03:16 → woke 11:41 (8h 25m)". */
+/** Last night in plain sentences: "Night of 29 Oct: slept 02:07, woke 10:23 (8h 16m). …" */
+var NIGHT_BARE_NAMES = { 'distraction apps': 1, 'other apps': 1, 'private apps': 1, 'calls': 1, 'work apps': 1, other: 1 };
 function nightWords(n) {
   var r = n.run || {};
   var s = Date.parse(n.streak_start);
   var w = Date.parse(n.span_end);
-  var bits = [];
-  if (r.e) bits.push('day ended ' + clockAt(Date.parse(r.e)));
+  var day = new Date(s - 12 * 3600000).toLocaleDateString('en-GB', { day: 'numeric', month: 'short' });
+  var out = ['Night of ' + day + ': ' + (r.manual ? 'you pressed Sleep at ' : 'you slept at ') + clockAt(s) + ', woke at ' + clockAt(w) +
+             ' (' + humanDuration(w - s) + ').'];
+  out.push(r.e ? 'Your work day ended at ' + clockAt(Date.parse(r.e)) + '.' : 'No work that day.');
   if (r.late && r.late.min) {
-    bits.push('phone ' + humanDuration(r.late.min * 60000) + ' late (' + (r.late.apps || []).map(function (a) { return a.name; }).join(', ') + ')');
+    var apps = r.late.apps || [];
+    var named = apps.filter(function (a) { return !NIGHT_BARE_NAMES[a.name]; });
+    out.push('Phone after ' + (r.e ? 'the day ended' : '23:30') + ': ' + humanDuration(r.late.min * 60000) +
+             (named.length ? ' (' + named.map(function (a) { return a.name + ' ' + humanDuration(a.min * 60000); }).join(', ') + ').'
+                           : ' (which apps was not kept that night).'));
   }
-  bits.push((r.manual ? 'Sleep pressed ' : 'slept ') + clockAt(s) + ' → woke ' + clockAt(w) + ' (' + humanDuration(w - s) + ')');
-  if (r.pickups) bits.push(r.pickups + ' pickup' + (r.pickups === 1 ? '' : 's') + ' in the night');
-  return bits.join(' · ');
+  if (r.pickups) out.push('You picked the phone up ' + (r.pickups === 1 ? 'once' : r.pickups + ' times') + ' in the night.');
+  return out.join(' ');
 }
 
 /** The instant with clock time `hhmm` nearest to `near` (within 12 hours either side). */
@@ -18198,7 +18204,7 @@ function nightAskRow(a, li, text, acts, btn) {
     btn('Asleep from ' + clockAt(s), function () { save(s, w, 'confirmed'); });
     btn('I was out', function () { change('Got home and slept'); });
   } else {
-    text.textContent = 'Last night: ' + nightWords(n) + '.';
+    text.textContent = nightWords(n) + ' Is this right?';
     btn('Looks right', function () { save(s, w, 'confirmed'); });
     btn('Change', function () { change(); });
   }
@@ -18947,14 +18953,16 @@ function catchupPrune() {
   if (!catchup || !catchupDlg.open) return;
   var rids = userMap();
   sessionLog().forEach(function (r) { if (r.rid) rids[r.rid] = 1; });
+  var before = catchup.asks.length;
   catchup.asks = catchup.asks.filter(function (a) {
-    if (a.kind === 'idle') return true;              // item 31b: its answer's rid carries a time; the next read decides
-    var answered = !catchupAsks([a.n], rids, -Infinity).length;
+    if (a.kind === 'idle') return true;              // item 38 fix: only his own answer (nn-) closes last night
+    var answered = a.kind === 'night' ? Boolean(rids['nn-' + a.n.id]) : !catchupAsks([a.n], rids, -Infinity).length;
     var over = WATCH_ASKS[a.kind] === 1 && !askStillOpen(a.n);
     if (!answered && !over) return true;
     if (a.li) a.li.textContent = answered ? 'Answered on another device.' : 'That one\'s over.';
     return false;
   });
+  if (catchup.asks.length < before) catchupMaybeDone();     // item 38 fix: never left on an empty step
 }
 
 /** The name a teach question is about: a site has a dot, an app is a squashed word. */
