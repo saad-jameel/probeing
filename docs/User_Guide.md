@@ -108,15 +108,19 @@ Pick a range: last 2 or 7 days, this week, last week, or last 30 days.
   breaks a day, prayers out of all of them, sleep a day, days the work never started
   and the time on distraction apps then, and any task that keeps sliding (carried,
   backlogged, deadline missed or moved). Home reminds you until you press **I've read
-  it**. Daily advice comes after End day; **Last 2 days** is a Review range.
+  it**. Daily advice comes after End day.
+- **Ranges** — Yesterday (the default), Last 2 days, This week, Last week, This month,
+  Last month. Yesterday leads with the night: when the day ended, late-night phone time
+  (and which apps), slept → woke, and whether the night was disturbed. A day with no work
+  at all is a **day off**, its phone time on its own line, counted as wasted.
 
 ## Settings
 
 Three tabs: **General**, **ProBeing training** and **Developer options**. Settings opens
 on the tab you used last.
 
-- **Bedtime notifications** — at 11:30 pm, if your day is still open, a push asks
-  "still awake?". Ignore it and the day ends at that time.
+- **Bedtime notifications** — the 23:30 "still awake?" push now comes only when no
+  laptop or phone has reported for 2 hours. With the watchers on, the devices decide.
 - **Prayer times** — your location, calculation method and Asr school. Switches for
   prayer reminders, task-deadline reminders and a morning plan push.
 - **Google Tasks** — connect, pick the list, **Sync now**. A copy of your records is
@@ -148,11 +152,25 @@ paste the line it gives you into PowerShell, done.
   only music apps (YouTube, Spotify…) are let through.
 - At End day: a slip of 5 minutes or more becomes a Distraction; three slips inside 30
   minutes become **Lost focus** for that whole stretch. **Away** means nothing was in use.
-- Pressing Sleep, then using the laptop for 15 minutes, asks "asleep or working?". A
-  **disturbed night** is the phone only: three pickups or more, or one over 10 minutes.
-- Using the laptop after Fajr while marked asleep, or a work app during a break or before
-  starting the day, gets a question ("awake?", "back to work?", "start?") that records
-  the right time when you answer.
+- **The day ends by itself.** Without End day, the day ends at your last work, written
+  after 23:30 once nothing has been worked for 30 minutes. Phone use after that is
+  **late phone**: no push, it goes in yesterday's report.
+- **Sleep and wake come from the devices.** Sleep = the start of the last quiet stretch
+  before Fajr (a short pickup after midnight doesn't count as being up). Wake = the first
+  5 minutes of use after Fajr that isn't followed by an hour of quiet (back to sleep).
+  Nothing is written until you confirm it.
+- Pressed Sleep yourself, then 30 minutes or more on the phone: **"Are you up?"**.
+  Unanswered, it is a disturbed night and your sleep runs on to the morning. Pressing
+  Sleep, then the laptop for 15 minutes, asks "asleep or working?". A **disturbed
+  night** is the phone only: three pickups or more, or one over 10 minutes.
+- A work app during a break or before starting the day gets a question ("back to
+  work?", "start?") that records the right time when you answer.
+- The distraction push says when, on which device, and what the other device showed:
+  "15:20–15:35: YouTube on your phone, ProBeing on the laptop — are you working?".
+- **Questions come in order, one colour at a time**: purple **Night & day** first
+  (last night's day end, sleep and wake — **Looks right** or **Change**; a night with no
+  use at all asks "Asleep from …" or "I was out"). These can't be put off. Then teal
+  **Was it work?**, grey **Not seen**, and the plain details.
 - When you open ProBeing it may show **"Unknown work 17:06 – 18:12"**, one box per
   desktop (the phone's in its own, **Phone**). Work on a project already in Working on is
   not asked about; a line already on its desktop's project shows just its name and time

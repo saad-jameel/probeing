@@ -6126,15 +6126,20 @@ async function checkRangeFloor(startDate) {
  *  option that can reach back past 27 Aug 2026, the first row this account has.
  *  Without it the refusal below is unreachable from the shipped UI, and an
  *  untriggerable safeguard is one nobody has ever seen work. */
+/* Item 38 (Saad, 30 Oct): Yesterday · Last 2 days · This week · Last week · This month · Last month on the
+ * picker. Last 7 and 30 days stay as ranges the code can still ask for, off the picker. */
 var REVIEW_RANGES = [
+  { id: 'y', label: 'Yesterday', days: 1, back: 1 },
   { id: 'd2', label: 'Last 2 days', days: 2 },
-  { id: 'd7', label: 'Last 7 days', days: 7 },
   { id: 'wk', label: 'This week', week: true },
   { id: 'lw', label: 'Last week', week: true, back: 1 },
-  { id: 'd30', label: 'Last 30 days', days: 30 }
+  { id: 'tm', label: 'This month', month: true },
+  { id: 'lm', label: 'Last month', month: true, back: 1 },
+  { id: 'd7', label: 'Last 7 days', days: 7, hidden: true },
+  { id: 'd30', label: 'Last 30 days', days: 30, hidden: true }
 ];
 
-var REVIEW_DEFAULT_RANGE = 'd7';
+var REVIEW_DEFAULT_RANGE = 'y';
 
 /** A Date as the local calendar day it falls on, 'YYYY-MM-DD'.
  *  rangeFloor() above has its own copy on purpose — it is written to be a pure
@@ -6166,7 +6171,7 @@ function counterStartOf(d) {
 function reviewRangeOf(id, now) {
   var spec = null;
   REVIEW_RANGES.forEach(function (r) { if (r.id === id) spec = r; });
-  if (!spec) spec = REVIEW_RANGES[1];
+  if (!spec) spec = REVIEW_RANGES[0];
 
   // The counter day: at 02:00 on a Monday it is still Sunday, and this week
   // has not begun.
@@ -6190,8 +6195,14 @@ function reviewRangeOf(id, now) {
       start = new Date(start.getFullYear(), start.getMonth(), start.getDate() - 7 * spec.back);
       end = new Date(start.getFullYear(), start.getMonth(), start.getDate() + 6);
     }
+  } else if (spec.month) {
+    // The calendar month; "Last month" is the whole previous one.
+    start = new Date(today.getFullYear(), today.getMonth() - (spec.back || 0), 1);
+    if (spec.back) end = new Date(today.getFullYear(), today.getMonth(), 0);
   } else {
-    start = new Date(today.getFullYear(), today.getMonth(), today.getDate() - (spec.days - 1));
+    // Yesterday: the previous counter day — Fajr to Fajr, which holds his wake to his next wake.
+    if (spec.back) end = new Date(today.getFullYear(), today.getMonth(), today.getDate() - spec.back);
+    start = new Date(end.getFullYear(), end.getMonth(), end.getDate() - (spec.days - 1));
   }
 
   return { id: spec.id, label: spec.label, start: start, end: end };
@@ -7397,6 +7408,13 @@ function reviewPrompt(win, now, prior, cats, pace) {
                ', before Fajr while marked asleep.');
   }
 
+  /* Item 38: the nights (day ended, late phone, sleep) and the days the work never started. */
+  if (now.nights && now.nights.length) {
+    lines.push('');
+    lines.push('NIGHTS AND DAYS OFF (worked out already, for you to judge from, not to repeat; late phone time is time wasted):');
+    now.nights.forEach(function (l) { lines.push('  ' + l); });
+  }
+
   /* Item 35: the week's own figures (goals, deadlines, energy, deep work, sleep, boundaries, trend). */
   var wx = now.weekly ? weeklyPromptLines(now.weekly) : [];
   if (wx.length) {
@@ -8078,6 +8096,7 @@ function renderReviewPicks() {
   box.textContent = '';
 
   REVIEW_RANGES.forEach(function (r) {
+    if (r.hidden) return;
     box.appendChild(pickButton(r.label, r.id === reviewRangeId, false, function () {
       if (r.id === reviewRangeId) return;
       reviewRangeId = r.id;
@@ -8198,6 +8217,11 @@ async function runReview(force) {
 
   renderReviewFigures(sum);
   paintReviewWatch(got.windows[0].startMs, got.windows[got.windows.length - 1].endMs, mine);   // item 23, not awaited
+  // Item 38: the nights and the days off, on screen and in the one call.
+  var nightSum = await readNightSummary(got.windows[0].startMs, got.windows[got.windows.length - 1].endMs, sum.perDay);
+  if (!mine()) return;
+  $('reviewNight').textContent = nightSum ? nightSum.lines.join(' ') : '';
+  $('reviewNight').hidden = !nightSum || !nightSum.lines.length;
   var prayed = prayerStats(got.rows, got.windows);
   showPrayerTable($('reviewPrayers'), prayed);
   /* Published for the dialog's Save to find later — see reviewRegroup. Called
@@ -8222,7 +8246,8 @@ async function runReview(force) {
    * finished. addReviewProse() decides whether to SPEND a call; deciding what
    * would be in it is this function's job, and splitting them that way means the
    * prompt can never be built from a different set of numbers than the screen. */
-  await addReviewProse(win, reviewPrompt(win, { sum: sum, tasks: tasks, notes: got.notes, qaza: prayed.qaza }, got.earlier,
+  await addReviewProse(win, reviewPrompt(win, { sum: sum, tasks: tasks, notes: got.notes, qaza: prayed.qaza,
+                                               nights: nightSum ? nightSum.lines : [] }, got.earlier,
                                          projectCategories, got.pace),
                        force, mine);
 }
@@ -10139,6 +10164,9 @@ async function weeklyFigures(win, got, reflect, act) {
     var idleDays = (got.sum.perDay || []).filter(function (d) { return !(d.worked > 0); }).length;
     out.offDistract = Object.assign({ days: idleDays }, act.offDistract);
   }
+  var ns = await readNightSummary(startMs, endMs, got.sum.perDay);       // item 38
+  if (ns && ns.lateMin) out.late = { min: ns.lateMin, nights: ns.nights.length };
+  if (ns && ns.dayOff) out.dayOff = ns.dayOff;
   if (win.period === 'week') {
     var self = await readWeekCheck(ymdLocal(win.start));
     if (self) out.self = self;
@@ -10242,6 +10270,9 @@ function weeklyPromptLines(x) {
   if (x.prayers) lines.push('  Prayers: ' + x.prayers.done + ' of ' + x.prayers.total + ' prayed.');
   if (x.sleep) lines.push('  Sleep: ' + reviewDuration(x.sleep.perDayMin * 60000) + ' a day on average over ' + x.sleep.days +
                           ' days (' + x.sleep.nights + ' nights measured).');
+  if (x.late) lines.push('  On the phone late at night, after the day ended: ' + reviewDuration(x.late.min * 60000) + ' over ' + x.late.nights + ' night(s) — time wasted.');
+  if (x.dayOff) lines.push('  Days off (no work at all): ' + x.dayOff.days + (x.dayOff.phoneMin ? '; ' + reviewDuration(x.dayOff.phoneMin * 60000) +
+                           ' on the phone on them' + (x.dayOff.apps.length ? ' (' + x.dayOff.apps.join(', ') + ')' : '') + ', wasted' : '') + '.');
   if (x.offDistract) lines.push('  Days the work never started (weekend or not): ' + x.offDistract.days + '; on them ' +
                                 reviewDuration(x.offDistract.min * 60000) + ' went to distraction apps' +
                                 (x.offDistract.top ? ', most of it ' + x.offDistract.top : '') + '.');
@@ -10286,6 +10317,56 @@ function slideWords(t) {
   if (t.moved) w.push('deadline moved ' + t.moved + '×');
   if (t.days) w.push('worked on ' + t.days + ' days, never finished');
   return w.join(', ');
+}
+
+/* ── Item 38: nights and days off for a span ───────────────────────────────────────────────────
+ * The night proposals (activity-ingest) say when each day ended, the late phone and the sleep; a day with
+ * no work at all is a day off, its phone time wasted. Null when there is nothing (or no table). */
+async function readNightSummary(startMs, endMs, perDay) {
+  if (!supabaseReady()) return null;
+  try {
+    var res = await sb.from('activity_nudges').select('ref_at,streak_start,span_end,state,run').eq('kind', 'night')
+      .gte('ref_at', new Date(startMs).toISOString()).lt('ref_at', new Date(endMs).toISOString()).order('ref_at', { ascending: true }).limit(62);
+    var nights = res.error ? [] : res.data || [];
+    var lines = [];
+    var lateMin = 0;
+    nights.forEach(function (n) {
+      var r = n.run || {};
+      if (r.late && r.late.min) lateMin += r.late.min;
+    });
+    if (nights.length === 1) {
+      lines.push('Night: ' + nightWords(nights[0]) + (nights[0].state === 'sent' ? ' (not confirmed yet).' : '.'));
+    } else if (nights.length > 1) {
+      var slept = nights.reduce(function (n, x) { return n + (Date.parse(x.span_end) - Date.parse(x.streak_start)); }, 0);
+      lines.push(nights.length + ' nights: slept ' + humanDuration(slept / nights.length) + ' a night on average' +
+                 (lateMin ? '; ' + humanDuration(lateMin * 60000) + ' on the phone late at night in all' : '') + '.');
+    }
+    var off = (perDay || []).filter(function (d) { return !(d.worked > 0); }).map(function (d) { return d.ymd; });
+    var dayOff = null;
+    if (off.length) {
+      var kinds = await readDeviceKinds();
+      var b = await sb.from('activity_blocks').select('started_at,ended_at,category,app,domain,device_id')
+        .lt('started_at', new Date(endMs).toISOString()).gte('ended_at', new Date(startMs).toISOString()).limit(5000);
+      var by = userMap();
+      var ms = 0;
+      (b.error ? [] : b.data || []).forEach(function (x) {
+        if (kinds[x.device_id] !== 'phone' || off.indexOf(counterDate(Date.parse(x.started_at))) === -1) return;
+        var m = Date.parse(x.ended_at) - Date.parse(x.started_at);
+        if (!(m > 0)) return;
+        ms += m;
+        var name = actDistractName({ app: x.app, domain: x.domain, kind: 'phone' });
+        if (name === 'distraction') name = x.app || x.category;
+        by[name] = (by[name] || 0) + m;
+      });
+      var apps = Object.keys(by).sort(function (p, q) { return by[q] - by[p]; }).slice(0, 3);
+      dayOff = { days: off.length, phoneMin: Math.round(ms / 60000), apps: apps };
+      lines.push((off.length === 1 ? 'Day off (no work)' : off.length + ' days off (no work)') +
+                 (ms >= 60000 ? ': ' + humanDuration(ms) + ' on the phone' + (apps.length ? ' (' + apps.join(', ') + ')' : '') + ', wasted.' : '.'));
+    }
+    return { nights: nights, lateMin: lateMin, dayOff: dayOff, lines: lines };
+  } catch (e) {
+    return null;
+  }
 }
 
 /* Item 36 (Saad, 28 Oct): the week's self-check, asked before its report is written. */
@@ -10414,6 +10495,8 @@ function weeklyLine(x) {
                                                 (x.badBreaks ? ' (' + x.badBreaks + ' too long)' : ''));
   if (x.sleep) bits.push('sleep ' + reviewDuration(x.sleep.perDayMin * 60000) + ' a day');
   if (x.offDistract) bits.push('days off: ' + reviewDuration(x.offDistract.min * 60000) + ' on distraction apps');
+  if (x.late) bits.push('late-night phone ' + reviewDuration(x.late.min * 60000));
+  if (x.dayOff) bits.push(x.dayOff.days + ' day' + (x.dayOff.days === 1 ? '' : 's') + ' off');
   bits.push('deadlines: ' + x.missed + ' missed, ' + x.moved + ' moved');
   if (x.plan) bits.push(x.plan.done + ' of ' + (x.plan.done + x.plan.left) + ' planned tasks done');
   if (x.sliding && x.sliding.length) bits.push('sliding: ' + x.sliding.map(function (t) { return t.title + ' (' + slideWords(t) + ')'; }).join('; '));
@@ -18000,10 +18083,134 @@ function catchupHeld(types) {
 /** Unanswered pushes and questions, and auto breaks since he last looked (Looks right
  *  accepts one). `rids`: rids that exist; `since`: when he last confirmed. Item 23 adds
  *  the awake and back-to-work questions (kind 'awake' / 'resume'), item 28 'upwork' / 'start'. */
+/* ── Item 38 (Saad, 30 Oct): the night from the devices, and the popup in tiers ──────────────────
+ * activity-ingest settles each night (sleep, wake, when the day ended, late phone) as a proposal (kind
+ * 'night'); tier 1 asks him to confirm it, and only his answer writes the sleep and wake rows. */
+var readNightOn = true;            // off once the table refuses kind 'night' (before the item 38 SQL)
+var NIGHT_BACK_MS = 7 * 86400000;
+
+async function readNightAsks(now) {
+  var res = await sb.from('activity_nudges').select('id,kind,ref_at,streak_start,span_end,what,state,run').eq('kind', 'night')
+    .eq('state', 'sent').gte('ref_at', new Date(now - NIGHT_BACK_MS).toISOString()).order('ref_at', { ascending: true }).limit(10);
+  if (res.error) { readNightOn = false; return []; }
+  var list = res.data || [];
+  if (!list.length) return [];
+  var rr = await sb.from('events').select('rid').in('rid', list.map(function (n) { return 'nn-' + n.id; })).limit(20);
+  var done = userMap();
+  (rr.error ? [] : rr.data || []).forEach(function (r) { done[r.rid] = 1; });
+  outboxMine().forEach(function (it) { if (it.rid) done[it.rid] = 1; });
+  return list.filter(function (n) { return !done['nn-' + n.id]; }).map(function (n) { return { kind: 'night', n: n }; });
+}
+
+/* Each question's tier: 1 what the rules cannot know (must be answered), 2 was it work, 3 not seen, 4 details. */
+var CATCHUP_TIER = { night: 1, start: 1, upwork: 1, awake: 2, resume: 2, sent: 2, question: 2, autobreak: 2, idle: 3, teach: 4 };
+var CATCHUP_TIER_NAMES = { 1: 'Night & day', 2: 'Was it work?', 3: 'Not seen by your devices', 4: 'Details' };
+
+function askTier(a) { return CATCHUP_TIER[a.kind] || 4; }
+
+/** The tiers still holding something, lowest first. */
+function catchupTiers(c) {
+  var t = userMap();
+  c.asks.forEach(function (a) { t[askTier(a)] = 1; });
+  if (c.groups.some(function (g) { return groupOpenLines(g).length; })) t[4] = 1;
+  return Object.keys(t).map(Number).sort();
+}
+
+/** "Last night: day ended 21:08 · phone 2h 35m (YouTube) · slept 03:16 → woke 11:41 (8h 25m)". */
+function nightWords(n) {
+  var r = n.run || {};
+  var s = Date.parse(n.streak_start);
+  var w = Date.parse(n.span_end);
+  var bits = [];
+  if (r.e) bits.push('day ended ' + clockAt(Date.parse(r.e)));
+  if (r.late && r.late.min) {
+    bits.push('phone ' + humanDuration(r.late.min * 60000) + ' late (' + (r.late.apps || []).map(function (a) { return a.name; }).join(', ') + ')');
+  }
+  bits.push((r.manual ? 'Sleep pressed ' : 'slept ') + clockAt(s) + ' → woke ' + clockAt(w) + ' (' + humanDuration(w - s) + ')');
+  if (r.pickups) bits.push(r.pickups + ' pickup' + (r.pickups === 1 ? '' : 's') + ' in the night');
+  return bits.join(' · ');
+}
+
+/** The instant with clock time `hhmm` nearest to `near` (within 12 hours either side). */
+function nearestClock(hhmm, near) {
+  var m = /^(\d{1,2}):(\d{2})$/.exec(String(hhmm || ''));
+  if (!m) return NaN;
+  var d = new Date(near);
+  d.setHours(Number(m[1]), Number(m[2]), 0, 0);
+  var t = d.getTime();
+  if (t - near > 12 * 3600000) t -= 86400000;
+  if (near - t > 12 * 3600000) t += 86400000;
+  return t;
+}
+
+/** Tier 1: last night, confirmed as the devices saw it, or with his own times. Writes the sleep and wake
+ *  rows (and the day's end when it was never written) through the outbox, then marks it answered (nn-). */
+function nightAskRow(a, li, text, acts, btn) {
+  var n = a.n;
+  var r = n.run || {};
+  var s = Date.parse(n.streak_start);
+  var w = Date.parse(n.span_end);
+  function save(sleepAt, wakeAt, said) {
+    var id = n.id;
+    var steps = [];
+    function row(type, at, rid, words) {
+      steps.push({ type: type, raw_text: words, rid: rid, at: new Date(at).toISOString(), local_time: humanLocalAt(at) });
+    }
+    if (!r.manual) row('sleep', sleepAt, 'nx-sl-' + id, 'Sleep (from the devices — ' + said + ')');
+    row('wake', wakeAt, 'nx-wk-' + id, 'Wake up (from the devices — ' + said + ')');
+    steps.push({ type: 'actanswer', raw_text: 'Night ' + said + ': slept ' + clockAt(sleepAt) + ', woke ' + clockAt(wakeAt), detail: 'night',
+                 rid: 'nn-' + id });
+    dropAsk(a);
+    li.textContent = 'Noted: slept ' + clockAt(sleepAt) + ' → woke ' + clockAt(wakeAt) + '.';
+    runWrites(actSkipTies(steps, sessionLog())).then(function () { scheduleRefresh(800); });
+  }
+  function change(label) {
+    acts.textContent = '';
+    var box = document.createElement('div');
+    box.className = 'catchup-acts night-times';
+    function field(lbl, t) {
+      var l = document.createElement('label');
+      var i = document.createElement('input');
+      i.type = 'time';
+      i.value = clockAt(t);
+      l.append(lbl + ' ', i);
+      box.appendChild(l);
+      return i;
+    }
+    var si = r.manual ? null : field(label || 'Slept', s);
+    var wi = field('Woke', w);
+    var ok = document.createElement('button');
+    ok.type = 'button';
+    ok.className = 'btn btn-accent';
+    ok.textContent = 'Save';
+    ok.addEventListener('click', function () {
+      var st = si ? nearestClock(si.value, s) : s;
+      var wt = nearestClock(wi.value, w);
+      if (!isFinite(st) || !isFinite(wt) || !(wt > st)) { text.textContent = 'The wake has to come after the sleep.'; return; }
+      save(st, wt, 'changed');
+    });
+    box.appendChild(ok);
+    acts.appendChild(box);
+  }
+  if (r.silent) {
+    // Out and back (snooker): nothing in use from the day's end to the morning.
+    text.textContent = 'Your devices were silent from ' + clockAt(s) + ' to ' + clockAt(w) + '. Out, or asleep?';
+    btn('Asleep from ' + clockAt(s), function () { save(s, w, 'confirmed'); });
+    btn('I was out', function () { change('Got home and slept'); });
+  } else {
+    text.textContent = 'Last night: ' + nightWords(n) + '.';
+    btn('Looks right', function () { save(s, w, 'confirmed'); });
+    btn('Change', function () { change(); });
+  }
+  li.append(text, acts);
+  return li;
+}
+
 function catchupAsks(nudges, rids, since) {
   var out = [];
   (nudges || []).forEach(function (n) {
     var id = n.id;
+    if (n.kind === 'night') return;                 // item 38: readNightAsks has its own row
     // Item 31b: "Why?" about an idle gap, until answered (readIdleAsks leaves out the answered ones).
     if (n.kind === 'idle') {
       if (n.state === 'pending' || n.state === 'applied') out.push({ kind: 'idle', n: n });
@@ -18079,14 +18286,15 @@ async function readCatchUp() {
   }
   await attachRuns(nudges);
   var idle = await readIdleAsks(dayStart);
-  var asks = catchupAsks(nudges.concat(await readTeachAsk(dayStart), idle.asks), rids, since);
+  var asks = readNightOn ? await readNightAsks(now) : [];
+  asks = asks.concat(catchupAsks(nudges.concat(await readTeachAsk(dayStart), idle.asks), rids, since));
   var desk = { desktops: await readSheetDesktops(), projects: catchupProjects([]) };
   var groups = actDeskGroups(blocks, fixes, desk);
   judgeLines(groups, blocks.map(function (b) { return actFixed(b, fixes); }), since, now);   // his corrections, as End day reads them
   var total = settleLines(groups, replayDay(named(sessionLog())).activeProjects);
   if (!asks.length && total < CATCHUP_MIN_MS) return null;
   var until = blocks.reduce(function (m, b) { return Math.max(m, b.end); }, since);
-  return { since: since, until: until, blocks: blocks, fixes: fixes, groups: groups, asks: asks, reasons: idle.reasons };
+  return { since: since, until: until, blocks: blocks, fixes: fixes, groups: groups, asks: asks, reasons: idle.reasons, readAt: now };
 }
 
 /* ── Item 31b: what the sheet adds ──────────────────────────────────────── */
@@ -18161,8 +18369,14 @@ function groupOpenLines(g) {
  *  so the last "Noted" can be read. */
 function catchupMaybeDone() {
   var c = catchup;
-  if (!c || !catchupDlg.open || c.asks.length) return;
-  if (c.groups.some(function (g) { return groupOpenLines(g).length; })) return;
+  if (!c || !catchupDlg.open) return;
+  var tiers = catchupTiers(c);
+  // Item 38: a tier answered, the next one comes, after a moment so its last "Noted" can be read.
+  if (tiers.length && c.tier && tiers[0] !== c.tier) {
+    setTimeout(function () { if (catchup === c && catchupTiers(c)[0] !== c.tier) { c.tiersDone = (c.tiersDone || 0) + 1; renderCatchUp(); } }, 1200);
+    return;
+  }
+  if (tiers.length) return;
   setTimeout(function () { if (catchup === c && !c.asks.length) confirmCatchUp(); }, 1200);
 }
 
@@ -18230,9 +18444,13 @@ function runDistText(run) {
 }
 
 /** On opening the app (and coming back to it): the sheet, when there is something to confirm. */
+var CATCHUP_STALE_MS = 60 * 60000;       // item 38: a popup read this long ago is read again on opening
+
 async function maybeCatchUp(force) {
-  if (catchupOff || catchupBusy || !supabaseReady() || (catchupDlg && catchupDlg.open)) return;
   var now = Date.now();
+  // Item 38: one left open overnight would hide the morning's questions; nothing is written by closing it.
+  if (catchupDlg && catchupDlg.open && catchup && now - catchup.readAt > CATCHUP_STALE_MS && !catchupBusy) closeCatchUp();
+  if (catchupOff || catchupBusy || !supabaseReady() || (catchupDlg && catchupDlg.open)) return;
   if (!force && (now - catchupLookedAt < CATCHUP_EVERY_MS || now < catchupLaterUntil())) return;
   catchupBusy = true;
   catchupLookedAt = now;
@@ -18359,6 +18577,7 @@ function catchupAskRow(a) {
     acts.appendChild(b);
   }
   if (a.kind === 'idle') return idleAskRow(a, li, text, acts, btn);
+  if (a.kind === 'night') return nightAskRow(a, li, text, acts, btn);
   if (a.kind === 'teach') {
     var r = teachAskName(n);
     var mins = Number(n.entry_min) > 0 ? ' ' + humanDuration(Number(n.entry_min) * 60000) + ' today, not sorted yet.' : '';
@@ -18679,25 +18898,37 @@ function deskAsk(g, projects) {
 
 function renderCatchUp() {
   var c = catchup;
+  // Item 38: one tier at a time, lowest first; tier 1 has no Later.
+  var tiers = catchupTiers(c);
+  var tier = tiers.length ? tiers[0] : 4;
+  c.tier = tier;
+  catchupDlg.className = catchupDlg.className.replace(/\s*tier-\d/g, '') + ' tier-' + tier;
+  var done = c.tiersDone || 0;
+  $('catchupStep').textContent = CATCHUP_TIER_NAMES[tier] + (tiers.length + done > 1 ? ' · ' + (1 + done) + ' of ' + (tiers.length + done) : '');
+  $('catchupLaterBtn').hidden = tier === 1;
+  // Tier 1 is answered line by line; before the last tier the button moves on, so nothing unseen is accepted.
+  $('catchupOkBtn').hidden = tier === 1;
+  $('catchupOkBtn').textContent = tiers.length > 1 ? 'Next' : 'Accept all';
+  var tierAsks = c.asks.filter(function (a) { return askTier(a) === tier; });
   // Questions first (item 23); the title speaks for the list under them.
-  var onlyTeach = c.asks.length && c.asks.every(function (a) { return a.kind === 'teach'; });
-  var shown = c.groups.filter(function (g) { return groupOpenLines(g).length; });
+  var onlyTeach = tierAsks.length && tierAsks.every(function (a) { return a.kind === 'teach'; });
+  var shown = tier === 4 ? c.groups.filter(function (g) { return groupOpenLines(g).length; }) : [];
   // Item 36 (Saad, 28 Oct): "Unknown work 5:06 – 6:12 pm", from the lines shown, not from when he last looked.
   var span = catchupSpan(shown);
-  $('catchupTitle').textContent = shown.length
-    ? 'Unknown work ' + spanClock(span[0], span[1]) + ' (' + humanDuration(span[1] - span[0]) + ')'
-    : !c.asks.length ? 'Nothing new from the laptop' : onlyTeach ? 'A quick question' : 'Missed while you were away';
+  $('catchupTitle').textContent = tier === 1 ? 'Please answer these first'
+    : shown.length ? 'Unknown work ' + spanClock(span[0], span[1]) + ' (' + humanDuration(span[1] - span[0]) + ')'
+    : !tierAsks.length ? 'Nothing new from the laptop' : onlyTeach ? 'A quick question' : 'Missed while you were away';
   var asks = $('catchupAsks');
   asks.textContent = '';
-  c.asks.forEach(function (a) { asks.appendChild(catchupAskRow(a)); });
-  asks.hidden = !c.asks.length;
+  tierAsks.forEach(function (a) { asks.appendChild(catchupAskRow(a)); });
+  asks.hidden = !tierAsks.length;
   var list = $('catchupList');
   list.textContent = '';
   var named = [];
   c.groups.forEach(function (g) { named = named.concat([{ project: g.project }], g.lines.map(function (l) { return { project: l.rec || l.project }; })); });
   var projects = catchupProjects(named);
-  c.groups.forEach(function (g) { if (groupOpenLines(g).length) list.appendChild(catchupDeskItem(g, projects)); });
-  $('catchupNote').textContent = shown.length || c.asks.length ? '' : 'Nothing new from the laptop.';
+  if (tier === 4) c.groups.forEach(function (g) { if (groupOpenLines(g).length) list.appendChild(catchupDeskItem(g, projects)); });
+  $('catchupNote').textContent = shown.length || tierAsks.length ? '' : 'Nothing new from the laptop.';
 }
 
 /** The first and last minute of the open lines in `groups`. */
@@ -19072,7 +19303,18 @@ function closeCatchUp() {
 }
 catchupDlg.addEventListener('close', function () { if ($('catchupShade')) $('catchupShade').hidden = true; });
 
-$('catchupOkBtn').addEventListener('click', confirmCatchUp);
+$('catchupOkBtn').addEventListener('click', function () {
+  var c = catchup;
+  if (!c) return;
+  // Item 38: "Next" leaves this tier's questions as they are (asked again next time) and shows the next tier.
+  if (catchupTiers(c).length > 1) {
+    c.asks = c.asks.filter(function (a) { return askTier(a) !== c.tier; });
+    c.tiersDone = (c.tiersDone || 0) + 1;
+    renderCatchUp();
+    return;
+  }
+  confirmCatchUp();
+});
 $('catchupLaterBtn').addEventListener('click', function () {
   try { localStorage.setItem(CATCHUP_LATER_KEY, String(Date.now() + CATCHUP_LATER_MS)); } catch (e) { /* full disk */ }
   closeCatchUp();

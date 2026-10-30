@@ -67,8 +67,9 @@
  * v42 (item 31): the catch-up sheet grouped by desktop, idle "Why?", the day's judgement in Review;
  *   no "That one's over" notification (said in the app); the day-end check-in.
  * v47 (item 36): a private app's push asks "Work / Not work".
- * v48 (item 37): 24-hour times; the catch-up popup made compact. */
-var CACHE = 'probeing-shell-v48';
+ * v48 (item 37): 24-hour times; the catch-up popup made compact.
+ * v49 (item 38): the popup in tiers, last night's confirm, the new Review ranges. */
+var CACHE = 'probeing-shell-v49';
 var SHELL = [
   './',
   'index.html',

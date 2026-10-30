@@ -78,6 +78,7 @@ function reply(status: number, body: unknown): Response {
  * request replaces it from user_settings (useSavedPlace), so the night's times
  * follow him when he travels. A number rather than a zone keeps this block pure. */
 var TZ_OFFSET_MIN = 300;
+var WATCHED_MS = 2 * 3600000;          // item 38: a device seen this recently decides the night instead
 
 /** 11:30 PM, as minutes past local midnight. The hour the whole stage is about. */
 var WRAP_AT_MIN = 23 * 60 + 30;
@@ -810,6 +811,17 @@ Deno.serve(async (req: Request): Promise<Response> => {
 
   const sb = admin();
   const place = await useSavedPlace(sb, owner, now);
+
+  /* Item 38 (Saad, 30 Oct): while the laptop or the phone is reporting, the night is decided from them
+   * (activity-ingest: the day ends at his last work, the sleep and wake are settled in the morning). This
+   * check comes back only when no device has reported for WATCHED_MS: no data, so the old way. */
+  const seenRes = await sb.from('watch_devices').select('last_seen_at').eq('user_id', owner).limit(50);
+  const seenAt = seenRes.error ? -Infinity : Math.max(-Infinity, ...(seenRes.data || [])
+    .map((d: { last_seen_at: string | null }) => Date.parse(String(d.last_seen_at || ''))).filter((t: number) => isFinite(t)));
+  if (now - seenAt < WATCHED_MS) {
+    return reply(200, { ok: true, act: 'watched', why: 'a device reported ' + Math.round((now - seenAt) / 60000) +
+                        ' min ago: the devices decide the night' });
+  }
 
   const lastRes = await sb.from('events')
     .select('at, type').eq('user_id', owner).in('type', STATE_TYPES)

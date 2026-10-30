@@ -344,7 +344,8 @@ function nudgeStep(d) {
     });
     // R7, narrowed by item 36: music on the phone while the laptop works is work; no push.
     if ((s.music || !s.phone) && otherCover(d.blocks, dev, s.start, s.end).ratio >= OTHER_COVER) return;
-    if (!known) out.push.push({ device_id: dev, start: s.start, end: s.end, what: s.what, private: s.private });
+    if (!known) out.push.push({ device_id: dev, start: s.start, end: s.end, what: s.what, private: s.private, phone: s.phone,
+                                other: otherShows(d.blocks, dev, s.start, s.end) });
   });
   return out;
 }
@@ -664,16 +665,19 @@ function quietStep(d) {
       var nfrom = afterMine(walk.asleep.at);
       var lap = function (b) { return b.kind !== 'phone'; };
       var np = findRun(sa, nfrom, nfrom, NIGHT_LAPTOP_MS, 'upwork', walk.asleep.at, lap) ||
-               find(sa, nfrom, nfrom, lap, NIGHT_LAPTOP_MS, 'awake', walk.asleep.at);
+               find(sa, nfrom, nfrom, lap, NIGHT_LAPTOP_MS, 'awake', walk.asleep.at) ||
+               // Item 38: half an hour on the phone after his own Sleep: "Are you up?" (shorter is a disturbed night).
+               find(sa, nfrom, nfrom, function (b) { return b.kind === 'phone'; }, UP_RUN_MS, 'awake', walk.asleep.at);
       if (np) np.night = true;
       add(np);
       sa = null;
     }
-    // Item 28: work is "Up and working?"; any other use the plain "awake?".
+    // Item 28: work is "Up and working?"; any other use the plain "awake?". Item 38: after a night the
+    // wake is set from the devices (the morning proposal), so only work is asked; a nap still asks both.
     if (sa !== null) {
       var afrom = afterMine(walk.asleep.at);
       add(findRun(sa, afrom, thr, USE_MIN_MS, 'upwork', walk.asleep.at) ||
-          find(sa, afrom, thr, null, USE_MIN_MS, 'awake', walk.asleep.at));
+          (f === null ? find(sa, afrom, thr, null, USE_MIN_MS, 'awake', walk.asleep.at) : null));
     }
   }
   if (walk.onBreak && d.checks !== false) {
@@ -745,6 +749,154 @@ function quietStep(d) {
   });
   return out;
 }
+
+/* ── Item 38 (Saad, 30 Oct): the night decided by the devices ──────────────────
+ * Evening: with no End day, the day ends at his last work, written once it is night and both devices
+ * have been quiet a while (phone use after it is "late phone", never asked). Morning: the night is
+ * settled from the devices — sleep is the start of the last quiet stretch, wake the first lasting use
+ * after Fajr — and kept as a proposal (kind 'night') the app asks him to confirm; nothing about his sleep
+ * is written until he does. Plan: claudeWorkingDocs/plan-item38.md. */
+var NIGHT_CLOSE_MIN = 23 * 60 + 30;    // the day is closed by itself from 23:30 (local) to Fajr
+var NIGHT_IDLE_MS = 30 * MIN_MS;       // ...once no work has been seen this long
+var SLEEP_QUIET_MS = 30 * MIN_MS;      // a quiet stretch this long can be sleep
+var UP_RUN_MS = 30 * MIN_MS;           // use this long in one go after a quiet stretch: he was up
+var PICKUP_MS = 10 * MIN_MS;           // with no Sleep pressed, shorter use after midnight is a pickup
+var WAKE_RUN_MS = 5 * MIN_MS;          // use this long after Fajr can be the wake...
+var BACK_ASLEEP_MS = 60 * MIN_MS;      // ...unless this much quiet follows it (back to sleep)
+var NIGHT_ANCHORS = { off: 1, sleep: 1, wake: 1 };
+
+/** Use runs of every device together: [{start, end, ms, phone}] (gaps under a minute joined). */
+function allRuns(blocks, from, to) {
+  var spans = [];
+  (blocks || []).forEach(function (b) {
+    var a = Math.max(b.start, from);
+    var z = Math.min(b.end, to);
+    if (z > a) spans.push({ a: a, z: z, phone: b.kind === 'phone' });
+  });
+  spans.sort(function (x, y) { return x.a - y.a; });
+  var out = [];
+  spans.forEach(function (sp) {
+    var last = out[out.length - 1];
+    if (last && sp.a - last.end <= USE_GAP_MS) {
+      if (sp.z > last.end) { last.ms += sp.z - Math.max(sp.a, last.end); last.end = sp.z; }
+      if (!sp.phone) last.phone = false;
+    } else out.push({ start: sp.a, end: sp.z, ms: sp.z - sp.a, phone: sp.phone });
+  });
+  return out;
+}
+
+/** The end of his last work before `to`: work or meeting blocks, or the time of his last state row. */
+function lastWorkAt(blocks, rows, from, to) {
+  var t = from;
+  (blocks || []).forEach(function (b) { if (isWorkBlock(b) && b.start < to && b.end > from) t = Math.max(t, Math.min(b.end, to)); });
+  (rows || []).forEach(function (r) { if (ACT_CLOCKISH[r.type] && r.at < to && r.at > t) t = r.at; });
+  return t;
+}
+var ACT_CLOCKISH = { work: 1, voice: 1, resume: 1, 'break': 1 };
+
+/** Minutes and the main apps of the phone's use in [a, z]: {min, apps: [name]} or null. */
+function phoneUse(blocks, a, z) {
+  var by = Object.create(null);
+  var ms = 0;
+  (blocks || []).forEach(function (b) {
+    if (b.kind !== 'phone') return;
+    var x = Math.max(b.start, a);
+    var y = Math.min(b.end, z);
+    if (!(y > x)) return;
+    ms += y - x;
+    var name = A.actDistractName(b);
+    if (name === 'distraction') name = b.app || ({ private: 'private apps', meeting: 'calls', work: 'work apps' }[b.category] || 'other');
+    by[name] = (by[name] || 0) + y - x;
+  });
+  if (ms < MIN_MS) return null;
+  return { min: Math.round(ms / MIN_MS), apps: Object.keys(by).sort(function (p, q) { return by[q] - by[p]; }).slice(0, 3)
+    .map(function (k) { return { name: A.actCut(k, 30), min: Math.round(by[k] / MIN_MS) }; }) };
+}
+
+/**
+ * d: {now, rows [{at, type, rid}] (state rows), walk (actWalk), blocks [{start, end, kind, category, app, domain}]
+ * (every mode), nights [{ref_at}] (kind 'night' already made), fajrAfter(t), offsetAt(t), seenAt (the newest
+ * time any device reported)}. Returns {write: [rows], night: {ref, s, w, run} or null}.
+ */
+function nightStep(d) {
+  var out = { write: [], night: null };
+  var now = d.now;
+  var rows = d.rows || [];
+  var walk = d.walk || {};
+  var local = function (t) { var m = Math.floor((t + d.offsetAt(t) * MIN_MS) / MIN_MS); return ((m % 1440) + 1440) % 1440; };
+  // Evening: the day still open, after 23:30 (or before Fajr), no work seen for half an hour, and a device
+  // has reported since: it ends at the last work.
+  // Open = his newest state row starts or pauses work (the walk's 12-hour idle cap must not hide it).
+  var newest = null;
+  rows.forEach(function (r) { if (ACT_STATE_ANY[r.type] && (!newest || r.at >= newest.at)) newest = r; });
+  if (newest && ACT_CLOCKISH[newest.type] && !walk.asleep) {
+    var since = walk.work && walk.work.length ? walk.work[walk.work.length - 1][0] : newest.at;
+    var lastRow = newest.at;
+    var e = lastWorkAt(d.blocks, rows, Math.max(since, lastRow), now);
+    // Night: from 23:30, or after midnight and before this morning's Fajr (the next Fajr within hours).
+    var nextFajr = d.fajrAfter(now);
+    var nightNow = local(now) >= NIGHT_CLOSE_MIN || (local(now) < 12 * 60 && isFinite(nextFajr) && nextFajr - now < 12 * 3600000);
+    if (nightNow && now - e >= NIGHT_IDLE_MS && d.seenAt > e) {
+      out.write.push({ type: 'off', at: e, rid: 'nx-off-' + Math.floor(e / 1000).toString(36),
+                       text: 'Day over (auto — last work at ' + clock12(e, d.offsetAt(e)) + ')' });
+      return out;
+    }
+  }
+  // Morning: the night since the newest off, sleep or wake before the latest Fajr, once he is up.
+  var anchor = null;
+  // (A Sleep at the same instant as its off row — the Sleep button, the night check — is the anchor.)
+  rows.forEach(function (r) {
+    if (NIGHT_ANCHORS[r.type] && (!anchor || r.at > anchor.at || (r.at === anchor.at && r.type === 'sleep'))) anchor = r;
+  });
+  if (!anchor || anchor.type === 'wake') {
+    // A wake already pressed (or answered) after the last night: nothing to settle, unless he never slept
+    // since (a day off ran into the night), handled from that wake.
+    if (!anchor) return out;
+  }
+  var e0 = anchor.at;
+  var f = d.fajrAfter(e0);
+  if (!isFinite(f) || !(f < now) || (d.nights || []).some(function (n) { return n.ref_at === e0; })) return out;
+  if (anchor.type === 'wake' && f - e0 < 12 * 3600000) return out;     // woke this morning already
+  var manual = anchor.type === 'sleep';
+  var runs = allRuns(d.blocks, e0, now);
+  // Sleep: the start of the last quiet stretch before Fajr. Before midnight any use means he was still up;
+  // after it, a use of under PICKUP_MS after a quiet stretch is a pickup (a disturbed night), not being up.
+  var s = e0;
+  var prevEnd = e0;
+  if (!manual) {
+    runs.forEach(function (r) {
+      if (r.start >= f) return;
+      var afterMidnight = local(r.start) < 12 * 60 && r.start > f - 12 * 3600000;
+      if (!afterMidnight || r.start - prevEnd < SLEEP_QUIET_MS || r.ms >= PICKUP_MS) s = r.end;
+      prevEnd = r.end;
+    });
+  }
+  // Wake: the first use of 5 minutes or more after Fajr (and after the sleep) not followed by an hour of quiet.
+  var w = null;
+  for (var i = 0; i < runs.length; i++) {
+    var r = runs[i];
+    var a = Math.max(r.start, f, s);
+    if (r.end <= a || r.end - a < WAKE_RUN_MS) continue;
+    var next = i + 1 < runs.length ? runs[i + 1].start : null;
+    var quietAfter = (next === null ? now : next) - r.end;
+    if (quietAfter >= BACK_ASLEEP_MS) continue;                       // used, then back to sleep
+    // Sure only once he kept going: more use within the hour, or an hour of it.
+    if (next === null && !(now - r.end <= 2 * MIN_MS && r.end - a >= BACK_ASLEEP_MS)) return out;
+    w = a;
+    break;
+  }
+  if (w === null) return out;
+  var pickups = runs.filter(function (r) { return r.start >= s && r.start < w && r.end <= w; }).length;
+  // The day's end (an off row, or the last work when the day was never ended).
+  var off = null;
+  rows.forEach(function (r) { if (r.type === 'off' && r.at <= e0 && r.at > e0 - 24 * 3600000) off = r; });
+  var late = phoneUse(d.blocks, off ? off.at : e0, s);
+  var silent = !manual && !runs.some(function (r) { return r.start < w && r.end > e0; });
+  out.night = { ref: e0, s: s, w: w, run: { e: off ? off.at : null, s: s, w: w, manual: manual, silent: silent, pickups: pickups,
+                                             late: late, fajr: f } };
+  return out;
+}
+var ACT_STATE_ANY = { work: 1, voice: 1, resume: 1, 'break': 1, off: 1, sleep: 1, wake: 1 };
 
 /* Item 31a: the answer an open question gets when the day closes on it. "awake?" has none: not his day. */
 var APPLY_CHOICE = { start: 'start', resume: 'resume', upwork: 'start' };
@@ -929,6 +1081,22 @@ function clock12(ms, offsetMin) {
   return (h < 10 ? '0' : '') + h + ':' + (mm < 10 ? '0' : '') + mm;         // item 37: 24-hour
 }
 
+/** Item 38: what the other device showed across [a, b], the most time first: {dev, what} or null. */
+function otherShows(blocks, device, a, b) {
+  var time = Object.create(null);
+  var kind = Object.create(null);
+  (blocks || []).forEach(function (x) {
+    if (x.device_id === device || x.category === 'private') return;
+    var ms = A.actSpansMs(A.actIntersect(x.start, x.end, [[a, b]]));
+    if (!(ms > 0)) return;
+    var w = x.category === 'distraction' ? A.actDistractName(x) : x.project || A.actLineName(x);
+    time[w] = (time[w] || 0) + ms;
+    kind[w] = x.kind === 'phone' ? 'phone' : 'laptop';
+  });
+  var top = Object.keys(time).sort(function (p, q) { return time[q] - time[p]; })[0];
+  return top ? { dev: kind[top], what: A.actCut(top, 40) } : null;
+}
+
 /** The push. sw.js shows it with Take a break / I'm working under one tag. */
 function nudgePayload(p, nudgeId, nonce, url, key, offsetMin) {
   var mins = Math.max(10, Math.round((p.end - p.start) / 60000));
@@ -938,9 +1106,13 @@ function nudgePayload(p, nudgeId, nonce, url, key, offsetMin) {
              title: A.actCut(p.what, 60) + ' for ' + mins + ' min — work (a call) or not?',
              body: 'No answer in 5 min and it counts as a distraction from ' + clock12(p.start, offsetMin) + '.' };
   }
+  // Item 38 (Saad, 30 Oct): when, on which device, and what the other one showed meanwhile.
+  var dev = p.phone ? 'phone' : 'laptop';
+  var other = p.other ? ', ' + p.other.what + ' on the ' + p.other.dev : '';
   return { kind: 'distract', tag: 'probeing-distract', nudge: nudgeId, nonce: nonce, url: url, key: key, goto: 'home',
-           title: 'You\'ve been on ' + A.actCut(p.what, 60) + ' for ' + mins + ' min — take a break?',
-           body: 'No answer in 5 min and it counts as a distraction from ' + clock12(p.start, offsetMin) + '.' };
+           title: clock12(p.start, offsetMin) + '–' + clock12(p.end, offsetMin) + ': ' + A.actCut(p.what, 40) + ' on your ' + dev + other +
+                  ' — are you working?',
+           body: mins + ' min so far. No answer in 5 min and it counts as a distraction from ' + clock12(p.start, offsetMin) + '.' };
 }
 
 /** The awake or back-to-work push. sw.js shows it with two buttons under one tag. */
@@ -950,9 +1122,9 @@ function askPayload(p, nudgeId, nonce, url, key, offsetMin) {
   var base = { kind: 'watch-ask', ask: p.kind, tag: 'probeing-watch-ask', nudge: nudgeId, nonce: nonce, url: url, key: key,
                goto: 'home' };
   if (p.night) {
-    // Item 36 (Saad, 28 Oct): Sleep pressed, then the laptop.
-    return Object.assign(base, { title: 'You marked sleep — asleep or working?',
-                                 body: 'Your laptop is in use since ' + at + '. ' + (p.kind === 'upwork' ? 'Start day records work from then.'
+    // Item 36 (Saad, 28 Oct): Sleep pressed, then the laptop; item 38: or half an hour on the phone.
+    return Object.assign(base, { title: dev === 'phone' ? 'Are you up?' : 'You marked sleep — asleep or working?',
+                                 body: 'Your ' + dev + ' is in use since ' + at + '. ' + (p.kind === 'upwork' ? 'Start day records work from then.'
                                                                                          : 'I\'m awake records waking then.') });
   }
   if (p.kind === 'awake') {
@@ -1590,6 +1762,51 @@ async function runQuiet(sb: Sb, owner: string, now: number, set: Record<string, 
   return report;
 }
 
+/** Item 38: the evening close and the morning's night proposal (nightStep). Before the item 38 SQL the
+ *  kind 'night' is refused: the evening close still runs, nothing is proposed. */
+async function runNight(sb: Sb, owner: string, now: number, set: Record<string, any>) {
+  const rows = await readRows(sb, owner, now - READ_BACK_MS);
+  const walk = A.actWalk(rows, now - READ_BACK_MS, now);
+  const kinds = await deviceKinds(sb, owner);
+  const blocks = must(await sb.from('activity_blocks').select('*').eq('user_id', owner)
+    .gte('ended_at', iso(now - QUIET_BACK_MS)).order('started_at', { ascending: true }).limit(5000))
+    .map((r) => blockOf(r, kinds));
+  const nightsRes = await sb.from('activity_nudges').select('id, ref_at, state').eq('user_id', owner).eq('kind', 'night')
+    .gte('ref_at', iso(now - 3 * 86400000)).limit(20);
+  const nights = nightsRes.error ? [] : (nightsRes.data || []).map((n) => ({ ref_at: ms(n.ref_at) }));
+  // His answer in the app (nn-<id>) closes a proposal.
+  const rids = new Set(rows.map((r) => String(r.rid || '')));
+  for (const n of (nightsRes.error ? [] : nightsRes.data || [])) {
+    if (n.state === 'sent' && rids.has('nn-' + n.id)) {
+      await sb.from('activity_nudges').update({ state: 'answered', decided_at: iso(now) }).eq('id', n.id).eq('user_id', owner);
+    }
+  }
+  const seen = must(await sb.from('watch_devices').select('last_seen_at').eq('user_id', owner).limit(50))
+    .map((x) => ms(x.last_seen_at)).filter((t) => isFinite(t));
+  const fajrAfter = fajrAfterFn(set);
+  const step = nightStep({ now, rows: rows.map((r) => ({ at: ms(r.at), type: r.type, rid: r.rid || '' })), walk, blocks, nights,
+                          fajrAfter, offsetAt: (t: number) => Day.zoneOffsetMin(set.zone, t, set.offset),
+                          seenAt: seen.length ? Math.max(...seen) : -Infinity });
+  for (const w of A.actSkipTies(step.write, rows)) await writeRow(sb, owner, set.zone, w);
+  let proposed = false;
+  if (step.night && !nightsRes.error) {
+    const n = step.night;
+    const claim = await sb.from('activity_nudges').insert({
+      user_id: owner, device_id: null, kind: 'night', ref_at: iso(n.ref), streak_start: iso(n.s), span_end: iso(n.w),
+      what: n.run.silent ? 'silent' : n.run.manual ? 'manual' : '', state: 'sent', run: nightJson(n.run)
+    }).select('id');
+    proposed = !claim.error;
+  }
+  return { wrote: step.write.length, proposed };
+}
+
+/** A night proposal's run as stored (times as ISO). */
+function nightJson(r: Record<string, any>) {
+  const t = (x: unknown) => typeof x === 'number' && isFinite(x) ? iso(x) : null;
+  return { e: t(r.e), s: t(r.s), w: t(r.w), manual: Boolean(r.manual), silent: Boolean(r.silent), pickups: Number(r.pickups) || 0,
+           late: r.late || null, fajr: t(r.fajr) };
+}
+
 /** Item 29: today's unsorted names, the question about one, its push; today's blocks filed
  *  again by name once the lists or rules place them. */
 async function runTeach(sb: Sb, owner: string, now: number, set: Record<string, any>) {
@@ -1948,6 +2165,8 @@ async function opConfig(sb: Sb, dev: Record<string, any>, body: Record<string, a
   }
   const { projects, rules } = await readProjects(sb, dev.user_id, now);
   try { await closeSortedTeach(sb, dev.user_id, now, set); } catch (_e) { /* the next call tries again */ }
+  // Item 38: a quiet phone still checks in, so the night is closed and settled without new blocks.
+  try { await runNight(sb, dev.user_id, now, set); } catch (_e) { /* the next call tries again */ }
   return reply(200, { ok: true, device: dev.label, now: iso(now), lists: set.lists, projects, desktops: set.desktops,
                       rules: rules.filter((r) => r.source !== 'gemini').map((r) => ({ keyword: r.keyword, project: r.project })),
                       spans: spans.map((s) => [iso(s[0]), iso(s[1])]), working: walk.working,
@@ -2031,6 +2250,13 @@ async function opIngest(sb: Sb, dev: Record<string, any>, body: Record<string, a
   } catch (e) {
     focus = { error: String((e as Error)?.message || e) };
   }
+  // Item 38: the night, after the checks above have read the same rows.
+  let night: Record<string, unknown> = {};
+  try {
+    night = await runNight(sb, dev.user_id, now, set);
+  } catch (e) {
+    night = { error: String((e as Error)?.message || e) };
+  }
   // Item 30b: before its SQL the kind 'auto' is refused, so nothing is asked; the rest ran.
   let auto: Record<string, unknown> = {};
   try {
@@ -2038,7 +2264,7 @@ async function opIngest(sb: Sb, dev: Record<string, any>, body: Record<string, a
   } catch (e) {
     auto = { error: String((e as Error)?.message || e) };
   }
-  return reply(200, { ok: true, stored, skipped: list.length - clean.length, nudges, quiet, teach, helpers, focus, auto });
+  return reply(200, { ok: true, stored, skipped: list.length - clean.length, nudges, quiet, teach, helpers, focus, night, auto });
 }
 
 async function askGemini(key: string, model: string, prompt: string) {

@@ -1182,3 +1182,15 @@ a.btn[hidden], a.link-btn[hidden] { display: none; }
 #catchupDlg .catchup-acts { margin-top: 2px; gap: 8px; padding-left: 26px; }
 #catchupDlg .catchup-acts .link-btn { min-height: 26px; font-size: 13px; }
 #catchupDlg .catchup-acts .cat-pick { min-height: 28px; font-size: 13px; padding: 2px 6px; }
+
+/* Item 38 (Saad, 30 Oct): the popup's tiers, each its own colour (none of Today's log colours). */
+:root { --tier-1: #9b6cf2; --tier-2: #2fb5a5; --tier-3: #8a919c; --tier-4: var(--line); }
+#catchupDlg.tier-1 { border-top: 5px solid var(--tier-1); }
+#catchupDlg.tier-2 { border-top: 5px solid var(--tier-2); }
+#catchupDlg.tier-3 { border-top: 5px solid var(--tier-3); }
+#catchupDlg.tier-4 { border-top: 5px solid var(--tier-4); }
+.catchup-step { margin: 0 0 4px; font-size: 12px; font-weight: 700; letter-spacing: .05em; text-transform: uppercase; color: var(--muted); }
+#catchupDlg.tier-1 .catchup-step { color: var(--tier-1); }
+#catchupDlg.tier-2 .catchup-step { color: var(--tier-2); }
+.night-times label { display: inline-flex; align-items: center; gap: 6px; }
+.night-times label[hidden] { display: none; }

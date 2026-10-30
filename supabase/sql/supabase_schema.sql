@@ -2102,3 +2102,11 @@ exception when duplicate_object then null; end $$;
 revoke all on table public.week_checks from anon, authenticated;
 grant select on public.week_checks to authenticated;
 grant insert (user_id, rid, week_start, answers, at) on public.week_checks to authenticated;
+
+-- ─────────────────────────────────────────────────────────────────────────────
+-- Item 38 (Saad, 30 Oct): the night settled from the devices, kept as a proposal (kind 'night') until he
+-- confirms it in the app: ref_at = the evening's off/sleep/wake row, streak_start = sleep, span_end = wake.
+alter table public.activity_nudges drop constraint if exists activity_nudges_kind;
+alter table public.activity_nudges add constraint activity_nudges_kind
+  check (kind in ('distract', 'awake', 'resume', 'upwork', 'start', 'teach', 'auto', 'idle', 'night'));
+create unique index if not exists activity_nudges_night_idx on public.activity_nudges (user_id, ref_at) where kind = 'night';
