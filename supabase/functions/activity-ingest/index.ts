@@ -1802,8 +1802,14 @@ async function runNight(sb: Sb, owner: string, now: number, set: Record<string, 
   const rows = await readRows(sb, owner, now - READ_BACK_MS);
   const walk = A.actWalk(rows, now - READ_BACK_MS, now);
   const kinds = await deviceKinds(sb, owner);
+  // Blocks back to the night's first row (item 38 fix, live 3 Nov: catching up a night days old with only the
+  // last 40 hours of blocks read Saturday as silent), at most a week.
+  let anchorAt = -Infinity;
+  rows.forEach((r) => { if (NIGHT_ANCHORS[r.type]) anchorAt = Math.max(anchorAt, ms(r.at)); });
+  if (!isFinite(anchorAt)) anchorAt = now;
+  const blocksFrom = Math.max(now - 7 * 86400000, Math.min(now - QUIET_BACK_MS, anchorAt - 3600000));
   const blocks = must(await sb.from('activity_blocks').select('*').eq('user_id', owner)
-    .gte('ended_at', iso(now - QUIET_BACK_MS)).order('started_at', { ascending: true }).limit(5000))
+    .gte('ended_at', iso(blocksFrom)).order('started_at', { ascending: true }).limit(8000))
     .map((r) => blockOf(r, kinds));
   const NIGHT_COLS = 'id, ref_at, state, streak_start, span_end, created_at, run';
   const recentRes = await sb.from('activity_nudges').select(NIGHT_COLS).eq('user_id', owner).eq('kind', 'night')
