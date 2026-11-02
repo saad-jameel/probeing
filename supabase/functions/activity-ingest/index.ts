@@ -1805,8 +1805,13 @@ async function runNight(sb: Sb, owner: string, now: number, set: Record<string, 
   const blocks = must(await sb.from('activity_blocks').select('*').eq('user_id', owner)
     .gte('ended_at', iso(now - QUIET_BACK_MS)).order('started_at', { ascending: true }).limit(5000))
     .map((r) => blockOf(r, kinds));
-  const nightsRes = await sb.from('activity_nudges').select('id, ref_at, state, streak_start, span_end, created_at, run').eq('user_id', owner).eq('kind', 'night')
+  const NIGHT_COLS = 'id, ref_at, state, streak_start, span_end, created_at, run';
+  const recentRes = await sb.from('activity_nudges').select(NIGHT_COLS).eq('user_id', owner).eq('kind', 'night')
     .gte('ref_at', iso(now - 3 * 86400000)).limit(20);
+  // Item 38 fix (live 3 Nov): an open one older than 3 days was never read, so never applied and never replaced.
+  const openRes = await sb.from('activity_nudges').select(NIGHT_COLS).eq('user_id', owner).eq('kind', 'night').eq('state', 'sent').limit(20);
+  const nightsRes = { error: recentRes.error || openRes.error, data: (recentRes.data || []).concat((openRes.data || [])
+    .filter((n) => !(recentRes.data || []).some((x) => x.id === n.id))) };
   const nights = nightsRes.error ? [] : (nightsRes.data || []).map((n) => ({ ref_at: ms(n.ref_at) }));
   // His answer in the app (nn-<id>) closes a proposal.
   const rids = new Set(rows.map((r) => String(r.rid || '')));
@@ -1820,7 +1825,7 @@ async function runNight(sb: Sb, owner: string, now: number, set: Record<string, 
     // Item 38 fix (Saad, 3 Nov): never answered by noon of the wake's day (or an hour after it was made, if later):
     // the devices' times are written by themselves, marked auto, so the next night has its start.
     const w = ms(n.span_end);
-    if (!(now >= nightApplyAt(w, ms(n.created_at), set))) continue;
+    if (!(now >= nightApplyAt(w, ms(n.created_at), set)) && !(now - w > 24 * 3600000)) continue;   // a day-old wake: at once
     const manual = Boolean(n.run && n.run.manual);
     const auto = [{ type: 'wake', at: w, rid: 'nx-wk-' + n.id, text: 'Wake up (from the devices — auto, not answered)' }];
     if (!manual) auto.unshift({ type: 'sleep', at: ms(n.streak_start), rid: 'nx-sl-' + n.id, text: 'Sleep (from the devices — auto, not answered)' });
