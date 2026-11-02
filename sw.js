@@ -69,8 +69,9 @@
  * v47 (item 36): a private app's push asks "Work / Not work".
  * v48 (item 37): 24-hour times; the catch-up popup made compact.
  * v49 (item 38): the popup in tiers, last night's confirm, the new Review ranges.
- * v50 (item 38 fix): only his answer closes last night; plain night words; the shade blocks taps. */
-var CACHE = 'probeing-shell-v50';
+ * v50 (item 38 fix): only his answer closes last night; plain night words; the shade blocks taps.
+ * v51 (item 38, 3 Nov): unanswered nights and "start?" applied by themselves; unsorted use is never Away. */
+var CACHE = 'probeing-shell-v51';
 var SHELL = [
   './',
   'index.html',

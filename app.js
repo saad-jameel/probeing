@@ -10335,7 +10335,7 @@ async function readNightSummary(startMs, endMs, perDay) {
       if (r.late && r.late.min) lateMin += r.late.min;
     });
     if (nights.length === 1) {
-      lines.push(nightWords(nights[0]) + (nights[0].state === 'sent' ? ' (Not confirmed yet.)' : ''));
+      lines.push(nightWords(nights[0]) + (nights[0].state === 'sent' ? ' (Not confirmed yet.)' : nights[0].state === 'applied' ? ' (Set by the app — not answered.)' : ''));
     } else if (nights.length > 1) {
       var slept = nights.reduce(function (n, x) { return n + (Date.parse(x.span_end) - Date.parse(x.streak_start)); }, 0);
       lines.push(nights.length + ' nights: slept ' + humanDuration(slept / nights.length) + ' a night on average' +

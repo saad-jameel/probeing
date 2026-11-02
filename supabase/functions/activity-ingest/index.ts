@@ -167,6 +167,7 @@ var HELPER_BACK_MS = 6 * 3600000;      // helpers given a project again on each 
 var FOCUS_BACK_MS = 24 * 3600000;      // focus recounted from the counter day this long ago
 var UPWORK_REPEAT_MS = 60 * MIN_MS;       // item 31a, R6: "Up and working?" again after this long,
 var UPWORK_PUSHES = 3;                 // ...this many times in all; then it is applied
+var START_AUTO_MS = 30 * MIN_MS;       // item 38 fix: "start?" about laptop work, unanswered this long: applied
 var APPLY_DELAY_MS = 20 * MIN_MS;         // item 31a: End day's recommendations wait for the phone's last report
 var APPLY_BACK_MS = 26 * 3600000;      // ...and reach back over the day it closed
 var IDLE_SEEN_MS = 2 * 3600000;        // an idle gap is asked once every device seen this recently has reported past it
@@ -725,6 +726,25 @@ function quietStep(d) {
     state[n.id] = 'applied';
   });
 
+  // Item 38 fix (Saad, 3 Nov: automatic first, he corrects later): "start?" unanswered while the laptop has
+  // done START_AUTO_MS of work since it began starts the day from the first laptop work minute (whichever device
+  // asked). Phone-only use (calls on a weekend) stays a question.
+  nudges.forEach(function (n) {
+    if (n.kind !== 'start' || state[n.id] !== 'sent' || !isFinite(n.pushed_at) || now < n.pushed_at + 15 * MIN_MS) return;
+    var lw = (d.blocks || []).filter(function (b) {
+      return b.kind === 'laptop' && (b.category === 'work' || b.category === 'meeting') && b.end > n.streak_start && b.start < now;
+    });
+    if (!lw.length) return;
+    var first = Math.max(Math.min.apply(null, lw.map(function (b) { return b.start; })), n.streak_start);
+    var worked = lw.reduce(function (t, b) { return t + Math.max(0, Math.min(b.end, now) - Math.max(b.start, first)); }, 0);
+    if (worked < START_AUTO_MS) return;
+    askRows(Object.assign({}, n, { streak_start: first }), 'start', now).forEach(function (w) {
+      out.write.push(Object.assign({}, w, { text: String(w.text || '').replace('answered the check', 'auto, not answered') }));
+    });
+    out.decide.push({ id: n.id, state: 'applied' });
+    state[n.id] = 'applied';
+  });
+
   // Disturbed nights (item 36, Saad 28 Oct): the phone picked up NIGHT_PICKUPS times or more (any
   // length), or once for more than NIGHT_LONG_MS, before Fajr while asleep. The laptop is never a
   // disturbance: it is asked about ("asleep or working?").
@@ -873,19 +893,26 @@ function nightStep(d) {
       prevEnd = r.end;
     });
   }
-  // Wake: the first use of 5 minutes or more after Fajr (and after the sleep) not followed by an hour of quiet.
+  // Wake: the first use after Fajr (and after the sleep) that starts a spell of use — uses less than an hour apart —
+  // of WAKE_RUN_MS or more in all. Sure once there is more use within the hour, or an hour of it; a spell followed
+  // by an hour of quiet was a doze (back to sleep). Item 38 fix: his Monday 2 Nov — short calls from 11:03 every
+  // 40-50 minutes — was a 13:39 wake when only one 5-minute run counted.
   var w = null;
   for (var i = 0; i < runs.length; i++) {
     var r = runs[i];
     var a = Math.max(r.start, f, s);
-    if (r.end <= a || r.end - a < WAKE_RUN_MS) continue;
-    var next = i + 1 < runs.length ? runs[i + 1].start : null;
-    var quietAfter = (next === null ? now : next) - r.end;
-    if (quietAfter >= BACK_ASLEEP_MS) continue;                       // used, then back to sleep
-    // Sure only once he kept going: more use within the hour, or an hour of it.
-    if (next === null && !(now - r.end <= 2 * MIN_MS && r.end - a >= BACK_ASLEEP_MS)) return out;
-    w = a;
-    break;
+    if (r.end <= a) continue;
+    var j = i;
+    var use = r.end - a;
+    while (j + 1 < runs.length && runs[j + 1].start - runs[j].end < BACK_ASLEEP_MS) {
+      j++;
+      use += runs[j].end - Math.max(runs[j].start, a);
+    }
+    var ongoing = j + 1 >= runs.length && now - runs[j].end < BACK_ASLEEP_MS;
+    if (use < WAKE_RUN_MS) { if (ongoing) return out; i = j; continue; }
+    if (j > i || runs[j].end - a >= BACK_ASLEEP_MS) { w = a; break; }
+    if (ongoing) return out;                                          // one run so far: not sure yet
+    i = j;                                                            // used, then an hour of quiet: back to sleep
   }
   if (w === null) return out;
   var pickups = runs.filter(function (r) { return r.start >= s && r.start < w && r.end <= w; }).length;
@@ -1778,16 +1805,30 @@ async function runNight(sb: Sb, owner: string, now: number, set: Record<string, 
   const blocks = must(await sb.from('activity_blocks').select('*').eq('user_id', owner)
     .gte('ended_at', iso(now - QUIET_BACK_MS)).order('started_at', { ascending: true }).limit(5000))
     .map((r) => blockOf(r, kinds));
-  const nightsRes = await sb.from('activity_nudges').select('id, ref_at, state').eq('user_id', owner).eq('kind', 'night')
+  const nightsRes = await sb.from('activity_nudges').select('id, ref_at, state, streak_start, span_end, created_at, run').eq('user_id', owner).eq('kind', 'night')
     .gte('ref_at', iso(now - 3 * 86400000)).limit(20);
   const nights = nightsRes.error ? [] : (nightsRes.data || []).map((n) => ({ ref_at: ms(n.ref_at) }));
   // His answer in the app (nn-<id>) closes a proposal.
   const rids = new Set(rows.map((r) => String(r.rid || '')));
+  let applied = 0;
   for (const n of (nightsRes.error ? [] : nightsRes.data || [])) {
-    if (n.state === 'sent' && rids.has('nn-' + n.id)) {
+    if (n.state !== 'sent') continue;
+    if (rids.has('nn-' + n.id)) {
       await sb.from('activity_nudges').update({ state: 'answered', decided_at: iso(now) }).eq('id', n.id).eq('user_id', owner);
+      continue;
     }
+    // Item 38 fix (Saad, 3 Nov): never answered by noon of the wake's day (or an hour after it was made, if later):
+    // the devices' times are written by themselves, marked auto, so the next night has its start.
+    const w = ms(n.span_end);
+    if (!(now >= nightApplyAt(w, ms(n.created_at), set))) continue;
+    const manual = Boolean(n.run && n.run.manual);
+    const auto = [{ type: 'wake', at: w, rid: 'nx-wk-' + n.id, text: 'Wake up (from the devices — auto, not answered)' }];
+    if (!manual) auto.unshift({ type: 'sleep', at: ms(n.streak_start), rid: 'nx-sl-' + n.id, text: 'Sleep (from the devices — auto, not answered)' });
+    for (const r of A.actSkipTies(auto, rows)) await writeRow(sb, owner, set.zone, r);
+    await sb.from('activity_nudges').update({ state: 'applied', decided_at: iso(now) }).eq('id', n.id).eq('user_id', owner).eq('state', 'sent');
+    applied++;
   }
+  if (applied) return { wrote: applied, proposed: false };      // the next run reads the rows just written
   const seen = must(await sb.from('watch_devices').select('last_seen_at').eq('user_id', owner).limit(50))
     .map((x) => ms(x.last_seen_at)).filter((t) => isFinite(t));
   const fajrAfter = fajrAfterFn(set);
@@ -1805,6 +1846,13 @@ async function runNight(sb: Sb, owner: string, now: number, set: Record<string, 
     proposed = !claim.error;
   }
   return { wrote: step.write.length, proposed };
+}
+
+/** When an unanswered night is applied: noon (local) of the wake's day, or an hour after the proposal if that is later. */
+function nightApplyAt(wake: number, made: number, set: Record<string, any>) {
+  const off = Day.zoneOffsetMin(set.zone, wake, set.offset) * MIN_MS;
+  const noon = Math.floor((wake + off) / 86400000) * 86400000 + 12 * 3600000 - off;
+  return Math.max(noon, (isFinite(made) ? made : wake) + 3600000);
 }
 
 /** A night proposal's run as stored (times as ISO). */

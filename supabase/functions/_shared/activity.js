@@ -979,14 +979,30 @@ function actRunPlan(blocks, from, now) {
     });
     return joined.filter(function (j) { return j[2] >= min; });
   }
-  // A long gap's parts: Away where nothing was in use, Distraction where it was.
+  // Unsorted use (item 38 fix: Away is only where nothing was in use; unsorted use stays on the clock, as at End day).
+  var unclear = actMergeSpans(list.filter(function (b) { return b.category === 'unclear'; }).map(function (b) { return [b.start, b.end]; }));
+  // A long gap's parts: Distraction where it was, Use where something unsorted was, Away where nothing was.
   function parts(a, z) {
+    var marks = distPieces(a, z, ACT_SLIP_MS).map(function (p) { return [p[0], p[1], 'Distraction']; });
+    actIntersect(a, z, unclear).forEach(function (u) {
+      // the unsorted time no distraction piece covers, a minute or more
+      var at = u[0];
+      marks.filter(function (m) { return m[2] === 'Distraction' && m[1] > u[0] && m[0] < u[1]; }).forEach(function (m) {
+        if (m[0] - at >= 60000) marks.push([at, m[0], 'Use']);
+        at = Math.max(at, m[1]);
+      });
+      if (u[1] - at >= 60000) marks.push([at, u[1], 'Use']);
+    });
+    marks.sort(function (x, y) { return x[0] - y[0]; });
     var out = [];
     var t = a;
-    distPieces(a, z, ACT_SLIP_MS).forEach(function (p) {
-      if (p[0] - t >= 60000) out.push([t, 'Away']);
-      out.push([out.length ? p[0] : t, 'Distraction']);
-      t = p[1];
+    marks.forEach(function (m) {
+      var from = Math.max(m[0], t);
+      if (m[1] <= from) return;
+      if (from - t >= 60000) out.push([t, 'Away']);
+      var at = out.length ? from : t;
+      if (!out.length || out[out.length - 1][1] !== m[2]) out.push([at, m[2]]);
+      t = m[1];
     });
     if (!out.length || z - t >= 60000) out.push([t, 'Away']);
     return out;
@@ -1019,23 +1035,32 @@ function actRunSteps(id, plan, after, now) {
   var tail = isFinite(last) && last > after && now - last >= ACT_RUN_GAP_MS;
   function key(t) { return Math.floor(t / 1000).toString(36); }
   var out = [];
+  // Each part a break of its own; a 'Use' part (unsorted use) puts the clock back on. True when it ends on a break.
   function breaks(a, z, list, fallback) {
     var ok = Array.isArray(list) ? list.filter(function (p) { var t = actMs(p && p[0]); return t >= a && t < z; }) : [];
     if (!ok.length) ok = [[a, fallback]];
+    var off = false;
     ok.forEach(function (p, k) {
       var t = k ? actMs(p[0]) : a;
+      if (p[1] === 'Use') {
+        if (off) out.push({ type: 'resume', at: t, rid: 'nu-' + id + '-' + key(t), text: 'Resume (in use, not sorted — auto)' });
+        off = false;
+        return;
+      }
       out.push({ type: 'break', at: t, rid: 'nd-' + id + '-' + key(t), text: p[1] === 'Distraction' ? 'Distraction' : 'Away' });
+      off = true;
     });
+    return off;
   }
   gaps.forEach(function (g) {
     var a = actMs(g[0]);
     var z = actMs(g[1]);
     if (!(a > after) || !(z > a) || !(z <= now) || (tail && a >= last)) return;
-    breaks(a, z, g[2], z - a >= ACT_RUN_GAP_MS ? 'Away' : 'Distraction');
-    out.push({ type: 'resume', at: z, rid: 'ne-' + id + '-' + key(a), text: 'Resume (after a distraction — answered the check)' });
+    if (breaks(a, z, g[2], z - a >= ACT_RUN_GAP_MS ? 'Away' : 'Distraction')) {
+      out.push({ type: 'resume', at: z, rid: 'ne-' + id + '-' + key(a), text: 'Resume (after a distraction — answered the check)' });
+    }
   });
-  if (tail) {
-    breaks(last, now, plan.tail, 'Away');
+  if (tail && breaks(last, now, plan.tail, 'Away')) {
     out.push({ type: 'resume', at: now, rid: 'ne-' + id + '-' + key(last), text: 'Resume (working now — answered the check)' });
   }
   return out.sort(function (x, y) { return x.at - y.at; });
