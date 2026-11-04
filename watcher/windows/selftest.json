@@ -963,7 +963,7 @@
    }
   },
   {
-   "name": "a private site named only in the title",
+   "name": "item 39: a work app (Outlook) titled with a private site stays work",
    "seg": {
     "app": "Outlook.exe",
     "title": "Statement from mybank.com",
@@ -994,7 +994,7 @@
     ]
    },
    "want": {
-    "category": "private",
+    "category": "work",
     "project": "",
     "key": ""
    }
@@ -2487,7 +2487,7 @@
    }
   },
   {
-   "name": "item 30a: a private word still beats a helper",
+   "name": "item 39 (was 30a): a helper with a private word in its title stays work (his lists decide)",
    "seg": {
     "app": "notepad.exe",
     "title": "bank passwords.txt - Notepad",
@@ -2514,7 +2514,7 @@
     ]
    },
    "want": {
-    "category": "private",
+    "category": "work",
     "project": "",
     "key": ""
    }
@@ -2653,6 +2653,96 @@
     "category": "work",
     "project": "NeuraVue",
     "key": "neuravue"
+   }
+  },
+  {
+   "name": "item 39: a terminal titled with a private word stays work",
+   "seg": {
+    "app": "WindowsTerminal.exe",
+    "title": "claude - bank tracking and password plan",
+    "host": "",
+    "path": "",
+    "incognito": false
+   },
+   "cfg": {
+    "lists": null,
+    "rules": [
+     {
+      "keyword": "docker",
+      "project": "OneNet"
+     },
+     {
+      "keyword": "neuravue",
+      "project": "NeuraVue"
+     }
+    ],
+    "projects": [
+     "ProBeing",
+     "OneNet",
+     "NeuraVue"
+    ]
+   },
+   "want": {
+    "category": "work",
+    "project": "",
+    "key": ""
+   }
+  },
+  {
+   "name": "item 39: notepad titled password.txt stays work",
+   "seg": {
+    "app": "notepad.exe",
+    "title": "password.txt - Notepad",
+    "host": "",
+    "path": "",
+    "incognito": false
+   },
+   "cfg": {
+    "lists": null,
+    "rules": [
+     {
+      "keyword": "docker",
+      "project": "OneNet"
+     },
+     {
+      "keyword": "neuravue",
+      "project": "NeuraVue"
+     }
+    ],
+    "projects": [
+     "ProBeing",
+     "OneNet",
+     "NeuraVue"
+    ]
+   },
+   "want": {
+    "category": "work",
+    "project": "",
+    "key": ""
+   }
+  },
+  {
+   "name": "item 39: an unknown app titled with a private site is still private (its title never leaves)",
+   "seg": {
+    "app": "SomeReader.exe",
+    "title": "Statement from mybank.com",
+    "host": "",
+    "path": "",
+    "incognito": false
+   },
+   "cfg": {
+    "lists": {
+     "private": [
+      "mybank.com"
+     ]
+    },
+    "rules": [],
+    "projects": []
+   },
+   "want": {
+    "category": "private",
+    "project": "",
+    "key": ""
    }
   }
  ],

@@ -2170,7 +2170,7 @@ async function runNudges(sb: Sb, owner: string, now: number, set: Record<string,
     .gte('ended_at', iso(now - 6 * 3600000)).order('started_at', { ascending: true }).limit(2000))
     .map((r) => blockOf(r, kinds)).filter((b) => b.mode === 'work');
   const clipped = labelClip(blocks, await teachLabelled(sb, owner, now - 6 * 3600000));
-  const nudgeRows = must(await sb.from('activity_nudges').select('id, device_id, streak_start, pushed_at, state, span_end')
+  const nudgeRows = must(await sb.from('activity_nudges').select('id, device_id, streak_start, pushed_at, state, span_end, what')
     .eq('user_id', owner).eq('kind', 'distract').gte('streak_start', iso(now - 12 * 3600000)).limit(500));
   const nudges = nudgeRows.map((n) => ({ id: n.id, device_id: n.device_id, streak_start: ms(n.streak_start),
                                          pushed_at: ms(n.pushed_at), state: n.state }));
@@ -2188,6 +2188,11 @@ async function runNudges(sb: Sb, owner: string, now: number, set: Record<string,
     if (d.span_end) patch.span_end = iso(d.span_end);
     if (d.other) patch.other_work = A.actCut(d.other, 160);
     await sb.from('activity_nudges').update(patch).eq('id', d.id).eq('user_id', owner);
+    // Item 39: an answer from the app's popup teaches as the push's does ("Always work" also writes al-<id>).
+    if (d.state === 'working') {
+      const n = nudgeRows.filter((x) => x.id === d.id)[0];
+      if (n) await maybeLearnWork(sb, owner, String(n.what || ''), rows.some((r) => r.rid === 'al-' + d.id), now, ms(n.streak_start));
+    }
   }
   const base = String(Deno.env.get('SUPABASE_URL') || new URL(req.url).origin).replace(/\/+$/, '');
   const anon = Deno.env.get('SUPABASE_ANON_KEY') || '';
@@ -2431,7 +2436,7 @@ async function answerAsk(sb: Sb, n: Record<string, any>, choice: string, set: Re
 async function opAnswer(sb: Sb, ans: Record<string, any>, now: number) {
   const id = String(ans.id || '');
   const nonce = String(ans.nonce || '');
-  const said = ['break', 'working', 'awake', 'asleep', 'resume', 'start', 'notwork'].indexOf(String(ans.choice)) !== -1
+  const said = ['break', 'working', 'always', 'awake', 'asleep', 'resume', 'start', 'notwork'].indexOf(String(ans.choice)) !== -1
     ? String(ans.choice) : '';
   if (!UUID.test(id) || !nonce || !said) return reply(401, { ok: false, error: 'not a check of yours' });
   const n = must(await sb.from('activity_nudges').select('*').eq('id', id).limit(1))[0];
@@ -2442,7 +2447,7 @@ async function opAnswer(sb: Sb, ans: Record<string, any>, now: number) {
   if (pinned && pinned !== n.user_id) return reply(403, { ok: false, error: 'not this account' });
   const set = await readSettings(sb, n.user_id, now);
   if (ASK_KINDS.indexOf(n.kind) !== -1) return await answerAsk(sb, n, said, set, now);
-  const choice = said === 'break' || said === 'working' ? said : '';
+  const choice = said === 'break' || said === 'working' ? said : said === 'always' ? 'working' : '';
   if (!choice) return reply(400, { ok: false, error: 'not an answer to this check' });
   const nudge = { id: n.id, state: n.state, streak_start: ms(n.streak_start), span_end: ms(n.span_end), pushed_at: ms(n.pushed_at) };
   const rows = await readRows(sb, n.user_id, Math.min(nudge.streak_start, now) - 60000);
@@ -2451,8 +2456,40 @@ async function opAnswer(sb: Sb, ans: Record<string, any>, now: number) {
   }
   for (const w of A.actSkipTies(answerRows(nudge, choice, now), rows)) await writeRow(sb, n.user_id, set.zone, w);
   await sb.from('activity_nudges').update({ state: choice, decided_at: iso(now) }).eq('id', id);
+  const learned = choice === 'working' ? await maybeLearnWork(sb, n.user_id, String(n.what || ''), said === 'always', now, ms(n.streak_start)) : '';
   // Item 31c: no "Noted" push to the other devices; each app closes its copy when it next opens.
-  return reply(200, { ok: true, state: choice });
+  return reply(200, { ok: true, state: choice, learned });
+}
+
+/** Item 39 (Saad, 4 Nov: "a proper autonomous watchkeeper"): "Always work", or "Work" for the same app three
+ *  times with never a "Not work", puts the app on his work list (off his private list if he had named it there).
+ *  Only an app whose blocks in that stretch were private or unsorted: a distraction is never learned (a YouTube
+ *  talk now and then is not YouTube as work). Returns the entry learned, or ''. Teach ProBeing shows it; × undoes it. */
+var LEARN_ANSWERS = 3;
+var LEARN_BACK_MS = 30 * 86400000;
+async function maybeLearnWork(sb: Sb, owner: string, what: string, always: boolean, now: number, start: number) {
+  const name = A.actWorkName(what);
+  if (name.length < 3 || !isFinite(start)) return '';
+  const seen = must(await sb.from('activity_blocks').select('app, category').eq('user_id', owner).gte('ended_at', iso(start))
+    .lte('started_at', iso(start + 20 * MIN_MS)).limit(300)).filter((b) => A.actWorkName(A.actAppName(String(b.app || ''))) === name);
+  if (!seen.length || seen.some((b) => b.category === 'distraction')) return '';
+  const row = must(await sb.from('user_settings').select('activity_lists').eq('user_id', owner).limit(1))[0] || null;
+  const lists = A.actLists(row && row.activity_lists);
+  const seg = { app: what, host: '', path: '', title: '' };
+  if (A.actListHit(lists.distract, seg, false)) return '';
+  if (!always) {
+    const said = must(await sb.from('activity_nudges').select('what, state').eq('user_id', owner).eq('kind', 'distract')
+      .in('state', ['working', 'break']).gte('streak_start', iso(now - LEARN_BACK_MS)).limit(500))
+      .filter((x) => A.actWorkName(String(x.what || '')) === name);
+    if (said.some((x) => x.state === 'break') || said.filter((x) => x.state === 'working').length < LEARN_ANSWERS) return '';
+  }
+  const work = lists.work.slice();
+  if (!A.actWorkHit(work, seg)) work.push(name);
+  const priv = lists['private'].filter((e: string) => A.actWorkName(e) !== name);
+  const next = Object.assign({}, row && row.activity_lists && typeof row.activity_lists === 'object' ? row.activity_lists : {}, lists,
+                             { work, private: priv });
+  const res = await sb.from('user_settings').update({ activity_lists: next }).eq('user_id', owner);
+  return res.error ? '' : name;
 }
 
 Deno.serve(async (req: Request): Promise<Response> => {

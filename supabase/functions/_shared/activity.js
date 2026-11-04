@@ -317,7 +317,13 @@ function actRuleHit(seg, rules) {
  */
 function actClassify(seg, cfg) {
   var lists = actLists(cfg && cfg.lists);
-  if (seg.incognito === true || ACT_PRIVATE_TITLE.test(String(seg.title || '')) || actListHit(lists['private'], seg, true)) {
+  // Item 39: an app on his work, helper or meeting lists is judged by its name, never by private words in its
+  // title (live 4 Nov: "bank" in a terminal's title made Windows Terminal private all day). Browsers and unknown
+  // apps still are, so such a title never leaves the laptop.
+  var listed = !actIsBrowser(seg.app) && Boolean(actHelperHit(lists.helpers, seg) || actWorkHit(lists.work, seg) ||
+                                                 actListHit(lists.meeting, seg, false));
+  if (seg.incognito === true || actListHit(lists['private'], seg, false) ||
+      (!listed && (ACT_PRIVATE_TITLE.test(String(seg.title || '')) || actListHit(lists['private'], seg, true)))) {
     return { category: 'private', project: '', key: '' };
   }
   var dist = actListHit(lists.distract, seg, false);

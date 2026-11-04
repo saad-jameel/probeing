@@ -322,8 +322,11 @@ function Act-TitleKey($app, $title) {
 
 function Act-Classify($seg, $cfg) {
   $lists = Act-Lists (Get-Prop $cfg 'lists')
-  if ((Get-Prop $seg 'incognito') -eq $true -or ((Act-Str (Get-Prop $seg 'title')) -match $ACT_PRIVATE_TITLE) -or
-      (Act-ListHit $lists['private'] $seg $true)) {
+  # Item 39: an app on his work, helper or meeting lists is judged by its name, never by private words in its title.
+  $listed = (-not (Act-IsBrowser (Get-Prop $seg 'app'))) -and [bool]((Act-HelperHit $lists['helpers'] $seg) -or
+            (Act-WorkHit $lists['work'] $seg) -or (Act-ListHit $lists['meeting'] $seg $false))
+  if ((Get-Prop $seg 'incognito') -eq $true -or (Act-ListHit $lists['private'] $seg $false) -or
+      (-not $listed -and (((Act-Str (Get-Prop $seg 'title')) -match $ACT_PRIVATE_TITLE) -or (Act-ListHit $lists['private'] $seg $true)))) {
     return @{ category = 'private'; project = ''; key = '' }
   }
   $dist = Act-ListHit $lists['distract'] $seg $false

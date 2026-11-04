@@ -323,8 +323,12 @@ public final class PhoneRules {
     /** {category, project, key}: private first, then distraction, then meeting, then the rules, then
      *  a helper (laptop only), then the work list (work, no project). */
     public static String[] classify(Seg seg, Cfg cfg) {
-        if (seg.incognito || PRIVATE_TITLE.matcher(seg.title == null ? "" : seg.title).find()
-                || !listHit(cfg.lists.get("private"), seg, true).isEmpty()) {
+        // Item 39: an app on his work, helper or meeting lists is judged by its name, never by private words in its title.
+        boolean listed = !isBrowser(seg.app) && (!helperHit(cfg.lists.get("helpers"), seg).isEmpty()
+                || !workHit(cfg.lists.get("work"), seg).isEmpty() || !listHit(cfg.lists.get("meeting"), seg, false).isEmpty());
+        if (seg.incognito || !listHit(cfg.lists.get("private"), seg, false).isEmpty()
+                || (!listed && (PRIVATE_TITLE.matcher(seg.title == null ? "" : seg.title).find()
+                    || !listHit(cfg.lists.get("private"), seg, true).isEmpty()))) {
             return new String[]{"private", "", ""};
         }
         if (!listHit(cfg.lists.get("distract"), seg, false).isEmpty()) return new String[]{"distraction", "", ""};

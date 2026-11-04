@@ -70,8 +70,9 @@
  * v48 (item 37): 24-hour times; the catch-up popup made compact.
  * v49 (item 38): the popup in tiers, last night's confirm, the new Review ranges.
  * v50 (item 38 fix): only his answer closes last night; plain night words; the shade blocks taps.
- * v51 (item 38, 3 Nov): unanswered nights and "start?" applied by themselves; unsorted use is never Away. */
-var CACHE = 'probeing-shell-v51';
+ * v51 (item 38, 3 Nov): unanswered nights and "start?" applied by themselves; unsorted use is never Away.
+ * v52 (item 39): "Always work" on the private-app push. */
+var CACHE = 'probeing-shell-v52';
 var SHELL = [
   './',
   'index.html',
@@ -218,8 +219,9 @@ self.addEventListener('push', function (event) {
     };
     if (!settled && data.nudge && data.nonce && data.url) {
       // Item 36: a private app is asked "work or not?".
+      // Item 39: "Always work" puts the app on his work list for good.
       opts.actions = data.private === true
-        ? [{ action: 'working', title: 'Work' }, { action: 'break', title: 'Not work' }]
+        ? [{ action: 'working', title: 'Work' }, { action: 'always', title: 'Always work' }, { action: 'break', title: 'Not work' }]
         : [{ action: 'break', title: 'Take a break' }, { action: 'working', title: 'I\'m working' }];
     }
     event.waitUntil(self.registration.showNotification(String(data.title || 'ProBeing'), opts));
@@ -433,7 +435,7 @@ self.addEventListener('notificationclick', function (event) {
   // A distraction push: a button answers it from here; the body opens the catch-up sheet.
   if (event.notification && event.notification.tag === DISTRACT_TAG) {
     var nd = event.notification.data || {};
-    var choice = event.action === 'break' || event.action === 'working' ? event.action : '';
+    var choice = event.action === 'break' || event.action === 'working' || event.action === 'always' ? event.action : '';
     event.notification.close();
     if (!choice) {
       event.waitUntil(showApp().then(function (client) {

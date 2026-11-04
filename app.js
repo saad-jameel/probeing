@@ -18633,6 +18633,9 @@ function catchupAskRow(a) {
     // Item 36: a distraction or a private app (WhatsApp...), by name: work or not?
     text.textContent = 'You\'ve been on ' + (n.what || 'a distraction') + ' since ' + clockAt(start) + ' — work or not?';
     btn('It was work', 'working');
+    // Item 39: learned for good (not for a distraction-list app: a talk on YouTube is not YouTube as work).
+    var seg = { app: n.what || '', host: '', path: '', title: '' };
+    if (n.what && !(actSet.lists && actListHit(actSet.lists.distract, seg, false))) btn('Always work', 'always');
     btn('Not work', 'break');
   } else if (a.kind === 'question') {
     text.textContent = spanClock(start, Date.parse(n.span_end)) + ' ' + (n.what || 'a distraction') +
@@ -19046,6 +19049,8 @@ function answerCatchUp(a, choice, li) {
     steps = choice === 'break'
       ? [{ type: 'break', raw_text: 'Distraction', at: new Date(start).toISOString(), local_time: humanLocalAt(start), rid: 'ab-' + id }]
       : [{ type: 'actanswer', raw_text: 'Working — answered the distraction check', detail: 'working', rid: 'an-' + id }];
+    // Item 39: the server sees al-<id> and puts the app on his work list.
+    if (choice === 'always') steps.push({ type: 'actanswer', raw_text: (n.what || 'This app') + ' is always work', detail: 'always', rid: 'al-' + id });
   } else if (a.kind === 'question') {
     var end = Date.parse(n.span_end);
     steps = choice === 'break'
@@ -19058,7 +19063,8 @@ function answerCatchUp(a, choice, li) {
   }
   catchup.asks = catchup.asks.filter(function (x) { return x !== a; });
   catchupMaybeDone();
-  li.textContent = choice === 'break' ? 'Noted: a break.' : 'Noted: working.';
+  li.textContent = choice === 'break' ? 'Noted: a break.' : choice === 'always'
+    ? 'Noted: ' + (n.what || 'this app') + ' is work from now on (Settings → ProBeing training → Work to undo).' : 'Noted: working.';
   runWrites(actSkipTies(steps, sessionLog())).then(function () { scheduleRefresh(800); });
 }
 
