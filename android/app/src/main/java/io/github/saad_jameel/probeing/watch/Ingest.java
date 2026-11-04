@@ -64,6 +64,17 @@ final class Ingest {
         }
     }
 
+    /** Item 40: bank alerts held by BankListener (text already blanked). */
+    static JSONObject bank(String token, JSONArray items) throws Failed {
+        try {
+            return call(token, new JSONObject().put("op", "bank").put("items", items));
+        } catch (Failed f) {
+            throw f;
+        } catch (Exception e) {
+            throw new Failed(0, "could not build the request");
+        }
+    }
+
     private static JSONObject call(String token, JSONObject body) throws Failed {
         HttpURLConnection conn = null;
         try {

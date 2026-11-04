@@ -68,6 +68,8 @@
 !/supabase/functions/_shared/google.js
 # Stage 18b: the activity watcher's logic (the PWA loads it too).
 !/supabase/functions/_shared/activity.js
+# Item 40: bank alerts parsing (server-only).
+!/supabase/functions/_shared/bank.js
 # The database: schema and the cron/trigger templates. Placeholders only; the
 # filled-in copies live in ~/.probeing/.
 !/supabase/sql/

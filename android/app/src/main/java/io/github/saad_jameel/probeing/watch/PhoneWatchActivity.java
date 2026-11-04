@@ -72,6 +72,12 @@ public class PhoneWatchActivity extends Activity {
                 openUsageAccess();
             }
         });
+        findViewById(R.id.phone_bank_btn).setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                openNotificationAccess();
+            }
+        });
         findViewById(R.id.phone_offer_btn).setOnClickListener(new View.OnClickListener() {
             @Override
             public void onClick(View v) {
@@ -145,6 +151,8 @@ public class PhoneWatchActivity extends Activity {
         TextView status = findViewById(R.id.phone_status);
         StringBuilder sb = new StringBuilder();
         sb.append(usage ? getString(R.string.phone_usage_on) : getString(R.string.phone_usage_off)).append('\n');
+        boolean bank = bankAllowed();
+        sb.append(getString(bank ? R.string.phone_bank_on : R.string.phone_bank_off)).append('\n');
         if (paired) {
             String label = store.label();
             sb.append(getString(R.string.phone_paired_as, label.isEmpty() ? "this phone" : label)).append('\n');
@@ -157,6 +165,7 @@ public class PhoneWatchActivity extends Activity {
         status.setText(sb.toString().trim());
         ((Button) findViewById(R.id.phone_usage_btn)).setText(usage ? R.string.phone_usage_btn_again
                 : R.string.phone_usage_btn);
+        ((Button) findViewById(R.id.phone_bank_btn)).setText(bank ? R.string.phone_bank_btn_again : R.string.phone_bank_btn);
         findViewById(R.id.phone_offer_box).setVisibility(offered.length() >= 24 ? View.VISIBLE : View.GONE);
         ((TextView) findViewById(R.id.phone_offer_text)).setText(paired ? R.string.phone_offer_replace
                 : R.string.phone_offer);
@@ -213,6 +222,20 @@ public class PhoneWatchActivity extends Activity {
                 });
             }
         });
+    }
+
+    /** Item 40: is ProBeing allowed to read notifications (its bank listener)? */
+    private boolean bankAllowed() {
+        String on = Settings.Secure.getString(getContentResolver(), "enabled_notification_listeners");
+        return on != null && on.contains(getPackageName() + "/");
+    }
+
+    private void openNotificationAccess() {
+        try {
+            startActivity(new Intent(Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS));
+        } catch (ActivityNotFoundException e) {
+            say(getString(R.string.phone_usage_missing));
+        }
     }
 
     /** Android's own page; straight to ProBeing's switch where the phone allows it. */

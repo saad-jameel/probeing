@@ -31,6 +31,20 @@
             android:layout_marginTop="12dp"
             android:text="@string/phone_usage_btn" />
 
+        <Button
+            android:id="@+id/phone_bank_btn"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="8dp"
+            android:text="@string/phone_bank_btn" />
+
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="4dp"
+            android:text="@string/phone_bank_explainer"
+            android:textSize="12sp" />
+
         <LinearLayout
             android:id="@+id/phone_offer_box"
             android:layout_width="match_parent"

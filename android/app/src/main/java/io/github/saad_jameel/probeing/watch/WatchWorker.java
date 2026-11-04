@@ -87,6 +87,7 @@ public final class WatchWorker extends Worker {
         synchronized (LOCK) {
             follow = runOnce(ctx);
         }
+        BankListener.Send.flush(ctx);            // item 40: any bank alert still held
         if (follow > 0) followUp(ctx, follow);
         return Result.success();
     }

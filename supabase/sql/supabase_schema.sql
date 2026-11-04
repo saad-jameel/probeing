@@ -1399,10 +1399,10 @@ alter table public.entry_filing add column if not exists new_more jsonb;
 alter table public.money add column if not exists buy_month text;
 alter table public.money drop constraint if exists money_kind_check;
 alter table public.money add constraint money_kind_check
-  check (kind in ('cash', 'loan', 'due', 'opening', 'buy'));
+  check (kind in ('cash', 'loan', 'due', 'opening', 'buy', 'transfer'));       -- 'transfer': item 40
 alter table public.money drop constraint if exists money_dir_check;
 alter table public.money add constraint money_dir_check check (
-  (kind in ('cash', 'loan') and dir in ('in', 'out')) or
+  (kind in ('cash', 'loan', 'transfer') and dir in ('in', 'out')) or
   (kind = 'due' and dir in ('they_owe', 'i_owe')) or
   (kind = 'opening' and dir = 'set') or
   (kind = 'buy' and dir = 'plan'));
@@ -2110,3 +2110,46 @@ alter table public.activity_nudges drop constraint if exists activity_nudges_kin
 alter table public.activity_nudges add constraint activity_nudges_kind
   check (kind in ('distract', 'awake', 'resume', 'upwork', 'start', 'teach', 'auto', 'idle', 'night'));
 create unique index if not exists activity_nudges_night_idx on public.activity_nudges (user_id, ref_at) where kind = 'night';
+
+-- ================================================================ item 40
+-- 4 Nov. Bank alerts read off the phone's notifications (HBL, Easypaisa, JazzCash; HBL's SMS from 14250).
+-- activity-ingest (service role) writes bank_alerts; he only reads them. Each waits in the app's popup until
+-- he confirms (a money row, rid 'bk-' + the alert's id) or ignores it (an events row 'bi-' + id); after
+-- 7 days unanswered the server files it itself (state 'auto'). pair_id joins an out and an in between his
+-- own accounts: an own transfer, money kind 'transfer', counted in neither spent, got nor the wallet.
+-- No account or phone number is kept: the phone blanks every run of 7+ digits before sending.
+alter table public.money add column if not exists account text not null default '';
+alter table public.money drop constraint if exists money_account_check;
+alter table public.money add constraint money_account_check check (char_length(account) <= 20);
+alter table public.money drop constraint if exists money_kind_check;
+alter table public.money add constraint money_kind_check
+  check (kind in ('cash', 'loan', 'due', 'opening', 'buy', 'transfer'));
+alter table public.money drop constraint if exists money_dir_check;
+alter table public.money add constraint money_dir_check check (
+  (kind in ('cash', 'loan', 'transfer') and dir in ('in', 'out')) or
+  (kind = 'due' and dir in ('they_owe', 'i_owe')) or
+  (kind = 'opening' and dir = 'set') or
+  (kind = 'buy' and dir = 'plan'));
+
+create table if not exists public.bank_alerts (
+  id          uuid          primary key default gen_random_uuid(),
+  user_id     uuid          not null references auth.users on delete cascade,
+  device_id   uuid          references public.watch_devices(id) on delete set null,
+  bank        text          not null check (bank in ('HBL', 'Easypaisa', 'JazzCash')),
+  dir         text          not null check (dir in ('in', 'out')),
+  amount      numeric(14,2) not null check (amount > 0 and amount <> 'NaN'),
+  party       text          not null default '' check (char_length(party) <= 60),
+  at          timestamptz   not null,
+  key_sha     text          not null check (key_sha ~ '^[0-9a-f]{64}$'),
+  state       text          not null default 'pending' check (state in ('pending', 'filed', 'ignored', 'auto')),
+  pair_id     uuid,
+  decided_at  timestamptz,
+  created_at  timestamptz   not null default now(),
+  constraint bank_alerts_key unique (user_id, key_sha)
+);
+create index if not exists bank_alerts_open_idx on public.bank_alerts (user_id, at) where state = 'pending';
+alter table public.bank_alerts enable row level security;
+do $$ begin
+  create policy "read own bank alerts" on public.bank_alerts for select using (auth.uid() = user_id);
+exception when duplicate_object then null; end $$;
+revoke insert, update, delete on table public.bank_alerts from anon, authenticated;

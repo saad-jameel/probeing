@@ -2,7 +2,7 @@
 <!-- Stage 18c. Its own file, not strings.xml: Bubblewrap overwrites that one. -->
 <resources>
     <string name="phone_watch_title">Phone activity</string>
-    <string name="phone_explainer">While you are working in ProBeing (not after End day), this phone tells ProBeing which app was on screen and from when to when: every 15 minutes, and every few minutes while a distraction is on. Only the app\'s name and the times. Never what is on the screen, never notification text. Banking, wallets, chats and messages go only as \"private\", with no name.\n\nYouTube, Instagram, X, TikTok and Facebook are distractions here: 10 minutes on one and you get a push; ignore it 5 minutes and it becomes a break from when it started, unless your laptop shows work in the same minutes (then ProBeing asks you later).\n\nAsleep or on a break, it sends only whether the phone was in use and what kind of use (work, distraction and so on), never the app\'s name. Marked asleep and using the phone 5 minutes after Fajr: a push asks if you are awake. On a break and in a work app 5 minutes: a push asks if you are back at work.</string>
+    <string name="phone_explainer">While you are working in ProBeing (not after End day), this phone tells ProBeing which app was on screen and from when to when: every 15 minutes, and every few minutes while a distraction is on. Only the app\'s name and the times. Never what is on the screen, and no notification text except your bank alerts (below). Banking, wallets, chats and messages go only as \"private\", with no name.\n\nYouTube, Instagram, X, TikTok and Facebook are distractions here: 10 minutes on one and you get a push; ignore it 5 minutes and it becomes a break from when it started, unless your laptop shows work in the same minutes (then ProBeing asks you later).\n\nAsleep or on a break, it sends only whether the phone was in use and what kind of use (work, distraction and so on), never the app\'s name. Marked asleep and using the phone 5 minutes after Fajr: a push asks if you are awake. On a break and in a work app 5 minutes: a push asks if you are back at work.</string>
     <string name="phone_usage_on">Usage access: allowed.</string>
     <string name="phone_usage_off">Usage access: not allowed yet. Press the button, find ProBeing, switch it on.</string>
     <string name="phone_usage_btn">Allow usage access</string>
@@ -29,4 +29,10 @@
     <string name="phone_send_slow">Still waiting for Android to run it (it needs a connection). This screen keeps checking.</string>
     <string name="phone_stop_btn">Stop watching on this phone</string>
     <string name="phone_stopped">Stopped, and the code is forgotten. Revoke this phone in ProBeing\'s Settings too.</string>
+    <!-- Item 40: bank alerts -->
+    <string name="phone_bank_on">Bank alerts: on (HBL, easypaisa, JazzCash and HBL\'s SMS from 14250).</string>
+    <string name="phone_bank_off">Bank alerts: off. Press the button, find ProBeing, switch it on, to log each payment in ProBeing.</string>
+    <string name="phone_bank_btn">Allow bank alerts</string>
+    <string name="phone_bank_btn_again">Notification access settings</string>
+    <string name="phone_bank_explainer">Bank alerts: only notifications from HBL Mobile, easypaisa and JazzCash, and SMS from 14250, are read. Every long number (account, phone, transaction ID) is blanked on this phone before anything is sent; ProBeing keeps the bank, the amount, which way it went, the other person\'s name and the time.</string>
 </resources>

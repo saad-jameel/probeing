@@ -95,12 +95,14 @@
 import { createClient } from 'jsr:@supabase/supabase-js@2';
 import '../_shared/day.js';
 import '../_shared/activity.js';
+import '../_shared/bank.js';
 import { pushAll } from '../_shared/push.ts';
 import { usageDay, takeCall, spendDay } from '../_shared/usage.ts';
 
 // activity.js is a classic script, so it hands its functions over on globalThis.
 const A = (globalThis as unknown as { ProBeingActivity: Record<string, any> }).ProBeingActivity;
 const Day = (globalThis as unknown as { ProBeingDay: Record<string, any> }).ProBeingDay;
+const BK = (globalThis as unknown as { ProBeingBank: Record<string, any> }).ProBeingBank;
 
 const CORS: Record<string, string> = {
   'Access-Control-Allow-Origin': '*',
@@ -2238,6 +2240,7 @@ async function opConfig(sb: Sb, dev: Record<string, any>, body: Record<string, a
   try { await closeSortedTeach(sb, dev.user_id, now, set); } catch (_e) { /* the next call tries again */ }
   // Item 38: a quiet phone still checks in, so the night is closed and settled without new blocks.
   try { await runNight(sb, dev.user_id, now, set); } catch (_e) { /* the next call tries again */ }
+  try { await bankSweep(sb, dev.user_id, now, set); } catch (_e) { /* before item 40's SQL; the next call tries again */ }
   return reply(200, { ok: true, device: dev.label, now: iso(now), lists: set.lists, projects, desktops: set.desktops,
                       rules: rules.filter((r) => r.source !== 'gemini').map((r) => ({ keyword: r.keyword, project: r.project })),
                       spans: spans.map((s) => [iso(s[0]), iso(s[1])]), working: walk.working,
@@ -2432,6 +2435,73 @@ async function answerAsk(sb: Sb, n: Record<string, any>, choice: string, set: Re
   return reply(200, { ok: true, state });
 }
 
+/* ── Item 40 (Saad, 4 Nov): bank alerts from the phone's notifications ─────────────────────────────────
+ * The phone sends {app, title, text, at, key}: text with every 7+ digit run already blanked (blanked again
+ * here), key the sha256 of the raw text. Kept: bank, way, amount, the other party's name, when. */
+var BANK_ITEMS_MAX = 50;
+var BANK_TEXT_MAX = 1000;
+
+async function opBank(sb: Sb, dev: Record<string, any>, body: Record<string, any>, now: number) {
+  const items = Array.isArray(body.items) ? body.items.slice(0, BANK_ITEMS_MAX) : [];
+  const recent = must(await sb.from('bank_alerts').select('id, bank, dir, amount, at, state, pair_id').eq('user_id', dev.user_id)
+    .gte('at', iso(now - 86400000 - BK.BANK_PAIR_MS)).limit(500))
+    .map((x) => ({ id: x.id, bank: x.bank, dir: x.dir, amount: Number(x.amount), at: ms(x.at), state: x.state, pair_id: x.pair_id }));
+  let kept = 0;
+  let unread = 0;
+  for (const it of items) {
+    const key = String((it && it.key) || '').toLowerCase();
+    const at = ms(it && it.at);
+    if (!/^[0-9a-f]{64}$/.test(key) || !isFinite(at) || at > now + 5 * MIN_MS || at < now - 30 * 86400000) continue;
+    const p = BK.bankParse({ app: String(it.app || '').slice(0, 60), title: String(it.title || '').slice(0, 120),
+                             text: BK.bankBlank(String(it.text || '').slice(0, BANK_TEXT_MAX)) });
+    if (!p) { unread++; continue; }
+    const a = { id: '', bank: p.bank, dir: p.dir, amount: p.amount, at, state: 'pending', pair_id: null as string | null };
+    if (BK.bankSeen(a, recent)) continue;                         // HBL's SMS of a payment its app already told
+    const ins = await sb.from('bank_alerts').insert({ user_id: dev.user_id, device_id: dev.id, bank: p.bank, dir: p.dir,
+      amount: p.amount, party: p.party, at: iso(at), key_sha: key, state: 'pending' }).select('id');
+    if (ins.error || !(ins.data || [])[0]) continue;                // 23505: this notification came before
+    a.id = ins.data[0].id;
+    kept++;
+    const mate = BK.bankPairFor(a, recent);
+    if (mate) {
+      await sb.from('bank_alerts').update({ pair_id: mate.id }).eq('id', a.id).eq('user_id', dev.user_id);
+      await sb.from('bank_alerts').update({ pair_id: mate.id }).eq('id', mate.id).eq('user_id', dev.user_id);
+      a.pair_id = mate.pair_id = mate.id;
+    }
+    recent.push(a);
+  }
+  const set = await readSettings(sb, dev.user_id, now);
+  await bankSweep(sb, dev.user_id, now, set);
+  return reply(200, { ok: true, kept, unread });
+}
+
+/** His answers close alerts (a money row bk-<id>: filed; an events row bi-<id>: ignored); one unanswered for
+ *  BANK_AUTO_MS is filed by the server, marked auto: an own transfer as 'transfer', else Untagged. */
+async function bankSweep(sb: Sb, owner: string, now: number, set: Record<string, any>) {
+  const open = must(await sb.from('bank_alerts').select('*').eq('user_id', owner).eq('state', 'pending').limit(200));
+  if (!open.length) return 0;
+  const rids = open.map((a) => 'bk-' + a.id);
+  const filed = new Set(must(await sb.from('money').select('rid').eq('user_id', owner).in('rid', rids).limit(400)).map((r) => r.rid));
+  const skipped = new Set(must(await sb.from('events').select('rid').eq('user_id', owner).in('rid', open.map((a) => 'bi-' + a.id))
+    .limit(400)).map((r) => r.rid));
+  let n = 0;
+  for (const a of open) {
+    let state = filed.has('bk-' + a.id) ? 'filed' : skipped.has('bi-' + a.id) ? 'ignored' : '';
+    if (!state && now - ms(a.at) >= BK.BANK_AUTO_MS) {
+      const t = ms(a.at);
+      const res = await sb.from('money').insert({ user_id: owner, rid: 'bk-' + a.id, at: iso(t), local_time: humanLocal(t, set.zone),
+        tz: set.zone, dir: a.dir, amount: a.amount, tag: a.pair_id ? 'Own transfer' : 'Untagged', kind: a.pair_id ? 'transfer' : 'cash',
+        account: a.bank, note: (a.party ? (a.dir === 'in' ? 'from ' : 'to ') + a.party + ' · ' : '') + 'auto, not answered' });
+      if (res.error && res.error.code !== '23505') continue;
+      state = 'auto';
+    }
+    if (!state) continue;
+    await sb.from('bank_alerts').update({ state, decided_at: iso(now) }).eq('id', a.id).eq('user_id', owner).eq('state', 'pending');
+    n++;
+  }
+  return n;
+}
+
 /** A push's button, from sw.js. The nonce is the credential. */
 async function opAnswer(sb: Sb, ans: Record<string, any>, now: number) {
   const id = String(ans.id || '');
@@ -2522,7 +2592,8 @@ Deno.serve(async (req: Request): Promise<Response> => {
     if (body.op === 'config') return await opConfig(sb, dev, body, now);
     if (body.op === 'ingest') return await opIngest(sb, dev, body, now, req);
     if (body.op === 'classify') return await opClassify(sb, dev, body, now);
-    return reply(400, { ok: false, error: 'op must be config, ingest, classify or glance' });
+    if (body.op === 'bank') return await opBank(sb, dev, body, now);
+    return reply(400, { ok: false, error: 'op must be config, ingest, classify, bank or glance' });
   } catch (e) {
     return reply(500, { ok: false, error: scrub((e as Error)?.message || e) });
   }

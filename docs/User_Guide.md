@@ -88,10 +88,16 @@ Amounts are in PKR.
 - **Dues** — who owes you and whom you owe. **Settle** records money actually moving.
 - **Logs** — every entry, by day. A mistake is cancelled, never edited.
 - **Buying list** — things you plan to buy this month, checked against the wallet.
+- **Bank alerts** (phone app) — each payment in or out of HBL, easypaisa or JazzCash
+  comes up first when you open ProBeing: pick a tag and **Confirm**, or **Ignore**. It
+  goes into the wallet with the bank's name. Money moved between your own accounts
+  (an out and an in of the same amount within 30 minutes) shows as one **Own
+  transfer** line: it counts as neither spending nor income. Not answered in 7 days,
+  an alert is filed by itself (Untagged, or Own transfer), marked "auto".
 
 ## Review
 
-Pick a range: last 2 or 7 days, this week, last week, or last 30 days.
+Pick a range: Yesterday, Last 2 days, This week, Last week, This month or Last month.
 
 - **Summary** — hours worked and per day, breaks, prayers (by prayer and mode, with
   missed and made-up ones), M, sleep, money in and out, and laptop/phone activity if
@@ -150,6 +156,11 @@ paste the line it gives you into PowerShell, done.
   sends a push. Ignore it for 5 minutes and it becomes a distraction from when it began.
   A distraction is never an earned break. On the phone while the laptop has real input,
   only music apps (YouTube, Spotify…) are let through.
+- **It learns.** On a private app's question, **Always work** puts the app on your Work
+  list for good; answering **Work** three times for the same app (never "Not work") does
+  the same. A single **Work** covers that stretch only. Distractions are never learned.
+  An app on your Work, Helpers or Meeting list is judged by its name, never by words in
+  its window title.
 - At End day: a slip of 5 minutes or more becomes a Distraction; three slips inside 30
   minutes become **Lost focus** for that whole stretch. **Away** means nothing was in use.
 - **The day ends by itself.** Without End day, the day ends at your last work, written
@@ -167,9 +178,10 @@ paste the line it gives you into PowerShell, done.
   work?", "start?") that records the right time when you answer.
 - The distraction push says when, on which device, and what the other device showed:
   "15:20–15:35: YouTube on your phone, ProBeing on the laptop — are you working?".
-- **Questions come in order, one colour at a time**: purple **Night & day** first
-  (last night's day end, sleep and wake — **Looks right** or **Change**; a night with no
-  use at all asks "Asleep from …" or "I was out"). These can't be put off. Then teal
+- **Questions come in order, one colour at a time**: purple **Must answer** first —
+  bank alerts and last night (sleep and wake: **Looks right** or **Change**; a night with
+  no use at all asks "Asleep from …" or "I was out"). These can't be put off; a night not
+  answered by noon is set by itself, a day-old one at once. Then teal
   **Was it work?**, grey **Not seen**, and the plain details.
 - When you open ProBeing it may show **"Unknown work 17:06 – 18:12"**, one box per
   desktop (the phone's in its own, **Phone**). Work on a project already in Working on is
@@ -192,6 +204,9 @@ The Android app is the same ProBeing, plus:
 - **Phone activity** — the same checks as the laptop, from Android's usage access
   (which app was on screen and when; never what was on it). In Settings press **Pair
   this phone**, then **Finish in the Android app**.
+- **Bank alerts** — on the same phone screen, **Allow bank alerts** gives ProBeing
+  notification access. Only HBL Mobile, easypaisa, JazzCash and SMS from 14250 are read;
+  every long number (account, phone, transaction ID) is blanked on the phone first.
 
 ## When something looks off
 

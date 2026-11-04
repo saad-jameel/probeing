@@ -699,6 +699,8 @@ async function callSupabase(action, payload) {
     if (kind !== 'cash') moneyRow.kind = kind;
     if (person) moneyRow.person = person;
     if (buyMonth) moneyRow.buy_month = buyMonth;
+    var account = String(payload.account || '').trim().slice(0, MONEY_ACCOUNT_MAX);
+    if (account) moneyRow.account = account;
     var ins = await sb.from('money').insert(moneyRow);
     // 23505: this rid, or a void of this row, is already in. Success either way.
     if (ins.error && ins.error.code !== '23505') throw errorFrom(ins.error);
@@ -978,7 +980,7 @@ var PARKED_MAX = 50;
  * fills in a project name on a row, and a name that never arrives leaves the
  * entry called by its own sentence — which is what it was called anyway. */
 var QUEUEABLE = { log: 1, m: 1, prayer: 1, money: 1, loan: 1, due: 1, wallet: 1, buy: 1, file: 1, mark: 1, item: 1,
-                  reflect: 1 };
+                  reflect: 1, transfer: 1 };
 
 function trimUrl(u) { return String(u || '').trim().replace(/\/+$/, ''); }
 
@@ -1267,11 +1269,12 @@ function queuedRow(it) {
 }
 
 /* Each write that becomes a `money` row, and the kind it is stored as. */
-var MONEY_KIND_OF = { money: 'cash', loan: 'loan', due: 'due', wallet: 'opening', buy: 'buy' };
-var MONEY_ACTION_OF = { cash: 'money', loan: 'loan', due: 'due', opening: 'wallet', buy: 'buy' };
+var MONEY_KIND_OF = { money: 'cash', loan: 'loan', due: 'due', wallet: 'opening', buy: 'buy', transfer: 'transfer' };
+var MONEY_ACTION_OF = { cash: 'money', loan: 'loan', due: 'due', opening: 'wallet', buy: 'buy', transfer: 'transfer' };
 // The dirs each kind may carry, as money_dir_check has them.
 var MONEY_DIRS = { cash: ['in', 'out'], loan: ['in', 'out'], due: ['they_owe', 'i_owe'], opening: ['set'],
-                   buy: ['plan'] };
+                   buy: ['plan'], transfer: ['in', 'out'] };
+var MONEY_ACCOUNT_MAX = 20;             // item 40: the bank an entry came from ('' = typed by hand)
 
 /** The action that writes a row of this kind, or '' for a kind this version does not know. */
 function moneyActionOf(kind) {
@@ -1293,6 +1296,7 @@ function queuedMoney(it) {
   if (kind !== 'cash') row.kind = kind;
   if (kind === 'loan' || kind === 'due') row.person = cleanPerson(p.person);
   if (kind === 'buy') row.buy_month = String(p.buy_month || '');
+  if (p.account) row.account = String(p.account);
   return row;
 }
 
@@ -6733,7 +6737,8 @@ function moneyFigures(rows, windows) {
 
   bucketByWindow(rows, windows || []).forEach(function (day) {
     day.forEach(function (r) {
-      if (r.voids_rid || (r.dir !== 'in' && r.dir !== 'out')) return;
+      // Item 40: an own transfer (money between his accounts) is neither spent nor got.
+      if (r.voids_rid || (r.dir !== 'in' && r.dir !== 'out') || r.kind === 'transfer') return;
       if (r.rid && cancelled[r.rid] === 1) { out.voided += 1; return; }
       var p = moneyPaisa(r.amount);
       if (!(p > 0)) return;
@@ -11216,7 +11221,9 @@ function moneyWhat(r) {
     return pre + (r.dir === 'they_owe' ? person + ' owes you ' + amount : 'You owe ' + person + ' ' + amount);
   }
   if (r.kind === 'loan') return pre + String(r.tag || 'Due') + ' ' + amount + ' · ' + person;
-  return pre + (r.dir === 'in' ? 'Got ' : 'Spent ') + amount + ' · ' + String(r.tag || '');
+  var acct = r.account ? ' · ' + String(r.account) : '';           // item 40: the bank it came from
+  if (r.kind === 'transfer') return pre + 'Own transfer ' + (r.dir === 'in' ? 'into ' : 'out of ') + String(r.account || '') + ' ' + amount;
+  return pre + (r.dir === 'in' ? 'Got ' : 'Spent ') + amount + ' · ' + String(r.tag || '') + acct;
 }
 
 /** A range's money as a few lines; none when nothing was logged. */
@@ -11625,6 +11632,7 @@ function logsKindOf(r) {
   if (kind === 'loan' || kind === 'due') return 'dues';
   if (kind === 'opening') return 'wallet';
   if (kind === 'cash') return r.dir === 'in' ? 'income' : 'expense';
+  if (kind === 'transfer') return 'transfer';
   return '';
 }
 
@@ -11677,12 +11685,12 @@ function logsLine(r, off) {
   what.className = 'what';
   var text = kind === 'opening' || kind === 'due' ? moneyWhat({ kind: kind, dir: r.dir, amount: r.amount, person: r.person })
            : (r.dir === 'in' ? '+' : '−') + amount + ' · ' + String(r.tag || '') +
-             (kind === 'loan' ? ' · ' + String(r.person || '') : '');
+             (kind === 'loan' ? ' · ' + String(r.person || '') : '') + (r.account ? ' · ' + String(r.account) : '');
   what.textContent = text + (r.note ? ' — ' + r.note : '');       // his own words: never markup
   var tag = document.createElement('span');
   tag.className = 'tag';
   tag.textContent = off ? 'void' : r.queued ? 'waiting' :
-    { cash: r.dir === 'in' ? 'in' : 'spent', loan: 'due · cash', due: 'due', opening: 'wallet' }[kind] || kind;
+    { cash: r.dir === 'in' ? 'in' : 'spent', loan: 'due · cash', due: 'due', opening: 'wallet', transfer: 'own transfer' }[kind] || kind;
   li.append(when, what, tag);
   if (!off && moneyActionOf(kind)) {
     var b = document.createElement('button');
@@ -18102,9 +18110,105 @@ async function readNightAsks(now) {
   return list.filter(function (n) { return !done['nn-' + n.id]; }).map(function (n) { return { kind: 'night', n: n }; });
 }
 
+/* ── Item 40 (Saad, 4 Nov): his bank alerts, each confirmed into the wallet or ignored ─────────────────
+ * activity-ingest keeps them (bank_alerts, pending) from the phone's notifications. Tier 1: answered before
+ * anything else. Confirm = a money row through the outbox (rid bk-<alert id>, account = the bank); Ignore = an
+ * events row bi-<id>. An own transfer (an out and an in between his banks, pair_id) is one line, kind 'transfer':
+ * neither spent nor got. Unanswered for 7 days, the server files it itself (auto). */
+var readBankOn = true;                // off once the table is missing (before item 40's SQL)
+
+async function readBankAsks() {
+  var res = await sb.from('bank_alerts').select('id,bank,dir,amount,party,at,pair_id').eq('state', 'pending')
+    .order('at', { ascending: true }).limit(60);
+  if (res.error) { readBankOn = false; return []; }
+  var list = res.data || [];
+  if (!list.length) return [];
+  var done = userMap();
+  var m = await sb.from('money').select('rid').in('rid', list.map(function (a) { return 'bk-' + a.id; })).limit(120);
+  (m.error ? [] : m.data || []).forEach(function (r) { done[r.rid] = 1; });
+  var e = await sb.from('events').select('rid').in('rid', list.map(function (a) { return 'bi-' + a.id; })).limit(120);
+  (e.error ? [] : e.data || []).forEach(function (r) { done[r.rid] = 1; });
+  outboxMine().forEach(function (it) { if (it.rid) done[it.rid] = 1; });
+  var open = list.filter(function (a) { return !done['bk-' + a.id] && !done['bi-' + a.id]; });
+  var byPair = userMap();
+  open.forEach(function (a) { if (a.pair_id) (byPair[a.pair_id] = byPair[a.pair_id] || []).push(a); });
+  var out = [];
+  open.forEach(function (a) {
+    var both = a.pair_id ? byPair[a.pair_id] : null;
+    if (both && both.length === 2) {
+      if (a.dir === 'out') out.push({ kind: 'bankpair', n: a, out: a, 'in': both[0] === a ? both[1] : both[0] });
+      return;
+    }
+    out.push({ kind: 'bank', n: a });
+  });
+  return out;
+}
+
+/** "HBL · sent PKR 2,500 to IMTIAZ STORE · Wed 4 Nov 18:00". */
+function bankWords(a) {
+  var t = Date.parse(a.at);
+  var day = new Date(t).toLocaleDateString('en-GB', { weekday: 'short', day: 'numeric', month: 'short' });
+  return a.bank + ' · ' + (a.dir === 'in' ? 'received PKR ' : 'sent PKR ') + formatPkr(Number(a.amount)) +
+         (a.party ? (a.dir === 'in' ? ' from ' : ' to ') + a.party : '') + ' · ' + day + ' ' + clockAt(t);
+}
+
+/** The money row an alert becomes. */
+function bankMoney(a, kind, tag) {
+  var t = Date.parse(a.at);
+  return { rid: 'bk-' + a.id, at: new Date(t).toISOString(), local_time: humanLocalAt(t), dir: a.dir, amount: String(Number(a.amount)),
+           tag: tag, note: a.party ? (a.dir === 'in' ? 'from ' : 'to ') + a.party : '', account: a.bank, kind: kind };
+}
+
+function bankAskRow(a, li, text, acts, btn) {
+  function done(words) {
+    dropAsk(a);
+    li.textContent = words;
+  }
+  if (a.kind === 'bankpair') {
+    text.textContent = 'Own transfer · ' + a.out.bank + ' → ' + a['in'].bank + ' · PKR ' + formatPkr(Number(a.out.amount)) +
+                       ' · ' + clockAt(Date.parse(a.out.at)) + ' (not income or spending).';
+    btn('Confirm', function () {
+      sendMoney(bankMoney(a.out, 'transfer', 'Own transfer'), 'transfer');
+      sendMoney(bankMoney(a['in'], 'transfer', 'Own transfer'), 'transfer');
+      done('Noted: own transfer, ' + a.out.bank + ' → ' + a['in'].bank + '.');
+    });
+    btn('Two separate entries', function () {
+      // Each answered on its own line from here on (this read only; the next read pairs them again until answered).
+      var i = catchup.asks.indexOf(a);
+      catchup.asks.splice(i, 1, { kind: 'bank', n: a.out }, { kind: 'bank', n: a['in'] });
+      renderCatchUp();
+    });
+    li.append(text, acts);
+    return li;
+  }
+  var al = a.n;
+  text.textContent = bankWords(al);
+  var sel = document.createElement('select');
+  sel.className = 'bank-tag';
+  sel.setAttribute('aria-label', 'Tag');
+  fixedTags(al.dir).concat(['Own transfer']).forEach(function (t) {
+    var o = document.createElement('option');
+    o.value = t;
+    o.textContent = t;               // his own tag words (rule 5)
+    sel.appendChild(o);
+  });
+  acts.appendChild(sel);
+  btn('Confirm', function () {
+    var own = sel.value === 'Own transfer';
+    sendMoney(bankMoney(al, own ? 'transfer' : 'cash', sel.value), own ? 'transfer' : 'money');
+    done('Noted: ' + bankWords(al) + ' · ' + sel.value + '.');
+  });
+  btn('Ignore', function () {
+    runWrites([{ type: 'bankignore', raw_text: 'Ignored: ' + bankWords(al), rid: 'bi-' + al.id }]);
+    done('Ignored.');
+  });
+  li.append(text, acts);
+  return li;
+}
+
 /* Each question's tier: 1 what the rules cannot know (must be answered), 2 was it work, 3 not seen, 4 details. */
-var CATCHUP_TIER = { night: 1, start: 1, upwork: 1, awake: 2, resume: 2, sent: 2, question: 2, autobreak: 2, idle: 3, teach: 4 };
-var CATCHUP_TIER_NAMES = { 1: 'Night & day', 2: 'Was it work?', 3: 'Not seen by your devices', 4: 'Details' };
+var CATCHUP_TIER = { bank: 1, bankpair: 1, night: 1, start: 1, upwork: 1, awake: 2, resume: 2, sent: 2, question: 2, autobreak: 2, idle: 3, teach: 4 };
+var CATCHUP_TIER_NAMES = { 1: 'Must answer', 2: 'Was it work?', 3: 'Not seen by your devices', 4: 'Details' };
 
 function askTier(a) { return CATCHUP_TIER[a.kind] || 4; }
 
@@ -18292,7 +18396,7 @@ async function readCatchUp() {
   }
   await attachRuns(nudges);
   var idle = await readIdleAsks(dayStart);
-  var asks = readNightOn ? await readNightAsks(now) : [];
+  var asks = (readBankOn ? await readBankAsks() : []).concat(readNightOn ? await readNightAsks(now) : []);
   asks = asks.concat(catchupAsks(nudges.concat(await readTeachAsk(dayStart), idle.asks), rids, since));
   var desk = { desktops: await readSheetDesktops(), projects: catchupProjects([]) };
   var groups = actDeskGroups(blocks, fixes, desk);
@@ -18584,6 +18688,7 @@ function catchupAskRow(a) {
   }
   if (a.kind === 'idle') return idleAskRow(a, li, text, acts, btn);
   if (a.kind === 'night') return nightAskRow(a, li, text, acts, btn);
+  if (a.kind === 'bank' || a.kind === 'bankpair') return bankAskRow(a, li, text, acts, btn);
   if (a.kind === 'teach') {
     var r = teachAskName(n);
     var mins = Number(n.entry_min) > 0 ? ' ' + humanDuration(Number(n.entry_min) * 60000) + ' today, not sorted yet.' : '';
@@ -18958,7 +19063,9 @@ function catchupPrune() {
   sessionLog().forEach(function (r) { if (r.rid) rids[r.rid] = 1; });
   var before = catchup.asks.length;
   catchup.asks = catchup.asks.filter(function (a) {
-    if (a.kind === 'idle') return true;              // item 38 fix: only his own answer (nn-) closes last night
+    if (a.kind === 'idle') return true;              // item 31b: its answer's rid carries a time; the next read decides
+    if (a.kind === 'bank' || a.kind === 'bankpair') return true;   // item 40: answered as money rows; the next read decides
+    // Item 38 fix: only his own answer (nn-) closes last night.
     var answered = a.kind === 'night' ? Boolean(rids['nn-' + a.n.id]) : !catchupAsks([a.n], rids, -Infinity).length;
     var over = WATCH_ASKS[a.kind] === 1 && !askStillOpen(a.n);
     if (!answered && !over) return true;

@@ -71,8 +71,9 @@
  * v49 (item 38): the popup in tiers, last night's confirm, the new Review ranges.
  * v50 (item 38 fix): only his answer closes last night; plain night words; the shade blocks taps.
  * v51 (item 38, 3 Nov): unanswered nights and "start?" applied by themselves; unsorted use is never Away.
- * v52 (item 39): "Always work" on the private-app push. */
-var CACHE = 'probeing-shell-v52';
+ * v52 (item 39): "Always work" on the private-app push.
+ * v53 (item 40): bank alerts in the popup; own transfers; the account on money rows. */
+var CACHE = 'probeing-shell-v53';
 var SHELL = [
   './',
   'index.html',
