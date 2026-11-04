@@ -156,6 +156,16 @@ function Act-IsAway($app) {
   return ($ACT_AWAY_APPS -contains (Act-Norm ((Act-Str $app) -replace '\.exe$', '')))
 }
 
+# Item 41: Windows' own apps run inside ApplicationFrameHost; the app's name is the last part of its title.
+$ACT_HOST_APPS = @('applicationframehost')
+function Act-HostedApp($app, $title) {
+  if (-not ($ACT_HOST_APPS -contains (Act-Norm ((Act-Str $app) -replace '\.exe$', '')))) { return $app }
+  $parts = ((Act-Str $title) -replace "[\u200e\u200f]", '') -split '\s+[-\u2013\u2014]\s+'
+  $last = $parts[$parts.Length - 1].Trim()
+  if ($last -cmatch "^[A-Za-z][A-Za-z0-9 &+.'()-]{1,29}$") { return $last }
+  return $app
+}
+
 function Act-TitleSendable($app, $title) {
   if ($ACT_NO_TITLE_APPS -contains (Act-Norm ((Act-Str $app) -replace '\.exe$', ''))) { return $false }
   $raw = Act-Str $title
@@ -445,9 +455,9 @@ function Act-Segments($events, $cut) {
     $sp = Act-EventSpan $e
     if ($null -eq $sp) { continue }
     $data = Get-Prop $e 'data'
-    $app = Act-CleanApp (Get-Prop $data 'app')
-    if (Act-IsAway $app) { continue }        # the lock screen: away, not activity
     $title = Act-Str (Get-Prop $data 'title')
+    $app = Act-HostedApp (Act-CleanApp (Get-Prop $data 'app')) $title
+    if (Act-IsAway $app) { continue }        # the lock screen: away, not activity
     $browser = Act-IsBrowser $app
     foreach ($p in (Act-Intersect $sp[0] $sp[1] $allowed)) {
       if (-not $browser) { & $piece $p[0] $p[1] $null $app $title; continue }

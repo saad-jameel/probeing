@@ -18740,7 +18740,7 @@ function catchupAskRow(a) {
     btn('It was work', 'working');
     // Item 39: learned for good (not for a distraction-list app: a talk on YouTube is not YouTube as work).
     var seg = { app: n.what || '', host: '', path: '', title: '' };
-    if (n.what && !(actSet.lists && actListHit(actSet.lists.distract, seg, false))) btn('Always work', 'always');
+    if (n.what && !actNeverLearn(n.what) && !(actSet.lists && actListHit(actSet.lists.distract, seg, false))) btn('Always work', 'always');
     btn('Not work', 'break');
   } else if (a.kind === 'question') {
     text.textContent = spanClock(start, Date.parse(n.span_end)) + ' ' + (n.what || 'a distraction') +
@@ -18851,7 +18851,16 @@ function catchupLineRow(line, projects, g) {
   what.className = 'link-btn catchup-what';
   var first = line.spans.length ? line.spans[0][0] : NaN;
   var last = line.spans.length ? line.spans[line.spans.length - 1][1] : NaN;
-  what.textContent = line.name + ' · ' + humanDuration(line.ms) + (isFinite(first) ? ' (' + spanClock(first, last) + ')' : '');
+  // Item 41 (Saad, 5 Nov): a distraction (or a private app) is said as it is — "YouTube — distraction — 13m" —
+  // with no tickbox: it is not something to accept as work. Its times are in the info box.
+  var plain = line.category === 'distraction' || line.category === 'private';
+  if (plain) {
+    pick.hidden = true;
+    line.picked = pick.checked = true;
+    what.textContent = line.name + ' — ' + (line.category === 'private' ? 'private' : 'distraction') + ' — ' + humanDuration(line.ms);
+  } else {
+    what.textContent = line.name + ' · ' + humanDuration(line.ms) + (isFinite(first) ? ' (' + spanClock(first, last) + ')' : '');
+  }
   what.setAttribute('aria-expanded', 'false');
   var rec = document.createElement('span');
   rec.className = 'catchup-rec';
@@ -18860,7 +18869,7 @@ function catchupLineRow(line, projects, g) {
   var placeable = line.category === 'work' || line.category === 'meeting' || line.category === 'unclear';
   var onDesk = placeable && line.category !== 'unclear' && !line.judge && g && g.project &&
                actNorm(linePick(line) || '') === actNorm(g.project);
-  rec.hidden = onDesk || !rec.textContent;
+  rec.hidden = plain || onDesk || !rec.textContent;
   head.className = 'catchup-line';
   head.append(pick, what, rec);
   var info = lineInfo(line);

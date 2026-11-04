@@ -1137,9 +1137,12 @@ function otherShows(blocks, device, a, b) {
 function nudgePayload(p, nudgeId, nonce, url, key, offsetMin) {
   var mins = Math.max(10, Math.round((p.end - p.start) / 60000));
   if (p.private) {
-    // Item 36 (Saad, 28 Oct): a private app while working is asked, by name.
+    // Item 36 (Saad, 28 Oct): a private app while working is asked, by name. Item 42: a call, "work or chit-chat?".
+    var call = /^phone( ?call)?$/i.test(String(p.what || '').trim());
     return { kind: 'distract', tag: 'probeing-distract', nudge: nudgeId, nonce: nonce, url: url, key: key, goto: 'home', private: true,
-             title: A.actCut(p.what, 60) + ' for ' + mins + ' min — work (a call) or not?',
+             learn: !A.actNeverLearn(p.what),
+             title: call ? 'Phone call ' + clock12(p.start, offsetMin) + '–' + clock12(p.end, offsetMin) + ' — work or chit-chat?'
+                         : A.actCut(p.what, 60) + ' for ' + mins + ' min — work or not?',
              body: 'No answer in 5 min and it counts as a distraction from ' + clock12(p.start, offsetMin) + '.' };
   }
   // Item 38 (Saad, 30 Oct): when, on which device, and what the other one showed meanwhile.
@@ -2263,7 +2266,8 @@ async function opIngest(sb: Sb, dev: Record<string, any>, body: Record<string, a
   const list = Array.isArray(body.blocks) ? body.blocks : [];
   if (list.length > INGEST_MAX) return reply(413, { ok: false, error: 'at most ' + INGEST_MAX + ' blocks a call' });
   const set = await readSettings(sb, dev.user_id, now);
-  const clean = list.map((b: unknown) => A.actSanitize(b, set.lists, now)).filter(Boolean);
+  const clean = list.map((b: unknown) => A.actSanitize(b, set.lists, now)).filter(Boolean)
+    .map((b: any) => dev.kind === 'phone' ? A.actPhoneRule(b) : b);           // item 42
   let stored = 0;
   if (clean.length) {
     const from = Math.min(...clean.map((b: any) => b.start));
@@ -2539,7 +2543,7 @@ var LEARN_ANSWERS = 3;
 var LEARN_BACK_MS = 30 * 86400000;
 async function maybeLearnWork(sb: Sb, owner: string, what: string, always: boolean, now: number, start: number) {
   const name = A.actWorkName(what);
-  if (name.length < 3 || !isFinite(start)) return '';
+  if (name.length < 3 || !isFinite(start) || A.actNeverLearn(what)) return '';
   const seen = must(await sb.from('activity_blocks').select('app, category').eq('user_id', owner).gte('ended_at', iso(start))
     .lte('started_at', iso(start + 20 * MIN_MS)).limit(300)).filter((b) => A.actWorkName(A.actAppName(String(b.app || ''))) === name);
   if (!seen.length || seen.some((b) => b.category === 'distraction')) return '';

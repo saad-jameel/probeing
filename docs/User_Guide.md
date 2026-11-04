@@ -161,6 +161,12 @@ paste the line it gives you into PowerShell, done.
   the same. A single **Work** covers that stretch only. Distractions are never learned.
   An app on your Work, Helpers or Meeting list is judged by its name, never by words in
   its window title.
+- **On the phone:** Chrome is always asked "work or not?" (it can't tell which site);
+  unanswered, it is a distraction. A phone call is asked "work or chit-chat?". WhatsApp
+  on the phone counts as a distraction; on the laptop it is asked (clients).
+- **In the popup** a distraction is said as it is — "YouTube — distraction — 13m" —
+  with nothing to tick. Browser lines name the site; Windows' own apps are named
+  (Settings, Photos), not "ApplicationFrameHost".
 - At End day: a slip of 5 minutes or more becomes a Distraction; three slips inside 30
   minutes become **Lost focus** for that whole stretch. **Away** means nothing was in use.
 - **The day ends by itself.** Without End day, the day ends at your last work, written

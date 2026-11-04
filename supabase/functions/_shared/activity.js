@@ -132,6 +132,32 @@ function actIsAway(app) {
   return ACT_AWAY_APPS.indexOf(actAppWord(app)) !== -1;
 }
 
+/* Item 42 (Saad, 5 Nov): the phone's own rules, on top of the lists. Chrome there shows no site (x.com mostly):
+ * always asked "work or not?", a distraction unanswered. A phone call is asked "work or chit-chat?". WhatsApp on
+ * the phone is chit-chat (a distraction); on the laptop it stays private (clients), asked. Server-side, so no APK. */
+function actPhoneRule(b) {
+  var w = actAppWord(b.app);
+  if (b.category === 'unclear' && actIsBrowser(b.app)) return Object.assign({}, b, { category: 'private', project: '', key: '' });
+  if (b.category === 'meeting' && /^phone(call)?$/.test(w)) return Object.assign({}, b, { category: 'private', project: '', key: '' });
+  if (b.category === 'private' && /^whatsapp(business)?$/.test(w)) return Object.assign({}, b, { category: 'distraction' });
+  return b;
+}
+
+/** Item 42: no "Always work" for these (Chrome is every site; a call is now this, now that). */
+function actNeverLearn(app) {
+  return actIsBrowser(app) || /^phone(call)?$/.test(actAppWord(app));
+}
+
+/* Item 41: Windows' own apps (Settings, Photos, Calculator...) all run inside ApplicationFrameHost; the app's name
+ * is the last part of its window title ("IMG_1.jpg - Photos" -> "Photos"). Anything else keeps the host's name. */
+var ACT_HOST_APPS = ['applicationframehost'];
+function actHostedApp(app, title) {
+  if (ACT_HOST_APPS.indexOf(actAppWord(app)) === -1) return app;
+  var parts = String(title == null ? '' : title).replace(/[\u200e\u200f]/g, '').split(/\s+[-\u2013\u2014]\s+/);
+  var last = parts[parts.length - 1].trim();
+  return /^[A-Za-z][A-Za-z0-9 &+.'()-]{1,29}$/.test(last) ? last : app;
+}
+
 /** May this unclear title go to Gemini? Not a terminal's or a file window's, and not one that looks like a path. */
 function actTitleSendable(app, title) {
   if (ACT_NO_TITLE_APPS.indexOf(actNorm(String(app || '').replace(/\.exe$/i, ''))) !== -1) return false;
@@ -410,9 +436,9 @@ function actSegments(events, cut) {
   (events.window || []).forEach(function (e) {
     var sp = actEventSpan(e);
     if (!sp) return;
-    var app = actCleanApp(e.data && e.data.app);
-    if (actIsAway(app)) return;              // the lock screen: away, not activity
     var title = String((e.data && e.data.title) || '');
+    var app = actHostedApp(actCleanApp(e.data && e.data.app), title);
+    if (actIsAway(app)) return;              // the lock screen: away, not activity
     var browser = actIsBrowser(app);
     actIntersect(sp[0], sp[1], allowed).forEach(function (p) {
       function piece(a, b, w) {
@@ -1729,14 +1755,21 @@ var ACT_PHONE_GROUP = 'Phone';
 /** A block's line name: Meeting, a distraction's word, Private, Browsing (a browser or a site), a phone
  *  app ("Phone · YouTube"), else the app in plain words (WindowsTerminal -> Terminal). */
 function actLineName(b) {
-  if (b.category === 'meeting') return 'Meeting';
-  if (b.category === 'private') return 'Private';
+  // Item 41: the phone's lines sit under "Phone" already, so they are named by the app alone; calls say so.
+  var phoneApp = b.kind === 'phone' ? String(b.app || '').trim() : '';
+  if (b.category === 'meeting') return phoneApp ? (/^phone( call)?$/i.test(phoneApp) ? 'Phone calls' : phoneApp) : 'Meeting';
+  if (b.category === 'private') {
+    if (/^phone( ?call)?$/i.test(phoneApp)) return 'Phone calls';                   // item 42: asked, work or chit-chat
+    return String(b.app || '').replace(/\.exe$/i, '').replace(/\.root$/i, '').trim() || 'Private';
+  }
   if (b.category === 'distraction') {
     var w = actDistractName(b);
-    return w === 'distraction' ? (b.kind === 'phone' && b.app ? 'Phone · ' + b.app : b.domain || 'Distraction') : w;
+    return w === 'distraction' ? (phoneApp || b.domain || 'Distraction') : w;
   }
-  if (b.kind === 'phone') return 'Phone · ' + (String(b.app || '').trim() || 'app');
-  if (b.domain || actIsBrowser(b.app)) return 'Browsing';
+  if (b.kind === 'phone') return phoneApp || 'App';
+  // Item 42 (Saad, 5 Nov): a browser line says its site; "Browsing" only when no site was seen.
+  if (b.domain) return b.domain;
+  if (actIsBrowser(b.app)) return 'Browsing';
   var raw = String(b.app || '').replace(/\.exe$/i, '').trim();
   var k = actWorkName(raw);
   return ACT_PLAIN_NAMES[k] || raw || 'Unknown app';
@@ -1906,5 +1939,8 @@ globalThis.ProBeingActivity = {
   actDeskGroups: actDeskGroups,
   ACT_NO_DESKTOP: ACT_NO_DESKTOP,
   ACT_PHONE_GROUP: ACT_PHONE_GROUP,
-  actEntrySite: actEntrySite
+  actEntrySite: actEntrySite,
+  actHostedApp: actHostedApp,
+  actPhoneRule: actPhoneRule,
+  actNeverLearn: actNeverLearn
 };

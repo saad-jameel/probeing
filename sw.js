@@ -72,8 +72,9 @@
  * v50 (item 38 fix): only his answer closes last night; plain night words; the shade blocks taps.
  * v51 (item 38, 3 Nov): unanswered nights and "start?" applied by themselves; unsorted use is never Away.
  * v52 (item 39): "Always work" on the private-app push.
- * v53 (item 40): bank alerts in the popup; own transfers; the account on money rows. */
-var CACHE = 'probeing-shell-v53';
+ * v53 (item 40): bank alerts in the popup; own transfers; the account on money rows.
+ * v54 (item 41): "YouTube — distraction — 13m" lines; phone lines named by app; Windows apps named. */
+var CACHE = 'probeing-shell-v54';
 var SHELL = [
   './',
   'index.html',
@@ -221,8 +222,10 @@ self.addEventListener('push', function (event) {
     if (!settled && data.nudge && data.nonce && data.url) {
       // Item 36: a private app is asked "work or not?".
       // Item 39: "Always work" puts the app on his work list for good.
+      // Item 42: no "Always work" for phone Chrome or a call (data.learn false).
       opts.actions = data.private === true
-        ? [{ action: 'working', title: 'Work' }, { action: 'always', title: 'Always work' }, { action: 'break', title: 'Not work' }]
+        ? (data.learn === false ? [{ action: 'working', title: 'Work' }, { action: 'break', title: 'Not work' }]
+                                : [{ action: 'working', title: 'Work' }, { action: 'always', title: 'Always work' }, { action: 'break', title: 'Not work' }])
         : [{ action: 'break', title: 'Take a break' }, { action: 'working', title: 'I\'m working' }];
     }
     event.waitUntil(self.registration.showNotification(String(data.title || 'ProBeing'), opts));

@@ -3809,6 +3809,104 @@
      "key": ""
     }
    ]
+  },
+  {
+   "name": "item 41: Windows' own apps named, not ApplicationFrameHost",
+   "cut": {
+    "from": "2026-10-12T05:00:00.000Z",
+    "to": "2026-10-12T05:10:00.000Z",
+    "spans": [
+     [
+      "2026-10-12T05:00:00.000Z",
+      "2026-10-12T05:10:00.000Z"
+     ]
+    ]
+   },
+   "cfg": {
+    "lists": null,
+    "rules": [
+     {
+      "keyword": "docker",
+      "project": "OneNet"
+     },
+     {
+      "keyword": "neuravue",
+      "project": "NeuraVue"
+     }
+    ],
+    "projects": [
+     "ProBeing",
+     "OneNet",
+     "NeuraVue"
+    ]
+   },
+   "events": {
+    "afk": [
+     {
+      "timestamp": "2026-10-12T04:50:00+00:00",
+      "duration": 1800,
+      "data": {
+       "status": "not-afk"
+      }
+     }
+    ],
+    "window": [
+     {
+      "timestamp": "2026-10-12T05:00:00.000000+00:00",
+      "duration": 240,
+      "data": {
+       "app": "ApplicationFrameHost.exe",
+       "title": "Settings"
+      }
+     },
+     {
+      "timestamp": "2026-10-12T05:04:00.000000+00:00",
+      "duration": 180,
+      "data": {
+       "app": "ApplicationFrameHost.exe",
+       "title": "IMG_2041.jpg ‎- Photos"
+      }
+     },
+     {
+      "timestamp": "2026-10-12T05:07:00.000000+00:00",
+      "duration": 180,
+      "data": {
+       "app": "ApplicationFrameHost.exe",
+       "title": "C:\\\\Users\\\\x\\\\secret plan.txt"
+      }
+     }
+    ],
+    "web": []
+   },
+   "want": [
+    {
+     "start": "2026-10-12T05:00:00.000Z",
+     "end": "2026-10-12T05:04:00.000Z",
+     "app": "Settings",
+     "domain": "",
+     "category": "unclear",
+     "project": "",
+     "key": ""
+    },
+    {
+     "start": "2026-10-12T05:04:00.000Z",
+     "end": "2026-10-12T05:07:00.000Z",
+     "app": "Photos",
+     "domain": "",
+     "category": "work",
+     "project": "",
+     "key": ""
+    },
+    {
+     "start": "2026-10-12T05:07:00.000Z",
+     "end": "2026-10-12T05:10:00.000Z",
+     "app": "ApplicationFrameHost.exe",
+     "domain": "",
+     "category": "unclear",
+     "project": "",
+     "key": ""
+    }
+   ]
   }
  ],
  "quiet": [
