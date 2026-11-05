@@ -696,7 +696,9 @@ function quietStep(d) {
       return n.kind === 'upwork' && state[n.id] === 'awake' && (state[n.id] !== n.state ? now : n.decided_at) >= oref;
     });
     var so = since(['start'], oref, just);
-    if (so !== null) add(findRun(so, ofrom, ofrom, START_MIN_MS, 'start', oref));
+    // Item 43 fix: one open at a time, whichever row it was asked from.
+    var startOpen = nudges.some(function (n) { return n.kind === 'start' && state[n.id] === 'sent'; });
+    if (so !== null && !startOpen) add(findRun(so, ofrom, ofrom, START_MIN_MS, 'start', oref));
   }
 
   // Item 30a: an open question's plan follows every block since it began (later runs and long gaps too).
@@ -981,6 +983,8 @@ function dayClosedOn(n, rows) {
     if (!first || r.at < first.at) first = r;
   });
   if (!first || !(first.type === 'off' || (first.type === 'sleep' && n.kind === 'start'))) return null;
+  // Item 43 fix: a night the app wrote from the devices is not him ending the day: phone use on a day off stays a question.
+  if (/^nx-/.test(String(first.rid || ''))) return null;
   // Open just before it: the same stretch, nothing of his in between.
   var before = (rows || []).filter(function (r) { return r.at < first.at; })
     .map(function (r) { return { at: new Date(r.at).toISOString(), type: r.type, rid: r.rid }; });
@@ -1797,7 +1801,15 @@ async function runQuiet(sb: Sb, owner: string, now: number, set: Record<string, 
       user_id: owner, device_id: p.device_id, kind: p.kind, ref_at: iso(p.ref), streak_start: iso(p.start), what: p.dev,
       pushed_at: iso(now), nonce_sha256: await sha256Hex(nonce), state: 'sent', ...(hasRun ? { run: p.run ? runJson(p.run) : null } : {})
     }).select('id');
-    if (claim.error) continue;                       // another run claimed this one (one open per sleep or break)
+    if (claim.error) {
+      // Item 43 fix: a "start?" closed earlier about this very run holds its place (one per start time), so every
+      // new try was refused for good (live 5 Nov). Open that one again; its 30 minutes then apply as usual.
+      if (p.kind === 'start') {
+        await sb.from('activity_nudges').update({ state: 'sent', ref_at: iso(p.ref), decided_at: null, ...(hasRun ? { run: p.run ? runJson(p.run) : null } : {}) })
+          .eq('user_id', owner).eq('device_id', p.device_id).eq('kind', 'start').eq('streak_start', iso(p.start)).eq('state', 'closed');
+      }
+      continue;                                      // another run claimed this one (one open per sleep or break)
+    }
     const id = String((claim.data || [])[0]?.id || '');
     // A use that ended long ago is asked in the app's sheet only; one no device got waits there too.
     if (!p.push) { (report.pushed as unknown[]).push({ kind: p.kind, sheetOnly: true }); continue; }

@@ -74,8 +74,9 @@
  * v52 (item 39): "Always work" on the private-app push.
  * v53 (item 40): bank alerts in the popup; own transfers; the account on money rows.
  * v54 (item 41): "YouTube — distraction — 13m" lines; phone lines named by app; Windows apps named.
- * v55 (item 43): "Probably asleep" on the pill; Change on a night already written. */
-var CACHE = 'probeing-shell-v55';
+ * v55 (item 43): "Probably asleep" on the pill; Change on a night already written.
+ * v56 (item 43 fix): "start?" stays open when a night is confirmed backdated. */
+var CACHE = 'probeing-shell-v56';
 var SHELL = [
   './',
   'index.html',

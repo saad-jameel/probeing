@@ -709,7 +709,15 @@ function actAskOpen(n, walk, rows) {
   if (moved) return false;
   if (n.kind === 'awake' || n.kind === 'upwork') return Boolean(walk && walk.asleep && walk.asleep.at === n.ref_at);
   if (n.kind === 'resume') return Boolean(walk && walk.onBreak && walk.onBreak.at === n.ref_at);
-  if (n.kind === 'start') return Boolean(walk && walk.offSince && walk.offSince.at === n.ref_at);
+  // Item 43 fix: a night confirmed backdated (sleep and wake before this work) moves the row it was asked from, not
+  // the question (live 5 Nov: six hours of work never asked again). Any other state row since is a new stretch.
+  if (n.kind === 'start') {
+    if (!walk || !walk.offSince) return false;
+    if (walk.offSince.at === n.ref_at) return true;
+    return !(rows || []).some(function (r) {
+      return r.at > n.ref_at && r.type !== 'sleep' && r.type !== 'wake' && ACT_ASK_ENDS.indexOf(r.type) !== -1;
+    });
+  }
   return false;
 }
 
