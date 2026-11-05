@@ -172,10 +172,15 @@ paste the line it gives you into PowerShell, done.
 - **The day ends by itself.** Without End day, the day ends at your last work, written
   after 23:30 once nothing has been worked for 30 minutes. Phone use after that is
   **late phone**: no push, it goes in yesterday's report.
-- **Sleep and wake come from the devices.** Sleep = the start of the last quiet stretch
-  before Fajr (a short pickup after midnight doesn't count as being up). Wake = the first
-  5 minutes of use after Fajr that isn't followed by an hour of quiet (back to sleep).
-  Nothing is written until you confirm it.
+- **Sleep and wake come from the devices.** With the day over, 2 hours or more with no
+  device in use is your sleep, even if it starts after Fajr. The longest such pause from
+  23:30 on counts; a pause that starts earlier counts only if there is no other, and is
+  then asked "Out, or asleep?". A short pickup after midnight doesn't count as being up.
+  Wake = the first use after Fajr that isn't followed by an hour of quiet. The popup asks
+  you in the morning (**Looks right** / **Change**); unanswered, it is written by itself.
+- **"Probably asleep"** shows on the pill between 23:30 and Fajr once the day is over and
+  nothing has been in use for 2 hours. It saves nothing. **Change this night** in Review
+  corrects a night already written.
 - Pressed Sleep yourself, then 30 minutes or more on the phone: **"Are you up?"**.
   Unanswered, it is a disturbed night and your sleep runs on to the morning. Pressing
   Sleep, then the laptop for 15 minutes, asks "asleep or working?". A **disturbed

@@ -785,6 +785,7 @@ var UP_RUN_MS = 30 * MIN_MS;           // use this long in one go after a quiet 
 var PICKUP_MS = 10 * MIN_MS;           // with no Sleep pressed, shorter use after midnight is a pickup
 var WAKE_RUN_MS = 5 * MIN_MS;          // use this long after Fajr can be the wake...
 var BACK_ASLEEP_MS = 60 * MIN_MS;      // ...unless this much quiet follows it (back to sleep)
+var SLEEP_LONG_MS = 2 * 3600000;        // item 43: the day over, this long with no device in use is his sleep
 var NIGHT_ANCHORS = { off: 1, sleep: 1, wake: 1 };
 
 /** Use runs of every device together: [{start, end, ms, phone}] (gaps under a minute joined). */
@@ -887,6 +888,8 @@ function nightStep(d) {
   // after it, a use of under PICKUP_MS after a quiet stretch is a pickup (a disturbed night), not being up.
   var s = e0;
   var prevEnd = e0;
+  var at2330f = f - ((local(f) - NIGHT_CLOSE_MIN + 1440) % 1440) * MIN_MS;
+  var longest = null;
   if (!manual) {
     runs.forEach(function (r) {
       if (r.start >= f) return;
@@ -894,6 +897,27 @@ function nightStep(d) {
       if (!afterMidnight || r.start - prevEnd < SLEEP_QUIET_MS || r.ms >= PICKUP_MS) s = r.end;
       prevEnd = r.end;
     });
+    // Item 43 (Saad, 5 Nov): whatever the clock says, the day over and 2+ hours with no device in use is his sleep
+    // (up till 06:45, then quiet till 13:02: slept 06:45). The longest that starts after 23:30; one that starts
+    // earlier (a dinner out) only if it runs past 23:30 and no such pause exists (he slept early).
+    var pStart = e0;
+    var quietFrom = e0;
+    var after = null;
+    var before = null;
+    runs.forEach(function (r) {
+      var pickup = local(r.start) < 12 * 60 && r.start - quietFrom >= SLEEP_QUIET_MS && r.ms < PICKUP_MS;
+      if (!pickup) {
+        if (r.start - pStart >= SLEEP_LONG_MS) {
+          var pause = { s: pStart, e: r.start };
+          if (pStart >= at2330f) { if (!after || pause.e - pause.s > after.e - after.s) after = pause; }
+          else if (r.start > at2330f && (!before || pause.e - pause.s > before.e - before.s)) before = pause;
+        }
+        pStart = r.end;
+      }
+      quietFrom = r.end;
+    });
+    longest = after || before;
+    if (longest) s = longest.s;
   }
   // Wake: the first use after Fajr (and after the sleep) that starts a spell of use — uses less than an hour apart —
   // of WAKE_RUN_MS or more in all. Sure once there is more use within the hour, or an hour of it; a spell followed
@@ -903,6 +927,8 @@ function nightStep(d) {
   for (var i = 0; i < runs.length; i++) {
     var r = runs[i];
     var a = Math.max(r.start, f, s);
+    // Item 43: the use that ended his long pause, carrying on past Fajr: up from when it began.
+    if (longest && r.start === longest.e && r.end > f) a = r.start;
     if (r.end <= a) continue;
     var j = i;
     var use = r.end - a;
@@ -917,6 +943,9 @@ function nightStep(d) {
     i = j;                                                            // used, then an hour of quiet: back to sleep
   }
   if (w === null) return out;
+  // Item 43: under two hours is no sleep yet (Tuesday 3 Nov read "slept 05:33, woke 05:36", up till 06:45): wait for
+  // his long pause. Given up after a day, so a really short night still goes on record.
+  if (!manual && !longest && w - s < SLEEP_LONG_MS && now - w < 20 * 3600000) return out;
   var pickups = runs.filter(function (r) { return r.start >= s && r.start < w && r.end <= w; }).length;
   // The day's end (an off row, or the last work when the day was never ended).
   // After a wake (a day off, nothing ended) there is no day end; late phone then counts from 23:30.
@@ -927,7 +956,8 @@ function nightStep(d) {
   if (s - at2330 > 12 * 3600000) at2330 = s;                        // asleep before 23:30: nothing late
   if (lateFrom === null || s - lateFrom > 16 * 3600000) lateFrom = at2330;
   var late = phoneUse(d.blocks, lateFrom, s);
-  var silent = !manual && !runs.some(function (r) { return r.start < w && r.end > e0; });
+  // A sleep from before 23:30 is unusual for him (out with friends?): asked as a silent night is.
+  var silent = !manual && (s < at2330f || !runs.some(function (r) { return r.start < w && r.end > e0; }));
   out.night = { ref: e0, s: s, w: w, run: { e: off ? off.at : null, s: s, w: w, manual: manual, silent: silent, pickups: pickups,
                                              late: late, fajr: f } };
   return out;
@@ -1847,6 +1877,7 @@ async function runNight(sb: Sb, owner: string, now: number, set: Record<string, 
   if (applied) return { wrote: applied, proposed: false };      // the next run reads the rows just written
   const seen = must(await sb.from('watch_devices').select('last_seen_at').eq('user_id', owner).limit(50))
     .map((x) => ms(x.last_seen_at)).filter((t) => isFinite(t));
+  await nightFixes(sb, owner, now, set);
   const fajrAfter = fajrAfterFn(set);
   const step = nightStep({ now, rows: rows.map((r) => ({ at: ms(r.at), type: r.type, rid: r.rid || '' })), walk, blocks, nights,
                           fajrAfter, offsetAt: (t: number) => Day.zoneOffsetMin(set.zone, t, set.offset),
@@ -1862,6 +1893,31 @@ async function runNight(sb: Sb, owner: string, now: number, set: Record<string, 
     proposed = !claim.error;
   }
   return { wrote: step.write.length, proposed };
+}
+
+/** Item 43: his Change on a night already written (Review; an events row 'nightfix', detail {id, s, w}): the night's
+ *  rows are moved to his times. Events are append-only for the browser, so this is the server's. Each fix once. */
+async function nightFixes(sb: Sb, owner: string, now: number, set: Record<string, any>) {
+  const fixes = must(await sb.from('events').select('rid, detail, at').eq('user_id', owner).eq('type', 'nightfix')
+    .gte('at', iso(now - 8 * 86400000)).order('at', { ascending: true }).limit(20));
+  for (const f of fixes) {
+    let d: Record<string, any> = {};
+    try { d = JSON.parse(String(f.detail || '{}')); } catch (_e) { continue; }
+    const id = String(d.id || '');
+    const st = ms(d.s);
+    const wk = ms(d.w);
+    if (!UUID.test(id) || !isFinite(wk)) continue;
+    const n = must(await sb.from('activity_nudges').select('id, kind, state, run, streak_start').eq('id', id).eq('user_id', owner).limit(1))[0];
+    if (!n || n.kind !== 'night' || n.state === 'sent' || (n.run && n.run.fix === f.rid)) continue;
+    const manual = Boolean(n.run && n.run.manual);
+    const sleepAt = manual || !isFinite(st) ? ms(n.streak_start) : st;
+    if (!(wk > sleepAt) || wk > now) continue;
+    await sb.from('events').delete().eq('user_id', owner).in('rid', ['nx-sl-' + id, 'nx-wk-' + id]);
+    if (!manual) await writeRow(sb, owner, set.zone, { type: 'sleep', at: sleepAt, rid: 'nx-sl-' + id, text: 'Sleep (from the devices — changed)' });
+    await writeRow(sb, owner, set.zone, { type: 'wake', at: wk, rid: 'nx-wk-' + id, text: 'Wake up (from the devices — changed)' });
+    await sb.from('activity_nudges').update({ streak_start: iso(sleepAt), span_end: iso(wk), run: Object.assign({}, n.run || {}, { s: iso(sleepAt), w: iso(wk), fix: f.rid }) })
+      .eq('id', id).eq('user_id', owner);
+  }
 }
 
 /** When an unanswered night is applied: noon (local) of the wake's day, or an hour after the proposal if that is later. */

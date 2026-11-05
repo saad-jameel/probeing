@@ -2190,6 +2190,7 @@ async function refresh(opts) {
     catchupPrune();                       // item 23: answered on another device, or over
     if (catchupOnOpen) { catchupOnOpen = false; maybeCatchUp(); }      // Stage 18b: once per opening
     readAutoAsks();                                                      // item 30b: at most once a minute
+    readProbableSleep().catch(function () {});                           // item 43
     paintReportAck(false).catch(function () {});                        // item 35: at most every 10 min
     if (!weekGoals || weekGoals.week !== weekStartYmd(Date.now())) paintGoals().catch(function () {});
     clearStaleNotes();                                                   // item 31c: with today's rows read
@@ -3216,6 +3217,39 @@ function sinceLabel(at) {
          String(d.getMinutes()).padStart(2, '0');
 }
 
+/* Item 43 (Saad, 5 Nov): between 23:30 and Fajr, the day over and no device in use for 2 hours, the pill says
+ * "Probably asleep". Only the pill: the sleep itself is settled in the morning. NaN = not now. */
+var PROBABLY_ASLEEP_MS = 2 * 3600000;
+var probablySleptAt = NaN;
+
+function sinceWords(t) { return ' since ' + clockAt(t); }
+
+/** When he probably fell asleep, or NaN. lastUse: the newest block's end or his last state press. Pure. */
+function probableSleep(lastUse, now, workState) {
+  if (workState !== 'off' || !isFinite(lastUse) || now - lastUse < PROBABLY_ASLEEP_MS) return NaN;
+  var d = new Date(now);
+  var mins = d.getHours() * 60 + d.getMinutes();
+  var fajr = prayerEndOf('Isha', prayerDate(now));
+  var night = mins >= 23 * 60 + 30 || (mins < 12 * 60 && fajr - now < 12 * 3600000);
+  return night ? lastUse : NaN;
+}
+
+async function readProbableSleep() {
+  if (!supabaseReady() || !toggles) return;
+  var was = probablySleptAt;
+  var res = await sb.from('activity_blocks').select('ended_at').order('ended_at', { ascending: false }).limit(1);
+  if (res.error || !(res.data || []).length) { probablySleptAt = NaN; }
+  else {
+    var pressed = toggles.work && toggles.work.at ? Date.parse(toggles.work.at) : -Infinity;
+    probablySleptAt = probableSleep(Math.max(Date.parse(res.data[0].ended_at), pressed), Date.now(), toggles.work.state);
+  }
+  if (was !== probablySleptAt && !(isNaN(was) && isNaN(probablySleptAt))) paintToggles();
+}
+
+setInterval(function () {
+  if (document.visibilityState === 'visible') readProbableSleep().catch(function () {});
+}, 5 * 60000);
+
 /** Labels, icons, the two pills and the page tint all follow the state. */
 function paintToggles() {
   var asleep = toggles.sleep.state === 'asleep';
@@ -3234,9 +3268,11 @@ function paintToggles() {
 
   // --- the two pills under the logo
   var sp = $('sleepPill');
-  $('sleepPillText').textContent = asleep ? 'Asleep' : 'Awake';
-  setIcon(sp.querySelector('use'), asleep ? 'i-moon' : 'i-sun');
-  sp.className = 'pill' + (asleep ? ' lit' : '');
+  // Item 43: on screen only; nothing is saved until the morning (he may be out with friends).
+  var maybe = !asleep && isFinite(probablySleptAt);
+  $('sleepPillText').textContent = asleep ? 'Asleep' : maybe ? 'Probably asleep' + sinceWords(probablySleptAt) : 'Awake';
+  setIcon(sp.querySelector('use'), asleep || maybe ? 'i-moon' : 'i-sun');
+  sp.className = 'pill' + (asleep || maybe ? ' lit' : '');
 
   var wp = $('workPill');
   var WORK_PILL = {
@@ -8227,6 +8263,7 @@ async function runReview(force) {
   if (!mine()) return;
   $('reviewNight').textContent = nightSum ? nightSum.lines.join(' ') : '';
   $('reviewNight').hidden = !nightSum || !nightSum.lines.length;
+  paintNightFix(nightSum);
   var prayed = prayerStats(got.rows, got.windows);
   showPrayerTable($('reviewPrayers'), prayed);
   /* Published for the dialog's Save to find later — see reviewRegroup. Called
@@ -10327,10 +10364,58 @@ function slideWords(t) {
 /* ── Item 38: nights and days off for a span ───────────────────────────────────────────────────
  * The night proposals (activity-ingest) say when each day ended, the late phone and the sleep; a day with
  * no work at all is a day off, its phone time wasted. Null when there is nothing (or no table). */
+/* Item 43: Change on a night already written (by his answer, or by itself): the two times, then a 'nightfix' row
+ * through the outbox. Events are append-only here, so activity-ingest moves the rows on its next run. */
+function paintNightFix(sum) {
+  var box = $('reviewNightFix');
+  box.textContent = '';
+  var n = sum && sum.nights && sum.nights.length === 1 ? sum.nights[0] : null;
+  box.hidden = !n || n.state === 'sent';
+  if (box.hidden) return;
+  var s = Date.parse(n.streak_start);
+  var w = Date.parse(n.span_end);
+  var manual = Boolean(n.run && n.run.manual);
+  var open = document.createElement('button');
+  open.type = 'button';
+  open.className = 'link-btn';
+  open.textContent = 'Change this night';
+  open.addEventListener('click', function () {
+    box.textContent = '';
+    function field(label, t) {
+      var l = document.createElement('label');
+      var i = document.createElement('input');
+      i.type = 'time';
+      i.value = clockAt(t);
+      l.append(label + ' ', i);
+      box.append(l, ' ');
+      return i;
+    }
+    var si = manual ? null : field('Slept', s);
+    var wi = field('Woke', w);
+    var note = document.createElement('p');
+    note.className = 'pending';
+    var save = document.createElement('button');
+    save.type = 'button';
+    save.className = 'btn btn-accent';
+    save.textContent = 'Save';
+    save.addEventListener('click', function () {
+      var st = si ? nearestClock(si.value, s) : s;
+      var wt = nearestClock(wi.value, w);
+      if (!isFinite(st) || !isFinite(wt) || !(wt > st) || wt > Date.now()) { note.textContent = 'The wake has to come after the sleep, and not in the future.'; return; }
+      runWrites([{ type: 'nightfix', raw_text: 'Night changed: slept ' + clockAt(st) + ', woke ' + clockAt(wt),
+                   detail: JSON.stringify({ id: n.id, s: new Date(st).toISOString(), w: new Date(wt).toISOString() }),
+                   rid: 'nf-' + n.id + '-' + Date.now().toString(36) }]);
+      box.textContent = 'Noted: slept ' + clockAt(st) + ', woke ' + clockAt(wt) + '. It shows here within a few minutes.';
+    });
+    box.append(save, note);
+  });
+  box.appendChild(open);
+}
+
 async function readNightSummary(startMs, endMs, perDay) {
   if (!supabaseReady()) return null;
   try {
-    var res = await sb.from('activity_nudges').select('ref_at,streak_start,span_end,state,run').eq('kind', 'night')
+    var res = await sb.from('activity_nudges').select('id,ref_at,streak_start,span_end,state,run').eq('kind', 'night')
       .gte('ref_at', new Date(startMs).toISOString()).lt('ref_at', new Date(endMs).toISOString()).order('ref_at', { ascending: true }).limit(62);
     var nights = res.error ? [] : res.data || [];
     var lines = [];

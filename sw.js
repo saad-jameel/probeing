@@ -73,8 +73,9 @@
  * v51 (item 38, 3 Nov): unanswered nights and "start?" applied by themselves; unsorted use is never Away.
  * v52 (item 39): "Always work" on the private-app push.
  * v53 (item 40): bank alerts in the popup; own transfers; the account on money rows.
- * v54 (item 41): "YouTube — distraction — 13m" lines; phone lines named by app; Windows apps named. */
-var CACHE = 'probeing-shell-v54';
+ * v54 (item 41): "YouTube — distraction — 13m" lines; phone lines named by app; Windows apps named.
+ * v55 (item 43): "Probably asleep" on the pill; Change on a night already written. */
+var CACHE = 'probeing-shell-v55';
 var SHELL = [
   './',
   'index.html',
