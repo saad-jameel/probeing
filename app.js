@@ -11571,6 +11571,7 @@ function renderMoney() {
   $('moneyMonth').textContent = (month.since ? 'Since ' + moneySinceDay(month) : 'This month') +
     ': got ' + formatPkr(month['in']) + ' · spent ' + formatPkr(month.out);
   paintBuyLine(rows, known ? wallet.left : null);
+  paintDailyBudget(rows, today);
 
   var held = outboxOurs().filter(moneyItem).length;
   var note = [];
@@ -11593,6 +11594,36 @@ function renderMoney() {
   [[buyMoveDlg, buyMoving], [buyEarlyDlg, buyEarly && buyEarly.thing]].forEach(function (d) {
     if (d[0].open && d[1] && !buyOpen(rows).some(function (t) { return t.rid === d[1].rid; })) closeMoneyDlg(d[0]);
   });
+}
+
+/* Item 44 (Saad, 6 Nov): he plans "Daily Expanse" on the Buying list each month (PKR 20,000). The Money tab holds
+ * his day-to-day spending against it. Things bought off the list are planned separately, so they do not count. */
+var DAILY_BUDGET_NAME = /^daily\s*exp[ae]nses?$/i;
+var DAILY_BUDGET_TAGS = { food: 1, snacks: 1, groceries: 1, transport: 1, personal: 1 };
+
+/** {monthAmount, perDay, today, month} in rupees, or null with no such thing this month. Pure. */
+function dailyBudgetOf(rows, today, todayYm) {
+  var plan = buyOpen(rows).filter(function (t) { return t.month === todayYm && DAILY_BUDGET_NAME.test(t.name.trim()); })[0];
+  if (!plan) return null;
+  var mine = (rows || []).filter(function (r) { return !(r && String(r.rid || '').indexOf(BUY_RID.bought) === 0); });
+  function spent(windows) {
+    var by = moneyFigures(mine, windows).byTagOut;
+    return Object.keys(by).reduce(function (t, k) { return DAILY_BUDGET_TAGS[k.toLowerCase()] === 1 ? t + by[k] : t; }, 0);
+  }
+  var days = new Date(today.getFullYear(), today.getMonth() + 1, 0).getDate();
+  return { monthAmount: plan.amount, perDay: Math.floor(plan.amount / days), today: spent(dayWindows(today, today)),
+           month: spent(dayWindows(new Date(today.getFullYear(), today.getMonth(), 1), today)) };
+}
+
+function paintDailyBudget(rows, today) {
+  var b = moneyReadAt > 0 ? dailyBudgetOf(rows, today, buyTodayYm()) : null;
+  $('dailyBudget').hidden = !b;
+  if (!b) return;
+  var over = b.today - b.perDay;
+  $('dailyToday').textContent = 'Daily expense today: PKR ' + formatPkr(b.today) + ' of ' + formatPkr(b.perDay) +
+    (over > 0 ? ' · over by ' + formatPkr(over) : '');
+  $('dailyToday').className = over > 0 ? 'over' : '';
+  $('dailyMonth').textContent = 'This month: PKR ' + formatPkr(b.month) + ' of ' + formatPkr(b.monthAmount);
 }
 
 /** Every money row, a page at a time: the wallet runs from the first one.
@@ -18238,10 +18269,23 @@ function bankWords(a) {
 }
 
 /** The money row an alert becomes. */
-function bankMoney(a, kind, tag) {
+function bankMoney(a, kind, tag, comment) {
   var t = Date.parse(a.at);
+  var who = a.party ? (a.dir === 'in' ? 'from ' : 'to ') + a.party : '';
+  var said = String(comment || '').trim();          // item 44: his comment, after the name
   return { rid: 'bk-' + a.id, at: new Date(t).toISOString(), local_time: humanLocalAt(t), dir: a.dir, amount: String(Number(a.amount)),
-           tag: tag, note: a.party ? (a.dir === 'in' ? 'from ' : 'to ') + a.party : '', account: a.bank, kind: kind };
+           tag: tag, note: (who && said ? who + ' · ' + said : who || said).slice(0, MONEY_NOTE_MAX), account: a.bank, kind: kind };
+}
+
+/** Item 44: a comment box on a bank line. */
+function bankNoteBox() {
+  var i = document.createElement('input');
+  i.type = 'text';
+  i.className = 'money-field bank-note';
+  i.maxLength = 120;
+  i.placeholder = 'Comment (optional)';
+  i.setAttribute('aria-label', 'Comment');
+  return i;
 }
 
 function bankAskRow(a, li, text, acts, btn) {
@@ -18252,9 +18296,11 @@ function bankAskRow(a, li, text, acts, btn) {
   if (a.kind === 'bankpair') {
     text.textContent = 'Own transfer · ' + a.out.bank + ' → ' + a['in'].bank + ' · PKR ' + formatPkr(Number(a.out.amount)) +
                        ' · ' + clockAt(Date.parse(a.out.at)) + ' (not income or spending).';
+    var pairNote = bankNoteBox();
+    acts.appendChild(pairNote);
     btn('Confirm', function () {
-      sendMoney(bankMoney(a.out, 'transfer', 'Own transfer'), 'transfer');
-      sendMoney(bankMoney(a['in'], 'transfer', 'Own transfer'), 'transfer');
+      sendMoney(bankMoney(a.out, 'transfer', 'Own transfer', pairNote.value), 'transfer');
+      sendMoney(bankMoney(a['in'], 'transfer', 'Own transfer', pairNote.value), 'transfer');
       done('Noted: own transfer, ' + a.out.bank + ' → ' + a['in'].bank + '.');
     });
     btn('Two separate entries', function () {
@@ -18278,9 +18324,11 @@ function bankAskRow(a, li, text, acts, btn) {
     sel.appendChild(o);
   });
   acts.appendChild(sel);
+  var note = bankNoteBox();
+  acts.appendChild(note);
   btn('Confirm', function () {
     var own = sel.value === 'Own transfer';
-    sendMoney(bankMoney(al, own ? 'transfer' : 'cash', sel.value), own ? 'transfer' : 'money');
+    sendMoney(bankMoney(al, own ? 'transfer' : 'cash', sel.value, note.value), own ? 'transfer' : 'money');
     done('Noted: ' + bankWords(al) + ' · ' + sel.value + '.');
   });
   btn('Ignore', function () {

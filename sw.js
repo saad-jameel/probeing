@@ -75,8 +75,9 @@
  * v53 (item 40): bank alerts in the popup; own transfers; the account on money rows.
  * v54 (item 41): "YouTube — distraction — 13m" lines; phone lines named by app; Windows apps named.
  * v55 (item 43): "Probably asleep" on the pill; Change on a night already written.
- * v56 (item 43 fix): "start?" stays open when a night is confirmed backdated. */
-var CACHE = 'probeing-shell-v56';
+ * v56 (item 43 fix): "start?" stays open when a night is confirmed backdated.
+ * v57 (item 44): the daily-expense status on Money; a comment on bank lines. */
+var CACHE = 'probeing-shell-v57';
 var SHELL = [
   './',
   'index.html',

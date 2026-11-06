@@ -88,8 +88,13 @@ Amounts are in PKR.
 - **Dues** — who owes you and whom you owe. **Settle** records money actually moving.
 - **Logs** — every entry, by day. A mistake is cancelled, never edited.
 - **Buying list** — things you plan to buy this month, checked against the wallet.
+- **Daily expense** — put a thing called **Daily Expanse** on this month's Buying list
+  (say PKR 20,000) and Money shows today's spending against the daily share (PKR 666 in a
+  30-day month), and the month against the total. It counts Food, Snacks, Groceries,
+  Transport and Personal; things bought off the list don't count.
 - **Bank alerts** (phone app) — each payment in or out of HBL, easypaisa or JazzCash
-  comes up first when you open ProBeing: pick a tag and **Confirm**, or **Ignore**. It
+  comes up first when you open ProBeing: pick a tag, add a comment if you like, and
+  **Confirm**, or **Ignore**. It
   goes into the wallet with the bank's name. Money moved between your own accounts
   (an out and an in of the same amount within 30 minutes) shows as one **Own
   transfer** line: it counts as neither spending nor income. Not answered in 7 days,
