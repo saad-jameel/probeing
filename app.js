@@ -11580,19 +11580,28 @@ function renderMoney() {
   });
 }
 
-/* Item 44 (Saad, 6 Nov): he plans "Daily Expanse" on the Buying list each month (PKR 20,000). The Money tab holds
- * his day-to-day spending against it. Things bought off the list are planned separately, so they do not count. */
+/* Item 44 (Saad, 6 Nov): he plans "Daily Expanse" on the Buying list each month (PKR 20,000), and an expense he tags
+ * the same counts against it; he decides, entry by entry. Things bought off the list are planned separately. */
 var DAILY_BUDGET_NAME = /^daily\s*exp[ae]nses?$/i;
-var DAILY_BUDGET_TAGS = { food: 1, snacks: 1, groceries: 1, transport: 1, personal: 1 };
+// November's entries from before the tag existed, so the month did not restart at zero.
+var DAILY_OLD_TAGS = { food: 1, snacks: 1, groceries: 1, transport: 1, personal: 1 };
+var DAILY_OLD_BEFORE = new Date(2026, 10, 7).getTime();
 
 /** {monthAmount, perDay, today, month} in rupees, or null with no such thing this month. Pure. */
 function dailyBudgetOf(rows, today, todayYm) {
   var plan = buyOpen(rows).filter(function (t) { return t.month === todayYm && DAILY_BUDGET_NAME.test(t.name.trim()); })[0];
   if (!plan) return null;
-  var mine = (rows || []).filter(function (r) { return !(r && String(r.rid || '').indexOf(BUY_RID.bought) === 0); });
+  // A void keeps its place whatever its date: it is what takes the row it names out of the sums.
+  var mine = (rows || []).filter(function (r) {
+    if (!r) return false;
+    if (r.voids_rid) return true;
+    if (String(r.rid || '').indexOf(BUY_RID.bought) === 0) return false;
+    var tag = String(r.tag || '').trim();
+    return DAILY_BUDGET_NAME.test(tag) || (DAILY_OLD_TAGS[tag.toLowerCase()] === 1 && instantOf(r.at) < DAILY_OLD_BEFORE);
+  });
   function spent(windows) {
     var by = moneyFigures(mine, windows).byTagOut;
-    return Object.keys(by).reduce(function (t, k) { return DAILY_BUDGET_TAGS[k.toLowerCase()] === 1 ? t + by[k] : t; }, 0);
+    return Object.keys(by).reduce(function (t, k) { return t + by[k]; }, 0);
   }
   var days = new Date(today.getFullYear(), today.getMonth() + 1, 0).getDate();
   return { monthAmount: plan.amount, perDay: Math.floor(plan.amount / days), today: spent(dayWindows(today, today)),

@@ -90,8 +90,8 @@ Amounts are in PKR.
 - **Buying list** — things you plan to buy this month, checked against the wallet.
 - **Daily expense** — put a thing called **Daily Expanse** on this month's Buying list
   (say PKR 20,000) and Money shows today's spending against the daily share (PKR 666 in a
-  30-day month), and the month against the total. It counts Food, Snacks, Groceries,
-  Transport and Personal; things bought off the list don't count.
+  30-day month), and the month against the total. Only expenses you tag **Daily Expanse**
+  count; things bought off the list don't.
 - **Bank alerts** (phone app) — each payment in or out of HBL, easypaisa or JazzCash
   comes up first when you open ProBeing: pick a tag, add a comment if you like, and
   **Confirm**, or **Ignore**. It
