@@ -6885,22 +6885,6 @@ function walletFigures(rows) {
   return { set: true, left: paisa / 100, from: open.at };
 }
 
-/** Counter days from `today` (a local date) to the next 1st, today included:
- *  1 on the 30th of September, 31 on the 1st of October. */
-function daysTillFirst(today) {
-  var y = today.getFullYear();
-  var m = today.getMonth();
-  return Math.round((Date.UTC(y, m + 1, 1) - Date.UTC(y, m, today.getDate())) / 86400000);
-}
-
-/** What is left, spread over the days to the next 1st, in whole rupees rounded
- *  down so the days add up to no more than is there. 0 when nothing is left. */
-function perDayTillFirst(left, today) {
-  var paisa = Math.round(Number(left) * 100);
-  if (!(paisa > 0)) return 0;
-  return Math.floor(paisa / daysTillFirst(today) / 100);
-}
-
 /* Item 19: the buying list. A thing is a money row of kind 'buy' (dir 'plan',
  * name in tag, its month in buy_month); it is off the list once a void names it.
  * It never counts in spent, got or the wallet: only Bought's own expense does. */
@@ -11560,16 +11544,16 @@ function renderMoney() {
   var wallet = walletFigures(rows);
   var known = wallet.set && moneyReadAt > 0;
   $('walletLeft').textContent = known ? formatPkr(wallet.left) : '—';
-  $('walletPerDay').textContent = known ? formatPkr(perDayTillFirst(wallet.left, today)) : '—';
-  var days = daysTillFirst(today);
-  $('walletDays').textContent = days === 1 ? 'today is the last day' : days + ' days, today included';
   $('walletSetBtn').textContent = wallet.set ? 'Recount' : 'Set starting amount';
   $('walletHint').hidden = wallet.set;
 
   var monthDays = dayWindows(new Date(today.getFullYear(), today.getMonth(), 1), today);
   var month = moneySince(moneyFigures(rows, monthDays), monthDays);
-  $('moneyMonth').textContent = (month.since ? 'Since ' + moneySinceDay(month) : 'This month') +
-    ': got ' + formatPkr(month['in']) + ' · spent ' + formatPkr(month.out);
+  var when = month.since ? ' since ' + moneySinceDay(month) : ' this month';
+  $('monthGotL').textContent = 'Got' + when;
+  $('monthSpentL').textContent = 'Spent' + when;
+  $('monthGot').textContent = formatPkr(month['in']);
+  $('monthSpent').textContent = formatPkr(month.out);
   paintBuyLine(rows, known ? wallet.left : null);
   paintDailyBudget(rows, today);
 
@@ -11620,10 +11604,10 @@ function paintDailyBudget(rows, today) {
   $('dailyBudget').hidden = !b;
   if (!b) return;
   var over = b.today - b.perDay;
-  $('dailyToday').textContent = 'Daily expense today: PKR ' + formatPkr(b.today) + ' of ' + formatPkr(b.perDay) +
-    (over > 0 ? ' · over by ' + formatPkr(over) : '');
-  $('dailyToday').className = over > 0 ? 'over' : '';
-  $('dailyMonth').textContent = 'This month: PKR ' + formatPkr(b.month) + ' of ' + formatPkr(b.monthAmount);
+  $('dailyToday').textContent = formatPkr(b.today);
+  $('dailyFig').className = 'wallet-n' + (over > 0 ? ' over' : '');
+  $('dailyOf').textContent = 'of ' + formatPkr(b.perDay) + (over > 0 ? ' · over by ' + formatPkr(over) : '');
+  $('dailyMonth').textContent = 'Month: ' + formatPkr(b.month) + ' of ' + formatPkr(b.monthAmount);
 }
 
 /** Every money row, a page at a time: the wallet runs from the first one.

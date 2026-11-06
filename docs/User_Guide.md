@@ -83,8 +83,8 @@ Amounts are in PKR.
 
 - **Expense / Income** — type the amount, tap a tag (**New** adds one), add a note if you
   like, **Save**.
-- **Left in wallet** and **per day till the 1st** count from your last wallet count.
-  **Set starting amount** / **Recount** sets what is in your wallet now.
+- **Left in wallet** counts from your last wallet count. **Set starting amount** /
+  **Recount** sets what is in your wallet now. **Got** and **Spent** are this month's.
 - **Dues** — who owes you and whom you owe. **Settle** records money actually moving.
 - **Logs** — every entry, by day. A mistake is cancelled, never edited.
 - **Buying list** — things you plan to buy this month, checked against the wallet.

@@ -264,18 +264,25 @@
         <span class="sum-l">Left in wallet</span>
         <span class="wallet-n">PKR <span id="walletLeft">&mdash;</span></span>
       </div>
-      <div class="wallet-fig">
-        <span class="sum-l">Per day till 1st</span>
-        <span class="wallet-n">PKR <span id="walletPerDay">&mdash;</span></span>
-        <span id="walletDays" class="sum-l"></span>
+      <!-- Item 44: this month's "Daily Expanse" from the Buying list, against what he spends day to day. -->
+      <div id="dailyBudget" class="wallet-fig" hidden>
+        <span class="sum-l">Daily expense today</span>
+        <span id="dailyFig" class="wallet-n">PKR <span id="dailyToday">&mdash;</span></span>
+        <span id="dailyOf" class="sum-l"></span>
+        <span id="dailyMonth" class="sum-l"></span>
       </div>
     </div>
-    <!-- Item 44: this month's "Daily Expanse" from the Buying list, against what he spends day to day. -->
-    <div id="dailyBudget" class="daily-budget" hidden>
-      <p id="dailyToday"></p>
-      <p id="dailyMonth" class="hint"></p>
+    <div class="wallet-row wallet-row2">
+      <div class="wallet-fig">
+        <span id="monthGotL" class="sum-l">Got this month</span>
+        <span class="wallet-n">PKR <span id="monthGot">&mdash;</span></span>
+      </div>
+      <div class="wallet-fig">
+        <span id="monthSpentL" class="sum-l">Spent this month</span>
+        <span class="wallet-n">PKR <span id="monthSpent">&mdash;</span></span>
+      </div>
     </div>
-    <p class="hint wallet-foot"><span id="moneyMonth"></span>
+    <p class="hint wallet-foot"><span></span>
       <button type="button" id="walletSetBtn" class="link-btn">Set starting amount</button></p>
     <p id="walletHint" class="hint">Set what is in your wallet now, and it counts from there.</p>
   </section>

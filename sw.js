@@ -76,8 +76,9 @@
  * v54 (item 41): "YouTube — distraction — 13m" lines; phone lines named by app; Windows apps named.
  * v55 (item 43): "Probably asleep" on the pill; Change on a night already written.
  * v56 (item 43 fix): "start?" stays open when a night is confirmed backdated.
- * v57 (item 44): the daily-expense status on Money; a comment on bank lines. */
-var CACHE = 'probeing-shell-v57';
+ * v57 (item 44): the daily-expense status on Money; a comment on bank lines.
+ * v58 (item 44): Money's top card: wallet + daily expense, got + spent; per day till the 1st removed. */
+var CACHE = 'probeing-shell-v58';
 var SHELL = [
   './',
   'index.html',
