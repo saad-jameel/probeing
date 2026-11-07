@@ -56,7 +56,8 @@
 // (terminal, Notepad, localhost...) takes the project of the nearest work within 10 minutes.
 // Distractions while working are kept as slips (2-5 min) and focus losses (5-15 min) in
 // activity_focus with each day's longest unbroken stretch; names only as a word (YouTube, X).
-// An unsorted site is asked about at 10 minutes a day, an app still at 15.
+// An unsorted site is asked about at 10 minutes a day, an app still at 15. Item 46 (8 Nov): a site at 2 minutes, so
+// his answers teach the lists early; each site is asked once.
 //
 // Item 30b (13 Oct): a laptop block may carry its virtual desktop's name (`desktop`, stored on
 // the block). A desktop named after a project, or paired with one in Settings
@@ -161,7 +162,7 @@ var RUN_KINDS = ['resume', 'upwork', 'start'];        // item 30a: the questions
 var ASK_QUIET_MS = 30 * MIN_MS;        // after "Still asleep", "It was a break" or "Not work", not asked again this long
 var START_MIN_MS = 10 * MIN_MS;        // item 28: work this long in a row, day not started, asks "start?"
 var TEACH_MIN_MS = 15 * MIN_MS;        // item 29: an unsorted app this long today is asked about
-var TEACH_SITE_MIN_MS = 10 * MIN_MS;   // item 30a: ...a site this long
+var TEACH_SITE_MIN_MS = 2 * MIN_MS;    // item 30a: ...a site this long (item 46: was 10)
 var RUN_GAP_MS = 15 * MIN_MS;          // item 30a: a work run goes on through gaps shorter than this
 var AUTO_MIN_MS = 10 * MIN_MS;         // item 30b: work on a project not in Working on this long is shown
 var AUTO_PUSH_MIN = 30;                // item 36: ...and pushed to the laptop at this many minutes
@@ -1431,7 +1432,7 @@ function nightNow(now, offsetMin, fajrAfter) {
 
 /** The push. sw.js shows it with no buttons; a tap opens the sheet, which asks it. */
 function teachPayload(label, ms, site) {
-  var mins = Math.max(site ? 10 : 15, Math.round(ms / 60000));
+  var mins = Math.max(site ? 2 : 15, Math.round(ms / 60000));
   return { kind: 'watch-teach', tag: 'probeing-watch-teach', goto: 'home',
            title: 'What is ' + A.actCut(label, 60) + '?',
            body: mins + ' min today and not sorted yet. Tap to say: Work, Meeting, Distraction, Private or Ignore.' };

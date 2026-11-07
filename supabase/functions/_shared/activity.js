@@ -415,6 +415,49 @@ function actEventSpan(e) {
  * events: {window, afk, web} as ActivityWatch returns them.
  * Returns [{start, end, app, title, host, path, incognito}] in time order.
  */
+/* Item 46 (7 Nov): his Chrome and Edge extensions write one ActivityWatch record, each once a minute, so the
+ * notes alternate between two tabs and time alone picks the wrong site (or none). A browser window is matched
+ * to the note with the same page title instead (97% of his browser time, 4-7 Nov); only when none matches are
+ * the notes overlapping it used, as before. Titles stay on the laptop; only the site is sent. */
+var ACT_TAB_NEAR_MS = 30 * 60000;
+var ACT_NEWTAB = 'newtab';            // an empty new tab: its own "site", never asked about
+var ACT_NEWTAB_URL = /^(?:chrome|edge|brave|opera|vivaldi|about):\/*newtab\b/i;
+var ACT_BROWSER_SUFFIX = /\s+[-\u2013\u2014]\s+(?:Google Chrome|Microsoft\s*Edge|Brave|Mozilla Firefox|Opera|Vivaldi)$/i;
+
+/** A title as compared: no zero-width marks, single spaces. */
+function actTabKey(t) {
+  return String(t == null ? '' : t).replace(/[\u200b-\u200f\u2060\ufeff]/g, '').replace(/\s+/g, ' ').trim();
+}
+
+/** The notes whose page title is this browser window's, or null (not a tab window, or none match). The window's
+ *  title is the page's plus the browser's name, and Edge's profile ("X - Personal - Microsoft Edge",
+ *  "X and 2 more pages - Personal - ..."); an installed site's window, the page's alone. */
+function actTabNotes(windowTitle, notes) {
+  var whole = actTabKey(windowTitle);
+  // A tab window ends in the browser's name; an installed site's window ("Excalidraw Whiteboard") is the page title.
+  var tab = ACT_BROWSER_SUFFIX.test(whole);
+  var full = whole.replace(ACT_BROWSER_SUFFIX, '').replace(/\s+and \d+ more pages?\b.*$/i, '');
+  if (!full) return null;
+  var cut = tab ? full.replace(/\s+[-\u2013\u2014]\s+[^-\u2013\u2014]+$/, '') : full;    // Edge's profile name
+  var keys = cut !== full ? [full, cut] : [full];
+  for (var k = 0; k < keys.length; k++) {
+    var hit = (notes || []).filter(function (w) { return w.title === keys[k]; });
+    if (hit.length) return hit;
+  }
+  return null;
+}
+
+/** The note nearest to a..b (0 when it overlaps), within ACT_TAB_NEAR_MS; null if none. First wins a tie. */
+function actTabNearest(notes, a, b) {
+  var best = null;
+  var bestGap = Infinity;
+  (notes || []).forEach(function (w) {
+    var gap = w.b < a ? a - w.b : w.a > b ? w.a - b : 0;
+    if (gap <= ACT_TAB_NEAR_MS && gap < bestGap) { best = w; bestGap = gap; }
+  });
+  return best;
+}
+
 function actSegments(events, cut) {
   events = events || {};
   var active = actMergeSpans((events.afk || []).filter(function (e) {
@@ -425,12 +468,18 @@ function actSegments(events, cut) {
     actIntersect(Math.max(s[0], cut.from), Math.min(s[1], cut.to), active).forEach(function (p) { allowed.push(p); });
   });
   allowed = actMergeSpans(allowed);
-  var web = (events.web || []).map(function (e) {
-    var sp = actEventSpan(e);
-    if (!sp) return null;
-    var u = actUrlParts(e.data && e.data.url);
-    return { a: sp[0], b: sp[1], host: u.host, path: u.path, incognito: Boolean(e.data && e.data.incognito) };
+  // Item 46: every note, zero-length ones too (most of his are), for matching by title; `web`, the ones with a
+  // length, for the overlap used before (unchanged).
+  var notes = (events.web || []).map(function (e) {
+    var a = Date.parse(String(e && e.timestamp));
+    if (!isFinite(a)) return null;
+    var d = Number(e && e.duration) * 1000;
+    var url = e.data && e.data.url;
+    var u = ACT_NEWTAB_URL.test(String(url || '')) ? { host: ACT_NEWTAB, path: '/' } : actUrlParts(url);
+    return { a: a, b: a + (d > 0 ? d : 0), host: u.host, path: u.path, incognito: Boolean(e.data && e.data.incognito),
+             title: actTabKey(e.data && e.data.title) };
   }).filter(Boolean).sort(function (x, y) { return x.a - y.a; });
+  var web = notes.filter(function (w) { return w.b > w.a; });
 
   var out = [];
   (events.window || []).forEach(function (e) {
@@ -447,16 +496,22 @@ function actSegments(events, cut) {
         if (b > a && !actIsNeutral(x)) out.push(x);      // ProBeing itself: not activity (item 30a)
       }
       if (!browser) { piece(p[0], p[1], null); return; }
+      // Item 46: when notes carry this window's page title, only they count: by overlap where they have a length,
+      // the nearest of them for the rest. With none, every note by overlap, as before.
+      // ProBeing's own installed window stays itself (not activity), whatever tab shares its title.
+      var mine = actIsNeutral({ app: app, host: '', path: '', title: title }) ? null : actTabNotes(title, notes);
+      var list = mine ? mine.filter(function (w) { return w.b > w.a; }) : web;
+      var rest = function (a, b) { piece(a, b, mine ? actTabNearest(mine, a, b) : null); };
       var at = p[0];
-      web.forEach(function (w) {
+      list.forEach(function (w) {
         if (w.b <= p[0] || w.a >= p[1]) return;
         var x = Math.max(p[0], w.a);
         var y = Math.min(p[1], w.b);
-        if (x > at) piece(at, x, null);
+        if (x > at) rest(at, x);
         piece(Math.max(x, at), y, w);
         if (y > at) at = y;
       });
-      piece(at, p[1], null);
+      rest(at, p[1]);
     });
   });
   return out.sort(function (x, y) { return x.start - y.start; });
@@ -494,7 +549,7 @@ function actBlocks(pieces, cfg) {
     var b = { start: p.start, end: p.end, app: actCleanApp(p.app), domain: c.category === 'private' ? '' : (p.host || c.site || ''),
               category: c.category, project: c.project, key: c.key,
               desktop: c.category === 'private' ? '' : actCleanDesktop(p.desktop),
-              title: c.category === 'unclear' && actTitleSendable(p.app, p.title) && !(actIsBrowser(p.app) && !p.host)
+              title: c.category === 'unclear' && actTitleSendable(p.app, p.title) && !(actIsBrowser(p.app) && (!p.host || p.host === ACT_NEWTAB))
                      ? actScrubTitle(p.title) : '' };     // a browser window the extension did not see: never sent
     b.id = actIdentity(b);
     return b;
@@ -884,6 +939,7 @@ function actGroups(blocks, fixes) {
 function actTeachName(b) {
   if (b.domain) {
     var d = actCleanDomain(b.domain);
+    if (d === ACT_NEWTAB) return null;                // item 46: an empty tab is never asked about
     return d ? { entry: d, label: d, site: true } : null;
   }
   var app = String(b.app || '').replace(/\.exe$/i, '').trim();
@@ -1762,6 +1818,12 @@ var ACT_PHONE_GROUP = 'Phone';
 
 /** A block's line name: Meeting, a distraction's word, Private, Browsing (a browser or a site), a phone
  *  app ("Phone · YouTube"), else the app in plain words (WindowsTerminal -> Terminal). */
+/** "Chrome", "Edge"...: a browser's everyday name. */
+function actBrowserWord(app) {
+  var w = actNorm(String(app || '').replace(/\.exe$/i, ''));
+  return { chrome: 'Chrome', msedge: 'Edge', brave: 'Brave', firefox: 'Firefox', opera: 'Opera', vivaldi: 'Vivaldi' }[w] || 'Browser';
+}
+
 function actLineName(b) {
   // Item 41: the phone's lines sit under "Phone" already, so they are named by the app alone; calls say so.
   var phoneApp = b.kind === 'phone' ? String(b.app || '').trim() : '';
@@ -1776,6 +1838,8 @@ function actLineName(b) {
   }
   if (b.kind === 'phone') return phoneApp || 'App';
   // Item 42 (Saad, 5 Nov): a browser line says its site; "Browsing" only when no site was seen.
+  // Item 46: an empty new tab says so, with the browser: "Chrome · New tab".
+  if (b.domain === ACT_NEWTAB) return actBrowserWord(b.app) + ' · New tab';
   if (b.domain) return b.domain;
   if (actIsBrowser(b.app)) return 'Browsing';
   var raw = String(b.app || '').replace(/\.exe$/i, '').trim();
@@ -1877,6 +1941,11 @@ globalThis.ProBeingActivity = {
   actIntersect: actIntersect,
   actSpansMs: actSpansMs,
   actSegments: actSegments,
+  actTabNotes: actTabNotes,
+  actTabNearest: actTabNearest,
+  actTabKey: actTabKey,
+  actBrowserWord: actBrowserWord,
+  ACT_NEWTAB: ACT_NEWTAB,
   actBlocks: actBlocks,
   actPayload: actPayload,
   actSanitize: actSanitize,

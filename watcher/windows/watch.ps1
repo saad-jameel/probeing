@@ -410,6 +410,45 @@ function Act-EventSpan($e) {
   return ,([double[]]@($a, ($a + $d)))
 }
 
+# Item 46: twins of activity.js actTabKey / actTabFor. His Chrome and Edge extensions write one record, so a
+# browser window is matched to the note with the same page title; only when none matches, the overlap as before.
+$ACT_TAB_NEAR_MS = 30 * 60000
+$ACT_NEWTAB = 'newtab'
+$ACT_NEWTAB_URL = '^(?:chrome|edge|brave|opera|vivaldi|about):/*newtab\b'
+$ACT_BROWSER_SUFFIX = '\s+[-\u2013\u2014]\s+(?:Google Chrome|Microsoft\s*Edge|Brave|Mozilla Firefox|Opera|Vivaldi)$'
+
+function Act-TabKey($t) {
+  return (((Act-Str $t) -replace '[\u200b-\u200f\u2060\ufeff]', '') -replace '\s+', ' ').Trim()
+}
+
+function Act-TabNotes($windowTitle, $notes) {
+  $whole = Act-TabKey $windowTitle
+  # A tab window ends in the browser's name; an installed site's window ("Excalidraw Whiteboard") is the page title.
+  $tab = $whole -match $ACT_BROWSER_SUFFIX
+  $full = ($whole -replace $ACT_BROWSER_SUFFIX, '') -replace '\s+and \d+ more pages?\b.*$', ''
+  if (-not $full) { return $null }
+  $cut = $full
+  if ($tab) { $cut = $full -replace '\s+[-\u2013\u2014]\s+[^-\u2013\u2014]+$', '' }   # Edge's profile name
+  $keys = @($full)
+  if ($cut -cne $full) { $keys += $cut }
+  foreach ($k in $keys) {
+    $hit = @($notes | Where-Object { $_.title -ceq $k })
+    if ($hit.Count -gt 0) { return ,$hit }
+  }
+  return $null
+}
+
+function Act-TabNearest($notes, [double]$a, [double]$b) {
+  $best = $null
+  $bestGap = [double]::PositiveInfinity
+  foreach ($w in $notes) {
+    $gap = 0
+    if ($w.b -lt $a) { $gap = $a - $w.b } elseif ($w.a -gt $b) { $gap = $w.a - $b }
+    if ($gap -le $ACT_TAB_NEAR_MS -and $gap -lt $bestGap) { $best = $w; $bestGap = $gap }
+  }
+  return $best
+}
+
 function Act-Segments($events, $cut) {
   $actList = New-Object System.Collections.Generic.List[object]
   foreach ($e in (Get-Prop $events 'afk')) {
@@ -427,19 +466,26 @@ function Act-Segments($events, $cut) {
   }
   $allowed = Act-MergeSpans $allowList
 
-  $webList = New-Object System.Collections.Generic.List[object]
+  # Item 46: every note, zero-length ones too, for matching by title; $web, the ones with a length, as before.
+  $noteList = New-Object System.Collections.Generic.List[object]
   $i = 0
   foreach ($e in (Get-Prop $events 'web')) {
-    $sp = $null
-    if ($null -ne $e) { $sp = Act-EventSpan $e }
-    if ($null -ne $sp) {
-      $data = Get-Prop $e 'data'
-      $u = Act-UrlParts (Get-Prop $data 'url')
-      $webList.Add(@{ a = $sp[0]; b = $sp[1]; host = $u.host; path = $u.path; incognito = ((Get-Prop $data 'incognito') -eq $true); i = $i })
+    if ($null -ne $e) {
+      $a = Act-Ms (Get-Prop $e 'timestamp')
+      if (-not [double]::IsNaN($a)) {
+        $d = [double](Get-Prop $e 'duration') * 1000
+        if (-not ($d -gt 0)) { $d = 0 }
+        $data = Get-Prop $e 'data'
+        $url = Act-Str (Get-Prop $data 'url')
+        if ($url -match $ACT_NEWTAB_URL) { $u = @{ host = $ACT_NEWTAB; path = '/' } } else { $u = Act-UrlParts $url }
+        $noteList.Add(@{ a = $a; b = ($a + $d); host = $u.host; path = $u.path; incognito = ((Get-Prop $data 'incognito') -eq $true); i = $i;
+                         title = (Act-TabKey (Get-Prop $data 'title')) })
+      }
     }
     $i++
   }
-  $web = @($webList | Sort-Object -Property @{ Expression = { $_.a } }, @{ Expression = { $_.i } })
+  $notes = @($noteList | Sort-Object -Property @{ Expression = { $_.a } }, @{ Expression = { $_.i } })
+  $web = @($notes | Where-Object { $_.b -gt $_.a })
 
   $out = New-Object System.Collections.Generic.List[object]
   $piece = {
@@ -461,16 +507,28 @@ function Act-Segments($events, $cut) {
     $browser = Act-IsBrowser $app
     foreach ($p in (Act-Intersect $sp[0] $sp[1] $allowed)) {
       if (-not $browser) { & $piece $p[0] $p[1] $null $app $title; continue }
+      # Item 46: when notes carry this window's page title, only they count: by overlap where they have a length,
+      # the nearest of them for the rest. With none, every note by overlap, as before.
+      # ProBeing's own installed window stays itself (not activity), whatever tab shares its title.
+      $mine = $null
+      if (-not (Act-IsNeutral @{ app = $app; host = ''; path = ''; title = $title })) { $mine = Act-TabNotes $title $notes }
+      if ($null -ne $mine) { $list = @($mine | Where-Object { $_.b -gt $_.a }) } else { $list = $web }
       $at = $p[0]
-      foreach ($w in $web) {
+      foreach ($w in $list) {
         if ($w.b -le $p[0] -or $w.a -ge $p[1]) { continue }
         $x = [Math]::Max($p[0], $w.a)
         $y = [Math]::Min($p[1], $w.b)
-        if ($x -gt $at) { & $piece $at $x $null $app $title }
+        if ($x -gt $at) {
+          $near = $null
+          if ($null -ne $mine) { $near = Act-TabNearest $mine $at $x }
+          & $piece $at $x $near $app $title
+        }
         & $piece ([Math]::Max($x, $at)) $y $w $app $title
         if ($y -gt $at) { $at = $y }
       }
-      & $piece $at $p[1] $null $app $title
+      $near = $null
+      if ($null -ne $mine -and $p[1] -gt $at) { $near = Act-TabNearest $mine $at $p[1] }
+      & $piece $at $p[1] $near $app $title
     }
   }
   $sorted = @($out | Sort-Object -Property @{ Expression = { $_.start } }, @{ Expression = { $_.n } })
@@ -512,7 +570,7 @@ function Act-Blocks($pieces, $cfg) {
     if ($c.category -eq 'private') { $domain = ''; $desk = '' }
     $title = ''
     # A browser window the extension did not see: its title is never sent.
-    if ($c.category -eq 'unclear' -and (Act-TitleSendable $p.app $p.title) -and -not ((Act-IsBrowser $p.app) -and -not $p.host)) {
+    if ($c.category -eq 'unclear' -and (Act-TitleSendable $p.app $p.title) -and -not ((Act-IsBrowser $p.app) -and (-not $p.host -or $p.host -eq $ACT_NEWTAB))) {
       $title = Act-ScrubTitle $p.title
     }
     $b = @{ start = [double]$p.start; end = [double]$p.end; app = (Act-CleanApp $p.app); domain = (Act-Str $domain);

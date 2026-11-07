@@ -176,7 +176,12 @@ paste the line it gives you into PowerShell, done.
   on the phone counts as a distraction; on the laptop it is asked (clients).
 - **In the popup** a distraction is said as it is — "YouTube — distraction — 13m" —
   with nothing to tick. Browser lines name the site; Windows' own apps are named
-  (Settings, Photos), not "ApplicationFrameHost".
+  (Settings, Photos), not "ApplicationFrameHost". An empty tab says **Chrome · New tab**
+  (or Edge); "Browsing" only when no tab was seen at all.
+- **Sites, Chrome and Edge both:** each browser window is matched to its tab by the
+  page's title, so the right site is named even with the extension in both browsers.
+  A site no list knows is asked once it reaches 2 minutes in a day ("What is
+  github.com?"); your answer goes on the list and it is never asked again.
 - At End day: a slip of 5 minutes or more becomes a Distraction; three slips inside 30
   minutes become **Lost focus** for that whole stretch. **Away** means nothing was in use.
 - **The day ends by itself.** Without End day, the day ends at your last work, written
