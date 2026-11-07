@@ -124,7 +124,14 @@ Pick a range: Yesterday, Last 2 days, This week, Last week, This month or Last m
   breaks a day, prayers out of all of them, sleep a day, days the work never started
   and the time on distraction apps then, and any task that keeps sliding (carried,
   backlogged, deadline missed or moved). Home reminds you until you press **I've read
-  it**. Daily advice comes after End day.
+  it**. Reports and the written summary also list the period's leaks against your
+  **Targets**, each pinned to a day, task or figure, and a **Next:** line.
+- **The day's assessment** comes after End day: a score out of 10 and a verdict, the
+  day's leaks (each names a time, task, site or figure), at most one thing that worked,
+  and rules for tomorrow. Gemini gets your whole day for it — sleep, each work stretch and
+  task, every break and its reason, distractions with times and sites, prayers and
+  Takbeer-e-oola, spending — your targets and the last 3 days; never a URL, a window
+  title or a name from your bank alerts. A generic answer is sent back once.
 - **Ranges** — Yesterday (the default), Last 2 days, This week, Last week, This month,
   Last month. Yesterday leads with the night: when the day ended, late-night phone time
   (and which apps), slept → woke, and whether the night was disturbed. A day with no work
@@ -139,6 +146,9 @@ on the tab you used last.
   laptop or phone has reported for 2 hours. With the watchers on, the devices decide.
 - **Prayer times** — your location, calculation method and Asr school. Switches for
   prayer reminders, task-deadline reminders and a morning plan push.
+- **Targets** — focused hours a day, prayers a day and a week, Takbeer-e-oola a day and a
+  week, the most sleep, and how many distractions a day are fine. The assessment and the
+  reports judge you against these; both devices share them.
 - **Google Tasks** — connect, pick the list, **Sync now**. A copy of your records is
   written to a Google Sheet in your Drive daily; **Export now** does it at once.
 - **Laptop and phone activity** — pair the laptop or phone, and switch the distraction

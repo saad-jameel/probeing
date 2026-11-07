@@ -2174,3 +2174,12 @@ alter table public.bank_alerts add constraint bank_alerts_text_check check (char
 alter table public.bank_alerts drop constraint if exists bank_alerts_read_check;
 alter table public.bank_alerts add constraint bank_alerts_read_check
   check ((dir is not null and amount is not null) or (dir is null and amount is null and char_length(text) > 0));
+
+-- ================================================================ item 48
+-- 8 Nov. The day's assessment is longer now (score, leaks, what worked, tomorrow's rules), and his targets are
+-- kept for both devices: {focusH, prayers, prayersWeek, takbeer, takbeerWeek, sleepMaxH, distractions}.
+-- Null means the app's defaults (his numbers of 8 Nov).
+alter table public.focus_advice drop constraint if exists focus_advice_text_check;
+alter table public.focus_advice add constraint focus_advice_text_check check (char_length(text) <= 2000);
+alter table public.user_settings add column if not exists targets jsonb
+  check (targets is null or jsonb_typeof(targets) = 'object');

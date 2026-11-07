@@ -572,6 +572,8 @@ a.btn[hidden], a.link-btn[hidden] { display: none; }
 .idle-other { display: flex; gap: 6px; margin-top: 6px; }
 .idle-other[hidden] { display: none; }
 .idle-said { flex: 1 1 auto; min-width: 0; }
+.target-grid { display: grid; grid-template-columns: minmax(0, 1fr) 84px; gap: 6px 10px; align-items: center; }
+.target-grid input { width: 100%; min-width: 0; }
 .wallet-foot .link-btn { flex: 0 0 auto; padding: 0; font-size: 13px; }
 /* The tag grid: an icon over a name, four across. It scrolls inside itself past
    three rows, so a long tag list never grows the screen. */

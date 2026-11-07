@@ -752,6 +752,36 @@
         </details>
       </div>
 
+      <!-- Item 48: what Gemini judges his days and weeks against. -->
+      <div class="dlg-block">
+        <h3>Targets <button type="button" class="help-btn" data-help="helpTargets"
+          data-title="Targets" aria-label="About targets">?</button></h3>
+        <template id="helpTargets">
+        <p class="hint">The day&rsquo;s assessment at End day, and the weekly and monthly reports, judge you
+          against these. Sleep has no fixed bedtime: a late night after late work is fine.</p>
+        </template>
+        <div class="target-grid">
+          <label class="hint" for="targetFocus">Focused hours a day</label>
+          <input id="targetFocus" type="number" inputmode="decimal" min="1" max="16" step="0.5" class="cat-pick">
+          <label class="hint" for="targetPrayers">Prayers a day</label>
+          <input id="targetPrayers" type="number" inputmode="numeric" min="0" max="5" step="1" class="cat-pick">
+          <label class="hint" for="targetPrayersWeek">Prayers a week</label>
+          <input id="targetPrayersWeek" type="number" inputmode="numeric" min="0" max="35" step="1" class="cat-pick">
+          <label class="hint" for="targetTakbeer">Takbeer-e-oola a day, at least</label>
+          <input id="targetTakbeer" type="number" inputmode="numeric" min="0" max="5" step="1" class="cat-pick">
+          <label class="hint" for="targetTakbeerWeek">Takbeer-e-oola a week, at least</label>
+          <input id="targetTakbeerWeek" type="number" inputmode="numeric" min="0" max="35" step="1" class="cat-pick">
+          <label class="hint" for="targetSleep">Sleep, at most (hours)</label>
+          <input id="targetSleep" type="number" inputmode="decimal" min="4" max="12" step="0.5" class="cat-pick">
+          <label class="hint" for="targetDistract">Distractions a day that are fine</label>
+          <input id="targetDistract" type="number" inputmode="numeric" min="0" max="20" step="1" class="cat-pick">
+        </div>
+        <div class="dlg-actions" style="justify-content: flex-start">
+          <button type="button" id="targetsSave" class="btn">Save targets</button>
+        </div>
+        <p id="targetsResult" class="hint"></p>
+      </div>
+
       <div class="dlg-block">
         <h3>Google Tasks <button type="button" class="help-btn" data-help="helpGoogle"
           data-title="Google Tasks" aria-label="About Google Tasks">?</button></h3>
