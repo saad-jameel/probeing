@@ -2153,3 +2153,24 @@ do $$ begin
   create policy "read own bank alerts" on public.bank_alerts for select using (auth.uid() = user_id);
 exception when duplicate_object then null; end $$;
 revoke insert, update, delete on table public.bank_alerts from anon, authenticated;
+
+-- ================================================================ item 45
+-- 8 Nov. More bank alerts: texts from Easypaisa (3737) and JazzCash (8558) too; card, ATM and QR payments
+-- (how); the source of each (app or sms), so an app alert and a text of one payment count once while two
+-- app alerts of the same amount stay two payments. An alert that looks like a payment but cannot be read is
+-- kept with no way or amount and its text (every 7+ digit run blanked) for him to fill in; it is never
+-- filed by itself. Transaction numbers are never kept.
+alter table public.bank_alerts alter column dir drop not null;
+alter table public.bank_alerts alter column amount drop not null;
+alter table public.bank_alerts add column if not exists source text not null default 'app';
+alter table public.bank_alerts add column if not exists how text not null default '';
+alter table public.bank_alerts add column if not exists text text not null default '';
+alter table public.bank_alerts drop constraint if exists bank_alerts_source_check;
+alter table public.bank_alerts add constraint bank_alerts_source_check check (source in ('app', 'sms'));
+alter table public.bank_alerts drop constraint if exists bank_alerts_how_check;
+alter table public.bank_alerts add constraint bank_alerts_how_check check (how in ('', 'card', 'atm', 'qr'));
+alter table public.bank_alerts drop constraint if exists bank_alerts_text_check;
+alter table public.bank_alerts add constraint bank_alerts_text_check check (char_length(text) <= 500 and text !~ '[0-9]{7,}');
+alter table public.bank_alerts drop constraint if exists bank_alerts_read_check;
+alter table public.bank_alerts add constraint bank_alerts_read_check
+  check ((dir is not null and amount is not null) or (dir is null and amount is null and char_length(text) > 0));

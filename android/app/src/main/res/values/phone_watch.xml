@@ -30,9 +30,9 @@
     <string name="phone_stop_btn">Stop watching on this phone</string>
     <string name="phone_stopped">Stopped, and the code is forgotten. Revoke this phone in ProBeing\'s Settings too.</string>
     <!-- Item 40: bank alerts -->
-    <string name="phone_bank_on">Bank alerts: on (HBL, easypaisa, JazzCash and HBL\'s SMS from 14250).</string>
+    <string name="phone_bank_on">Bank alerts: on (HBL, easypaisa, JazzCash, and their SMS from 14250, 3737 and 8558).</string>
     <string name="phone_bank_off">Bank alerts: off. Press the button, find ProBeing, switch it on, to log each payment in ProBeing.</string>
     <string name="phone_bank_btn">Allow bank alerts</string>
     <string name="phone_bank_btn_again">Notification access settings</string>
-    <string name="phone_bank_explainer">Bank alerts: only notifications from HBL Mobile, easypaisa and JazzCash, and SMS from 14250, are read. Every long number (account, phone, transaction ID) is blanked on this phone before anything is sent; ProBeing keeps the bank, the amount, which way it went, the other person\'s name and the time.</string>
+    <string name="phone_bank_explainer">Bank alerts: only notifications from HBL Mobile, easypaisa and JazzCash, and SMS from 14250 (HBL), 3737 (easypaisa) and 8558 (JazzCash), are read. Every long number (account, phone, transaction ID) is blanked on this phone before anything is sent; ProBeing keeps the bank, the amount, which way it went, the other person\'s name and the time; for an alert it cannot read, its blanked words, so you can fill it in.</string>
 </resources>

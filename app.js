@@ -18227,7 +18227,7 @@ async function readNightAsks(now) {
 var readBankOn = true;                // off once the table is missing (before item 40's SQL)
 
 async function readBankAsks() {
-  var res = await sb.from('bank_alerts').select('id,bank,dir,amount,party,at,pair_id').eq('state', 'pending')
+  var res = await sb.from('bank_alerts').select('id,bank,dir,amount,party,at,pair_id,how,text').eq('state', 'pending')
     .order('at', { ascending: true }).limit(60);
   if (res.error) { readBankOn = false; return []; }
   var list = res.data || [];
@@ -18253,12 +18253,17 @@ async function readBankAsks() {
   return out;
 }
 
-/** "HBL · sent PKR 2,500 to IMTIAZ STORE · Wed 4 Nov 18:00". */
+/** "HBL · sent PKR 2,500 to IMTIAZ STORE · Wed 4 Nov 18:00"; item 45: "card payment PKR 850 at KFC", "ATM cash
+ *  PKR 10,000", "QR payment PKR 340 to X", or "a payment I could not read" (no way or amount). */
 function bankWords(a) {
   var t = Date.parse(a.at);
   var day = new Date(t).toLocaleDateString('en-GB', { weekday: 'short', day: 'numeric', month: 'short' });
-  return a.bank + ' · ' + (a.dir === 'in' ? 'received PKR ' : 'sent PKR ') + formatPkr(Number(a.amount)) +
-         (a.party ? (a.dir === 'in' ? ' from ' : ' to ') + a.party : '') + ' · ' + day + ' ' + clockAt(t);
+  var when = ' · ' + day + ' ' + clockAt(t);
+  if (!a.dir) return a.bank + ' · a payment I could not read' + when;
+  var what = a.how === 'atm' ? 'ATM cash' : a.how === 'card' ? 'card payment' : a.how === 'qr' ? 'QR payment'
+           : a.dir === 'in' ? 'received' : 'sent';
+  var who = a.party ? (a.dir === 'in' ? ' from ' : a.how === 'card' ? ' at ' : ' to ') + a.party : '';
+  return a.bank + ' · ' + what + ' PKR ' + formatPkr(Number(a.amount)) + who + when;
 }
 
 /** The money row an alert becomes. */
@@ -18307,15 +18312,8 @@ function bankAskRow(a, li, text, acts, btn) {
   }
   var al = a.n;
   text.textContent = bankWords(al);
-  var sel = document.createElement('select');
-  sel.className = 'bank-tag';
-  sel.setAttribute('aria-label', 'Tag');
-  fixedTags(al.dir).concat(['Own transfer']).forEach(function (t) {
-    var o = document.createElement('option');
-    o.value = t;
-    o.textContent = t;               // his own tag words (rule 5)
-    sel.appendChild(o);
-  });
+  if (!al.dir) return bankUnreadRow(al, li, text, acts, btn, done);
+  var sel = bankTagSelect(al.dir);
   acts.appendChild(sel);
   var note = bankNoteBox();
   acts.appendChild(note);
@@ -18329,6 +18327,71 @@ function bankAskRow(a, li, text, acts, btn) {
     done('Ignored.');
   });
   li.append(text, acts);
+  return li;
+}
+
+/** The tag picker on a bank line: his tags for that way, then Own transfer. */
+function bankTagSelect(dir) {
+  var sel = document.createElement('select');
+  sel.className = 'bank-tag';
+  sel.setAttribute('aria-label', 'Tag');
+  fillBankTags(sel, dir);
+  return sel;
+}
+
+function fillBankTags(sel, dir) {
+  sel.textContent = '';
+  fixedTags(dir).concat(['Own transfer']).forEach(function (t) {
+    var o = document.createElement('option');
+    o.value = t;
+    o.textContent = t;               // his own tag words (rule 5)
+    sel.appendChild(o);
+  });
+}
+
+/** Item 45: an alert that looks like a payment but could not be read. Its text (long numbers blanked) is shown
+ *  and he says which way, how much, the tag and a comment. It waits until he does (never filed by itself). */
+function bankUnreadRow(al, li, text, acts, btn, done) {
+  var said = document.createElement('div');
+  said.className = 'bank-said';
+  said.textContent = '"' + String(al.text || '') + '"';     // textContent: the bank's words, never markup (rule 5)
+  var way = document.createElement('select');
+  way.className = 'bank-way';
+  way.setAttribute('aria-label', 'Money in or out');
+  [['out', 'Out'], ['in', 'In']].forEach(function (w) {
+    var o = document.createElement('option');
+    o.value = w[0];
+    o.textContent = w[1];
+    way.appendChild(o);
+  });
+  var amount = document.createElement('input');
+  amount.type = 'text';
+  amount.inputMode = 'decimal';
+  amount.className = 'money-field bank-amount';
+  amount.placeholder = 'Amount';
+  amount.setAttribute('aria-label', 'Amount');
+  var sel = bankTagSelect('out');
+  way.addEventListener('change', function () { fillBankTags(sel, way.value); });
+  var note = bankNoteBox();
+  acts.append(way, amount, sel, note);
+  btn('Confirm', function () {
+    var n = parseMoneyAmount(amount.value);
+    if (!n) {
+      amount.classList.add('bad');
+      amount.placeholder = 'Amount needed';
+      amount.focus();
+      return;
+    }
+    var filled = Object.assign({}, al, { dir: way.value, amount: n });
+    var own = sel.value === 'Own transfer';
+    sendMoney(bankMoney(filled, own ? 'transfer' : 'cash', sel.value, note.value), own ? 'transfer' : 'money');
+    done('Noted: ' + bankWords(filled) + ' · ' + sel.value + '.');
+  });
+  btn('Ignore', function () {
+    runWrites([{ type: 'bankignore', raw_text: 'Ignored: ' + bankWords(al), rid: 'bi-' + al.id }]);
+    done('Ignored.');
+  });
+  li.append(text, said, acts);
   return li;
 }
 

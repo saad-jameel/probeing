@@ -99,6 +99,11 @@ Amounts are in PKR.
   (an out and an in of the same amount within 30 minutes) shows as one **Own
   transfer** line: it counts as neither spending nor income. Not answered in 7 days,
   an alert is filed by itself (Untagged, or Own transfer), marked "auto".
+  Card, ATM and QR payments say so ("HBL · ATM cash PKR 10,000"); ATM cash counts as
+  spending. A message that looks like a payment (an amount and a word like sent,
+  received, paid, debited) but cannot be read shows its words: choose In or Out, type
+  the amount, pick a tag, **Confirm**. That one waits for you; it is never filed by
+  itself. Promotions, codes (OTP) and failed payments are ignored.
 
 ## Review
 
@@ -221,7 +226,8 @@ The Android app is the same ProBeing, plus:
   (which app was on screen and when; never what was on it). In Settings press **Pair
   this phone**, then **Finish in the Android app**.
 - **Bank alerts** — on the same phone screen, **Allow bank alerts** gives ProBeing
-  notification access. Only HBL Mobile, easypaisa, JazzCash and SMS from 14250 are read;
+  notification access. Only HBL Mobile, easypaisa, JazzCash and SMS from 14250 (HBL),
+  3737 (easypaisa) and 8558 (JazzCash) are read;
   every long number (account, phone, transaction ID) is blanked on the phone first.
 
 ## When something looks off

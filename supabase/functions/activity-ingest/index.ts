@@ -2509,28 +2509,42 @@ async function answerAsk(sb: Sb, n: Record<string, any>, choice: string, set: Re
 
 /* ── Item 40 (Saad, 4 Nov): bank alerts from the phone's notifications ─────────────────────────────────
  * The phone sends {app, title, text, at, key}: text with every 7+ digit run already blanked (blanked again
- * here), key the sha256 of the raw text. Kept: bank, way, amount, the other party's name, when. */
+ * here), key the sha256 of the raw text. Kept: bank, way, amount, the other party's name, when.
+ * Item 45 (7 Nov): also how (card / atm / qr), the source (app or sms), and, only for an alert that looks like a
+ * payment but cannot be read, its blanked text, so he can fill it in. Transaction numbers are never kept. */
 var BANK_ITEMS_MAX = 50;
 var BANK_TEXT_MAX = 1000;
 
 async function opBank(sb: Sb, dev: Record<string, any>, body: Record<string, any>, now: number) {
   const items = Array.isArray(body.items) ? body.items.slice(0, BANK_ITEMS_MAX) : [];
-  const recent = must(await sb.from('bank_alerts').select('id, bank, dir, amount, at, state, pair_id').eq('user_id', dev.user_id)
+  const recent = must(await sb.from('bank_alerts').select('id, bank, dir, amount, at, state, pair_id, source').eq('user_id', dev.user_id)
     .gte('at', iso(now - 86400000 - BK.BANK_PAIR_MS)).limit(500))
-    .map((x) => ({ id: x.id, bank: x.bank, dir: x.dir, amount: Number(x.amount), at: ms(x.at), state: x.state, pair_id: x.pair_id }));
+    .filter((x) => x.dir && x.amount != null)
+    .map((x) => ({ id: x.id, bank: x.bank, dir: x.dir, amount: Number(x.amount), at: ms(x.at), state: x.state, pair_id: x.pair_id,
+                   source: x.source || 'app' }));
   let kept = 0;
   let unread = 0;
   for (const it of items) {
     const key = String((it && it.key) || '').toLowerCase();
     const at = ms(it && it.at);
     if (!/^[0-9a-f]{64}$/.test(key) || !isFinite(at) || at > now + 5 * MIN_MS || at < now - 30 * 86400000) continue;
-    const p = BK.bankParse({ app: String(it.app || '').slice(0, 60), title: String(it.title || '').slice(0, 120),
-                             text: BK.bankBlank(String(it.text || '').slice(0, BANK_TEXT_MAX)) });
-    if (!p) { unread++; continue; }
-    const a = { id: '', bank: p.bank, dir: p.dir, amount: p.amount, at, state: 'pending', pair_id: null as string | null };
-    if (BK.bankSeen(a, recent)) continue;                         // HBL's SMS of a payment its app already told
+    const app = String(it.app || '').slice(0, 60);
+    const title = String(it.title || '').slice(0, 120);
+    const text = BK.bankBlank(String(it.text || '').slice(0, BANK_TEXT_MAX));
+    const p = BK.bankParse({ app, title, text });
+    if (!p) continue;                                               // not a payment: a promotion, an OTP, a failure
+    const source = BK.bankSource(app, title);
+    if (p.unread) {
+      // Item 45: a payment it cannot read waits in his popup with its blanked text; he fills it in.
+      const res = await sb.from('bank_alerts').insert({ user_id: dev.user_id, device_id: dev.id, bank: p.bank, dir: null, amount: null,
+        at: iso(at), key_sha: key, state: 'pending', source, text: text.replace(/\s+/g, ' ').trim().slice(0, BK.BANK_TEXT_KEEP) });
+      if (!res.error) unread++;
+      continue;
+    }
+    const a = { id: '', bank: p.bank, dir: p.dir, amount: p.amount, at, state: 'pending', pair_id: null as string | null, source };
+    if (BK.bankSeen(a, recent)) continue;                         // the text of a payment its app already told, or the other way
     const ins = await sb.from('bank_alerts').insert({ user_id: dev.user_id, device_id: dev.id, bank: p.bank, dir: p.dir,
-      amount: p.amount, party: p.party, at: iso(at), key_sha: key, state: 'pending' }).select('id');
+      amount: p.amount, party: p.party, at: iso(at), key_sha: key, state: 'pending', source, how: p.how || '' }).select('id');
     if (ins.error || !(ins.data || [])[0]) continue;                // 23505: this notification came before
     a.id = ins.data[0].id;
     kept++;
@@ -2559,7 +2573,8 @@ async function bankSweep(sb: Sb, owner: string, now: number, set: Record<string,
   let n = 0;
   for (const a of open) {
     let state = filed.has('bk-' + a.id) ? 'filed' : skipped.has('bi-' + a.id) ? 'ignored' : '';
-    if (!state && now - ms(a.at) >= BK.BANK_AUTO_MS) {
+    // Item 45: one it could not read has no amount to file; it waits for him however long (Saad, 7 Nov).
+    if (!state && a.dir && a.amount != null && now - ms(a.at) >= BK.BANK_AUTO_MS) {
       const t = ms(a.at);
       const res = await sb.from('money').insert({ user_id: owner, rid: 'bk-' + a.id, at: iso(t), local_time: humanLocal(t, set.zone),
         tz: set.zone, dir: a.dir, amount: a.amount, tag: a.pair_id ? 'Own transfer' : 'Untagged', kind: a.pair_id ? 'transfer' : 'cash',

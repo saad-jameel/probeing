@@ -26,7 +26,8 @@ import java.util.Locale;
 
 /**
  * Item 40: his bank alerts, read off the notifications Android shows (HBL Mobile, easypaisa, JazzCash, and the
- * Messages notification from HBL's SMS sender 14250). Every other notification is ignored unread. Each alert is
+ * Messages notifications from the banks' SMS senders: HBL 14250, Easypaisa 3737, JazzCash 8558 — item 45).
+ * Every other notification is ignored unread. Each alert is
  * held on the phone with every run of 7+ digits blanked (account, phone and transaction numbers) and a sha256 of
  * its raw text for dedupe, then sent to activity-ingest (op 'bank'), which reads the amount and the way it went.
  */
@@ -35,7 +36,7 @@ public final class BankListener extends NotificationListenerService {
     private static final String FILE = "probeing_bank_queue";
     private static final String KEY_QUEUE = "queue";
     private static final int QUEUE_MAX = 200;
-    static final String SMS_SENDER = "14250";
+    static final String[] SMS_SENDERS = { "14250", "4250", "3737", "8558" };
     private static final String[] BANK_WORDS = { "hbl", "easypaisa", "jazzcash" };
 
     @Override
@@ -56,9 +57,9 @@ public final class BankListener extends NotificationListenerService {
         }
     }
 
-    /** One of his banks' apps, or the SMS sender. */
+    /** One of his banks' apps, or one of their SMS senders. */
     static boolean isBank(String app, String title) {
-        if (SMS_SENDER.equals(title.trim())) return true;
+        for (String s : SMS_SENDERS) if (s.equals(title.trim())) return true;
         String a = app.toLowerCase(Locale.ROOT).replaceAll("[^a-z]", "");
         for (String w : BANK_WORDS) if (a.contains(w)) return true;
         return false;
