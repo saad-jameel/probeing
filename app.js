@@ -18593,7 +18593,8 @@ async function readCatchUp() {
   var total = settleLines(groups, replayDay(named(sessionLog())).activeProjects);
   if (!asks.length && total < CATCHUP_MIN_MS) return null;
   var until = blocks.reduce(function (m, b) { return Math.max(m, b.end); }, since);
-  return { since: since, until: until, blocks: blocks, fixes: fixes, groups: groups, asks: asks, reasons: idle.reasons, readAt: now };
+  return { since: since, until: until, blocks: blocks, fixes: fixes, groups: groups, asks: asks, reasons: idle.reasons,
+           mine: idle.mine || [], readAt: now };
 }
 
 /* ── Item 31b: what the sheet adds ──────────────────────────────────────── */
@@ -18628,7 +18629,13 @@ async function readIdleAsks(dayStart) {
     var r = actGapReason(g, reasons);
     return n.state === 'pending' ? !r : !r || r.auto;
   });
-  return { asks: asks, reasons: reasons };
+  var mine = [];
+  if (asks.length) {
+    var old = await sb.from('events').select('raw_text').eq('type', 'actanswer').like('rid', 'jw-%').eq('detail', 'Other')
+      .gte('at', new Date(Date.now() - IDLE_MINE_BACK_MS).toISOString()).limit(500);
+    mine = idleMineReasons(old.error ? [] : old.data || []);
+  }
+  return { asks: asks, reasons: reasons, mine: mine };
 }
 
 /* The order a line's judgement is told in: the worst gap it touches. */
@@ -18946,6 +18953,36 @@ function catchupAskRow(a) {
 
 /** Item 31b: "Away 22 min (2:10 – 2:32 pm) — why?" with the six reasons; the recommended one (a prayer
  *  logged in it, or End day's choice) is marked. */
+/* Item 47 (Saad, 7 Nov): "Other" opens a box for why; a reason he has typed IDLE_MINE_TIMES times becomes its own
+ * button. Kept as an Other answer (the reason stays one the rules know) with his words after IDLE_SAID_SEP. */
+var IDLE_SAID_MAX = 60;
+var IDLE_SAID_SEP = ' — ';
+var IDLE_MINE_TIMES = 3;
+var IDLE_MINE_MAX = 4;
+var IDLE_MINE_BACK_MS = 90 * 86400000;
+
+/** His words on an Other answer's row ("Idle 25m: Other — went to the bank"), or ''. */
+function idleSaid(rawText) {
+  var s = String(rawText || '');
+  var i = s.indexOf(': Other' + IDLE_SAID_SEP);
+  return i === -1 ? '' : s.slice(i + (': Other' + IDLE_SAID_SEP).length).trim();
+}
+
+/** The reasons he has typed IDLE_MINE_TIMES times or more, most used first (his first spelling kept). */
+function idleMineReasons(rows) {
+  var by = userMap();
+  (rows || []).forEach(function (r) {
+    var said = idleSaid(r && r.raw_text);
+    if (!said) return;
+    var k = said.toLowerCase().replace(/\s+/g, ' ');
+    if (!by[k]) by[k] = { word: said, n: 0 };
+    by[k].n++;
+  });
+  return Object.keys(by).map(function (k) { return by[k]; }).filter(function (x) { return x.n >= IDLE_MINE_TIMES; })
+    .sort(function (x, y) { return y.n - x.n || (x.word < y.word ? -1 : 1); }).slice(0, IDLE_MINE_MAX)
+    .map(function (x) { return x.word; });
+}
+
 function idleAskRow(a, li, text, acts, btn) {
   var n = a.n;
   var start = Date.parse(n.streak_start);
@@ -18954,19 +18991,46 @@ function idleAskRow(a, li, text, acts, btn) {
   var rec = r ? r.reason : actIdleReason(n.what);
   text.textContent = 'Away ' + humanDuration(end - start) + ' (' + spanClock(start, end) + '), no device in use — why?' +
     (n.state === 'applied' ? ' (auto: ' + actIdleWord(rec || ACT_IDLE_DEFAULT) + ')' : rec ? '' : ' No answer: Idle (break) at End day.');
+  var box = document.createElement('div');
+  box.className = 'idle-other';
+  box.hidden = true;
+  var said = document.createElement('input');
+  said.type = 'text';
+  said.className = 'money-field idle-said';
+  said.maxLength = IDLE_SAID_MAX;
+  said.placeholder = 'Why? e.g. went to the bank';
+  said.setAttribute('aria-label', 'Why were you away?');
+  var save = document.createElement('button');
+  save.type = 'button';
+  save.className = 'btn btn-sm btn-accent';
+  save.textContent = 'Save';
+  save.addEventListener('click', function () { answerIdle(a, 'Other', li, said.value); });
+  said.addEventListener('keydown', function (e) { if (e.key === 'Enter') { e.preventDefault(); save.click(); } });
+  box.append(said, save);
+  var mine = (catchup && catchup.mine) || [];
   ACT_IDLE_REASONS.forEach(function (reason) {
-    btn(actIdleWord(reason), function () { answerIdle(a, reason, li); });
+    if (reason === 'Other') {
+      mine.forEach(function (word) { btn(word, function () { answerIdle(a, 'Other', li, word); }); });
+      btn(actIdleWord(reason), function () {
+        box.hidden = false;
+        said.focus();
+      });
+    } else {
+      btn(actIdleWord(reason), function () { answerIdle(a, reason, li); });
+    }
     var b = acts.lastChild;
     if (reason === rec) { b.classList.add('btn-accent'); b.setAttribute('aria-pressed', 'true'); }
   });
-  li.append(text, acts);
+  li.append(text, acts, box);
   return li;
 }
 
 /** Item 31b: an idle gap's reason (jw-, the newest wins), and, unless the clock is already off there, its
  *  break and resume (jb-/jr-, the server's rids, so End day never writes them twice). Through the outbox. */
-function answerIdle(a, reason, li) {
+function answerIdle(a, reason, li, typed) {
   var n = a.n;
+  // '+' joins reasons on a break row (REASON_SEP), so his words never carry one.
+  var said = reason === 'Other' ? String(typed || '').replace(/[+]/g, ' ').replace(/\s+/g, ' ').trim().slice(0, IDLE_SAID_MAX) : '';
   var start = Date.parse(n.streak_start);
   var end = Date.parse(n.span_end);
   var now = Date.now();
@@ -18976,13 +19040,15 @@ function answerIdle(a, reason, li) {
   var g = { start: start, end: end, ms: end - start, kind: 'idle', key: key, tail: false, prayer: false,
             head: rows.some(function (r) { return instantOf(r.at) === start && ACT_STATE[r.type] === 1; }),
             applied: actSpansMs(actIntersect(start, end, work)) * 2 < end - start };
-  var steps = [{ type: 'actanswer', raw_text: 'Idle ' + humanDuration(end - start) + ': ' + actIdleWord(reason), detail: reason,
-                 rid: 'jw-' + key + '-' + Math.floor(now / 1000).toString(36) }];
+  var steps = [{ type: 'actanswer', raw_text: 'Idle ' + humanDuration(end - start) + ': ' + actIdleWord(reason) +
+                 (said ? IDLE_SAID_SEP + said : ''), detail: reason, rid: 'jw-' + key + '-' + Math.floor(now / 1000).toString(36) }];
   actJudgeSteps(g, reason).forEach(function (w) {
-    steps.push({ type: w.type, raw_text: w.text, rid: w.rid, at: new Date(w.at).toISOString(), local_time: humanLocalAt(w.at) });
+    // Item 47: the break carries his words, so Logs and the day's figures say "went to the bank", not "Other".
+    var t = w.type === 'break' && said ? said : w.text;
+    steps.push({ type: w.type, raw_text: t, rid: w.rid, at: new Date(w.at).toISOString(), local_time: humanLocalAt(w.at) });
   });
   dropAsk(a);
-  li.textContent = 'Noted: ' + actIdleWord(reason) + ', ' + spanClock(start, end) + '.';
+  li.textContent = 'Noted: ' + (said || actIdleWord(reason)) + ', ' + spanClock(start, end) + '.';
   runWrites(actSkipTies(steps, sessionLog())).then(function () { scheduleRefresh(800); });
 }
 

@@ -184,6 +184,9 @@ paste the line it gives you into PowerShell, done.
   github.com?"); your answer goes on the list and it is never asked again.
 - At End day: a slip of 5 minutes or more becomes a Distraction; three slips inside 30
   minutes become **Lost focus** for that whole stretch. **Away** means nothing was in use.
+- **"Away 25m — why?"**: Prayer, Washroom, Walk, Chit-chat, Food, or **Other**, which
+  opens a box for your own words ("went to the bank"); they name the break in Logs and
+  go to the day's assessment. A reason you have typed 3 times gets its own button.
 - **The day ends by itself.** Without End day, the day ends at your last work, written
   after 23:30 once nothing has been worked for 30 minutes. Phone use after that is
   **late phone**: no push, it goes in yesterday's report.
