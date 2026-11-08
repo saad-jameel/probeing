@@ -788,6 +788,7 @@ var UP_RUN_MS = 30 * MIN_MS;           // use this long in one go after a quiet 
 var PICKUP_MS = 10 * MIN_MS;           // with no Sleep pressed, shorter use after midnight is a pickup
 var WAKE_RUN_MS = 5 * MIN_MS;          // use this long after Fajr can be the wake...
 var BACK_ASLEEP_MS = 60 * MIN_MS;      // ...unless this much quiet follows it (back to sleep)
+var DOZE_WINDOW_MS = 3 * 3600000;      // item 50: ...and only this soon after Fajr
 var SLEEP_LONG_MS = 2 * 3600000;        // item 43: the day over, this long with no device in use is his sleep
 var NIGHT_ANCHORS = { off: 1, sleep: 1, wake: 1 };
 
@@ -856,7 +857,13 @@ function nightStep(d) {
   // has reported since: it ends at the last work.
   // Open = his newest state row starts or pauses work (the walk's 12-hour idle cap must not hide it).
   var newest = null;
-  rows.forEach(function (r) { if (ACT_STATE_ANY[r.type] && (!newest || r.at >= newest.at)) newest = r; });
+  // Item 50 (8 Nov, the 18-day simulation): at one instant, a start of work beats a wake (the auto wake and the auto
+  // start both land on the first work): the day is open. Which was written last decided it, and a day the app
+  // never saw could then never end by itself.
+  rows.forEach(function (r) {
+    if (!ACT_STATE_ANY[r.type]) return;
+    if (!newest || r.at > newest.at || (r.at === newest.at && !(r.type === 'wake' && ACT_CLOCKISH[newest.type]))) newest = r;
+  });
   if (newest && ACT_CLOCKISH[newest.type] && !walk.asleep) {
     var since = walk.work && walk.work.length ? walk.work[walk.work.length - 1][0] : newest.at;
     var lastRow = newest.at;
@@ -941,8 +948,11 @@ function nightStep(d) {
     }
     var ongoing = j + 1 >= runs.length && now - runs[j].end < BACK_ASLEEP_MS;
     if (use < WAKE_RUN_MS) { if (ongoing) return out; i = j; continue; }
+    // Item 50 (8 Nov, the 18-day simulation): a doze is early (DOZE_WINDOW_MS after Fajr); later, use followed by
+    // quiet is a day away from the phone, not sleep (a Saturday read as asleep until Monday).
     if (j > i || runs[j].end - a >= BACK_ASLEEP_MS) { w = a; break; }
     if (ongoing) return out;                                          // one run so far: not sure yet
+    if (a - f >= DOZE_WINDOW_MS) { w = a; break; }                    // used, then quiet, but late: up, not a doze
     i = j;                                                            // used, then an hour of quiet: back to sleep
   }
   if (w === null) return out;
@@ -1335,7 +1345,7 @@ function keptPieces(clean, walk) {
     });
   }
   // Item 36 (Saad, 28 Oct): awake with the day off (a weekend) is kept whole, so its distraction is named.
-  var off = A.actClip(clean, walk.awakeOff || []).map(function (b) { return Object.assign({}, b, { mode: 'off' }); });
+  var off = A.actClip(clean, (walk.awakeOff || []).concat(walk.idleOff || [])).map(function (b) { return Object.assign({}, b, { mode: 'off' }); });
   return full.concat(bare(walk.sleep, 'sleep'), bare(walk.rest, 'break'), off);
 }
 
@@ -1846,6 +1856,29 @@ async function runQuiet(sb: Sb, owner: string, now: number, set: Record<string, 
 
 /** Item 38: the evening close and the morning's night proposal (nightStep). Before the item 38 SQL the
  *  kind 'night' is refused: the evening close still runs, nothing is proposed. */
+/* Item 50 (8 Nov, the 18-day simulation): a clock last touched 12 hours ago stops counting (actWalk and replayDay's
+ * idle cap), and the watchers send nothing outside the clock, so a long day the app never saw lost its evening
+ * and never ended. While the devices show work in the cap's last 2 hours, a quiet resume (nk-, at most one an
+ * hour) keeps the clock; once the work stops, the day ends at the last work as before. */
+var KEEP_MARGIN_MS = 2 * 3600000;
+var KEEP_RECENT_MS = 15 * MIN_MS;
+async function runKeep(sb: Sb, owner: string, now: number, set: Record<string, any>) {
+  const rows = await readRows(sb, owner, now - READ_BACK_MS);
+  const walk = A.actWalk(rows, now - READ_BACK_MS, now);
+  if (!walk.working) return { kept: false };
+  let tended = 0;
+  rows.forEach((r) => { if (A.ACT_TENDED.indexOf(r.type) !== -1) tended = Math.max(tended, ms(r.at)); });
+  if (!tended || now < tended + A.ACT_IDLE_MAX_MS - KEEP_MARGIN_MS) return { kept: false };
+  const recent = must(await sb.from('activity_blocks').select('ended_at, category, mode').eq('user_id', owner)
+    .gte('ended_at', iso(now - KEEP_RECENT_MS)).in('category', ['work', 'meeting']).limit(50))
+    .filter((b) => !b.mode || b.mode === 'work').map((b) => Math.min(ms(b.ended_at), now)).filter((t) => t > tended);
+  if (!recent.length) return { kept: false };
+  const t = Math.max(...recent);
+  const w = { type: 'resume', at: t, rid: 'nk-' + Math.floor(t / 3600000).toString(36), text: 'Still working (from the devices — auto)' };
+  for (const r of A.actSkipTies([w], rows)) await writeRow(sb, owner, set.zone, r);
+  return { kept: true, at: iso(t) };
+}
+
 async function runNight(sb: Sb, owner: string, now: number, set: Record<string, any>) {
   const rows = await readRows(sb, owner, now - READ_BACK_MS);
   const walk = A.actWalk(rows, now - READ_BACK_MS, now);
@@ -2295,7 +2328,7 @@ async function watchSpans(sb: Sb, owner: string, from: number, now: number) {
   const walk = A.actWalk(rows, from, now);
   // Item 36: awake with the day off is watched whole (named); asleep and breaks stay bare.
   const quiet = (walk.sleep || []).concat(walk.rest || []);
-  return { walk, spans: A.actMergeSpans((walk.watch || []).concat(walk.awakeOff || [])) as number[][], quiet: A.actMergeSpans(quiet) as number[][] };
+  return { walk, spans: A.actMergeSpans((walk.watch || []).concat(walk.awakeOff || [], walk.idleOff || [])) as number[][], quiet: A.actMergeSpans(quiet) as number[][] };
 }
 
 async function opConfig(sb: Sb, dev: Record<string, any>, body: Record<string, any>, now: number) {
@@ -2397,6 +2430,13 @@ async function opIngest(sb: Sb, dev: Record<string, any>, body: Record<string, a
   } catch (e) {
     focus = { error: String((e as Error)?.message || e) };
   }
+  // Item 50: a day of work the app never saw keeps its clock while the devices show work.
+  let keep: Record<string, unknown> = {};
+  try {
+    keep = await runKeep(sb, dev.user_id, now, set);
+  } catch (e) {
+    keep = { error: String((e as Error)?.message || e) };
+  }
   // Item 38: the night, after the checks above have read the same rows.
   let night: Record<string, unknown> = {};
   try {
@@ -2411,7 +2451,7 @@ async function opIngest(sb: Sb, dev: Record<string, any>, body: Record<string, a
   } catch (e) {
     auto = { error: String((e as Error)?.message || e) };
   }
-  return reply(200, { ok: true, stored, skipped: list.length - clean.length, nudges, quiet, teach, helpers, focus, night, auto });
+  return reply(200, { ok: true, stored, skipped: list.length - clean.length, nudges, quiet, teach, helpers, focus, keep, night, auto });
 }
 
 async function askGemini(key: string, model: string, prompt: string) {

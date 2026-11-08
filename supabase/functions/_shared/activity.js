@@ -618,7 +618,7 @@ var ACT_AUTO_RID = /^ab-/;
  * a question's (kb-/kr-/qb-/qr-), an awake or back-to-work answer's (nw-/nr-, item 23),
  * a Start answer's (ns-, item 28), the distractions it writes as breaks (nd-/ne-, item 30a) and a
  * judged gap's break and resume (jb-/jr-, item 31a). On a tie with his own row they go first, so his row decides. */
-var ACT_BACKDATED = /^(ab|ar|aw|kb|kr|qb|qr|nw|nr|ns|nd|ne|jb|jr)-/;
+var ACT_BACKDATED = /^(ab|ar|aw|kb|kr|qb|qr|nw|nr|ns|nd|ne|jb|jr|nk)-/;   // nk: item 50's "still working"
 
 /** Order of two rows at the same instant: backdated ones first, those by rid; else 0. */
 function actTie(x, y) {
@@ -676,6 +676,7 @@ function actWalk(rows, fromMs, toMs) {
   var sleep = [];
   var rest = [];
   var awakeOff = [];
+  var idleOff = [];                       // item 50: past the idle cap, kept as use only
   var off = null;                         // awake with the work side off since this row (item 28)
   var known = false;                      // a state row has been read: before it the work side is a guess
   function emit(a, b) {
@@ -684,6 +685,9 @@ function actWalk(rows, fromMs, toMs) {
     if (clock) {
       var end = tended ? Math.min(b, tended + ACT_IDLE_MAX_MS) : b;
       if (end > a) { work.push([a, end]); watch.push([a, end]); }
+      // Item 50: past the idle cap the clock no longer counts and nothing is asked (awakeOff stays empty), but his
+      // devices' use is kept (it was dropped, and the night after it was read wrong).
+      if (end < b && !asleep) idleOff.push([Math.max(a, end), b]);
     } else if (auto) {
       var stop = Math.min(b, auto.t + ACT_AUTO_WATCH_MS);
       if (stop > a) watch.push([a, stop]);
@@ -738,7 +742,7 @@ function actWalk(rows, fromMs, toMs) {
            sleep: actMergeSpans(sleep), rest: actMergeSpans(rest),
            asleep: asleep ? { at: asleep.t, rid: asleep.rid } : null,
            onBreak: onBreak,
-           awakeOff: actMergeSpans(awakeOff),
+           awakeOff: actMergeSpans(awakeOff), idleOff: actMergeSpans(idleOff),
            offSince: off ? { at: off.t, rid: off.rid } : null,
            sleeps: sleepList.filter(function (s) { return (s.end === null || s.end > fromMs) && s.t < toMs; })
              .map(function (s) { return { at: s.t, end: s.end, rid: s.rid }; }) };
@@ -1950,6 +1954,8 @@ globalThis.ProBeingActivity = {
   actPayload: actPayload,
   actSanitize: actSanitize,
   actWalk: actWalk,
+  ACT_TENDED: ACT_TENDED,
+  ACT_IDLE_MAX_MS: ACT_IDLE_MAX_MS,
   ACT_ASK_ENDS: ACT_ASK_ENDS,
   actAskOpen: actAskOpen,
   actQuiet: actQuiet,

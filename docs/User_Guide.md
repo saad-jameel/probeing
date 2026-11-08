@@ -131,7 +131,11 @@ Pick a range: Yesterday, Last 2 days, This week, Last week, This month or Last m
   and rules for tomorrow. Gemini gets your whole day for it — sleep, each work stretch and
   task, every break and its reason, distractions with times and sites, prayers and
   Takbeer-e-oola, spending — your targets and the last 3 days; never a URL, a window
-  title or a name from your bank alerts. A generic answer is sent back once.
+  title or a name from your bank alerts. A generic answer is sent back once. A day that
+  ended by itself (no End day) gets its assessment the next time you open ProBeing — the
+  last 2 days, one per opening; if Gemini is down it tries again an hour later.
+- **A long day the app never saw** keeps counting while the laptop shows work ("Still
+  working (auto)" in Logs), and ends at your last work once the devices go quiet.
 - **Ranges** — Yesterday (the default), Last 2 days, This week, Last week, This month,
   Last month. Yesterday leads with the night: when the day ended, late-night phone time
   (and which apps), slept → woke, and whether the night was disturbed. A day with no work

@@ -521,7 +521,7 @@ function userMap() {
 /** Two rows at the same instant: a backdated one replays first (two of them by rid), so his
  *  own row decides that instant whatever order the table returned them in; else 0. */
 function rowTie(x, y) {
-  var late = /^(ab|ar|aw|kb|kr|qb|qr|nw|nr|ns|nd|ne|jb|jr)-/;
+  var late = /^(ab|ar|aw|kb|kr|qb|qr|nw|nr|ns|nd|ne|jb|jr|nk)-/;
   var bx = late.test(String((x && x.rid) || ''));
   var by = late.test(String((y && y.rid) || ''));
   if (bx !== by) return bx ? -1 : 1;

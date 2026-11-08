@@ -2192,6 +2192,7 @@ async function refresh(opts) {
     readAutoAsks();                                                      // item 30b: at most once a minute
     readProbableSleep().catch(function () {});                           // item 43
     paintReportAck(false).catch(function () {});                        // item 35: at most every 10 min
+    assessPastDays(false).catch(function () {});                         // item 49: a day that ended by itself
     if (!weekGoals || weekGoals.week !== weekStartYmd(Date.now())) paintGoals().catch(function () {});
     clearStaleNotes();                                                   // item 31c: with today's rows read
     if (epoch === glanceEpoch) armGlance(data, readAt);
@@ -9558,6 +9559,7 @@ async function openFocusDay(check) {
   var dlg = $('focusDlg');
   if (!dlg || !supabaseReady()) return;
   var day = check && check.day ? check.day : counterDate(Date.now());
+  $('focusDlgTitle').textContent = 'Your focus today';
   var s = null;
   try { s = focusSummary(await readFocusDay(day)); } catch (e) { if (!check) return; }
   if (!s && !check) return;
@@ -9572,7 +9574,71 @@ async function openFocusDay(check) {
   try { got = await focusAdvice(day, s, true, check || null); } catch (e) { /* said below */ }
   paint(got.text);
   $('focusDlgNote').textContent = got.text ? '' : ADVICE_WHY[got.why] || '';
+  if (got.text) markAssessSeen(day);
   paintTodayFocus();
+}
+
+/* Item 49 (Saad, 8 Nov: "automatic first"): a day that ended by itself (no End day) still gets its assessment.
+ * On a later open, the latest finished day of the last ASSESS_BACK_DAYS with something recorded and none saved
+ * is assessed (one call per open; focusAdvice's claim keeps two devices from both asking) and shown once here. */
+var ASSESS_BACK_DAYS = 2;
+var ASSESS_LOOK_MS = 10 * 60000;
+var ASSESS_RETRY_MS = 60 * 60000;     // a failed one waits an hour for its one more try (Gemini down for a while)
+var ASSESS_SEEN_KEY = 'pb_assess_seen';
+var ASSESS_RECORD_TYPES = { work: 1, voice: 1, resume: 1, M: 1, prayer: 1, wake: 1, off: 1, done: 1 };
+var assessLookedAt = 0;
+
+function assessSeen() {
+  try { var v = JSON.parse(localStorage.getItem(ASSESS_SEEN_KEY) || '[]'); return Array.isArray(v) ? v : []; } catch (e) { return []; }
+}
+
+function markAssessSeen(day) {
+  try { localStorage.setItem(ASSESS_SEEN_KEY, JSON.stringify(assessSeen().filter(function (d) { return d !== day; }).concat([day]).slice(-10))); }
+  catch (e) { /* a convenience only */ }
+}
+
+/** The focus sheet for a day already over, its assessment in it. */
+function showPastAssessment(day, s, text) {
+  var dlg = $('focusDlg');
+  if (!dlg) return;
+  $('focusDlgTitle').textContent = 'Assessment · ' + assessDayLabel(day) + ' (the day ended by itself)';
+  paintFocusBox($('focusDlgLine'), $('focusDlgAdvice'), s, text);
+  $('focusDlgNote').textContent = '';
+  if (!dlg.open) { if (typeof dlg.show === 'function') dlg.show(); else dlg.setAttribute('open', ''); }
+  markAssessSeen(day);
+}
+
+async function assessPastDays(force) {
+  if (!supabaseReady()) return;
+  var now = Date.now();
+  if (!force && now - assessLookedAt < ASSESS_LOOK_MS) return;
+  assessLookedAt = now;
+  // The must-answer popup first: try again in a minute.
+  if (($('catchupDlg') && $('catchupDlg').open) || ($('focusDlg') && $('focusDlg').open) || ($('checkinDlg') && $('checkinDlg').open)) {
+    assessLookedAt = now - ASSESS_LOOK_MS + 60000;
+    return;
+  }
+  var today = counterDate(now);
+  var seen = assessSeen();
+  for (var i = 1; i <= ASSESS_BACK_DAYS; i++) {
+    var day = ymdShift(today, -i);
+    if (seen.indexOf(day) !== -1) continue;
+    var got = await sb.from('focus_advice').select('text,state,tries,made_at').eq('day', day).limit(1);
+    if (got.error) return;
+    var row = (got.data || [])[0];
+    if (row && row.text) { markAssessSeen(day); continue; }        // written at End day, or on the other device
+    if (row && row.state === 'failed' && Number(row.tries) >= ADVICE_TRIES) { markAssessSeen(day); continue; }
+    if (row && row.state === 'failed' && now - Date.parse(row.made_at) < ASSESS_RETRY_MS) continue;
+    var rows = await rangeEvents(new Date(ymdStartMs(day)).toISOString(), new Date(ymdStartMs(ymdShift(day, 1))).toISOString());
+    if (!rows.some(function (r) { return ASSESS_RECORD_TYPES[r.type]; })) { markAssessSeen(day); continue; }
+    var s = null;
+    try { s = focusSummary(await readFocusDay(day)); } catch (e) { s = null; }
+    var check = null;
+    try { check = ((await readReflections(day, day)) || []).slice(-1)[0] || null; } catch (e) { check = null; }
+    var r = await focusAdvice(day, s, true, check);
+    if (r.text) showPastAssessment(day, s, r.text);
+    return;                                                       // one per open
+  }
 }
 
 /* ── Item 31d: the day-end check-in ───────────────────────────────────────

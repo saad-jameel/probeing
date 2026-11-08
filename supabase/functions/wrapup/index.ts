@@ -79,6 +79,7 @@ function reply(status: number, body: unknown): Response {
  * follow him when he travels. A number rather than a zone keeps this block pure. */
 var TZ_OFFSET_MIN = 300;
 var WATCHED_MS = 2 * 3600000;          // item 38: a device seen this recently decides the night instead
+var DEVICE_CLOCKISH = { work: 1, voice: 1, resume: 1, 'break': 1 };   // item 50: the day is open
 
 /** 11:30 PM, as minutes past local midnight. The hour the whole stage is about. */
 var WRAP_AT_MIN = 23 * 60 + 30;
@@ -821,6 +822,29 @@ Deno.serve(async (req: Request): Promise<Response> => {
   if (now - seenAt < WATCHED_MS) {
     return reply(200, { ok: true, act: 'watched', why: 'a device reported ' + Math.round((now - seenAt) / 60000) +
                         ' min ago: the devices decide the night' });
+  }
+
+  /* Item 50 (8 Nov, the 18-day simulation): a day the devices started by themselves (ns-, kept going by nk-), none
+   * of them reporting for WATCHED_MS (the laptop shut, the phone dead or off): it ends at the last work they saw,
+   * the row activity-ingest's evening step writes (nx-off-), and the night is settled from them in the morning.
+   * Asking "still awake?" ended it at the time of the check: a 7-hour Tuesday counted 12. A day he started
+   * himself is asked, as before. */
+  if (isFinite(seenAt) && inFirstCheckWindow(now)) {
+    const stRes = await sb.from('events').select('at, type, rid').eq('user_id', owner).in('type', STATE_TYPES)
+      .order('at', { ascending: false }).limit(4);
+    const st = stRes.error ? [] : (stRes.data || []);
+    let newest = st[0] || null;
+    // At one instant a start of work beats a wake (the auto wake and the auto start both land on the first work).
+    if (newest && newest.type === 'wake' && st[1] && st[1].at === newest.at && DEVICE_CLOCKISH[st[1].type]) newest = st[1];
+    if (newest && DEVICE_CLOCKISH[newest.type] && /^(ns|nk)-/.test(String(newest.rid || ''))) {
+      const bRes = await sb.from('activity_blocks').select('ended_at').eq('user_id', owner).in('category', ['work', 'meeting'])
+        .eq('mode', 'work').gt('ended_at', String(newest.at)).order('ended_at', { ascending: false }).limit(1);
+      const e = bRes.error || !(bRes.data || []).length ? NaN : Math.min(Date.parse(String(bRes.data[0].ended_at)), now);
+      if (isFinite(e) && now - e >= WATCHED_MS) {
+        await writeEvent(sb, owner, e, 'off', 'Day over (auto — last work at ' + clockLocal(e) + ')', 'nx-off-' + Math.floor(e / 1000).toString(36));
+        return reply(200, { ok: true, act: 'closed-by-devices', why: 'no device for 2 h: the day ends at the last work they saw' });
+      }
+    }
   }
 
   const lastRes = await sb.from('events')
