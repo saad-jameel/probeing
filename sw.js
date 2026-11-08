@@ -79,7 +79,7 @@
  * v57 (item 44): the daily-expense status on Money; a comment on bank lines.
  * v58 (item 44): Money's top card: wallet + daily expense, got + spent; per day till the 1st removed.
  * v59 (item 44): only the "Daily Expanse" tag counts against the daily expense. */
-var CACHE = 'probeing-shell-v60';
+var CACHE = 'probeing-shell-v61';
 var SHELL = [
   './',
   'index.html',
